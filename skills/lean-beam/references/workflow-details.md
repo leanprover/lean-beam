@@ -37,16 +37,27 @@ example (a b : Nat) (h : a = b) : 0 + a = b := by
 | `1 3`: inside `simp` | After `simp`: `a = b` | Succeeds |
 | `2 2`: start of `exact h` | Before `exact h`: `a = b` | Succeeds |
 
-After updating the file, this replacement probe correctly returns `result.success=false`:
+Read the source and select the intended position first. Stop if `update` fails; after it succeeds,
+extract its token. This replacement probe correctly returns `result.success=false`:
 
 ```bash
-lean-beam run-at "BeamRunAtProbe.lean" <snapshot-from-update> 1 2 -- "exact h"
+update_json="$(lean-beam update "BeamRunAtProbe.lean")"
+snapshot="$(printf '%s\n' "$update_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["snapshot"])')"
+lean-beam run-at "BeamRunAtProbe.lean" "$snapshot" 1 2 -- "exact h"
 ```
 
 Nested tactics and whitespace may select an enclosing or neighboring tactic. `goals before` and
 `goals after` inspect both sides of the selected tactic; they do not configure a later `run-at`.
 
 ## Command Details
+
+The following position examples use `Foo.lean`; obtain its token separately after reading that file.
+Stop if `update` fails.
+
+```bash
+update_json="$(lean-beam update "Foo.lean")"
+snapshot="$(printf '%s\n' "$update_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["snapshot"])')"
+```
 
 Continue from a stored handle:
 
@@ -65,7 +76,7 @@ printf '%s\n' "$HANDLE_JSON" | lean-beam release "Foo.lean" -
 Short search helper:
 
 ```bash
-lean-beam-search mint "Foo.lean" <snapshot-from-update> 10 2 "constructor"
+lean-beam-search mint "Foo.lean" "$snapshot" 10 2 "constructor"
 printf '%s\n' "$HANDLE_JSON" | lean-beam-search branch "Foo.lean" "constructor"
 printf '%s\n' "$HANDLE_JSON" | lean-beam-search playout "Foo.lean" "exact trivial" "exact trivial"
 printf '%s\n' "$HANDLE_JSON" | lean-beam-search release "Foo.lean"
@@ -74,24 +85,24 @@ printf '%s\n' "$HANDLE_JSON" | lean-beam-search release "Foo.lean"
 Inspect Lean type/term information at a specific position:
 
 ```bash
-lean-beam hover "Foo.lean" <snapshot-from-update> 10 2
-lean-beam signature-help "Foo.lean" <snapshot-from-update> 10 2
+lean-beam hover "Foo.lean" "$snapshot" 10 2
+lean-beam signature-help "Foo.lean" "$snapshot" 10 2
 ```
 
 Follow semantic navigation and symbol information:
 
 ```bash
-lean-beam definition "Foo.lean" <snapshot-from-update> 10 2
-lean-beam references "Foo.lean" <snapshot-from-update> 10 2
-lean-beam document-symbols "Foo.lean" <snapshot-from-update>
+lean-beam definition "Foo.lean" "$snapshot" 10 2
+lean-beam references "Foo.lean" "$snapshot" 10 2
+lean-beam document-symbols "Foo.lean" "$snapshot"
 lean-beam workspace-symbols "Foo.bar"
 ```
 
 Inspect Lean proof goals at an existing tactic position:
 
 ```bash
-lean-beam goals before "Foo.lean" <snapshot-from-update> 10 2
-lean-beam goals after "Foo.lean" <snapshot-from-update> 10 2
+lean-beam goals before "Foo.lean" "$snapshot" 10 2
+lean-beam goals after "Foo.lean" "$snapshot" 10 2
 ```
 
 These commands return structured goals in `result.goals`. A solved state uses

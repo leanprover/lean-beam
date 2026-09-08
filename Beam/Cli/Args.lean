@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Lean
 import Beam.Broker.Protocol
+import Beam.Lean.Operation
 import Beam.Path
 import Beam.LSP.Todo
 
@@ -28,6 +29,17 @@ def parseNatArg (name value : String) : IO Nat := do
   let some n := value.toNat?
     | throw <| IO.userError s!"invalid {name} '{value}'"
   pure n
+
+def parseLeanDocumentArgs (path snapshotText : String) : IO Beam.Lean.DocumentInput := do
+  pure { path, snapshot := ← IO.ofExcept <| SnapshotRef.decode snapshotText }
+
+def parseLeanPositionArgs
+    (path snapshotText lineText characterText : String) : IO Beam.Lean.PositionInput := do
+  pure {
+    toDocumentInput := ← parseLeanDocumentArgs path snapshotText
+    line := ← parseNatArg "line" lineText
+    character := ← parseNatArg "character" characterText
+  }
 
 def joinTextArgs (args : List String) : Option String :=
   if args.isEmpty then none else some <| String.intercalate " " args

@@ -93,16 +93,14 @@ private def runLeanRunAt
     (action path snapshotText lineText characterText : String)
     (textArgs : List String)
     (storeHandle : Bool := false) : IO Unit := do
-  let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
-  let line ← parseNatArg "line" lineText
-  let character ← parseNatArg "character" characterText
+  let position ← parseLeanPositionArgs path snapshotText lineText characterText
   let parsedText ← parseTextArg s!"{action} <path> <snapshot> <line> <character>" textArgs
   let root ← projectRoot opts .lean
   withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client => do
     let req ← withEnvClientRequestId <|
-      leanRunAtRequest path snapshot line character parsedText.text (storeHandle := storeHandle)
+      leanRunAtRequest position parsedText.text (storeHandle := storeHandle)
     maybeEmitTextDebug req.clientRequestId? action parsedText.source parsedText.text
-    callBrokerWithProgress root client req (leanRunAtWaitSpec action path line character)
+    callBrokerWithProgress root client req (leanRunAtWaitSpec action path position.line position.character)
 
 private def runLeanRunWith
     (opts : CliOptions)
@@ -300,52 +298,44 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
         (storeHandle := true)
   | "hover" :: path :: snapshotText :: line :: character :: [] =>
       let root ← projectRoot opts .lean
-      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
-      let line ← parseNatArg "line" line
-      let character ← parseNatArg "character" character
+      let position ← parseLeanPositionArgs path snapshotText line character
       let action := "hover"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanHoverRequest path snapshot line character)
-          (leanHoverWaitSpec path line character action)
+          (leanHoverRequest position)
+          (leanHoverWaitSpec path position.line position.character action)
   | "signature-help" :: path :: snapshotText :: line :: character :: [] =>
       let root ← projectRoot opts .lean
-      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
-      let line ← parseNatArg "line" line
-      let character ← parseNatArg "character" character
+      let position ← parseLeanPositionArgs path snapshotText line character
       let action := "signature-help"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanSignatureHelpRequest path snapshot line character)
-          (leanSignatureHelpWaitSpec path line character action)
+          (leanSignatureHelpRequest position)
+          (leanSignatureHelpWaitSpec path position.line position.character action)
   | "definition" :: path :: snapshotText :: line :: character :: [] =>
       let root ← projectRoot opts .lean
-      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
-      let line ← parseNatArg "line" line
-      let character ← parseNatArg "character" character
+      let position ← parseLeanPositionArgs path snapshotText line character
       let action := "definition"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanDefinitionRequest path snapshot line character)
-          (leanDefinitionWaitSpec path line character action)
+          (leanDefinitionRequest position)
+          (leanDefinitionWaitSpec path position.line position.character action)
   | "references" :: path :: snapshotText :: line :: character :: extra =>
       let root ← projectRoot opts .lean
-      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
-      let line ← parseNatArg "line" line
-      let character ← parseNatArg "character" character
+      let position ← parseLeanPositionArgs path snapshotText line character
       let includeDeclaration ← parseLeanReferencesArgs extra
       let action := "references"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanReferencesRequest path snapshot line character includeDeclaration)
-          (leanReferencesWaitSpec path line character action)
+          (leanReferencesRequest position includeDeclaration)
+          (leanReferencesWaitSpec path position.line position.character action)
   | "document-symbols" :: path :: snapshotText :: [] =>
       let root ← projectRoot opts .lean
-      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
+      let document ← parseLeanDocumentArgs path snapshotText
       let action := "document-symbols"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanDocumentSymbolsRequest path snapshot)
+          (leanDocumentSymbolsRequest document)
           (leanDocumentSymbolsWaitSpec path action)
   | "workspace-symbols" :: queryParts =>
       let root ← projectRoot opts .lean
@@ -361,14 +351,12 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
   | "goals" :: modeText :: path :: snapshotText :: line :: character :: [] =>
       let root ← projectRoot opts .lean
       let mode ← parseLeanGoalsModeArg modeText
-      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
-      let line ← parseNatArg "line" line
-      let character ← parseNatArg "character" character
+      let position ← parseLeanPositionArgs path snapshotText line character
       let action := "goals"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanGoalsRequest path snapshot line character mode)
-          (leanGoalsWaitSpec path line character mode (some action))
+          (leanGoalsRequest position mode)
+          (leanGoalsWaitSpec path position.line position.character mode (some action))
   | "todo" :: path :: snapshotText :: startLine :: startCharacter :: endLine :: endCharacter :: extra => do
       let root ← projectRoot opts .lean
       let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText

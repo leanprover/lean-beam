@@ -240,7 +240,9 @@ the broken identity. Restart an agent or MCP client for `runtime_current: false`
 work.
 
 Direct MCP clients should call `lean_update` or `lean_sync` before snapshot-bound operations and
-pass the returned `snapshot` for the same descriptor and path. `lean_workspace_symbols` is
+pass the returned `snapshot` for the same descriptor and path. Token lifetimes and stale-state
+recovery follow the [source snapshot contract](SYNC_AND_DIAGNOSTICS.md#command-model).
+`lean_workspace_symbols` is
 workspace-scoped but has no document snapshot. `lean_run_with`, `lean_run_with_linear`, and
 `lean_release` take an opaque handle returned by a previous handle operation. The supplied workspace
 descriptor must resolve to the same private runtime identity carried by that handle. `lean_goals`

@@ -120,7 +120,6 @@ a progression:
 
 Position/range/document operations are snapshot-bound across the broker, MCP, and wrapper surfaces.
 Clients first update or sync a saved file, then pass the returned opaque `snapshot` token to later probes.
-Tokens distinguish file lifetimes and backend sessions, including identical text reopened after refresh.
 Workspace symbol queries are workspace-scoped and do not take a file snapshot. The canonical
 field-level contract for update, sync, save, progress, diagnostics, stale-snapshot failures,
 readiness, and recovery hints lives in [SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md).

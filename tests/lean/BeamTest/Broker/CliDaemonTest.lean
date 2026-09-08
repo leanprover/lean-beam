@@ -719,28 +719,29 @@ private def checkLeanOperationRequests : IO Unit := do
     text := "exact h"
   }
   requireRequestJson "runAt request should share the Lean operation adapter"
-    (Beam.Cli.leanRunAtRequest path ⟨"test-session", 12⟩ 4 2 "exact h")
+    (Beam.Cli.leanRunAtRequest runAtInput.toPositionInput "exact h")
     runAtInput.toBrokerRequest
   requireRequestJson "runAt handle request should share the Lean operation adapter"
-    (Beam.Cli.leanRunAtRequest path ⟨"test-session", 12⟩ 4 2 "exact h" (storeHandle := true))
+    (Beam.Cli.leanRunAtRequest runAtInput.toPositionInput "exact h" (storeHandle := true))
     (runAtInput.toBrokerRequest (storeHandle := true))
   expectIoErrorContains "runAt missing text should fail at the CLI boundary"
-    "usage: lean-beam" (Beam.Cli.parseTextArg "run-at Demo.lean 12 4 2" [])
+    "usage: lean-beam" (Beam.Cli.parseTextArg "run-at Demo.lean test-session/12 4 2" [])
 
-  let positionInput : Beam.Lean.PositionInput := {
-    path
-    snapshot := ⟨"test-session", 13⟩
-    line := 7
-    character := 3
-  }
+  let positionInput ← Beam.Cli.parseLeanPositionArgs path "test-session/13" "7" "3"
+  require "position parsing keeps the source token and coordinates"
+    (positionInput.snapshot == ⟨"test-session", 13⟩ && positionInput.line == 7 && positionInput.character == 3)
+  expectIoErrorContains "position parsing rejects a numeric token" "opaque token"
+    (Beam.Cli.parseLeanPositionArgs path "13" "7" "3")
+  expectIoErrorContains "position parsing rejects invalid coordinates" "invalid line"
+    (Beam.Cli.parseLeanPositionArgs path "test-session/13" "bad" "3")
   requireRequestJson "hover request should share the Lean operation adapter"
-    (Beam.Cli.leanHoverRequest path ⟨"test-session", 13⟩ 7 3)
+    (Beam.Cli.leanHoverRequest positionInput)
     positionInput.toHoverBrokerRequest
   requireRequestJson "signature-help request should share the Lean operation adapter"
-    (Beam.Cli.leanSignatureHelpRequest path ⟨"test-session", 13⟩ 7 3)
+    (Beam.Cli.leanSignatureHelpRequest positionInput)
     positionInput.toSignatureHelpBrokerRequest
   requireRequestJson "definition request should share the Lean operation adapter"
-    (Beam.Cli.leanDefinitionRequest path ⟨"test-session", 13⟩ 7 3)
+    (Beam.Cli.leanDefinitionRequest positionInput)
     positionInput.toDefinitionBrokerRequest
   let referencesInput : Beam.Lean.ReferencesInput := {
     path
@@ -750,15 +751,15 @@ private def checkLeanOperationRequests : IO Unit := do
     includeDeclaration? := some false
   }
   requireRequestJson "references request should share the Lean operation adapter"
-    (Beam.Cli.leanReferencesRequest path ⟨"test-session", 13⟩ 7 3 false)
+    (Beam.Cli.leanReferencesRequest positionInput false)
     referencesInput.toBrokerRequest
-  let documentSymbolsInput : Beam.Lean.DocumentSymbolsInput := {
+  let documentSymbolsInput : Beam.Lean.DocumentInput := {
     path
     snapshot := ⟨"test-session", 13⟩
   }
   requireRequestJson "document-symbols request should share the Lean operation adapter"
-    (Beam.Cli.leanDocumentSymbolsRequest path ⟨"test-session", 13⟩)
-    documentSymbolsInput.toBrokerRequest
+    (Beam.Cli.leanDocumentSymbolsRequest documentSymbolsInput)
+    documentSymbolsInput.toDocumentSymbolsBrokerRequest
   let workspaceSymbolsInput : Beam.Lean.WorkspaceSymbolsInput := {
     query := "Demo"
   }
@@ -766,7 +767,7 @@ private def checkLeanOperationRequests : IO Unit := do
     (Beam.Cli.leanWorkspaceSymbolsRequest "Demo")
     workspaceSymbolsInput.toBrokerRequest
   requireRequestJson "goals request should share the Lean operation adapter"
-    (Beam.Cli.leanGoalsRequest path ⟨"test-session", 13⟩ 7 3 .before)
+    (Beam.Cli.leanGoalsRequest positionInput .before)
     (positionInput.toGoalsBrokerRequest .before)
 
   let runWithInput : Beam.Lean.RunWithInput := {

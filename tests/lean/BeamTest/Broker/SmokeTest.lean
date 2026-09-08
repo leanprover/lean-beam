@@ -65,8 +65,8 @@ private def runUpdateSmoke
     payload := .updateFile { path := relPath }
   }
   let first ← requireUpdateFileResult "initial update_file" (← expectOk firstResp)
-  if first.snapshot.revision == 0 || !first.changed then
-    throw <| IO.userError s!"expected initial update_file a nonempty snapshot and changed=true, got {(toJson first).compress}"
+  if !first.changed then
+    throw <| IO.userError s!"expected initial update_file changed=true, got {(toJson first).compress}"
   let unchangedResp ← runClient endpoint {
     payload := .updateFile { path := relPath }
   }
@@ -176,8 +176,6 @@ private def runSyncSmoke
     clientRequestId? := syncRequestId
   }
   let syncRes ← requireSyncFileResult "sync_file" (← expectOk syncResp)
-  if syncRes.snapshot.revision == 0 then
-    throw <| IO.userError s!"expected sync_file a nonempty snapshot, got {syncRes.snapshot}"
   if !syncRes.readiness.saveReady then
     throw <| IO.userError
       s!"expected sync_file saveReady = true for clean module, got {(toJson syncRes).compress}"
@@ -229,8 +227,6 @@ private def runErrorOnlySyncSmoke
     payload := .syncFile { path := errorPath.toString }
   }
   let errorRes ← requireSyncFileResult "error-only sync_file" (← expectOk errorResp)
-  if errorRes.snapshot.revision == 0 then
-    throw <| IO.userError s!"expected error-only sync_file a nonempty snapshot, got {errorRes.snapshot}"
   if errorRes.readiness.saveReady then
     throw <| IO.userError
       s!"expected error-only sync_file saveReady = false, got {(toJson errorRes).compress}"
@@ -822,9 +818,7 @@ private def runSaveAndStatsSmoke
     payload := .saveOlean { path := "tests/lean/BeamTest/Fixtures/Deps/DepA.lean" }
   }
   let savePayload ← expectOk saveResp
-  let saveSnapshot ← IO.ofExcept <| savePayload.getObjValAs? Beam.SnapshotRef "snapshot"
-  if saveSnapshot.revision == 0 then
-    throw <| IO.userError s!"expected save_olean a nonempty snapshot, got {saveSnapshot}"
+  discard <| IO.ofExcept <| savePayload.getObjValAs? Beam.SnapshotRef "snapshot"
   let saveHash ← IO.ofExcept <| savePayload.getObjValAs? String "sourceHash"
   if saveHash.isEmpty then
     throw <| IO.userError "expected save_olean sourceHash to be present"
@@ -913,8 +907,6 @@ private def runWorkspaceLifecycleSmoke
     workspaceId? := some workspaceId
   })
   let update ← requireUpdateFileResult "named workspace update" updatePayload
-  if update.snapshot.revision == 0 then
-    throw <| IO.userError s!"expected named workspace update a nonempty snapshot, got {update.snapshot}"
   let wrongFile ← runClient endpoint {
     payload := .runAt {
       path := "GoalSmoke.lean", snapshot := update.snapshot, line := 1, character := 2, text := "trivial"

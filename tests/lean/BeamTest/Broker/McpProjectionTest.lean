@@ -338,7 +338,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
     fromJson? (α := Beam.Mcp.ReferencesInput) referencesJson
   require "decoded references include declaration" (decodedReferences.includeDeclaration? == some false)
 
-  let documentSymbolsInput : Beam.Mcp.DocumentSymbolsInput := {
+  let documentSymbolsInput : Beam.Mcp.DocumentInput := {
     path := "Demo.lean"
     snapshot := ⟨"test-session", 13⟩
   }

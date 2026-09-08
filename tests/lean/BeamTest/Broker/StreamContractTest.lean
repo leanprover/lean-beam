@@ -168,8 +168,6 @@ def main : IO Unit := do
     let syncPayload ← expectOk syncResp
     expectNoReplayDiagnosticsField "sync_file" syncPayload
     let syncResult ← requireSyncFileResult "sync_file" syncPayload
-    if syncResult.snapshot.session.isEmpty then
-      throw <| IO.userError s!"expected sync_file a nonempty snapshot, got {syncResult.snapshot}"
     if !syncResult.readiness.saveReady then
       throw <| IO.userError s!"expected sync_file saveReady = true, got {(toJson syncResult).compress}"
     if syncResult.readiness.blockingErrorCount != 0 then

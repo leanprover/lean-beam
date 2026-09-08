@@ -55,7 +55,7 @@ private def checkFirstSyncResult : IO Unit := do
   }
   let result := mkSyncFileResult "Demo.lean" ⟨"test-session", 1⟩ #[warning] readiness
 
-  require "first sync path and version" (result.path == "Demo.lean" && result.snapshot == ⟨"test-session", 1⟩)
+  require "first sync path and snapshot" (result.path == "Demo.lean" && result.snapshot == ⟨"test-session", 1⟩)
   require "first sync records warning count"
     (result.diagnostics.counts.warning == 1 && result.diagnostics.counts.total == 1)
   require "first sync readiness is current verdict"

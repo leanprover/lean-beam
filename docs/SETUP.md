@@ -347,7 +347,8 @@ Position and range probes are snapshot-bound. Use the `snapshot` returned by `le
 `document-symbols`, `goals`, and `todo`. Workspace symbol queries are workspace-scoped and do not
 take a file snapshot. If Beam reports `contentModified`, update or sync the file again and retry
 only after reading the current source and resolving the intended target again. A fresh snapshot
-token does not repair old coordinates or code actions.
+token does not repair old coordinates or code actions. See the
+[full snapshot and recovery contract](SYNC_AND_DIAGNOSTICS.md#command-model).
 
 Useful follow-up commands:
 

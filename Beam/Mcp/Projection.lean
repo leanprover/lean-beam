@@ -282,7 +282,7 @@ def ToolName.validateInputFields (tool : ToolName) (input : Json) : Except Strin
 abbrev RunAtInput := Beam.Lean.RunAtInput
 abbrev PositionInput := Beam.Lean.PositionInput
 abbrev ReferencesInput := Beam.Lean.ReferencesInput
-abbrev DocumentSymbolsInput := Beam.Lean.DocumentSymbolsInput
+abbrev DocumentInput := Beam.Lean.DocumentInput
 abbrev WorkspaceSymbolsInput := Beam.Lean.WorkspaceSymbolsInput
 abbrev GoalsInput := Beam.Lean.GoalsInput
 abbrev TodoInput := Beam.Lean.TodoInput

@@ -12,24 +12,27 @@ namespace Beam
 structure SnapshotRef where
   session : String
   revision : Nat
-  deriving Inhabited, BEq, Repr
+  deriving BEq, Repr
 
 namespace SnapshotRef
 
 def encode (snapshot : SnapshotRef) : String :=
   s!"{snapshot.session}/{snapshot.revision}"
 
+private def invalidSnapshot : String :=
+  "snapshot must be an opaque token returned by update or sync"
+
 def decode (text : String) : Except String SnapshotRef := do
   match text.splitOn "/" with
   | [session, revisionText] =>
       unless !session.isEmpty do
-        throw "snapshot must be an opaque token returned by update or sync"
+        throw invalidSnapshot
       let some revision := revisionText.toNat?
-        | throw "snapshot must be an opaque token returned by update or sync"
+        | throw invalidSnapshot
       unless revision > 0 && toString revision == revisionText do
-        throw "snapshot must be an opaque token returned by update or sync"
+        throw invalidSnapshot
       pure { session, revision }
-  | _ => throw "snapshot must be an opaque token returned by update or sync"
+  | _ => throw invalidSnapshot
 
 end SnapshotRef
 

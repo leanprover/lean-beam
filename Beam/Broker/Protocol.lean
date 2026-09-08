@@ -787,7 +787,7 @@ structure SyncFileProgress where
   rangeStartLine? : Option Nat := none
   /-- One-based upper line bound from Lean's processing ranges; not the source file line count. -/
   rangeEndLine? : Option Nat := none
-  deriving Inhabited, FromJson, ToJson, BEq, Repr
+  deriving FromJson, ToJson, BEq, Repr
 
 namespace SyncFileProgress
 
@@ -1002,12 +1002,11 @@ structure SyncFileResult where
   snapshot : SnapshotRef
   diagnostics : SyncResultDiagnostics := {}
   readiness : SyncResultReadiness := {}
-  deriving Inhabited
 
 structure UpdateFileResult where
   snapshot : SnapshotRef
   changed : Bool := false
-  deriving Inhabited, FromJson, ToJson, BEq, Repr
+  deriving FromJson, ToJson, BEq, Repr
 
 structure CancelResult where
   cancelled : Bool
@@ -1055,7 +1054,6 @@ structure SaveOleanResult where
   ir? : Option String := none
   bc? : Option String := none
   sync : SyncFileResult
-  deriving Inhabited
 
 def SaveOleanResult.path (result : SaveOleanResult) : String :=
   result.sync.path
@@ -1130,7 +1128,6 @@ instance : FromJson SaveOleanResult where
 /-- Stable broker result for an artifact save followed by closing the mirrored document. -/
 structure CloseSaveResult where
   saved : SaveOleanResult
-  deriving Inhabited
 
 def CloseSaveResult.closed (_ : CloseSaveResult) : Bool :=
   true

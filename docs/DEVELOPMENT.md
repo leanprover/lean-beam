@@ -399,6 +399,14 @@ request handlers reserve a sequence number under the broker mutex, read and hash
 mutex, then ignore a completed snapshot if a newer read has already been applied to the same document.
 In-session syncs use sequence zero because they run inside the already-ordered session flow.
 
+`SnapshotRef` combines the backend session identity with a session-wide document revision. Keep
+revision allocation in the pure `DocumentState.syncFileDecision` transition, and persist its returned
+allocator with its document map. Closing a file removes the document but retains the allocator.
+Complete readonly document requests and sync barriers through the same current-document check under
+the broker state mutex. Native LSP parameters come from the accepted `DocState`, while clients
+round-trip the opaque token. Diagnostic publications with explicit revisions must match the pending
+request before contributing completion evidence.
+
 Keep readiness claims deliberately narrow: `fileProgress` is an observable LSP progress signal, and
 it is a barrier input only for the operations that define a diagnostics/save barrier (`sync`,
 `refresh`, `save`, and `close-save`). It is not a general semantic-ready signal, and it is not the

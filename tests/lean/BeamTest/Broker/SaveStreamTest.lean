@@ -69,8 +69,6 @@ def main : IO Unit := do
     let defaultPayload ← expectOk defaultResp
     expectNoReplayDiagnosticsField "default save_olean" defaultPayload
     let defaultSnapshot ← IO.ofExcept <| defaultPayload.getObjValAs? Beam.SnapshotRef "snapshot"
-    if defaultSnapshot.session.isEmpty then
-      throw <| IO.userError s!"expected default save_olean a nonempty snapshot, got {defaultSnapshot}"
     let defaultSyncVerdict ← expectSyncVerdict "default save_olean" defaultPayload defaultSnapshot true
     if defaultSyncVerdict.readiness.blockingErrorCount != 0 then
       throw <| IO.userError

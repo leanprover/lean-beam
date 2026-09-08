@@ -28,10 +28,14 @@ Pass it unchanged to position, range, document-symbol, and code-action resolutio
 same workspace and file. `update` and `sync` preserve the token for unchanged tracked source.
 Source changes, refresh, close/reopen, backend restart, and workspace reset or recreation produce
 fresh tokens, even when the text is identical. Tokens from another file are also rejected.
-Lean's numeric LSP document revisions remain internal; numeric `version` arguments are not accepted.
+This source token identifies the whole tracked document. Lean's elaboration snapshots are the
+internal command or proof states at particular positions within that source. Native LSP revisions
+may appear in backend error details, but numeric `version` arguments are not accepted by the wrapper
+or MCP.
 
 The broker checks the token before dispatch and verifies that the document is still current before
-returning a document request's result. A stale token produces `contentModified` with
+returning a document request's result or completing a sync barrier. A stale token produces
+`contentModified` with
 `error.data.reason = "snapshotMismatch"`, `expectedSnapshot`, and `currentSnapshot` when the file is
 still tracked. A backend that exits while a request is pending can instead produce `workerExited`.
 These checks concern the source tracked by the broker; they do not detect unsupported workspace
@@ -155,8 +159,10 @@ The MCP server advertises logging and forwards incremental Lean diagnostics as s
 both protocol eras. Events include path, URI, range, severity, message data, and
 `completion_blocking=true` when a diagnostic is known to block file completion. They are
 request-scoped observations; save-blocking evidence is attached to the final sync/save verdict.
-A diagnostic includes `snapshot` when its backend notification names a positive document revision;
-unversioned notifications omit it. Reply diagnostic items carry the barrier snapshot.
+Notifications with an explicit revision must match the request's tracked document revision before
+they can affect completion evidence or stream diagnostics. Their diagnostic events include `snapshot`.
+Unversioned notifications remain best-effort observations and omit the token; their events do not
+suppress an otherwise identical versioned event. Reply diagnostic items carry the barrier snapshot.
 
 MCP clients that cannot conveniently collect interleaved notifications can call `lean_sync` or
 `lean_refresh` with `diagnostics_in_result: true` to replay diagnostics in the final structured
