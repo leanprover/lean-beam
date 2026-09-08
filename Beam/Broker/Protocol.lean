@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Lean
 import Beam.LSP.Todo
+import Beam.Snapshot
 import Beam.Workspace.Protocol
 
 open Lean
@@ -246,10 +247,10 @@ structure RequestBackend where
 structure RequestFile extends RequestBackend where
   path : String
 
-structure RequestVersionedFile extends RequestFile where
-  version : Nat
+structure RequestSnapshotFile extends RequestFile where
+  snapshot : SnapshotRef
 
-structure RequestPosition extends RequestVersionedFile where
+structure RequestPosition extends RequestSnapshotFile where
   line : Nat
   character : Nat
 
@@ -271,7 +272,7 @@ structure ReferencesRequest extends RequestPosition where
 structure WorkspaceSymbolsRequest extends RequestBackend where
   query : String
 
-structure CodeActionResolveRequest extends RequestVersionedFile where
+structure CodeActionResolveRequest extends RequestSnapshotFile where
   codeAction : Lsp.CodeAction
 
 structure SaveOleanRequest extends RequestFile where
@@ -324,7 +325,7 @@ inductive RequestPayload where
   | signatureHelp (request : RequestPosition)
   | definition (request : RequestPosition)
   | references (request : ReferencesRequest)
-  | documentSymbols (request : RequestVersionedFile)
+  | documentSymbols (request : RequestSnapshotFile)
   | workspaceSymbols (request : WorkspaceSymbolsRequest)
   | codeActionResolve (request : CodeActionResolveRequest)
   | saveOlean (request : SaveOleanRequest)
@@ -433,23 +434,23 @@ private def Op.requestFields (op : Op) : Array String :=
       #["path", "diagnosticScope", "diagnosticsInResult"]
   | .close => #["path", "diagnosticScope", "saveArtifacts"]
   | .runAt =>
-      #["path", "version", "line", "character", "text", "storeHandle"]
+      #["path", "snapshot", "line", "character", "text", "storeHandle"]
   | .hover | .signatureHelp | .definition =>
-      #["path", "version", "line", "character"]
+      #["path", "snapshot", "line", "character"]
   | .references =>
-      #["path", "version", "line", "character", "includeDeclaration"]
-  | .documentSymbols => #["path", "version"]
+      #["path", "snapshot", "line", "character", "includeDeclaration"]
+  | .documentSymbols => #["path", "snapshot"]
   | .workspaceSymbols => #["query"]
-  | .codeActionResolve => #["path", "version", "codeAction"]
+  | .codeActionResolve => #["path", "snapshot", "codeAction"]
   | .saveOlean => #["path", "diagnosticScope"]
   | .goals =>
       #[
-        "path", "version", "line", "character", "text", "mode", "compact",
+        "path", "snapshot", "line", "character", "text", "mode", "compact",
         "ppFormat"
       ]
   | .todo =>
       #[
-        "path", "version", "line", "character", "endLine", "endCharacter", "kinds",
+        "path", "snapshot", "line", "character", "endLine", "endCharacter", "kinds",
         "suggest"
       ]
   | .runWith =>
@@ -475,12 +476,12 @@ private def optionalJsonField [ToJson α] (name : String) : Option α → List (
 private def RequestFile.jsonFields (request : RequestFile) : List (String × Json) :=
   [("path", toJson request.path)]
 
-private def RequestVersionedFile.jsonFields
-    (request : RequestVersionedFile) : List (String × Json) :=
-  request.toRequestFile.jsonFields ++ [("version", toJson request.version)]
+private def RequestSnapshotFile.jsonFields
+    (request : RequestSnapshotFile) : List (String × Json) :=
+  request.toRequestFile.jsonFields ++ [("snapshot", toJson request.snapshot)]
 
 private def RequestPosition.jsonFields (request : RequestPosition) : List (String × Json) :=
-  request.toRequestVersionedFile.jsonFields ++ [
+  request.toRequestSnapshotFile.jsonFields ++ [
     ("line", toJson request.line),
     ("character", toJson request.character)
   ]
@@ -511,7 +512,7 @@ private def RequestPayload.jsonFields : RequestPayload → List (String × Json)
   | .workspaceSymbols request =>
       [("query", toJson request.query)]
   | .codeActionResolve request =>
-      request.toRequestVersionedFile.jsonFields ++ [("codeAction", toJson request.codeAction)]
+      request.toRequestSnapshotFile.jsonFields ++ [("codeAction", toJson request.codeAction)]
   | .saveOlean request =>
       request.toRequestFile.jsonFields ++
       optionalJsonField "diagnosticScope" request.diagnosticScope?
@@ -629,21 +630,21 @@ private def decodeRequestFile
     path := ← requiredField j "path"
   }
 
-private def decodeRequestVersionedFile
+private def decodeRequestSnapshotFile
     (j : Json)
-    (backend : Backend) : Except String RequestVersionedFile := do
+    (backend : Backend) : Except String RequestSnapshotFile := do
   let target ← decodeRequestFile j backend
   pure {
     toRequestFile := target
-    version := ← requiredField j "version"
+    snapshot := ← requiredField j "snapshot"
   }
 
 private def decodeRequestPosition
     (j : Json)
     (backend : Backend) : Except String RequestPosition := do
-  let target ← decodeRequestVersionedFile j backend
+  let target ← decodeRequestSnapshotFile j backend
   pure {
-    toRequestVersionedFile := target
+    toRequestSnapshotFile := target
     line := ← requiredField j "line"
     character := ← requiredField j "character"
   }
@@ -694,16 +695,16 @@ instance : FromJson Request where
             toRequestPosition := target
             includeDeclaration? := ← optionalField? (α := Bool) j "includeDeclaration"
           }
-      | .documentSymbols => .documentSymbols <$> decodeRequestVersionedFile j backend
+      | .documentSymbols => .documentSymbols <$> decodeRequestSnapshotFile j backend
       | .workspaceSymbols =>
           pure <| .workspaceSymbols {
             backend
             query := ← requiredField j "query"
           }
       | .codeActionResolve => do
-          let target ← decodeRequestVersionedFile j backend
+          let target ← decodeRequestSnapshotFile j backend
           pure <| .codeActionResolve {
-            toRequestVersionedFile := target
+            toRequestSnapshotFile := target
             codeAction := ← requiredField j "codeAction"
           }
       | .saveOlean => do
@@ -942,7 +943,7 @@ instance : FromJson SyncResultReadiness where
 structure StreamDiagnostic where
   path : String
   uri : String
-  version? : Option Int := none
+  snapshot? : Option SnapshotRef := none
   severity? : Option Lsp.DiagnosticSeverity := none
   range : Lsp.Range
   message : String
@@ -954,12 +955,12 @@ instance : FromJson StreamDiagnostic where
   fromJson? json := do
     requireOnlyJsonFields "stream diagnostic"
       #[
-        "path", "uri", "version", "severity", "range", "message", "saveBlocking",
+        "path", "uri", "snapshot", "severity", "range", "message", "saveBlocking",
         "completionBlocking"
       ] json
     let path ← json.getObjValAs? String "path"
     let uri ← json.getObjValAs? String "uri"
-    let version? ← optionalField? (α := Int) json "version"
+    let snapshot? ← optionalField? (α := SnapshotRef) json "snapshot"
     let severity? ← optionalField? (α := Lsp.DiagnosticSeverity) json "severity"
     let range ← json.getObjValAs? Lsp.Range "range"
     let message ← json.getObjValAs? String "message"
@@ -968,7 +969,7 @@ instance : FromJson StreamDiagnostic where
     pure {
       path
       uri
-      version?
+      snapshot?
       severity?
       range
       message
@@ -998,13 +999,13 @@ instance : FromJson SyncResultDiagnostics where
 
 structure SyncFileResult where
   path : String
-  version : Nat
+  snapshot : SnapshotRef
   diagnostics : SyncResultDiagnostics := {}
   readiness : SyncResultReadiness := {}
   deriving Inhabited
 
 structure UpdateFileResult where
-  version : Nat
+  snapshot : SnapshotRef
   changed : Bool := false
   deriving Inhabited, FromJson, ToJson, BEq, Repr
 
@@ -1013,7 +1014,7 @@ structure CancelResult where
   deriving FromJson, ToJson
 
 structure CodeActionResolveResult where
-  version : Nat
+  snapshot : SnapshotRef
   codeAction : Lsp.CodeAction
   deriving FromJson, ToJson
 
@@ -1022,21 +1023,21 @@ instance : ToJson SyncFileResult where
     Json.mkObj <|
       [
         ("path", toJson result.path),
-        ("version", toJson result.version),
+        ("snapshot", toJson result.snapshot),
         ("diagnostics", toJson result.diagnostics),
         ("readiness", toJson result.readiness)
       ]
 
 instance : FromJson SyncFileResult where
   fromJson? json := do
-    requireOnlyJsonFields "sync result" #["path", "version", "diagnostics", "readiness"] json
+    requireOnlyJsonFields "sync result" #["path", "snapshot", "diagnostics", "readiness"] json
     let path ← json.getObjValAs? String "path"
-    let version ← json.getObjValAs? Nat "version"
+    let snapshot ← json.getObjValAs? SnapshotRef "snapshot"
     let diagnostics ← json.getObjValAs? SyncResultDiagnostics "diagnostics"
     let readiness ← json.getObjValAs? SyncResultReadiness "readiness"
     pure {
       path
-      version
+      snapshot
       diagnostics
       readiness
     }
@@ -1059,8 +1060,8 @@ structure SaveOleanResult where
 def SaveOleanResult.path (result : SaveOleanResult) : String :=
   result.sync.path
 
-def SaveOleanResult.version (result : SaveOleanResult) : Nat :=
-  result.sync.version
+def SaveOleanResult.snapshot (result : SaveOleanResult) : SnapshotRef :=
+  result.sync.snapshot
 
 instance : ToJson SaveOleanResult where
   toJson result :=
@@ -1068,7 +1069,7 @@ instance : ToJson SaveOleanResult where
       [
         ("path", toJson result.path),
         ("module", toJson result.module),
-        ("version", toJson result.version),
+        ("snapshot", toJson result.snapshot),
         ("sourceHash", toJson result.sourceHash),
         ("olean", toJson result.olean),
         ("ilean", toJson result.ilean),
@@ -1092,12 +1093,12 @@ instance : ToJson SaveOleanResult where
 instance : FromJson SaveOleanResult where
   fromJson? json := do
     requireOnlyJsonFields "save result" #[
-      "path", "module", "version", "sourceHash", "olean", "ilean", "c", "trace",
+      "path", "module", "snapshot", "sourceHash", "olean", "ilean", "c", "trace",
       "oleanServer", "oleanPrivate", "ir", "bc", "sync"
     ] json
     let path ← json.getObjValAs? String "path"
     let module ← json.getObjValAs? String "module"
-    let version ← json.getObjValAs? Nat "version"
+    let snapshot ← json.getObjValAs? SnapshotRef "snapshot"
     let sourceHash ← json.getObjValAs? String "sourceHash"
     let olean ← json.getObjValAs? String "olean"
     let ilean ← json.getObjValAs? String "ilean"
@@ -1110,8 +1111,8 @@ instance : FromJson SaveOleanResult where
     let sync ← json.getObjValAs? SyncFileResult "sync"
     unless path == sync.path do
       throw s!"save result path '{path}' does not match sync path '{sync.path}'"
-    unless version == sync.version do
-      throw s!"save result version {version} does not match sync version {sync.version}"
+    unless snapshot == sync.snapshot do
+      throw s!"save result snapshot {snapshot} does not match sync snapshot {sync.snapshot}"
     pure {
       module
       sourceHash

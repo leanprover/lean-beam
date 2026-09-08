@@ -22,9 +22,9 @@ beam_wrapper_start_owner "$handle_root"
 example : True ∧ True := by
 EOF
 
-  handle_version="$(beam_wrapper_update_version HandleSmoke "$beam_script" update HandleSmoke.lean)"
+  handle_snapshot="$(beam_wrapper_update_snapshot HandleSmoke "$beam_script" update HandleSmoke.lean)"
 
-  mint_handle_stdin="$(printf 'constructor' | "$beam_script" run-at-handle HandleSmoke.lean "$handle_version" 0 27 --stdin)"
+  mint_handle_stdin="$(printf 'constructor' | "$beam_script" run-at-handle HandleSmoke.lean "$handle_snapshot" 0 27 --stdin)"
   if [ "$(BEAM_JSON_PAYLOAD="$mint_handle_stdin" read_json_text_field ok)" != "true" ]; then
     echo "expected wrapper handle mint via --stdin to succeed" >&2
     printf '%s\n' "$mint_handle_stdin" >&2
@@ -38,7 +38,7 @@ EOF
 
   handle_mint_file="handle-mint.txt"
   printf 'constructor' > "$handle_mint_file"
-  mint_handle_file="$("$beam_script" run-at-handle HandleSmoke.lean "$handle_version" 0 27 --text-file "$handle_mint_file")"
+  mint_handle_file="$("$beam_script" run-at-handle HandleSmoke.lean "$handle_snapshot" 0 27 --text-file "$handle_mint_file")"
   if [ "$(BEAM_JSON_PAYLOAD="$mint_handle_file" read_json_text_field ok)" != "true" ]; then
     echo "expected wrapper handle mint via --text-file to succeed" >&2
     printf '%s\n' "$mint_handle_file" >&2
@@ -52,7 +52,7 @@ EOF
   branch_handle_file="branch-handle.json"
   printf '%s\n' "$mint_handle_file" > "$branch_handle_file"
 
-  mint_handle="$("$beam_script" run-at-handle HandleSmoke.lean "$handle_version" 0 27 "constructor")"
+  mint_handle="$("$beam_script" run-at-handle HandleSmoke.lean "$handle_snapshot" 0 27 "constructor")"
   if [ "$(BEAM_JSON_PAYLOAD="$mint_handle" read_json_text_field ok)" != "true" ]; then
     echo "expected wrapper handle mint to succeed" >&2
     printf '%s\n' "$mint_handle" >&2
@@ -132,7 +132,7 @@ EOF
     exit 1
   fi
 
-  mint_linear="$("$beam_script" run-at-handle HandleSmoke.lean "$handle_version" 0 27 "constructor")"
+  mint_linear="$("$beam_script" run-at-handle HandleSmoke.lean "$handle_snapshot" 0 27 "constructor")"
   if [ "$(BEAM_JSON_PAYLOAD="$mint_linear" read_json_text_field ok)" != "true" ]; then
     echo "expected wrapper linear handle mint to succeed" >&2
     printf '%s\n' "$mint_linear" >&2
@@ -220,8 +220,8 @@ EOF
     exit 1
   fi
 
-  portable_helper_version="$(beam_wrapper_update_version "portable HandleSmoke" "$beam_script" update HandleSmoke.lean)"
-  portable_helper_root="$(PATH="$portable_wrapper_bin:$PATH" "$portable_wrapper_bin/lean-beam-search" mint HandleSmoke.lean "$portable_helper_version" 0 27 "constructor")"
+  portable_helper_snapshot="$(beam_wrapper_update_snapshot "portable HandleSmoke" "$beam_script" update HandleSmoke.lean)"
+  portable_helper_root="$(PATH="$portable_wrapper_bin:$PATH" "$portable_wrapper_bin/lean-beam-search" mint HandleSmoke.lean "$portable_helper_snapshot" 0 27 "constructor")"
   if [ "$(BEAM_JSON_PAYLOAD="$portable_helper_root" read_json_text_field ok)" != "true" ]; then
     echo "expected symlinked helper to work when readlink -f is unavailable" >&2
     printf '%s\n' "$portable_helper_root" >&2
@@ -262,7 +262,7 @@ EOF
     exit 1
   fi
 
-  helper_root="$("$search_helper" mint HandleSmoke.lean "$portable_helper_version" 0 27 "constructor")"
+  helper_root="$("$search_helper" mint HandleSmoke.lean "$portable_helper_snapshot" 0 27 "constructor")"
   if [ "$(BEAM_JSON_PAYLOAD="$helper_root" read_json_text_field ok)" != "true" ]; then
     echo "expected helper mint to succeed" >&2
     printf '%s\n' "$helper_root" >&2

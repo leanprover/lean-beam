@@ -48,11 +48,11 @@ start_slow_request() {
   local root="$1"
   local label="$2"
   local request_id="$3"
-  local version
-  version="$(beam_wrapper_update_version "$label SlowPoll" \
+  local snapshot
+  snapshot="$(beam_wrapper_update_snapshot "$label SlowPoll" \
     "$beam_script" --root "$root" update tests/scenario/docs/SlowPoll.lean)"
   BEAM_PROGRESS=1 BEAM_REQUEST_ID="$request_id" "$beam_script" --root "$root" \
-    run-at tests/scenario/docs/SlowPoll.lean "$version" 25 2 poll_sleep_cmd \
+    run-at tests/scenario/docs/SlowPoll.lean "$snapshot" 25 2 poll_sleep_cmd \
     >"$root/$label.out" 2>"$root/$label.err" &
   active_request_pid="$!"
   if ! wait_for_file_text "$root/$label.err" "running run-at" \

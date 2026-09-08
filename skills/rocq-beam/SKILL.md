@@ -223,7 +223,7 @@ lean-beam stats
 `lean-beam open-files` shows the files currently tracked by the Beam daemon for the current project. For
 tracked files the broker already knows about, the wrapper checks status incrementally against the
 current on-disk text, and `open-files` also reports the last compact `fileProgress` observed for
-that tracked version.
+that tracked snapshot.
 
 Stats are in-memory only and scoped to the current project Beam daemon.
 

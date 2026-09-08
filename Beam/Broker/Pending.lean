@@ -223,6 +223,7 @@ private def diagnosticStreamKey (diagnostic : Diagnostic) : String :=
 
 private def emitNewTrackedDiagnostics
     (root : System.FilePath)
+    (sessionToken : String)
     (seen : Std.TreeSet String compare)
     (diagnosticParam : PublishDiagnosticsParams)
     (diagnosticScope : DiagnosticScope)
@@ -238,7 +239,10 @@ private def emitNewTrackedDiagnostics
       | some emitDiagnostic =>
           try
             emitDiagnostic <|
-              streamDiagnosticOfDiagnostic root diagnosticParam.uri diagnosticParam.version? diagnostic
+              streamDiagnosticOfDiagnostic root diagnosticParam.uri
+                (diagnosticParam.version?.bind fun version =>
+                  if version > 0 then some { session := sessionToken, revision := version.toNat }
+                  else none) diagnostic
           catch _ =>
             pure ()
       | none =>
@@ -264,6 +268,7 @@ def observeProgress
 
 def observePublishDiagnostics
     (root : System.FilePath)
+    (sessionToken : String)
     (pending : PendingRequest)
     (diagnosticParam : PublishDiagnosticsParams) : IO Unit := do
   match trackedPublishDiagnosticsParam? (pending.tracked?.map Prod.fst) diagnosticParam with
@@ -274,17 +279,18 @@ def observePublishDiagnostics
       pending.diagnosticsRef.set diagnosticParam.diagnostics
       let seen ← pending.seenDiagnosticKeysRef.get
       let seen ←
-        emitNewTrackedDiagnostics root seen diagnosticParam pending.diagnosticScope pending.emitDiagnostic?
+        emitNewTrackedDiagnostics root sessionToken seen diagnosticParam pending.diagnosticScope pending.emitDiagnostic?
       pending.seenDiagnosticKeysRef.set seen
 
 def observeDiagnostics
     [ToJson α]
     (root : System.FilePath)
+    (sessionToken : String)
     (pending : PendingRequest)
     (param : α) : IO Unit := do
   match fromJson? (toJson param) with
   | .ok (diagnosticParam : PublishDiagnosticsParams) =>
-      observePublishDiagnostics root pending diagnosticParam
+      observePublishDiagnostics root sessionToken pending diagnosticParam
   | .error _ =>
       pure ()
 

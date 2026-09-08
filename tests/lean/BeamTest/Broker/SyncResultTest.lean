@@ -53,9 +53,9 @@ private def checkFirstSyncResult : IO Unit := do
     saveReady := true
     saveReadyReason := "ok"
   }
-  let result := mkSyncFileResult "Demo.lean" 1 #[warning] readiness
+  let result := mkSyncFileResult "Demo.lean" ⟨"test-session", 1⟩ #[warning] readiness
 
-  require "first sync path and version" (result.path == "Demo.lean" && result.version == 1)
+  require "first sync path and version" (result.path == "Demo.lean" && result.snapshot == ⟨"test-session", 1⟩)
   require "first sync records warning count"
     (result.diagnostics.counts.warning == 1 && result.diagnostics.counts.total == 1)
   require "first sync readiness is current verdict"
@@ -70,7 +70,7 @@ private def checkCurrentCountsAndReadinessEvidence : IO Unit := do
     blockingDiagnostics := #[blockingEvidence added]
     blockingCommandMessages := #[commandEvidence "new error"]
   }
-  let result := mkSyncFileResult "Demo.lean" 3 #[duplicate, duplicate, added] readiness
+  let result := mkSyncFileResult "Demo.lean" ⟨"test-session", 3⟩ #[duplicate, duplicate, added] readiness
 
   require "duplicate diagnostic current counts"
     (result.diagnostics.counts.warning == 2 &&
@@ -90,7 +90,7 @@ private def checkEffectiveSeverityCounts : IO Unit := do
     saveReadyReason := "documentErrors"
     blockingDiagnostics := #[blockingEvidence currentDiagnostic]
   }
-  let result := mkSyncFileResult "Demo.lean" 5 #[currentDiagnostic] readiness
+  let result := mkSyncFileResult "Demo.lean" ⟨"test-session", 5⟩ #[currentDiagnostic] readiness
 
   require "effective severity counts incomplete-barrier diagnostic as error"
     (result.diagnostics.counts.error == 1 &&
@@ -102,7 +102,7 @@ private def checkDiagnosticErrorsDoNotOverrideReadiness : IO Unit := do
     saveReady := true
     saveReadyReason := "ok"
   }
-  let result := mkSyncFileResult "Demo.lean" 6 #[interactiveDiagnostic] readiness
+  let result := mkSyncFileResult "Demo.lean" ⟨"test-session", 6⟩ #[interactiveDiagnostic] readiness
 
   require "diagnostic severity counts report current Lean diagnostics"
     (result.diagnostics.counts.error == 1 &&
@@ -123,7 +123,7 @@ private def checkSaveBlockingEvidenceProjection : IO Unit := do
     blockingDiagnostics := #[blockingEvidence blockingDiagnostic]
     blockingCommandMessages := #[commandEvidence "save-blocking command message"]
   }
-  let result := mkSyncFileResult "Demo.lean" 7 #[blockingDiagnostic] readiness
+  let result := mkSyncFileResult "Demo.lean" ⟨"test-session", 7⟩ #[blockingDiagnostic] readiness
 
   require "save-blocking evidence appears in readiness result"
     (result.readiness.blockingDiagnostics.size == 1 &&

@@ -17,44 +17,41 @@ namespace BeamTest.Broker.SmokeTest
 open BeamTest.Broker.TestUtil
 open BeamTest.Broker.JsonAssert
 
-private def syncVersion
+private def syncSnapshot
     (endpoint : Beam.Broker.Endpoint)
-    (path : String) : IO Nat := do
+    (path : String) : IO Beam.SnapshotRef := do
   let resp ← runClient endpoint {
     payload := .syncFile { path }
   }
-  let result ← requireSyncFileResult s!"sync version for {path}" (← expectOk resp)
-  pure result.version
+  let result ← requireSyncFileResult s!"sync snapshot for {path}" (← expectOk resp)
+  pure result.snapshot
 
-private def updateVersion
+private def updateSnapshot
     (endpoint : Beam.Broker.Endpoint)
-    (path : String) : IO Nat := do
+    (path : String) : IO Beam.SnapshotRef := do
   let resp ← runClient endpoint {
     payload := .updateFile { path }
   }
-  let result ← requireUpdateFileResult s!"update version for {path}" (← expectOk resp)
-  pure result.version
+  let result ← requireUpdateFileResult s!"update snapshot for {path}" (← expectOk resp)
+  pure result.snapshot
 
-private def expectVersionMismatchData
+private def expectSnapshotMismatchData
     (label : String)
     (resp : Beam.Broker.Response)
-    (expectedVersion acceptedVersion : Nat) : IO Unit := do
+    (expectedSnapshot acceptedSnapshot : Beam.SnapshotRef) : IO Unit := do
   let some err := resp.error?
     | throw <| IO.userError s!"{label}: expected error response, got {(toJson resp).compress}"
   let some data := err.data?
     | throw <| IO.userError s!"{label}: expected error.data, got {(toJson resp).compress}"
   let reason ← IO.ofExcept <| data.getObjValAs? String "reason"
-  if reason != "documentVersionMismatch" then
-    throw <| IO.userError s!"{label}: expected documentVersionMismatch data, got {data.compress}"
-  let expected ← IO.ofExcept <| data.getObjValAs? Nat "expectedVersion"
-  if expected != expectedVersion then
-    throw <| IO.userError s!"{label}: expected expectedVersion={expectedVersion}, got {data.compress}"
-  let accepted ← IO.ofExcept <| data.getObjValAs? Nat "acceptedVersion"
-  if accepted != acceptedVersion then
-    throw <| IO.userError s!"{label}: expected acceptedVersion={acceptedVersion}, got {data.compress}"
-  let current ← IO.ofExcept <| data.getObjValAs? Nat "currentVersion"
-  if current != acceptedVersion then
-    throw <| IO.userError s!"{label}: expected currentVersion={acceptedVersion}, got {data.compress}"
+  if reason != "snapshotMismatch" then
+    throw <| IO.userError s!"{label}: expected snapshotMismatch data, got {data.compress}"
+  let expected ← IO.ofExcept <| data.getObjValAs? Beam.SnapshotRef "expectedSnapshot"
+  if expected != expectedSnapshot then
+    throw <| IO.userError s!"{label}: expected expectedSnapshot={expectedSnapshot}, got {data.compress}"
+  let current ← IO.ofExcept <| data.getObjValAs? Beam.SnapshotRef "currentSnapshot"
+  if current != acceptedSnapshot then
+    throw <| IO.userError s!"{label}: expected currentSnapshot={acceptedSnapshot}, got {data.compress}"
 
 private def runUpdateSmoke
     (endpoint : Beam.Broker.Endpoint)
@@ -68,24 +65,24 @@ private def runUpdateSmoke
     payload := .updateFile { path := relPath }
   }
   let first ← requireUpdateFileResult "initial update_file" (← expectOk firstResp)
-  if first.version != 1 || !first.changed then
-    throw <| IO.userError s!"expected initial update_file version 1 changed=true, got {(toJson first).compress}"
+  if first.snapshot.revision == 0 || !first.changed then
+    throw <| IO.userError s!"expected initial update_file a nonempty snapshot and changed=true, got {(toJson first).compress}"
   let unchangedResp ← runClient endpoint {
     payload := .updateFile { path := relPath }
   }
   let unchanged ← requireUpdateFileResult "unchanged update_file" (← expectOk unchangedResp)
-  if unchanged.version != first.version || unchanged.changed then
-    throw <| IO.userError s!"expected unchanged update_file to preserve version and report changed=false, got {(toJson unchanged).compress}"
+  if unchanged.snapshot != first.snapshot || unchanged.changed then
+    throw <| IO.userError s!"expected unchanged update_file to preserve snapshot and report changed=false, got {(toJson unchanged).compress}"
   let syncResp ← runClient endpoint {
     payload := .syncFile { path := relPath }
   }
   let syncRes ← requireSyncFileResult "sync after update_file" (← expectOk syncResp)
-  if syncRes.version != first.version then
-    throw <| IO.userError s!"expected sync_file after update_file to reuse version {first.version}, got {syncRes.version}"
+  if syncRes.snapshot != first.snapshot then
+    throw <| IO.userError s!"expected sync_file after update_file to reuse snapshot {first.snapshot}, got {syncRes.snapshot}"
   let runAtResp ← runClient endpoint {
     payload := .runAt {
       path := relPath
-      version := first.version
+      snapshot := first.snapshot
       line := 0
       character := 0
       text := "#check Nat"
@@ -93,32 +90,81 @@ private def runUpdateSmoke
   }
   let runAtRes ← expectOk runAtResp
   let .ok true := runAtRes.getObjValAs? Bool "success"
-    | throw <| IO.userError s!"expected run_at with update_file version to succeed, got {runAtRes.compress}"
+    | throw <| IO.userError s!"expected run_at with update_file snapshot to succeed, got {runAtRes.compress}"
 
   IO.FS.writeFile path "def updateSmokeVal : Nat := 2\n"
   let changedResp ← runClient endpoint {
     payload := .updateFile { path := relPath }
   }
   let changed ← requireUpdateFileResult "changed update_file" (← expectOk changedResp)
-  if changed.version != first.version + 1 || !changed.changed then
-    throw <| IO.userError s!"expected changed update_file to bump version and report changed=true, got {(toJson changed).compress}"
+  if changed.snapshot == first.snapshot || !changed.changed then
+    throw <| IO.userError s!"expected changed update_file to bump snapshot and report changed=true, got {(toJson changed).compress}"
   let syncChangedResp ← runClient endpoint {
     payload := .syncFile { path := relPath }
   }
   let syncChanged ← requireSyncFileResult "sync after changed update_file" (← expectOk syncChangedResp)
-  if syncChanged.version != changed.version then
-    throw <| IO.userError s!"expected sync_file after changed update_file to reuse version {changed.version}, got {syncChanged.version}"
+  if syncChanged.snapshot != changed.snapshot then
+    throw <| IO.userError s!"expected sync_file after changed update_file to reuse snapshot {changed.snapshot}, got {syncChanged.snapshot}"
   let staleRunAtResp ← runClient endpoint {
     payload := .runAt {
       path := relPath
-      version := first.version
+      snapshot := first.snapshot
       line := 0
       character := 0
       text := "#check Nat"
     }
   }
   expectErrCode staleRunAtResp "contentModified"
-  expectVersionMismatchData "stale run_at" staleRunAtResp first.version changed.version
+  expectSnapshotMismatchData "stale run_at" staleRunAtResp first.snapshot changed.snapshot
+
+private def runReopenedSnapshotSmoke
+    (endpoint : Beam.Broker.Endpoint)
+    (root : System.FilePath) : IO Unit := do
+  let dir := root / ".tmp" / s!"beam-snapshot-reopen-{← IO.monoNanosNow}"
+  IO.FS.createDirAll dir
+  let path := dir / "Snapshot.lean"
+  let relPath := Beam.pathRelativeToRootOrSelf root path
+  IO.FS.writeFile path "example : 1 = 1 := by\n  rfl\n"
+  let before ← updateSnapshot endpoint relPath
+  let probe := fun snapshot => runClient endpoint {
+    payload := .runAt {
+      path := relPath
+      snapshot
+      line := 1
+      character := 2
+      text := "rfl"
+    }
+  }
+  let initial ← expectOk (← probe before)
+  requireJsonBool "initial snapshot probe" "success" true initial
+  -- Inserting another valid proof leaves the old coordinate valid but moves the intended target.
+  IO.FS.writeFile path "example : 2 = 2 := by\n  rfl\n\nexample : 1 = 1 := by\n  rfl\n"
+  let refreshed ← requireSyncFileResult "refresh replacement snapshot" <| ← expectOk <| ← runClient endpoint {
+    payload := .refreshFile { path := relPath }
+  }
+  let current ← expectOk (← probe refreshed.snapshot)
+  requireJsonBool "replacement snapshot probe" "success" true current
+  let relocated ← expectOk <| ← runClient endpoint {
+    payload := .runAt {
+      path := relPath, snapshot := refreshed.snapshot, line := 4, character := 2, text := "rfl"
+    }
+  }
+  requireJsonBool "resolved target after insertion" "success" true relocated
+  let stale ← probe before
+  expectErrCode stale "contentModified"
+  expectSnapshotMismatchData "refresh rejects old snapshot" stale before refreshed.snapshot
+  require "refresh replaces snapshot" (before != refreshed.snapshot)
+  discard <| expectOk <| ← runClient endpoint { payload := .close { path := relPath } }
+  let reopened ← updateSnapshot endpoint relPath
+  require "close/reopen replaces snapshot" (reopened != refreshed.snapshot)
+  expectErrCode (← probe refreshed.snapshot) "contentModified"
+  requireJsonBool "reopened snapshot works" "success" true (← expectOk <| ← probe reopened)
+  let other := dir / "Other.lean"
+  IO.FS.writeFile other (← IO.FS.readFile path)
+  let otherSnapshot ← updateSnapshot endpoint (Beam.pathRelativeToRootOrSelf root other)
+  require "identical files have distinct snapshots" (otherSnapshot != reopened)
+  expectErrCode (← probe otherSnapshot) "contentModified"
+  require "unchanged update preserves snapshot" ((← updateSnapshot endpoint relPath) == reopened)
 
 private def runSyncSmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
@@ -130,8 +176,8 @@ private def runSyncSmoke
     clientRequestId? := syncRequestId
   }
   let syncRes ← requireSyncFileResult "sync_file" (← expectOk syncResp)
-  if syncRes.version != 1 then
-    throw <| IO.userError s!"expected sync_file version 1, got {syncRes.version}"
+  if syncRes.snapshot.revision == 0 then
+    throw <| IO.userError s!"expected sync_file a nonempty snapshot, got {syncRes.snapshot}"
   if !syncRes.readiness.saveReady then
     throw <| IO.userError
       s!"expected sync_file saveReady = true for clean module, got {(toJson syncRes).compress}"
@@ -150,8 +196,8 @@ private def runSyncSmoke
     payload := .syncFile { path := "tests/scenario/docs/CommandA.lean" }
   }
   let syncResAgain ← requireSyncFileResult "unchanged sync_file" (← expectOk syncRespAgain)
-  if syncResAgain.version != 1 then
-    throw <| IO.userError s!"expected unchanged sync_file version 1, got {syncResAgain.version}"
+  if syncResAgain.snapshot != syncRes.snapshot then
+    throw <| IO.userError s!"expected unchanged sync_file to preserve its snapshot, got {syncResAgain.snapshot}"
   let syncTopAgain := ← requireFileProgress "unchanged sync_file" syncRespAgain
   if !syncTopAgain.done then
     throw <| IO.userError s!"expected unchanged sync_file fileProgress.done = true, got {(toJson syncTopAgain).compress}"
@@ -163,8 +209,8 @@ private def runSyncSmoke
     clientRequestId? := refreshRequestId
   }
   let refreshRes ← requireSyncFileResult "refresh_file" (← expectOk refreshResp)
-  if refreshRes.version != 1 then
-    throw <| IO.userError s!"expected refresh_file to reopen version 1, got {refreshRes.version}"
+  if refreshRes.snapshot == syncRes.snapshot then
+    throw <| IO.userError s!"expected refresh_file to return a fresh snapshot, got {refreshRes.snapshot}"
   let refreshTop := ← requireFileProgress "refresh_file" refreshResp
   if !refreshTop.done then
     throw <| IO.userError s!"expected top-level refresh_file fileProgress.done = true, got {(toJson refreshTop).compress}"
@@ -183,8 +229,8 @@ private def runErrorOnlySyncSmoke
     payload := .syncFile { path := errorPath.toString }
   }
   let errorRes ← requireSyncFileResult "error-only sync_file" (← expectOk errorResp)
-  if errorRes.version != 1 then
-    throw <| IO.userError s!"expected error-only sync_file version 1, got {errorRes.version}"
+  if errorRes.snapshot.revision == 0 then
+    throw <| IO.userError s!"expected error-only sync_file a nonempty snapshot, got {errorRes.snapshot}"
   if errorRes.readiness.saveReady then
     throw <| IO.userError
       s!"expected error-only sync_file saveReady = false, got {(toJson errorRes).compress}"
@@ -257,11 +303,11 @@ private def runInteractiveOnlyDiagnosticSmoke
 private def runTodoThenSyncDiagnosticSummarySmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   let path := "tests/scenario/docs/InteractiveOnlyDiagnostic.lean"
-  let version ← syncVersion endpoint path
+  let snapshot ← syncSnapshot endpoint path
   let todoResp ← runClient endpoint {
     payload := .todo {
       path
-      version
+      snapshot
       line := 0
       character := 0
       endLine := 22
@@ -298,11 +344,11 @@ private def runTodoThenSyncDiagnosticSummarySmoke
 private def runTodoCodeActionResolveSmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   let path := BeamTest.Fixtures.TodoFixture.codeActionRepoPath.toString
-  let version ← updateVersion endpoint path
+  let snapshot ← updateSnapshot endpoint path
   let todoResp ← runClient endpoint {
     payload := .todo {
       path
-      version
+      snapshot
       line := BeamTest.Fixtures.TodoFixture.codeActionLine
       character := BeamTest.Fixtures.TodoFixture.codeActionStartCharacter
       endLine := BeamTest.Fixtures.TodoFixture.codeActionLine
@@ -321,12 +367,12 @@ private def runTodoCodeActionResolveSmoke
     | throw <| IO.userError <|
       s!"todo/code_action_resolve composition: expected embedded codeAction, got {(toJson actionItem).compress}"
   let resolveResp ← runClient endpoint {
-    payload := .codeActionResolve { path, version, codeAction := action }
+    payload := .codeActionResolve { path, snapshot, codeAction := action }
   }
   let resolved : Beam.Broker.CodeActionResolveResult ← IO.ofExcept <| fromJson? (← expectOk resolveResp)
-  if resolved.version != version then
+  if resolved.snapshot != snapshot then
     throw <| IO.userError
-      s!"todo/code_action_resolve composition: expected resolved version {version}, got {resolved.version}"
+      s!"todo/code_action_resolve composition: expected resolved snapshot {snapshot}, got {resolved.snapshot}"
   if resolved.codeAction.title != action.title then
     throw <| IO.userError
       s!"todo/code_action_resolve composition: expected resolved action title {action.title}, got {resolved.codeAction.title}"
@@ -336,17 +382,17 @@ private def runTodoCodeActionResolveSmoke
   discard <| requireFileProgress "code_action_resolve" resolveResp
 
   let staleResp ← runClient endpoint {
-    payload := .codeActionResolve { path, version := 0, codeAction := action }
+    payload := .codeActionResolve { path, snapshot := { session := "stale", revision := 1 }, codeAction := action }
   }
   expectErrCode staleResp "contentModified"
-  expectVersionMismatchData "stale code_action_resolve" staleResp 0 version
+  expectSnapshotMismatchData "stale code_action_resolve" staleResp { session := "stale", revision := 1 } snapshot
 
   let otherPath := "tests/scenario/docs/CommandA.lean"
-  let otherVersion ← updateVersion endpoint otherPath
+  let otherSnapshot ← updateSnapshot endpoint otherPath
   let mismatchedSourceResp ← runClient endpoint {
     payload := .codeActionResolve {
       path := otherPath
-      version := otherVersion
+      snapshot := otherSnapshot
       codeAction := action
     }
   }
@@ -394,11 +440,11 @@ private def runPartialProgressSmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   let partialRequestId := some "smoke-partial"
   let path := "tests/scenario/docs/PartialProgress.lean"
-  let version ← syncVersion endpoint path
+  let snapshot ← syncSnapshot endpoint path
   let (partialResp, partialEvents) ← runClientWithProgress endpoint {
     payload := .runAt {
       path
-      version
+      snapshot
       line := 7
       character := 2
       text := "#check partialProgressAnchor"
@@ -409,11 +455,11 @@ private def runPartialProgressSmoke
   let .ok true := partialRes.getObjValAs? Bool "success" | throw <| IO.userError "partial run_at did not succeed"
   let partialProgress := ← requireFileProgress "partial run_at" partialResp
   if !partialProgress.done then
-    throw <| IO.userError s!"expected versioned run_at fileProgress.done = true after sync, got {(toJson partialProgress).compress}"
+    throw <| IO.userError s!"expected snapshoted run_at fileProgress.done = true after sync, got {(toJson partialProgress).compress}"
   if let some partialLast := partialEvents.back? then
     expectClientRequestId "partial run_at progress" partialLast.clientRequestId? partialRequestId
     if !partialLast.progress.done then
-      throw <| IO.userError s!"expected final streamed versioned run_at progress to be complete, got {(toJson partialLast.progress).compress}"
+      throw <| IO.userError s!"expected final streamed snapshoted run_at progress to be complete, got {(toJson partialLast.progress).compress}"
 
 private def runConcurrentSmoke
     (endpoint : Beam.Broker.Endpoint)
@@ -422,7 +468,7 @@ private def runConcurrentSmoke
   let concurrentHoverId := some "concurrent-hover"
   let slowSyncPath ← writeSlowSyncFile root
   let hoverPath := "tests/scenario/docs/CommandA.lean"
-  let hoverVersion ← updateVersion endpoint hoverPath
+  let hoverSnapshot ← updateSnapshot endpoint hoverPath
   let syncTask ← IO.asTask (prio := Task.Priority.dedicated) <| runClientWithProgress endpoint {
     payload := .syncFile {
       path := slowSyncPath.toString
@@ -434,7 +480,7 @@ private def runConcurrentSmoke
   let (hoverResp, hoverEvents) ← runClientWithProgress endpoint {
     payload := .hover {
       path := hoverPath
-      version := hoverVersion
+      snapshot := hoverSnapshot
       line := 0
       character := 4
     }
@@ -456,13 +502,13 @@ private def runConcurrentSmoke
 private def runRequestAndGoalsSmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   let commandPath := "tests/scenario/docs/CommandA.lean"
-  let commandVersion ← updateVersion endpoint commandPath
+  let commandSnapshot ← updateSnapshot endpoint commandPath
   let proofPath := "tests/scenario/docs/SimpleProof.lean"
-  let proofVersion ← updateVersion endpoint proofPath
+  let proofSnapshot ← updateSnapshot endpoint proofPath
   let cmdResp ← runClient endpoint {
     payload := .runAt {
       path := commandPath
-      version := commandVersion
+      snapshot := commandSnapshot
       line := 0
       character := 2
       text := "#check answerA"
@@ -474,7 +520,7 @@ private def runRequestAndGoalsSmoke
   let hoverResp ← runClient endpoint {
     payload := .hover {
       path := commandPath
-      version := commandVersion
+      snapshot := commandSnapshot
       line := 0
       character := 4
     }
@@ -486,11 +532,11 @@ private def runRequestAndGoalsSmoke
   expectStringContains "hover markdown" hoverValue "answerA : Nat"
 
   let signaturePath := "tests/scenario/docs/SignatureHelp.lean"
-  let signatureVersion ← updateVersion endpoint signaturePath
+  let signatureSnapshot ← updateSnapshot endpoint signaturePath
   let signatureHelpResp ← runClient endpoint {
     payload := .signatureHelp {
       path := signaturePath
-      version := signatureVersion
+      snapshot := signatureSnapshot
       line := 4
       character := 12
     }
@@ -502,7 +548,7 @@ private def runRequestAndGoalsSmoke
   let definitionResp ← runClient endpoint {
     payload := .definition {
       path := commandPath
-      version := commandVersion
+      snapshot := commandSnapshot
       line := 0
       character := 4
     }
@@ -514,7 +560,7 @@ private def runRequestAndGoalsSmoke
   let referencesResp ← runClient endpoint {
     payload := .references {
       path := commandPath
-      version := commandVersion
+      snapshot := commandSnapshot
       line := 0
       character := 4
       includeDeclaration? := some true
@@ -525,7 +571,7 @@ private def runRequestAndGoalsSmoke
   expectStringContains "references result" references.compress "CommandA.lean"
 
   let documentSymbolsResp ← runClient endpoint {
-    payload := .documentSymbols { path := commandPath, version := commandVersion }
+    payload := .documentSymbols { path := commandPath, snapshot := commandSnapshot }
   }
   let documentSymbols ← expectOk documentSymbolsResp
   discard <| requireFileProgress "document symbols" documentSymbolsResp
@@ -547,7 +593,7 @@ private def runRequestAndGoalsSmoke
   let goalsPrevResp ← runClient endpoint {
     payload := .goals {
       path := proofPath
-      version := proofVersion
+      snapshot := proofSnapshot
       line := 1
       character := 2
       mode? := some .before
@@ -566,7 +612,7 @@ private def runRequestAndGoalsSmoke
   let goalsAfterResp ← runClient endpoint {
     payload := .goals {
       path := proofPath
-      version := proofVersion
+      snapshot := proofSnapshot
       line := 1
       character := 2
       mode? := some .after
@@ -581,7 +627,7 @@ private def runRequestAndGoalsSmoke
   let speculativeGoalsResp ← runClient endpoint {
     payload := .goals {
       path := proofPath
-      version := proofVersion
+      snapshot := proofSnapshot
       line := 1
       character := 2
       text? := some "exact trivial"
@@ -600,11 +646,11 @@ private def runCancelSmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   let slowRequestId := some "cancel-slow"
   let slowPath := "tests/scenario/docs/SlowPoll.lean"
-  let slowVersion ← updateVersion endpoint slowPath
+  let slowSnapshot ← updateSnapshot endpoint slowPath
   let slowTask ← IO.asTask (prio := Task.Priority.dedicated) <| runClientWithProgress endpoint {
     payload := .runAt {
       path := slowPath
-      version := slowVersion
+      snapshot := slowSnapshot
       line := 25
       character := 2
       text := "poll_sleep_cmd"
@@ -621,11 +667,11 @@ private def runCancelSmoke
   expectProgressIds "cancelled run_at progress" slowEvents slowRequestId
 
   let commandPath := "tests/scenario/docs/CommandA.lean"
-  let commandVersion ← updateVersion endpoint commandPath
+  let commandSnapshot ← updateSnapshot endpoint commandPath
   let postCancelHoverResp ← runClient endpoint {
     payload := .hover {
       path := commandPath
-      version := commandVersion
+      snapshot := commandSnapshot
       line := 0
       character := 4
     }
@@ -639,11 +685,11 @@ private def runWorkerExitSmoke
     (endpoint : Beam.Broker.Endpoint)
     (root : System.FilePath) : IO Unit := do
   let branchPath := "tests/scenario/docs/BranchProof.lean"
-  let branchVersion ← updateVersion endpoint branchPath
+  let branchSnapshot ← updateSnapshot endpoint branchPath
   let handleSeed ← expectOk <| ← runClient endpoint {
     payload := .runAt {
       path := branchPath
-      version := branchVersion
+      snapshot := branchSnapshot
       line := 0
       character := 27
       text := "constructor"
@@ -655,11 +701,11 @@ private def runWorkerExitSmoke
 
   let workerExitRequestId := some "worker-exit-slow"
   let slowPath := "tests/scenario/docs/SlowPoll.lean"
-  let slowVersion ← updateVersion endpoint slowPath
+  let slowSnapshot ← updateSnapshot endpoint slowPath
   let slowTask ← IO.asTask (prio := Task.Priority.dedicated) <| runClientWithProgress endpoint {
     payload := .runAt {
       path := slowPath
-      version := slowVersion
+      snapshot := slowSnapshot
       line := 25
       character := 2
       text := "poll_sleep_cmd"
@@ -678,12 +724,24 @@ private def runWorkerExitSmoke
     throw <| IO.userError s!"expected worker-exit stderr diagnostic, got {(toJson slowResp).compress}"
   expectProgressIds "worker-exit run_at progress" slowEvents workerExitRequestId
 
+  let restartedSnapshot ← updateSnapshot endpoint branchPath
+  require "backend restart replaces snapshot" (restartedSnapshot != branchSnapshot)
+  expectErrCode (← runClient endpoint {
+    payload := .runAt {
+      path := branchPath, snapshot := branchSnapshot, line := 0, character := 27, text := "constructor"
+    }
+  }) "contentModified"
+  requireJsonBool "restarted snapshot works" "success" true <| ← expectOk <| ← runClient endpoint {
+    payload := .runAt {
+      path := branchPath, snapshot := restartedSnapshot, line := 0, character := 27, text := "constructor"
+    }
+  }
   let commandPath := "tests/scenario/docs/CommandA.lean"
-  let commandVersion ← updateVersion endpoint commandPath
+  let commandSnapshot ← updateSnapshot endpoint commandPath
   let restartHoverResp ← runClient endpoint {
     payload := .hover {
       path := commandPath
-      version := commandVersion
+      snapshot := commandSnapshot
       line := 0
       character := 4
     }
@@ -705,11 +763,11 @@ private def runWorkerExitSmoke
 private def runHandleSmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   let branchPath := "tests/scenario/docs/BranchProof.lean"
-  let branchVersion ← updateVersion endpoint branchPath
+  let branchSnapshot ← updateSnapshot endpoint branchPath
   let proofRes ← expectOk <| ← runClient endpoint {
     payload := .runAt {
       path := branchPath
-      version := branchVersion
+      snapshot := branchSnapshot
       line := 0
       character := 27
       text := "constructor"
@@ -764,9 +822,9 @@ private def runSaveAndStatsSmoke
     payload := .saveOlean { path := "tests/lean/BeamTest/Fixtures/Deps/DepA.lean" }
   }
   let savePayload ← expectOk saveResp
-  let saveVersion ← IO.ofExcept <| savePayload.getObjValAs? Nat "version"
-  if saveVersion != 1 then
-    throw <| IO.userError s!"expected save_olean version = 1, got {saveVersion}"
+  let saveSnapshot ← IO.ofExcept <| savePayload.getObjValAs? Beam.SnapshotRef "snapshot"
+  if saveSnapshot.revision == 0 then
+    throw <| IO.userError s!"expected save_olean a nonempty snapshot, got {saveSnapshot}"
   let saveHash ← IO.ofExcept <| savePayload.getObjValAs? String "sourceHash"
   if saveHash.isEmpty then
     throw <| IO.userError "expected save_olean sourceHash to be present"
@@ -855,12 +913,23 @@ private def runWorkspaceLifecycleSmoke
     workspaceId? := some workspaceId
   })
   let update ← requireUpdateFileResult "named workspace update" updatePayload
-  if update.version != 1 then
-    throw <| IO.userError s!"expected named workspace update version 1, got {update.version}"
+  if update.snapshot.revision == 0 then
+    throw <| IO.userError s!"expected named workspace update a nonempty snapshot, got {update.snapshot}"
+  let wrongFile ← runClient endpoint {
+    payload := .runAt {
+      path := "GoalSmoke.lean", snapshot := update.snapshot, line := 1, character := 2, text := "trivial"
+    }
+    workspaceId? := some workspaceId
+  }
+  expectErrCode wrongFile "contentModified"
+  let proofUpdate ← requireUpdateFileResult "proof snapshot" <| ← expectOk <| ← runClient endpoint {
+    payload := .updateFile { path := "GoalSmoke.lean" }
+    workspaceId? := some workspaceId
+  }
   let proofHandleSeed ← expectOk <| ← runClient endpoint {
     payload := .runAt {
       path := "GoalSmoke.lean"
-      version := update.version
+      snapshot := proofUpdate.snapshot
       line := 1
       character := 2
       text := "trivial"
@@ -901,10 +970,17 @@ private def runWorkspaceLifecycleSmoke
     workspaceId? := some workspaceId
   })
   let updateAfterReset ← requireUpdateFileResult "named workspace update after reset" updateAfterResetPayload
+  require "workspace reset replaces snapshot" (updateAfterReset.snapshot != proofUpdate.snapshot)
+  expectErrCode (← runClient endpoint {
+    payload := .runAt {
+      path := "GoalSmoke.lean", snapshot := proofUpdate.snapshot, line := 1, character := 2, text := "trivial"
+    }
+    workspaceId? := some workspaceId
+  }) "contentModified"
   let postResetHandleSeed ← expectOk <| ← runClient endpoint {
     payload := .runAt {
       path := "GoalSmoke.lean"
-      version := updateAfterReset.version
+      snapshot := updateAfterReset.snapshot
       line := 1
       character := 2
       text := "trivial"
@@ -965,6 +1041,36 @@ private def runWorkspaceLifecycleSmoke
     workspaceId? := some workspaceId
   }
   expectErrCode droppedEnsure "invalidParams"
+  discard <| expectOk <| ← runClient endpoint {
+    payload := .initWorkspace {
+      root := otherRoot.toString
+      lean? := some { command := leanCmd, plugin := plugin.toString }
+    }
+    workspaceId? := some workspaceId
+  }
+  let recreated ← requireUpdateFileResult "recreated workspace snapshot" <| ← expectOk <| ← runClient endpoint {
+    payload := .updateFile { path := "GoalSmoke.lean" }
+    workspaceId? := some workspaceId
+  }
+  require "workspace recreation reuses the native revision in this regression"
+    (recreated.snapshot.revision == updateAfterReset.snapshot.revision)
+  require "workspace recreation replaces snapshot" (recreated.snapshot != updateAfterReset.snapshot)
+  for snapshot in [proofUpdate.snapshot, updateAfterReset.snapshot] do
+    expectErrCode (← runClient endpoint {
+      payload := .runAt {
+        path := "GoalSmoke.lean", snapshot, line := 1, character := 2, text := "trivial"
+      }
+      workspaceId? := some workspaceId
+    }) "contentModified"
+  requireJsonBool "recreated workspace snapshot works" "success" true <| ← expectOk <| ← runClient endpoint {
+    payload := .runAt {
+      path := "GoalSmoke.lean", snapshot := recreated.snapshot, line := 1, character := 2, text := "trivial"
+    }
+    workspaceId? := some workspaceId
+  }
+  discard <| expectOk <| ← runClient endpoint {
+    Beam.Broker.Request.dropWorkspace with workspaceId? := some workspaceId
+  }
 
 private def runInitialWorkspaceDropDebugPayloadSmoke (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   let drop ← expectOk (← runClient endpoint {
@@ -991,6 +1097,7 @@ def smokeMain : IO Unit := do
   try
     waitForBrokerReadyForRoot endpoint root
     discard <| expectOk (← runClient endpoint Beam.Broker.Request.ensure)
+    runReopenedSnapshotSmoke endpoint root
     runWorkspaceLifecycleSmoke endpoint otherRoot plugin leanCmd
     runUpdateSmoke endpoint root
     runSyncSmoke endpoint

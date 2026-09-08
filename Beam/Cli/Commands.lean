@@ -74,33 +74,33 @@ private def mkSessionStatus
   detail?
 }
 
-private def updateVersionForRocqGoals
+private def updateSnapshotForRocqGoals
     (root : System.FilePath)
     (client : ProjectDaemonClient)
-    (path : String) : IO Nat := do
+    (path : String) : IO SnapshotRef := do
   let resp ← requestBroker root client {
     payload := .updateFile { backend := .rocq, path }
   }
   match decodeUpdateFileResult resp with
-  | .ok result => pure result.version
+  | .ok result => pure result.snapshot
   | .error (.broker failure) => throw <| IO.userError failure.error.message
   | .error (.invalidPayload detail) =>
       throw <| IO.userError <|
-        s!"update_file returned an invalid result while obtaining document version: {detail}"
+        s!"update_file returned an invalid result while obtaining document snapshot: {detail}"
 
 private def runLeanRunAt
     (opts : CliOptions)
-    (action path versionText lineText characterText : String)
+    (action path snapshotText lineText characterText : String)
     (textArgs : List String)
     (storeHandle : Bool := false) : IO Unit := do
-  let version ← parseNatArg "version" versionText
+  let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
   let line ← parseNatArg "line" lineText
   let character ← parseNatArg "character" characterText
-  let parsedText ← parseTextArg s!"{action} <path> <version> <line> <character>" textArgs
+  let parsedText ← parseTextArg s!"{action} <path> <snapshot> <line> <character>" textArgs
   let root ← projectRoot opts .lean
   withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client => do
     let req ← withEnvClientRequestId <|
-      leanRunAtRequest path version line character parsedText.text (storeHandle := storeHandle)
+      leanRunAtRequest path snapshot line character parsedText.text (storeHandle := storeHandle)
     maybeEmitTextDebug req.clientRequestId? action parsedText.source parsedText.text
     callBrokerWithProgress root client req (leanRunAtWaitSpec action path line character)
 
@@ -293,59 +293,59 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       serveBackend home opts .lean
   | "serve" :: backend :: [] =>
       serveBackend home opts (← parseBackendName backend)
-  | "run-at" :: path :: version :: line :: character :: text =>
-      runLeanRunAt opts "run-at" path version line character text
-  | "run-at-handle" :: path :: version :: line :: character :: text =>
-      runLeanRunAt opts "run-at-handle" path version line character text
+  | "run-at" :: path :: snapshot :: line :: character :: text =>
+      runLeanRunAt opts "run-at" path snapshot line character text
+  | "run-at-handle" :: path :: snapshot :: line :: character :: text =>
+      runLeanRunAt opts "run-at-handle" path snapshot line character text
         (storeHandle := true)
-  | "hover" :: path :: versionText :: line :: character :: [] =>
+  | "hover" :: path :: snapshotText :: line :: character :: [] =>
       let root ← projectRoot opts .lean
-      let version ← parseNatArg "version" versionText
+      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
       let line ← parseNatArg "line" line
       let character ← parseNatArg "character" character
       let action := "hover"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanHoverRequest path version line character)
+          (leanHoverRequest path snapshot line character)
           (leanHoverWaitSpec path line character action)
-  | "signature-help" :: path :: versionText :: line :: character :: [] =>
+  | "signature-help" :: path :: snapshotText :: line :: character :: [] =>
       let root ← projectRoot opts .lean
-      let version ← parseNatArg "version" versionText
+      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
       let line ← parseNatArg "line" line
       let character ← parseNatArg "character" character
       let action := "signature-help"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanSignatureHelpRequest path version line character)
+          (leanSignatureHelpRequest path snapshot line character)
           (leanSignatureHelpWaitSpec path line character action)
-  | "definition" :: path :: versionText :: line :: character :: [] =>
+  | "definition" :: path :: snapshotText :: line :: character :: [] =>
       let root ← projectRoot opts .lean
-      let version ← parseNatArg "version" versionText
+      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
       let line ← parseNatArg "line" line
       let character ← parseNatArg "character" character
       let action := "definition"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanDefinitionRequest path version line character)
+          (leanDefinitionRequest path snapshot line character)
           (leanDefinitionWaitSpec path line character action)
-  | "references" :: path :: versionText :: line :: character :: extra =>
+  | "references" :: path :: snapshotText :: line :: character :: extra =>
       let root ← projectRoot opts .lean
-      let version ← parseNatArg "version" versionText
+      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
       let line ← parseNatArg "line" line
       let character ← parseNatArg "character" character
       let includeDeclaration ← parseLeanReferencesArgs extra
       let action := "references"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanReferencesRequest path version line character includeDeclaration)
+          (leanReferencesRequest path snapshot line character includeDeclaration)
           (leanReferencesWaitSpec path line character action)
-  | "document-symbols" :: path :: versionText :: [] =>
+  | "document-symbols" :: path :: snapshotText :: [] =>
       let root ← projectRoot opts .lean
-      let version ← parseNatArg "version" versionText
+      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
       let action := "document-symbols"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanDocumentSymbolsRequest path version)
+          (leanDocumentSymbolsRequest path snapshot)
           (leanDocumentSymbolsWaitSpec path action)
   | "workspace-symbols" :: queryParts =>
       let root ← projectRoot opts .lean
@@ -358,20 +358,20 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
         callBrokerWithProgress root client
           (leanWorkspaceSymbolsRequest query)
           (leanWorkspaceSymbolsWaitSpec query action)
-  | "goals" :: modeText :: path :: versionText :: line :: character :: [] =>
+  | "goals" :: modeText :: path :: snapshotText :: line :: character :: [] =>
       let root ← projectRoot opts .lean
       let mode ← parseLeanGoalsModeArg modeText
-      let version ← parseNatArg "version" versionText
+      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
       let line ← parseNatArg "line" line
       let character ← parseNatArg "character" character
       let action := "goals"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanGoalsRequest path version line character mode)
+          (leanGoalsRequest path snapshot line character mode)
           (leanGoalsWaitSpec path line character mode (some action))
-  | "todo" :: path :: versionText :: startLine :: startCharacter :: endLine :: endCharacter :: extra => do
+  | "todo" :: path :: snapshotText :: startLine :: startCharacter :: endLine :: endCharacter :: extra => do
       let root ← projectRoot opts .lean
-      let version ← parseNatArg "version" versionText
+      let snapshot ← IO.ofExcept <| SnapshotRef.decode snapshotText
       let startLine ← parseNatArg "startLine" startLine
       let startCharacter ← parseNatArg "startCharacter" startCharacter
       let endLine ← parseNatArg "endLine" endLine
@@ -380,7 +380,7 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       let action := "todo"
       withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanTodoRequest path version startLine startCharacter endLine endCharacter kinds? suggest?)
+          (leanTodoRequest path snapshot startLine startCharacter endLine endCharacter kinds? suggest?)
           (leanTodoWaitSpec path startLine startCharacter endLine endCharacter action)
   | "run-with" :: path :: args =>
       runLeanRunWith opts "run-with" path args
@@ -432,12 +432,12 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
   | "rocq-goals-after" :: path :: line :: character :: text =>
       let root ← projectRoot opts .rocq
       withProjectDaemon root .rocq (explicitControlDir? := opts.explicitControlDir?) fun client => do
-        let version ← updateVersionForRocqGoals root client path
+        let snapshot ← updateSnapshotForRocqGoals root client path
         callBroker root client {
           payload := .goals {
             backend := .rocq
             path
-            version
+            snapshot
             line := ← parseNatArg "line" line
             character := ← parseNatArg "character" character
             mode? := some .after
@@ -449,12 +449,12 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
   | "rocq-goals-prev" :: path :: line :: character :: text =>
       let root ← projectRoot opts .rocq
       withProjectDaemon root .rocq (explicitControlDir? := opts.explicitControlDir?) fun client => do
-        let version ← updateVersionForRocqGoals root client path
+        let snapshot ← updateSnapshotForRocqGoals root client path
         callBroker root client {
           payload := .goals {
             backend := .rocq
             path
-            version
+            snapshot
             line := ← parseNatArg "line" line
             character := ← parseNatArg "character" character
             mode? := some .before

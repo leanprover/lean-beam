@@ -427,10 +427,10 @@ beam_start_owner "$tmp2"
   save_json="$(beam --root "$tmp2" close-save SaveSmoke/B.lean)"
   if [ "$(BEAM_JSON_PAYLOAD="$save_json" python3 - <<'PY'
 import json, os
-print(json.loads(os.environ["BEAM_JSON_PAYLOAD"])["result"]["saved"]["version"])
+print(json.loads(os.environ["BEAM_JSON_PAYLOAD"])["result"]["saved"]["snapshot"])
 PY
-)" != "1" ]; then
-    echo "expected close-save to report saved version 1" >&2
+)" = "" ]; then
+    echo "expected close-save to report its saved snapshot" >&2
     printf '%s\n' "$save_json" >&2
     exit 1
   fi

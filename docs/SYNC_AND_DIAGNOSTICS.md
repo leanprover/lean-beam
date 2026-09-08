@@ -11,42 +11,49 @@ a source-editing command.
 
 `lean-beam update` is the cheap on-disk edit observation for a Lean file. It reads the current file,
 opens or updates the broker's LSP mirror when needed, and returns the broker-owned document
-`version` immediately without waiting for diagnostics. Its `changed` flag means the broker sent
+`snapshot` immediately without waiting for diagnostics. Its `changed` flag means the broker sent
 `didOpen` or `didChange` to the LSP session for this request; unchanged files keep the previous
-document version and return `changed: false`.
+document snapshot and return `changed: false`.
 
 `lean-beam sync` is the diagnostics/readiness barrier for a Lean file. It opens or updates the
-tracked file, waits for diagnostics for the current document version, streams fresh request
-diagnostics, and returns a machine-readable JSON verdict for that version. Wrapper stdout uses
+tracked file, waits for diagnostics for the current document snapshot, streams fresh request
+diagnostics, and returns a machine-readable JSON verdict for that snapshot. Wrapper stdout uses
 stable, agent-oriented field ordering after a broker operation completes. Selector, setup, or
 transport failures can instead exit nonzero with human-facing stderr and no JSON, so automation
 must check the exit status before parsing stdout. Clients that require structured live events and
 failures should use MCP.
 
-The returned document `version` is the snapshot token for broker, MCP, and wrapper callers.
-Position- or range-bound operations reject missing or stale versions; clients can obtain the
-version from `lean-beam update`, the internal broker `update_file` operation, or MCP `lean_update`.
-`lean-beam sync`, the internal broker `sync_file` operation, and MCP `lean_sync` also return the
-current version when the caller needs the diagnostics/readiness barrier.
+The returned `snapshot` is an opaque string identifying this file's source in one backend session.
+Pass it unchanged to position, range, document-symbol, and code-action resolution requests for the
+same workspace and file. `update` and `sync` preserve the token for unchanged tracked source.
+Source changes, refresh, close/reopen, backend restart, and workspace reset or recreation produce
+fresh tokens, even when the text is identical. Tokens from another file are also rejected.
+Lean's numeric LSP document revisions remain internal; numeric `version` arguments are not accepted.
 
-When the broker rejects a position- or range-bound request because the supplied version is stale,
-the failure uses `contentModified` and includes `error.data.reason = "documentVersionMismatch"`.
-The same payload reports `expectedVersion`, the currently accepted `acceptedVersion`, and
-`currentVersion` when the broker can name the current tracked document version.
+The broker checks the token before dispatch and verifies that the document is still current before
+returning a document request's result. A stale token produces `contentModified` with
+`error.data.reason = "snapshotMismatch"`, `expectedSnapshot`, and `currentSnapshot` when the file is
+still tracked. A backend that exits while a request is pending can instead produce `workerExited`.
+These checks concern the source tracked by the broker; they do not detect unsupported workspace
+configuration drift or guarantee that imported artifacts are current.
 
-Example stale-version semantic response as printed by the wrapper on stdout:
+After `contentModified`, read the current source and resolve the intended position, range, or code
+action again. Obtain a fresh token from `update` or `sync` before retrying. Replacing the token alone
+does not repair stale coordinates or actions. Treat tokens as opaque: do not construct, increment,
+or compare their internal parts.
+
+Example stale-snapshot response as printed by the wrapper on stdout:
 
 ```json
 {
   "ok": false,
   "error": {
     "code": "contentModified",
-    "message": "document version mismatch for file:///workspace/Foo.lean: expected document version 1, got 2",
+    "message": "source snapshot changed for file:///workspace/Foo.lean; read the source and resolve the intended target again before retrying",
     "data": {
-      "reason": "documentVersionMismatch",
-      "expectedVersion": 1,
-      "acceptedVersion": 2,
-      "currentVersion": 2,
+      "reason": "snapshotMismatch",
+      "expectedSnapshot": "example-session/1",
+      "currentSnapshot": "example-session/2",
       "uri": "file:///workspace/Foo.lean"
     }
   }
@@ -116,7 +123,7 @@ Their transport types differ by surface.
 | Progress | Request-scoped operation movement, not diagnostics and not final readiness. | MCP `notifications/progress`; internal broker `fileProgress` events; CLI progress text. |
 | Status | Best-effort notice that a no-token MCP request is doing setup or remains pending. | MCP `notifications/message` with logger `beam.status`. |
 | Streamed diagnostics | Lean-published events observed while a request is pending. | MCP `notifications/message` with logger `lean.diagnostic`; internal broker `diagnostic` events; CLI stderr diagnostics. |
-| Current result | Stable synced-state verdict for one document version. | Final internal broker response or wrapper stdout `diagnostics`, `readiness`, and `fileProgress` fields; MCP spells the progress field `document_progress`. |
+| Current result | Stable synced-state verdict for one document snapshot. | Final internal broker response or wrapper stdout `diagnostics`, `readiness`, and `fileProgress` fields; MCP spells the progress field `document_progress`. |
 
 Wrapper stderr is the human-facing surface. Machine consumers of an owned wrapper session should
 check exit status, then parse final stdout JSON when present. Use MCP for structured live events and
@@ -145,9 +152,11 @@ The MCP server advertises logging and forwards incremental Lean diagnostics as s
 `notifications/message` log events. Modern callers opt in for each request with
 `_meta["io.modelcontextprotocol/logLevel"]`; legacy callers set the connection-wide level with
 `logging/setLevel`. [MCP.md](MCP.md#progress-and-diagnostic-logs) defines the exact behavior for
-both protocol eras. Events include path, URI, version, range, severity, message data, and
+both protocol eras. Events include path, URI, range, severity, message data, and
 `completion_blocking=true` when a diagnostic is known to block file completion. They are
 request-scoped observations; save-blocking evidence is attached to the final sync/save verdict.
+A diagnostic includes `snapshot` when its backend notification names a positive document revision;
+unversioned notifications omit it. Reply diagnostic items carry the barrier snapshot.
 
 MCP clients that cannot conveniently collect interleaved notifications can call `lean_sync` or
 `lean_refresh` with `diagnostics_in_result: true` to replay diagnostics in the final structured
@@ -208,7 +217,7 @@ request can return before the whole file reaches `done = true`.
 
 ## Readiness
 
-Successful sync responses expose one flat result for the current document version. MCP uses
+Successful sync responses expose one flat result for the current document snapshot. MCP uses
 snake_case field names; broker and CLI JSON use the corresponding camelCase names. The
 machine-facing MCP readiness fields are:
 
@@ -219,7 +228,7 @@ machine-facing MCP readiness fields are:
 - `readiness.blocking_messages`
 
 `diagnostics.counts.*` reports user-facing Lean-published diagnostic severities. It answers "what
-did Lean report?", while readiness answers "can this synced version be checkpointed?". The backend
+did Lean report?", while readiness answers "can this synced snapshot be checkpointed?". The backend
 readiness API is authoritative for `saveReady`; diagnostic severity summaries are evidence and
 counts, not a separate broker-side veto.
 
@@ -234,16 +243,16 @@ and message history are observations; clients should not reconstruct save readin
 
 ## Current Result
 
-Each sync result describes only the current synced document version. It does not carry deltas
+Each sync result describes only the current synced document snapshot. It does not carry deltas
 against previous responses. Clients that need comparisons should retain the previous response they
 care about and compare it explicitly.
 
-- `path` and `version`: the synced document described by the result
+- `path` and `snapshot`: the synced document described by the result
 - `diagnostics.counts`: current user-facing diagnostic counts by severity and total
 - `diagnostics.items`, when requested: diagnostics selected by `diagnostic_scope`
 - `readiness`: the current save-readiness verdict and blocking evidence
 
-Successful broker and wrapper saves repeat the synced document's top-level `path` and `version`, add
+Successful broker and wrapper saves repeat the synced document's top-level `path` and `snapshot`, add
 the checkpoint fields `module`, `sourceHash`, `olean`, `ilean`, `c`, and `trace`, and nest the
 canonical sync result under `sync`. Optional backend artifacts use `oleanServer`, `oleanPrivate`,
 `ir`, and `bc`. Close-save wraps the same save result as
@@ -252,7 +261,7 @@ see the complete [`lean_save` result example](MCP.md#stable-result-shapes).
 
 ## Failures And Recovery
 
-If Lean cannot reach a completed diagnostics barrier for the synced version, `lean-beam sync` fails
+If Lean cannot reach a completed diagnostics barrier for the synced snapshot, `lean-beam sync` fails
 instead of reporting partial success. `lean-beam save` and `lean-beam close-save` refuse to proceed
 past that incomplete barrier.
 

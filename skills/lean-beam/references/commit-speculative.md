@@ -16,7 +16,7 @@ That is the current explicit handoff from speculative execution to saved file st
 ## Minimal Pattern
 
 ```bash
-lean-beam run-at "Foo.lean" <version-from-update> 20 2 "exact h"
+lean-beam run-at "Foo.lean" <snapshot-from-update> 20 2 "exact h"
 
 # if the speculative result is the change you want:
 # 1. edit Foo.lean for real
@@ -36,7 +36,7 @@ Sometimes the task is:
 Use the handle path first:
 
 ```bash
-root="$(lean-beam run-at-handle "Foo.lean" <version-from-update> 20 2 "tac1")"
+root="$(lean-beam run-at-handle "Foo.lean" <snapshot-from-update> 20 2 "tac1")"
 next="$(printf '%s\n' "$root" | lean-beam run-with-linear "Foo.lean" - "tac2")"
 ```
 

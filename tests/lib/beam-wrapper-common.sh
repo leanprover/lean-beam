@@ -142,7 +142,7 @@ json_file_array_len() {
   BEAM_JSON_PAYLOAD="$(cat "$payload_file")" read_json_array_len "$field"
 }
 
-beam_wrapper_command_version() {
+beam_wrapper_command_snapshot() {
   local kind="$1"
   shift
   local label="$1"
@@ -157,28 +157,28 @@ beam_wrapper_command_version() {
     printf '%s\n' "$out" >&2
     return 1
   fi
-  local version
-  version="$(json_text_field "$out" result.version)"
-  case "$version" in
-    ""|*[!0-9]*)
-      echo "expected $label $kind response to include numeric result.version" >&2
+  local snapshot
+  snapshot="$(json_text_field "$out" result.snapshot)"
+  case "$snapshot" in
+    "")
+      echo "expected $label $kind response to include a nonempty result.snapshot token" >&2
       printf '%s\n' "$out" >&2
       return 1
       ;;
   esac
-  printf '%s\n' "$version"
+  printf '%s\n' "$snapshot"
 }
 
-beam_wrapper_sync_version() {
+beam_wrapper_sync_snapshot() {
   local label="$1"
   shift
-  beam_wrapper_command_version sync "$label" "$@"
+  beam_wrapper_command_snapshot sync "$label" "$@"
 }
 
-beam_wrapper_update_version() {
+beam_wrapper_update_snapshot() {
   local label="$1"
   shift
-  beam_wrapper_command_version update "$label" "$@"
+  beam_wrapper_command_snapshot update "$label" "$@"
 }
 
 print_json_file_assertion_context() {

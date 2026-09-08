@@ -44,7 +44,7 @@ client so it launches the current runtime. If a newly resolved installed wrapper
 `false`, the install root's `current` link is missing or broken; stop normal Beam work and reinstall.
 If an installed identity reports `runtime_error`, do not treat it as a source checkout or try to
 clean it with `lean-beam prune`. After stopping active Beam agents and MCP clients, move an invalid
-manifest runtime out of `BEAM_INSTALL_ROOT/versions`, preserve it for inspection, and rerun the
+manifest runtime out of `BEAM_INSTALL_ROOT/snapshots`, preserve it for inspection, and rerun the
 installer. For an invalid install-root marker, preserve and rename the exact `BEAM_INSTALL_ROOT` as
 a unit before reinstalling; do not recreate its ownership marker in place or delete the preserved
 state.
@@ -68,7 +68,7 @@ family that fits the task.
 
 Agents may access Beam through the `lean-beam` wrapper or through a registered `lean-beam-mcp`
 server. This skill names wrapper commands because they are always available after installation. When
-your client exposes the matching MCP tools, use them with the same saved-file, version, update, sync,
+your client exposes the matching MCP tools, use them with the same saved-file, snapshot, update, sync,
 and isolation rules; do not treat MCP as a raw Lean LSP proxy.
 
 Supported command families:
@@ -113,7 +113,7 @@ Core workflow contract:
 - MCP owns its stdio runtime session automatically; do not start a separate wrapper holder solely
   for MCP tool calls
 - after every real Lean source edit: save the file normally, then run `lean-beam update` before the
-  next version-bound probe; run `lean-beam sync` when you need diagnostics/readiness
+  next snapshot-bound probe; run `lean-beam sync` when you need diagnostics/readiness
 - use `lean-beam save` only for a synced workspace module path in the current Lake workspace package
   graph, for example `MyPkg/Sub/Module.lean`
 - `lean-beam save` checks readiness and checkpoints only the module snapshot you save; it does not
@@ -153,7 +153,7 @@ A standalone scratch file has a high fixed cost: it starts from a detached modul
 and environment, and encourages simplified contexts that may not match the real source position.
 
 A `lean-beam run-at` probe has low marginal cost once the per-project daemon and module context are
-warm: it asks one speculative question against an explicit broker document version and the real
+warm: it asks one speculative question against an explicit broker document snapshot and the real
 module environment.
 
 This changes the right agent behavior:
@@ -194,11 +194,11 @@ Prefer the smallest command that matches the actual task:
 - before `lean-beam run-at`, `lean-beam run-at-handle`, `lean-beam hover`,
   `lean-beam signature-help`, `lean-beam definition`, `lean-beam references`,
   `lean-beam document-symbols`, `lean-beam goals`, or `lean-beam todo`, call
-  `lean-beam update <file>` and pass the returned `version`; `lean-beam workspace-symbols` takes
+  `lean-beam update <file>` and pass the returned `snapshot`; `lean-beam workspace-symbols` takes
   only a query
-- if a versioned request fails with `contentModified` and
-  `error.data.reason = "documentVersionMismatch"`, use `error.data.acceptedVersion` for the next
-  retry or run `lean-beam update` / `lean-beam sync` again; do not guess a version
+- if a request fails with `contentModified`, read the current source and resolve the intended
+  position, range, or code action again, then obtain a fresh `snapshot` from `lean-beam update`
+  or `lean-beam sync` before retrying; changing only the token does not repair stale coordinates
 - for `lean-beam run-at`, `lean-beam hover`, `lean-beam signature-help`,
   `lean-beam definition`, `lean-beam references`, `lean-beam goals`, and `lean-beam todo`, treat
   line and character arguments as Lean/LSP coordinates: line `0` is the first line, character `0`
@@ -238,7 +238,7 @@ batch-equivalence check rather than one-file probing.
 
 ## Lean-Run-At Semantics
 
-`lean-beam run-at` is a speculative execution request against one explicit broker document version.
+`lean-beam run-at` is a speculative execution request against one explicit broker document snapshot.
 Read it as "try this Lean text here", not as "edit the file here".
 
 What `lean-beam run-at` does not do:
@@ -350,7 +350,7 @@ Default rules:
 - start and keep one `lean-beam serve` owner before issuing wrapper workflow commands
 - start with `lean-beam run-at`
 - after every real source edit: save the file to disk normally, then `lean-beam update` before the
-  next version-bound probe; use `lean-beam sync` for diagnostics/readiness
+  next snapshot-bound probe; use `lean-beam sync` for diagnostics/readiness
 - if exact continuation matters: mint a handle
 - if search branches: use `lean-beam run-with`, `lean-beam run-with-linear`, and `lean-beam release`
 - if you want shorter shell commands for search loops: use `lean-beam-search`
@@ -367,21 +367,21 @@ lean-beam serve
 # terminal or agent process 2: inspect existing code or proof state
 update_out="$(lean-beam update "Foo.lean")"
 printf '%s\n' "$update_out"
-version="$(printf '%s\n' "$update_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["version"])')"
-lean-beam hover "Foo.lean" "$version" 10 2
-lean-beam signature-help "Foo.lean" "$version" 10 2
-lean-beam definition "Foo.lean" "$version" 10 2
-lean-beam references "Foo.lean" "$version" 10 2
-lean-beam document-symbols "Foo.lean" "$version"
+snapshot="$(printf '%s\n' "$update_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["snapshot"])')"
+lean-beam hover "Foo.lean" "$snapshot" 10 2
+lean-beam signature-help "Foo.lean" "$snapshot" 10 2
+lean-beam definition "Foo.lean" "$snapshot" 10 2
+lean-beam references "Foo.lean" "$snapshot" 10 2
+lean-beam document-symbols "Foo.lean" "$snapshot"
 lean-beam workspace-symbols "Foo.bar"
-lean-beam goals before "Foo.lean" "$version" 10 2
+lean-beam goals before "Foo.lean" "$snapshot" 10 2
 
 # try speculative Lean text without editing the file
-lean-beam run-at "Foo.lean" "$version" 10 2 "exact trivial"
+lean-beam run-at "Foo.lean" "$snapshot" 10 2 "exact trivial"
 # for multiline probes, prefer stdin
-printf 'example : True := by\n  trivial\n' | lean-beam run-at "Foo.lean" "$version" 10 2 --stdin
+printf 'example : True := by\n  trivial\n' | lean-beam run-at "Foo.lean" "$snapshot" 10 2 --stdin
 
-# after every real edit saved to disk, use update for the next probe version
+# after every real edit saved to disk, use update for the next probe snapshot
 lean-beam update "MyPkg/Sub/Module.lean"
 
 # when you need diagnostics/readiness, on that same workspace module path
@@ -495,7 +495,7 @@ Open these only when the task needs the detail:
 
 - prefer `lean-beam run-at` before editing when feasible
 - treat `lean-beam update` as mandatory after every real Lean file edit before the next speculative probe
-- do not assume one successful probe changes the basis of the next one; each probe starts from the explicit document version it names
+- do not assume one successful probe changes the basis of the next one; each probe starts from the explicit document snapshot it names
 - when continuation really matters, prefer an explicit stored handle over hoping the next probe will
   recover the same internal basis by accident
 - prefer `lean-beam save` / `lean-beam close-save` over a full `lake build` when only one file needs checkpointing

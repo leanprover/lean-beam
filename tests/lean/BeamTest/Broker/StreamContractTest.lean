@@ -44,14 +44,14 @@ private def expectTodoKindOnly
     throw <| IO.userError s!"expected {label} to contain only todo kind {kind.key}, got {(toJson result).compress}"
   pure item
 
-private def syncVersion
+private def syncSnapshot
     (endpoint : Beam.Broker.Endpoint)
-    (path : String) : IO Nat := do
+    (path : String) : IO Beam.SnapshotRef := do
   let resp ← runClient endpoint {
     payload := .syncFile { path }
   }
-  let result ← requireSyncFileResult s!"sync version for {path}" (← expectOk resp)
-  pure result.version
+  let result ← requireSyncFileResult s!"sync snapshot for {path}" (← expectOk resp)
+  pure result.snapshot
 
 private partial def waitForBrokerExit
     (broker : IO.Process.Child nullBrokerStdio)
@@ -132,11 +132,11 @@ def main : IO Unit := do
         throw <| IO.userError s!"daemon root mismatch was classified as {repr status}"
     discard <| expectOk (← runClient endpoint Beam.Broker.Request.ensure)
 
-    let todoVersion ← syncVersion endpoint BeamTest.Fixtures.TodoFixture.brokerPath
+    let todoSnapshot ← syncSnapshot endpoint BeamTest.Fixtures.TodoFixture.brokerPath
     let todoMessages ← requireSuccessStream "todo" <| ← runBrokerStream endpoint {
       payload := .todo {
         path := BeamTest.Fixtures.TodoFixture.brokerPath
-        version := todoVersion
+        snapshot := todoSnapshot
         line := BeamTest.Fixtures.TodoFixture.startLine
         character := BeamTest.Fixtures.TodoFixture.startCharacter
         endLine := BeamTest.Fixtures.TodoFixture.endLine
@@ -168,8 +168,8 @@ def main : IO Unit := do
     let syncPayload ← expectOk syncResp
     expectNoReplayDiagnosticsField "sync_file" syncPayload
     let syncResult ← requireSyncFileResult "sync_file" syncPayload
-    if syncResult.version != 1 then
-      throw <| IO.userError s!"expected sync_file version 1, got {syncResult.version}"
+    if syncResult.snapshot.session.isEmpty then
+      throw <| IO.userError s!"expected sync_file a nonempty snapshot, got {syncResult.snapshot}"
     if !syncResult.readiness.saveReady then
       throw <| IO.userError s!"expected sync_file saveReady = true, got {(toJson syncResult).compress}"
     if syncResult.readiness.blockingErrorCount != 0 then
@@ -211,9 +211,9 @@ def main : IO Unit := do
     let saveResp ← requireFinalStreamResponse "save_olean" saveMessages
     let savePayload ← expectOk saveResp
     expectNoReplayDiagnosticsField "save_olean" savePayload
-    let saveVersion ← IO.ofExcept <| savePayload.getObjValAs? Nat "version"
-    if saveVersion != 2 then
-      throw <| IO.userError s!"expected save_olean version 2, got {saveVersion}"
+    let saveSnapshot ← IO.ofExcept <| savePayload.getObjValAs? Beam.SnapshotRef "snapshot"
+    if saveSnapshot == syncResult.snapshot then
+      throw <| IO.userError s!"expected save_olean a fresh snapshot, got {saveSnapshot}"
     let saveDiagnostics ← requireAnyStreamDiagnostics "save_olean" saveMessages
     expectNonErrorDiagnosticsForPath "save_olean" "SaveSmoke/B.lean" saveDiagnostics
 
@@ -232,9 +232,9 @@ def main : IO Unit := do
     if !closed then
       throw <| IO.userError s!"expected close-save payload to report closed = true, got {closePayload.compress}"
     let savedPayload ← IO.ofExcept <| closePayload.getObjVal? "saved"
-    let closeVersion ← IO.ofExcept <| savedPayload.getObjValAs? Nat "version"
-    if closeVersion != 3 then
-      throw <| IO.userError s!"expected close-save saved version 3, got {closeVersion}"
+    let closeSnapshot ← IO.ofExcept <| savedPayload.getObjValAs? Beam.SnapshotRef "snapshot"
+    if closeSnapshot == saveSnapshot then
+      throw <| IO.userError s!"expected close-save saved a fresh snapshot, got {closeSnapshot}"
     let closeDiagnostics ← requireAnyStreamDiagnostics "close-save" closeMessages
     expectNonErrorDiagnosticsForPath "close-save" "SaveSmoke/B.lean" closeDiagnostics
 

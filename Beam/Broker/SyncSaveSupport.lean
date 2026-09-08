@@ -103,11 +103,11 @@ def diagnosticDisplayPath (root : System.FilePath) (uri : DocumentUri) : String 
 def streamDiagnosticOfDiagnostic
     (root : System.FilePath)
     (uri : DocumentUri)
-    (version? : Option Int)
+    (snapshot? : Option SnapshotRef)
     (diagnostic : Diagnostic) : StreamDiagnostic := {
   path := diagnosticDisplayPath root uri
   uri
-  version?
+  snapshot?
   severity? := effectiveSyncDiagnosticSeverity diagnostic
   range := diagnostic.fullRange
   message := diagnostic.message
@@ -117,11 +117,11 @@ def streamDiagnosticOfDiagnostic
 def streamDiagnosticsForReply
     (root : System.FilePath)
     (uri : DocumentUri)
-    (version : Nat)
+    (snapshot : SnapshotRef)
     (diagnosticScope : DiagnosticScope)
     (diagnostics : Array Diagnostic) : Array StreamDiagnostic :=
   (filterSyncDiagnostics diagnosticScope diagnostics).map fun diagnostic =>
-    streamDiagnosticOfDiagnostic root uri (some (Int.ofNat version)) diagnostic
+    streamDiagnosticOfDiagnostic root uri (some snapshot) diagnostic
 
 def syncErrorCount (diagnostics : Array Diagnostic) : Nat :=
   diagnostics.foldl (init := 0) fun count diagnostic =>

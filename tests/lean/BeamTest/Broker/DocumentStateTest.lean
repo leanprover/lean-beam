@@ -54,7 +54,7 @@ private def mkSnapshot
 private def checkSyncFileDecisionOpen : IO Unit := do
   let uri := "file:///workspace/Foo.lean"
   let decision := DocumentState.syncFileDecision {} uri
-    (mkSnapshot 10)
+    (mkSnapshot 10) 1
   require "syncFileDecision opens unknown doc" (decision.action == .open)
   require "syncFileDecision open starts at version 1" (decision.version == 1)
   let some doc := decision.docs.get? uri
@@ -72,7 +72,7 @@ private def checkSyncFileDecisionUnchanged : IO Unit := do
       fileProgress? := some { updates := 2, done := true }
       lastSyncEventSeq := 8
     }
-  let decision := DocumentState.syncFileDecision docs uri (mkSnapshot 10 (some "Foo"))
+  let decision := DocumentState.syncFileDecision docs uri (mkSnapshot 10 (some "Foo")) 6
   require "syncFileDecision unchanged has no LSP action" (decision.action == .unchanged)
   require "syncFileDecision unchanged preserves version" (decision.version == 5)
   let some doc := decision.docs.get? uri
@@ -93,7 +93,7 @@ private def checkSyncFileDecisionChange : IO Unit := do
       fileProgress? := some { updates := 2, done := true }
       lastSyncEventSeq := 8
     }
-  let decision := DocumentState.syncFileDecision docs uri (mkSnapshot 11 (some "Foo"))
+  let decision := DocumentState.syncFileDecision docs uri (mkSnapshot 11 (some "Foo")) 6
   require "syncFileDecision changed emits change action" (decision.action == .change)
   require "syncFileDecision changed bumps version" (decision.version == 6)
   let some doc := decision.docs.get? uri

@@ -395,8 +395,8 @@ def main():
             require(sync.get("isError") is not True, f"lean_sync returned tool error: {sync}")
             structured = sync.get("structuredContent")
             require(isinstance(structured, dict), f"sync missing structuredContent: {sync}")
-            version = structured.get("version")
-            require(isinstance(version, int), f"sync missing version: {sync}")
+            snapshot = structured.get("snapshot")
+            require(isinstance(snapshot, str), f"sync missing snapshot: {sync}")
             require_document_progress_range(structured, "lean_sync")
 
             probe = expect_result(http_json(
@@ -409,7 +409,7 @@ def main():
                         "name": "lean_run_at",
                         "arguments": {
                             "path": "PositionEmptyLine.lean",
-                            "version": version,
+                            "snapshot": snapshot,
                             "line": 1,
                             "character": 0,
                             "text": "def mcpHttpProbe : Nat := 1",

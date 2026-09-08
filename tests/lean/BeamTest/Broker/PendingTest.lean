@@ -417,6 +417,7 @@ private def checkDiagnosticLineCanExceedProgressRange : IO Unit := do
     (tracked? := some ("file:///workspace/Foo.lean", 1))
   PendingRequest.observeDiagnostics
     (System.FilePath.mk ".")
+    "test-session"
     pending
     (mkPublishDiagnostics #[farDiagnostic])
   require "diagnostic publication does not rewrite fileProgress range"
@@ -438,6 +439,7 @@ private def observeStreamedDiagnostics
       streamedRef.modify (·.push diagnostic))
   PendingRequest.observeDiagnostics
     (System.FilePath.mk "/workspace")
+    "test-session"
     pending
     (mkPublishDiagnostics diagnostics)
   streamedRef.get
@@ -451,6 +453,7 @@ private def checkDiagnosticEmitterFailureIsolation : IO Unit := do
       throw <| IO.userError "diagnostic sink failed")
   PendingRequest.observeDiagnostics
     (System.FilePath.mk "/workspace")
+    "test-session"
     pending
     (mkPublishDiagnostics #[diagnostic])
   require "diagnostic sink failure still records the publication"
@@ -499,6 +502,8 @@ private def checkSetupFileProgressStreamsByScope : IO Unit := do
     (defaultStreamed.all (fun diagnostic => diagnostic.severity? == some .information))
 
   let allStreamed ← observeStreamedDiagnostics .all #[setupProgress, warning, goalsAccomplished]
+  require "streamed diagnostics carry their backend snapshot"
+    (allStreamed.all fun diagnostic => diagnostic.snapshot? == some ⟨"test-session", 1⟩)
   require "all diagnostic scope streams user-facing setup-file status and warning"
     (allStreamed.map (·.message) == #[setupProgress.message, warning.message])
 

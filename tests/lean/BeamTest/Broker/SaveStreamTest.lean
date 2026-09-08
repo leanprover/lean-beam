@@ -28,13 +28,13 @@ private def expectNoTrackedLeanDoc (payload : Json) (path : String) : IO Unit :=
 private def expectSyncVerdict
     (label : String)
     (payload : Json)
-    (expectedVersion : Nat)
+    (expectedSnapshot : Beam.SnapshotRef)
     (expectedSaveReady : Bool) : IO Beam.Broker.SyncFileResult := do
   let syncJson ← IO.ofExcept <| payload.getObjVal? "sync"
   let sync ← requireSyncFileResult label syncJson
-  if sync.version != expectedVersion then
+  if sync.snapshot != expectedSnapshot then
     throw <| IO.userError
-      s!"expected {label} sync.version = {expectedVersion}, got {(toJson sync).compress}"
+      s!"expected {label} sync.snapshot = {expectedSnapshot}, got {(toJson sync).compress}"
   if sync.readiness.saveReady != expectedSaveReady then
     throw <| IO.userError
       s!"expected {label} sync.readiness.saveReady = {expectedSaveReady}, got {(toJson sync).compress}"
@@ -68,10 +68,10 @@ def main : IO Unit := do
     }
     let defaultPayload ← expectOk defaultResp
     expectNoReplayDiagnosticsField "default save_olean" defaultPayload
-    let defaultVersion ← IO.ofExcept <| defaultPayload.getObjValAs? Nat "version"
-    if defaultVersion != 1 then
-      throw <| IO.userError s!"expected default save_olean version 1, got {defaultVersion}"
-    let defaultSyncVerdict ← expectSyncVerdict "default save_olean" defaultPayload defaultVersion true
+    let defaultSnapshot ← IO.ofExcept <| defaultPayload.getObjValAs? Beam.SnapshotRef "snapshot"
+    if defaultSnapshot.session.isEmpty then
+      throw <| IO.userError s!"expected default save_olean a nonempty snapshot, got {defaultSnapshot}"
+    let defaultSyncVerdict ← expectSyncVerdict "default save_olean" defaultPayload defaultSnapshot true
     if defaultSyncVerdict.readiness.blockingErrorCount != 0 then
       throw <| IO.userError
         s!"expected default save_olean sync verdict to be clean, got {(toJson defaultSyncVerdict).compress}"
@@ -94,10 +94,10 @@ def main : IO Unit := do
     }
     let fullPayload ← expectOk fullResp
     expectNoReplayDiagnosticsField "full save_olean" fullPayload
-    let fullVersion ← IO.ofExcept <| fullPayload.getObjValAs? Nat "version"
-    if fullVersion != 2 then
-      throw <| IO.userError s!"expected full save_olean version 2 after a fresh edit, got {fullVersion}"
-    let fullSyncVerdict ← expectSyncVerdict "full save_olean" fullPayload fullVersion true
+    let fullSnapshot ← IO.ofExcept <| fullPayload.getObjValAs? Beam.SnapshotRef "snapshot"
+    if fullSnapshot == defaultSnapshot then
+      throw <| IO.userError s!"expected full save_olean a fresh snapshot after an edit, got {fullSnapshot}"
+    let fullSyncVerdict ← expectSyncVerdict "full save_olean" fullPayload fullSnapshot true
     if fullSyncVerdict.readiness.blockingErrorCount != 0 ||
         fullSyncVerdict.diagnostics.counts.warning == 0 then
       throw <| IO.userError
@@ -122,10 +122,10 @@ def main : IO Unit := do
     }
     let repeatPayload ← expectOk repeatResp
     expectNoReplayDiagnosticsField "unchanged full save_olean" repeatPayload
-    let repeatVersion ← IO.ofExcept <| repeatPayload.getObjValAs? Nat "version"
-    if repeatVersion != 2 then
-      throw <| IO.userError s!"expected unchanged full save_olean version 2, got {repeatVersion}"
-    discard <| expectSyncVerdict "unchanged full save_olean" repeatPayload repeatVersion true
+    let repeatSnapshot ← IO.ofExcept <| repeatPayload.getObjValAs? Beam.SnapshotRef "snapshot"
+    if repeatSnapshot != fullSnapshot then
+      throw <| IO.userError s!"expected unchanged full save_olean to preserve its snapshot, got {repeatSnapshot}"
+    discard <| expectSyncVerdict "unchanged full save_olean" repeatPayload repeatSnapshot true
     let repeatTop := ← requireFileProgress "unchanged full save_olean" repeatResp
     if !repeatTop.done then
       throw <| IO.userError
@@ -189,10 +189,10 @@ def main : IO Unit := do
     if !closeClosed then
       throw <| IO.userError s!"expected close-save payload to report closed = true, got {closePayload.compress}"
     let savedPayload ← IO.ofExcept <| closePayload.getObjVal? "saved"
-    let closeVersion ← IO.ofExcept <| savedPayload.getObjValAs? Nat "version"
-    if closeVersion != 4 then
-      throw <| IO.userError s!"expected close-save saved version 4 after a fresh edit, got {closeVersion}"
-    let closeSyncVerdict ← expectSyncVerdict "full close-save" savedPayload closeVersion true
+    let closeSnapshot ← IO.ofExcept <| savedPayload.getObjValAs? Beam.SnapshotRef "snapshot"
+    if closeSnapshot == fullSnapshot then
+      throw <| IO.userError s!"expected close-save saved a fresh snapshot after an edit, got {closeSnapshot}"
+    let closeSyncVerdict ← expectSyncVerdict "full close-save" savedPayload closeSnapshot true
     if closeSyncVerdict.readiness.blockingErrorCount != 0 ||
         closeSyncVerdict.diagnostics.counts.warning == 0 then
       throw <| IO.userError

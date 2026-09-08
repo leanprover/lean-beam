@@ -29,7 +29,7 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 - explicit Lean `lean-beam sync` barrier with diagnostics wait and compact `fileProgress` reporting
 - zero-build `lean-beam save` development checkpoint for one synced workspace module, including
   structured Lake setup already applied by the Lean file worker
-- typed sync summaries with current diagnostic/readiness counts for the synced document version
+- typed sync summaries with current diagnostic/readiness counts for the synced document snapshot
 
 ### Local Beam Layer
 
@@ -113,16 +113,16 @@ The `lean-beam update`, `lean-beam sync`, `lean-beam save`, and `lean-beam close
 a progression:
 
 - `lean-beam update` opens or updates the broker's LSP mirror and returns the current document
-  version without waiting for diagnostics
-- `lean-beam sync` establishes the diagnostics-complete saved file snapshot for the current document
-  version
+  snapshot without waiting for diagnostics
+- `lean-beam sync` waits for diagnostics/readiness for the saved source and returns its snapshot
 - `lean-beam save` creates a development checkpoint from that server snapshot for one module
 - `lean-beam close-save` creates the same checkpoint and then closes the tracked file
 
-Position/range/document operations are version-bound across the broker, MCP, and wrapper surfaces.
-Clients first update or sync a saved file, then pass the returned document version to later probes.
-Workspace symbol queries are workspace-scoped and do not take a file version. The canonical
-field-level contract for update, sync, save, progress, diagnostics, stale-version failures,
+Position/range/document operations are snapshot-bound across the broker, MCP, and wrapper surfaces.
+Clients first update or sync a saved file, then pass the returned opaque `snapshot` token to later probes.
+Tokens distinguish file lifetimes and backend sessions, including identical text reopened after refresh.
+Workspace symbol queries are workspace-scoped and do not take a file snapshot. The canonical
+field-level contract for update, sync, save, progress, diagnostics, stale-snapshot failures,
 readiness, and recovery hints lives in [SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md).
 
 If a speculative probe looks right and should become real source, the current contract is still:

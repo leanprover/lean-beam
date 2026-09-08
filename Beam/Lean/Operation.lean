@@ -104,8 +104,8 @@ private def operationDescription : Operation → String
   | .runWith => "Speculatively continue from a stored handle without consuming the parent handle. The continuation remains speculative and is not persisted as source. To keep the result, first edit and save the Lean file so it contains the complete accepted source; only then call the sync operation."
   | .runWithLinear => "Speculatively continue from a stored handle and consume that handle on success or failure. The continuation remains speculative and is not persisted as source. To keep the result, first edit and save the Lean file so it contains the complete accepted source; only then call the sync operation."
   | .release => "Release a stored Lean follow-up handle."
-  | .update => "Read the current on-disk Lean source into the broker's LSP mirror and return its document version without waiting for diagnostics."
-  | .sync => "Read the current on-disk Lean source into the broker's LSP mirror, wait for diagnostics and readiness, and return its document version. This never applies or recovers speculative text."
+  | .update => "Read the current on-disk Lean source into the broker's LSP mirror and return its document snapshot without waiting for diagnostics."
+  | .sync => "Read the current on-disk Lean source into the broker's LSP mirror, wait for diagnostics and readiness, and return its document snapshot. This never applies or recovers speculative text."
   | .refresh => "Close the tracked LSP document, reread the current on-disk Lean source, and wait for fresh diagnostics."
   | .save => "Read and synchronize the current on-disk Lean source, then write Lean/Lake build artifacts as a zero-build development checkpoint when possible."
   | .closeSave => "Read and synchronize the current on-disk Lean source, write the same Lean/Lake build artifacts when possible, and close the tracked LSP document."
@@ -132,8 +132,8 @@ def Operation.description (operation : Operation) : String :=
 private def pathField : String × Json :=
   ("path", Beam.JsonSchema.string "Lean file path, relative to the server root unless absolute.")
 
-private def versionField : String × Json :=
-  ("version", Beam.JsonSchema.natural "Document version returned by a successful update or sync operation for this file.")
+private def snapshotField : String × Json :=
+  ("snapshot", Beam.JsonSchema.string "Opaque snapshot token returned by update or sync for this file. After contentModified, read the source and resolve the target again before retrying with a fresh token.")
 
 private def lineField : String × Json :=
   ("line", Beam.JsonSchema.natural "Zero-based LSP line.")
@@ -200,15 +200,15 @@ private def diagnosticsInResultField : String × Json :=
 
 private def codeActionField : String × Json :=
   ("code_action", Beam.JsonSchema.object
-    "Raw Lean LSP CodeAction payload returned by the todo operation. The action must include its data field so Lean can resolve it against this document version.")
+    "Raw Lean LSP CodeAction payload returned by the todo operation. The action must include its data field so Lean can resolve it against this document snapshot.")
 
 private def positionFields : List (String × Json) :=
-  [pathField, versionField, lineField, characterField]
+  [pathField, snapshotField, lineField, characterField]
 
 private def rangeFields : List (String × Json) :=
   [
     pathField,
-    versionField,
+    snapshotField,
     rangeStartLineField,
     rangeStartCharacterField,
     rangeEndLineField,
@@ -216,27 +216,27 @@ private def rangeFields : List (String × Json) :=
   ]
 
 private def documentFields : List (String × Json) :=
-  [pathField, versionField]
+  [pathField, snapshotField]
 
 open Beam.JsonSchema in
 def Operation.inputSchema : Operation → Json
   | .runAt | .runAtHandle =>
-      inputObject (positionFields ++ [runAtTextField]) #["path", "version", "line", "character", "text"]
+      inputObject (positionFields ++ [runAtTextField]) #["path", "snapshot", "line", "character", "text"]
   | .hover | .signatureHelp | .definition =>
-      inputObject positionFields #["path", "version", "line", "character"]
+      inputObject positionFields #["path", "snapshot", "line", "character"]
   | .references =>
-      inputObject (positionFields ++ [includeDeclarationField]) #["path", "version", "line", "character"]
+      inputObject (positionFields ++ [includeDeclarationField]) #["path", "snapshot", "line", "character"]
   | .documentSymbols =>
-      inputObject documentFields #["path", "version"]
+      inputObject documentFields #["path", "snapshot"]
   | .workspaceSymbols =>
       inputObject [workspaceSymbolQueryField] #["query"]
   | .goals =>
-      inputObject (positionFields ++ [goalsModeField]) #["path", "version", "line", "character", "mode"]
+      inputObject (positionFields ++ [goalsModeField]) #["path", "snapshot", "line", "character", "mode"]
   | .todo =>
       inputObject (rangeFields ++ [kindsField, suggestField])
-        #["path", "version", "start_line", "start_character", "end_line", "end_character"]
+        #["path", "snapshot", "start_line", "start_character", "end_line", "end_character"]
   | .codeActionResolve =>
-      inputObject (documentFields ++ [codeActionField]) #["path", "version", "code_action"]
+      inputObject (documentFields ++ [codeActionField]) #["path", "snapshot", "code_action"]
   | .runWith | .runWithLinear =>
       inputObject [pathField, handleField, continuationTextField] #["path", "handle", "text"]
   | .release =>
@@ -257,7 +257,7 @@ def Operation.validateInputFields (operation : Operation) (input : Json) : Excep
 /-- Input for position-based Lean execution. Coordinates use LSP zero-based line/character units. -/
 structure RunAtInput where
   path : String
-  version : Nat
+  snapshot : SnapshotRef
   line : Nat
   character : Nat
   text : String
@@ -266,7 +266,7 @@ structure RunAtInput where
 /-- Input for position-based Lean inspection operations. -/
 structure PositionInput where
   path : String
-  version : Nat
+  snapshot : SnapshotRef
   line : Nat
   character : Nat
   deriving FromJson, ToJson
@@ -283,7 +283,7 @@ private def optionalField? [FromJson α] (j : Json) (field : String) : Except St
 /-- Input for Lean reference queries. -/
 structure ReferencesInput where
   path : String
-  version : Nat
+  snapshot : SnapshotRef
   line : Nat
   character : Nat
   includeDeclaration? : Option Bool := none
@@ -292,7 +292,7 @@ instance : ToJson ReferencesInput where
   toJson input :=
     Json.mkObj <|
       [ ("path", toJson input.path)
-      , ("version", toJson input.version)
+      , ("snapshot", toJson input.snapshot)
       , ("line", toJson input.line)
       , ("character", toJson input.character)
       ] ++
@@ -303,16 +303,16 @@ instance : ToJson ReferencesInput where
 instance : FromJson ReferencesInput where
   fromJson? j := do
     let path ← j.getObjValAs? String "path"
-    let version ← j.getObjValAs? Nat "version"
+    let snapshot ← j.getObjValAs? SnapshotRef "snapshot"
     let line ← j.getObjValAs? Nat "line"
     let character ← j.getObjValAs? Nat "character"
     let includeDeclaration? ← optionalField? (α := Bool) j "include_declaration"
-    pure { path, version, line, character, includeDeclaration? }
+    pure { path, snapshot, line, character, includeDeclaration? }
 
 /-- Input for file-scoped Lean document symbol queries. -/
 structure DocumentSymbolsInput where
   path : String
-  version : Nat
+  snapshot : SnapshotRef
   deriving FromJson, ToJson
 
 /-- Input for workspace-wide Lean symbol queries. -/
@@ -345,7 +345,7 @@ instance : FromJson GoalsMode where
 /-- Input for read-only Lean goal inspection at a file position. -/
 structure GoalsInput where
   path : String
-  version : Nat
+  snapshot : SnapshotRef
   line : Nat
   character : Nat
   mode : GoalsMode
@@ -354,7 +354,7 @@ structure GoalsInput where
 /-- Input for range-based Lean todo inspection operations. -/
 structure TodoInput where
   path : String
-  version : Nat
+  snapshot : SnapshotRef
   startLine : Nat
   startCharacter : Nat
   endLine : Nat
@@ -366,7 +366,7 @@ instance : ToJson TodoInput where
   toJson input :=
     Json.mkObj <|
       [ ("path", toJson input.path)
-      , ("version", toJson input.version)
+      , ("snapshot", toJson input.snapshot)
       , ("start_line", toJson input.startLine)
       , ("start_character", toJson input.startCharacter)
       , ("end_line", toJson input.endLine)
@@ -382,35 +382,35 @@ instance : ToJson TodoInput where
 instance : FromJson TodoInput where
   fromJson? j := do
     let path ← j.getObjValAs? String "path"
-    let version ← j.getObjValAs? Nat "version"
+    let snapshot ← j.getObjValAs? SnapshotRef "snapshot"
     let startLine ← j.getObjValAs? Nat "start_line"
     let startCharacter ← j.getObjValAs? Nat "start_character"
     let endLine ← j.getObjValAs? Nat "end_line"
     let endCharacter ← j.getObjValAs? Nat "end_character"
     let kinds? ← optionalField? (α := Array Beam.LSP.Todo.TodoKind) j "kinds"
     let suggest? ← optionalField? (α := Beam.LSP.Todo.TodoSuggestMode) j "suggest"
-    pure { path, version, startLine, startCharacter, endLine, endCharacter, kinds?, suggest? }
+    pure { path, snapshot, startLine, startCharacter, endLine, endCharacter, kinds?, suggest? }
 
 /-- Input for resolving a Lean code action returned by the todo operation. -/
 structure CodeActionResolveInput where
   path : String
-  version : Nat
+  snapshot : SnapshotRef
   codeAction : Lean.Lsp.CodeAction
 
 instance : ToJson CodeActionResolveInput where
   toJson input :=
     Json.mkObj [
       ("path", toJson input.path),
-      ("version", toJson input.version),
+      ("snapshot", toJson input.snapshot),
       ("code_action", toJson input.codeAction)
     ]
 
 instance : FromJson CodeActionResolveInput where
   fromJson? j := do
     let path ← j.getObjValAs? String "path"
-    let version ← j.getObjValAs? Nat "version"
+    let snapshot ← j.getObjValAs? SnapshotRef "snapshot"
     let codeAction ← j.getObjValAs? Lean.Lsp.CodeAction "code_action"
-    pure { path, version, codeAction }
+    pure { path, snapshot, codeAction }
 
 /-- Input for handle-based Lean execution. -/
 structure RunWithInput where
@@ -478,7 +478,7 @@ def RunAtInput.toBrokerRequest
     (storeHandle : Bool := false) : Beam.Broker.Request := {
   payload := .runAt {
     path := input.path
-    version := input.version
+    snapshot := input.snapshot
     line := input.line
     character := input.character
     text := input.text
@@ -489,7 +489,7 @@ def RunAtInput.toBrokerRequest
 def PositionInput.toHoverBrokerRequest (input : PositionInput) : Beam.Broker.Request := {
   payload := .hover {
     path := input.path
-    version := input.version
+    snapshot := input.snapshot
     line := input.line
     character := input.character
   }
@@ -499,7 +499,7 @@ def PositionInput.toSignatureHelpBrokerRequest (input : PositionInput) :
     Beam.Broker.Request := {
   payload := .signatureHelp {
     path := input.path
-    version := input.version
+    snapshot := input.snapshot
     line := input.line
     character := input.character
   }
@@ -508,7 +508,7 @@ def PositionInput.toSignatureHelpBrokerRequest (input : PositionInput) :
 def PositionInput.toDefinitionBrokerRequest (input : PositionInput) : Beam.Broker.Request := {
   payload := .definition {
     path := input.path
-    version := input.version
+    snapshot := input.snapshot
     line := input.line
     character := input.character
   }
@@ -517,7 +517,7 @@ def PositionInput.toDefinitionBrokerRequest (input : PositionInput) : Beam.Broke
 def ReferencesInput.toBrokerRequest (input : ReferencesInput) : Beam.Broker.Request := {
   payload := .references {
     path := input.path
-    version := input.version
+    snapshot := input.snapshot
     line := input.line
     character := input.character
     includeDeclaration? := input.includeDeclaration?
@@ -528,7 +528,7 @@ def DocumentSymbolsInput.toBrokerRequest (input : DocumentSymbolsInput) :
     Beam.Broker.Request := {
   payload := .documentSymbols {
     path := input.path
-    version := input.version
+    snapshot := input.snapshot
   }
 }
 
@@ -542,7 +542,7 @@ def PositionInput.toGoalsBrokerRequest
     (mode : Beam.Broker.GoalMode) : Beam.Broker.Request := {
   payload := .goals {
     path := input.path
-    version := input.version
+    snapshot := input.snapshot
     line := input.line
     character := input.character
     mode? := some mode
@@ -552,7 +552,7 @@ def PositionInput.toGoalsBrokerRequest
 def GoalsInput.toBrokerRequest (input : GoalsInput) : Beam.Broker.Request := {
   payload := .goals {
     path := input.path
-    version := input.version
+    snapshot := input.snapshot
     line := input.line
     character := input.character
     mode? := some input.mode.toBrokerMode
@@ -562,7 +562,7 @@ def GoalsInput.toBrokerRequest (input : GoalsInput) : Beam.Broker.Request := {
 def TodoInput.toBrokerRequest (input : TodoInput) : Beam.Broker.Request := {
   payload := .todo {
     path := input.path
-    version := input.version
+    snapshot := input.snapshot
     line := input.startLine
     character := input.startCharacter
     endLine := input.endLine
@@ -576,7 +576,7 @@ def CodeActionResolveInput.toBrokerRequest
     (input : CodeActionResolveInput) : Beam.Broker.Request := {
   payload := .codeActionResolve {
     path := input.path
-    version := input.version
+    snapshot := input.snapshot
     codeAction := input.codeAction
   }
 }

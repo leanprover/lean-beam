@@ -14,11 +14,11 @@ open Beam.Broker
 
 def leanRunAtRequest
     (path : String)
-    (version : Nat)
+    (snapshot : SnapshotRef)
     (line character : Nat)
     (text : String)
     (storeHandle : Bool := false) : Request :=
-  ({ path, version, line, character, text } : Beam.Lean.RunAtInput).toBrokerRequest
+  ({ path, snapshot, line, character, text } : Beam.Lean.RunAtInput).toBrokerRequest
     (storeHandle := storeHandle)
 
 def leanRunWithRequest
@@ -34,30 +34,30 @@ def leanReleaseRequest (path : String) (handle : Handle) : Request :=
 
 def leanHoverRequest
     (path : String)
-    (version : Nat)
+    (snapshot : SnapshotRef)
     (line character : Nat) : Request :=
-  ({ path, version, line, character } : Beam.Lean.PositionInput).toHoverBrokerRequest
+  ({ path, snapshot, line, character } : Beam.Lean.PositionInput).toHoverBrokerRequest
 
 def leanSignatureHelpRequest
     (path : String)
-    (version : Nat)
+    (snapshot : SnapshotRef)
     (line character : Nat) : Request :=
-  ({ path, version, line, character } : Beam.Lean.PositionInput).toSignatureHelpBrokerRequest
+  ({ path, snapshot, line, character } : Beam.Lean.PositionInput).toSignatureHelpBrokerRequest
 
 def leanDefinitionRequest
     (path : String)
-    (version : Nat)
+    (snapshot : SnapshotRef)
     (line character : Nat) : Request :=
-  ({ path, version, line, character } : Beam.Lean.PositionInput).toDefinitionBrokerRequest
+  ({ path, snapshot, line, character } : Beam.Lean.PositionInput).toDefinitionBrokerRequest
 
 def leanReferencesRequest
     (path : String)
-    (version : Nat)
+    (snapshot : SnapshotRef)
     (line character : Nat)
     (includeDeclaration : Bool := true) : Request :=
   ({
     path
-    version
+    snapshot
     line
     character
     includeDeclaration? := some includeDeclaration
@@ -65,8 +65,8 @@ def leanReferencesRequest
 
 def leanDocumentSymbolsRequest
     (path : String)
-    (version : Nat) : Request :=
-  ({ path, version } : Beam.Lean.DocumentSymbolsInput).toBrokerRequest
+    (snapshot : SnapshotRef) : Request :=
+  ({ path, snapshot } : Beam.Lean.DocumentSymbolsInput).toBrokerRequest
 
 def leanWorkspaceSymbolsRequest
     (query : String) : Request :=
@@ -74,20 +74,20 @@ def leanWorkspaceSymbolsRequest
 
 def leanGoalsRequest
     (path : String)
-    (version : Nat)
+    (snapshot : SnapshotRef)
     (line character : Nat)
     (mode : GoalMode) : Request :=
-  ({ path, version, line, character } : Beam.Lean.PositionInput).toGoalsBrokerRequest mode
+  ({ path, snapshot, line, character } : Beam.Lean.PositionInput).toGoalsBrokerRequest mode
 
 def leanTodoRequest
     (path : String)
-    (version : Nat)
+    (snapshot : SnapshotRef)
     (startLine startCharacter endLine endCharacter : Nat)
     (kinds? : Option (Array Beam.LSP.Todo.TodoKind))
     (suggest? : Option Beam.LSP.Todo.TodoSuggestMode) : Request :=
   ({
     path
-    version
+    snapshot
     startLine
     startCharacter
     endLine

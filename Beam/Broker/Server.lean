@@ -65,10 +65,15 @@ structure Session where
   stdout : IO.FS.Stream
   stderrCapture : BackendStderrCapture
   pending : PendingRequestStore
+  /-- Allocate fresh Lean/Rocq revisions across all document lifetimes in this session. -/
+  nextDocumentVersion : Nat := 1
   nextId : Nat := 1
   nextEventSeq : Nat := 1
   moduleHistory : Std.TreeMap String ModuleHistory := {}
   docs : Std.TreeMap String DocState := {}
+
+private def Session.snapshotRef (session : Session) (version : Nat) : SnapshotRef :=
+  { session := session.sessionToken, revision := version }
 
 structure BackendState where
   nextEpoch : Nat := 1
@@ -516,7 +521,7 @@ partial def sessionReaderLoop (session : Session) : IO Unit := do
             let pending ← PendingRequestStore.snapshot session.pending
             traceBroker s!"lsp publishDiagnostics pending={pending.size} params={(toJson param).compress}"
             for req in pending do
-              PendingRequest.observePublishDiagnostics session.root req diagnosticParam
+              PendingRequest.observePublishDiagnostics session.root session.sessionToken req diagnosticParam
         | .error _ =>
             pure ()
     | _ =>
@@ -844,7 +849,7 @@ private def withSessionForSnapshot
 private def syncFileSnapshotDetailed
     (session : Session)
     (snapshot : FileSyncSnapshot) : IO SyncedFileSnapshot := do
-  let decision := DocumentState.syncFileDecision session.docs snapshot.uri snapshot.file
+  let decision := DocumentState.syncFileDecision session.docs snapshot.uri snapshot.file session.nextDocumentVersion
   let session ←
     match decision.action with
     | .open =>
@@ -869,7 +874,7 @@ private def syncFileSnapshotDetailed
     | .unchanged =>
         pure session
   pure {
-    session := { session with docs := decision.docs }
+    session := { session with docs := decision.docs, nextDocumentVersion := decision.nextVersion }
     uri := snapshot.uri
     version := decision.version
     changed := decision.action != .unchanged
@@ -929,6 +934,7 @@ private def markDocSavedVersion (session : Session) (uri : DocumentUri) (version
   applyVersionMarkResult session result
 
 private def openDocsSessionView (session : Session) : OpenDocs.SessionView := {
+  sessionToken := session.sessionToken
   root := session.root
   docs := session.docs
 }
@@ -1554,7 +1560,12 @@ private def mergeFileProgressIfCurrent
     (uri : DocumentUri)
     (fileProgress? : Option SyncFileProgress) : IO Unit := do
   server.withState do
-    modifyCurrentSessionIfMatching session (fun current => recordFileProgress current uri fileProgress?)
+    modifyCurrentSessionIfMatching session fun current =>
+      match session.docs.get? uri, current.docs.get? uri with
+      | some captured, some now =>
+          if captured.version == now.version then recordFileProgress current uri fileProgress?
+          else current
+      | _, _ => current
 
 private def withCurrentMatchingSession
     (server : ServerRuntime)
@@ -1621,13 +1632,24 @@ private def documentVersionMismatchFailure
       (currentVersion? := some acceptedVersion)
       (uri? := some uri))
 
+private def snapshotMismatchFailure
+    (expected : SnapshotRef)
+    (current? : Option SnapshotRef)
+    (uri : DocumentUri) : ResponseFailure :=
+  responseFailureFor .contentModified
+    s!"source snapshot changed for {uri}; read the source and resolve the intended target again before retrying"
+    (some <| Json.mkObj <|
+      [("reason", toJson "snapshotMismatch"), ("expectedSnapshot", toJson expected),
+       ("uri", toJson uri)] ++
+      (current?.toList.map fun current => ("currentSnapshot", toJson current)))
+
 private def startSyncedDocumentRequest
     (session : Session)
     (snapshot : FileSyncSnapshot)
     (method : String)
     (mkParams : DocumentUri → DocState → Json)
     (trackedFor : DocumentUri → DocState → Option (DocumentUri × Nat))
-    (expectedVersion? : Option Nat := none)
+    (expectedSnapshot? : Option SnapshotRef := none)
     (clientRequestId? : Option String := none)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
     (diagnosticScope : DiagnosticScope := .errors)
@@ -1640,11 +1662,12 @@ private def startSyncedDocumentRequest
   let session ← syncFileSnapshot session snapshot
   let uri := snapshot.uri
   let docState ← requireDocState session uri
-  match expectedVersion? with
-  | some expectedVersion =>
-      if docState.version != expectedVersion then
+  match expectedSnapshot? with
+  | some expectedSnapshot =>
+      if session.snapshotRef docState.version != expectedSnapshot then
         updateSession session
-        return .error <| documentVersionMismatchFailure expectedVersion docState.version uri
+        return .error <| snapshotMismatchFailure expectedSnapshot
+          (some <| session.snapshotRef docState.version) uri
   | none =>
       pure ()
   let tracked := trackedFor uri docState
@@ -1675,7 +1698,7 @@ private def startSyncedWorkspaceRequest
     (method : String)
     (mkParams : DocumentUri → DocState → Json)
     (trackedFor : DocumentUri → DocState → Option (DocumentUri × Nat))
-    (expectedVersion? : Option Nat := none)
+    (expectedSnapshot? : Option SnapshotRef := none)
     (clientRequestId? : Option String := none)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
     (diagnosticScope : DiagnosticScope := .errors)
@@ -1683,7 +1706,7 @@ private def startSyncedWorkspaceRequest
     (cancelRef? : Option (IO.Ref Bool) := none) :
     M (Except ResponseFailure StartedSyncedRequest) :=
   withSessionForSnapshot workspaceId backend snapshot fun session =>
-    startSyncedDocumentRequest session snapshot method mkParams trackedFor expectedVersion?
+    startSyncedDocumentRequest session snapshot method mkParams trackedFor expectedSnapshot?
       clientRequestId? emitProgress? diagnosticScope emitDiagnostic? cancelRef?
 
 private def awaitSyncedDocumentRequest
@@ -1695,8 +1718,12 @@ private def awaitSyncedDocumentRequest
   if started.tracked.isSome then
     withFailureProgress pending.progress? <|
       liftHandlerIO <| mergeFileProgressIfCurrent server started.session started.uri pending.progress?
-  withFailureProgress pending.progress? <|
-    withCurrentMatchingSession server started.session fun _ => pure ()
+  withFailureProgress pending.progress? do
+    let current? ← withCurrentMatchingSession server started.session fun current =>
+      pure <| (current.docs.get? started.uri).map fun doc => current.snapshotRef doc.version
+    let expected := started.session.snapshotRef started.version
+    unless current? == some expected do
+      throw <| snapshotMismatchFailure expected current? started.uri
   pure pending
 
 private def readRequestSyncSnapshot
@@ -1957,7 +1984,7 @@ private def saveOleanCore
       { hash := started.textTraceHash, mtime := started.textMTime }
       (some leanConfig.command) leanConfig.lakeHelper?
   let syncResult :=
-    mkSyncFileResult spec.relPath started.version currentDiagnostics saveReadiness
+    mkSyncFileResult spec.relPath (started.session.snapshotRef started.version) currentDiagnostics saveReadiness
   withFailureProgress barrierProgress? <|
     recordCompletedSync server started.session started.uri started.version
   if let some reason := spec.unsupportedSetupReason? then
@@ -2104,13 +2131,13 @@ private def handleSyncFileOp
       barrierOutcome.completionDiagnostics fileProgress?
   let replyDiagnostics? :=
     if request.diagnosticsInResult?.getD false then
-      some <| streamDiagnosticsForReply started.session.root started.uri started.version
+      some <| streamDiagnosticsForReply started.session.root started.uri (started.session.snapshotRef started.version)
         (request.diagnosticScope?.getD .errors) currentDiagnostics
     else
       none
   let resultPath := trackedPathLabel started.session.root started.uri
   let syncResult :=
-    mkSyncFileResult resultPath started.version currentDiagnostics saveReadiness replyDiagnostics?
+    mkSyncFileResult resultPath (started.session.snapshotRef started.version) currentDiagnostics saveReadiness replyDiagnostics?
   withFailureProgress fileProgress? <|
     recordCompletedSync server started.session started.uri started.version
   liftHandlerIO <| traceBroker
@@ -2158,7 +2185,7 @@ private def handleUpdateFileOp
       updateSession synced.session
       pure (.ok synced)
   pure <| Response.success (toJson ({
-    version := updated.version
+    snapshot := updated.session.snapshotRef updated.version
     changed := updated.changed
     : UpdateFileResult
   }))
@@ -2209,7 +2236,7 @@ private def handleRunAtOp
   let started ← liftFailureIO <| server.withRequestBackendState req do
     startSyncedWorkspaceRequest req.workspaceId req.backend snapshot method
       (fun uri _ => Json.mkObj <|
-        [ ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier }))
+        [ ("textDocument", toJson ({ uri := uri, version? := some request.snapshot.revision : VersionedTextDocumentIdentifier }))
         , ("position", toJson ({ line := request.line, character := request.character : Lsp.Position }))
         , ("text", toJson request.text)
         ] ++
@@ -2217,7 +2244,7 @@ private def handleRunAtOp
         | some b => [("storeHandle", toJson b)]
         | none => [])
       trackedDocumentVersion
-      (expectedVersion? := some request.version)
+      (expectedSnapshot? := some request.snapshot)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
       (emitDiagnostic? := runAtSetupProgressEmitter? emitDiagnostic?)
@@ -2234,7 +2261,7 @@ private def positionLspParams
     (extraFields : List (String × Json) := []) : Json :=
   Json.mkObj <|
     [
-      ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier })),
+      ("textDocument", toJson ({ uri := uri, version? := some request.snapshot.revision : VersionedTextDocumentIdentifier })),
       ("position", toJson ({ line := request.line, character := request.character : Lsp.Position }))
     ] ++ extraFields
 
@@ -2254,7 +2281,7 @@ private def handlePositionLspOp
     startSyncedWorkspaceRequest req.workspaceId req.backend snapshot method
       (fun uri _ => positionLspParams request uri extraFields)
       (trackedLeanDocumentVersion req.backend)
-      (expectedVersion? := some request.version)
+      (expectedSnapshot? := some request.snapshot)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
       (cancelRef? := cancelRef?)
@@ -2311,7 +2338,7 @@ private def handleReferencesOp
 private def handleDocumentSymbolsOp
     (server : ServerRuntime)
     (req : BackendWorkspaceRequest)
-    (request : RequestVersionedFile)
+    (request : RequestSnapshotFile)
     (cancelRef? : Option (IO.Ref Bool) := none)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none) :
     HandlerM Response := do
@@ -2325,7 +2352,7 @@ private def handleDocumentSymbolsOp
         ("textDocument", toJson ({ uri := uri : TextDocumentIdentifier }))
       ])
       (trackedLeanDocumentVersion req.backend)
-      (expectedVersion? := some request.version)
+      (expectedSnapshot? := some request.snapshot)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
       (cancelRef? := cancelRef?)
@@ -2385,14 +2412,14 @@ private def handleCodeActionResolveOp
     startSyncedWorkspaceRequest req.workspaceId req.backend snapshot method
       (fun _uri _docState => toJson request.codeAction)
       (trackedLeanDocumentVersion req.backend)
-      (expectedVersion? := some request.version)
+      (expectedSnapshot? := some request.snapshot)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
       (cancelRef? := cancelRef?)
   let pending ← awaitSyncedDocumentRequest server started cancelRef?
   let resolved : CodeAction ← liftHandlerIO <| decodeResponseAs pending.result
   let payload : CodeActionResolveResult := {
-    version := started.version
+    snapshot := started.session.snapshotRef started.version
     codeAction := resolved
   }
   pure <| Response.withOptionalFileProgress (Response.success (toJson payload)) pending.progress?
@@ -2432,7 +2459,7 @@ private def handleGoalsOp
         match req.backend with
         | .lean =>
             Json.mkObj [
-              ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier })),
+              ("textDocument", toJson ({ uri := uri, version? := some request.snapshot.revision : VersionedTextDocumentIdentifier })),
               ("position", toJson position)
             ]
         | .rocq =>
@@ -2449,7 +2476,7 @@ private def handleGoalsOp
               | none => []
             Json.mkObj fields)
       (trackedLeanDocumentVersion req.backend)
-      (expectedVersion? := some request.version)
+      (expectedSnapshot? := some request.snapshot)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
       (cancelRef? := cancelRef?)
@@ -2474,7 +2501,7 @@ private def handleTodoOp
   let started ← liftFailureIO <| server.withRequestBackendState req do
     startSyncedWorkspaceRequest req.workspaceId req.backend snapshot method
       (fun uri _docState => Json.mkObj <|
-        [ ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier }))
+        [ ("textDocument", toJson ({ uri := uri, version? := some request.snapshot.revision : VersionedTextDocumentIdentifier }))
         , ("range", toJson range)
         ] ++
         (match request.kinds? with
@@ -2484,7 +2511,7 @@ private def handleTodoOp
         | some suggest => [("suggest", toJson suggest)]
         | none => []))
       (trackedLeanDocumentVersion req.backend)
-      (expectedVersion? := some request.version)
+      (expectedSnapshot? := some request.snapshot)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
       (cancelRef? := cancelRef?)
