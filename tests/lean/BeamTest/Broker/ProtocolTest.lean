@@ -154,31 +154,31 @@ private def sampleRequest : Op → Request
   | .refreshFile => { payload := .refreshFile { path := "Demo.lean" } }
   | .close => { payload := .close { path := "Demo.lean" } }
   | .runAt => { payload := .runAt {
-      path := "Demo.lean", version := 7, line := 1, character := 2, text := "exact trivial"
+      path := "Demo.lean", snapshot := ⟨"test-session", 7⟩, line := 1, character := 2, text := "exact trivial"
     } }
   | .hover => { payload := .hover {
-      path := "Demo.lean", version := 7, line := 1, character := 2
+      path := "Demo.lean", snapshot := ⟨"test-session", 7⟩, line := 1, character := 2
     } }
   | .signatureHelp => { payload := .signatureHelp {
-      path := "Demo.lean", version := 7, line := 1, character := 2
+      path := "Demo.lean", snapshot := ⟨"test-session", 7⟩, line := 1, character := 2
     } }
   | .definition => { payload := .definition {
-      path := "Demo.lean", version := 7, line := 1, character := 2
+      path := "Demo.lean", snapshot := ⟨"test-session", 7⟩, line := 1, character := 2
     } }
   | .references => { payload := .references {
-      path := "Demo.lean", version := 7, line := 1, character := 2
+      path := "Demo.lean", snapshot := ⟨"test-session", 7⟩, line := 1, character := 2
     } }
-  | .documentSymbols => { payload := .documentSymbols { path := "Demo.lean", version := 7 } }
+  | .documentSymbols => { payload := .documentSymbols { path := "Demo.lean", snapshot := ⟨"test-session", 7⟩ } }
   | .workspaceSymbols => { payload := .workspaceSymbols { query := "Demo" } }
   | .codeActionResolve => { payload := .codeActionResolve {
-      path := "Demo.lean", version := 7, codeAction := { title := "Resolve" }
+      path := "Demo.lean", snapshot := ⟨"test-session", 7⟩, codeAction := { title := "Resolve" }
     } }
   | .saveOlean => { payload := .saveOlean { path := "Demo.lean" } }
   | .goals => { payload := .goals {
-      path := "Demo.lean", version := 7, line := 1, character := 2
+      path := "Demo.lean", snapshot := ⟨"test-session", 7⟩, line := 1, character := 2
     } }
   | .todo => { payload := .todo {
-      path := "Demo.lean", version := 7, line := 1, character := 2,
+      path := "Demo.lean", snapshot := ⟨"test-session", 7⟩, line := 1, character := 2,
       endLine := 3, endCharacter := 4
     } }
   | .runWith => { payload := .runWith {
@@ -207,13 +207,13 @@ private def diagnostic (severity : DiagnosticSeverity) (message : String) : Diag
   }
 
 private def syncResultFor
-    (version : Nat)
+    (snapshot : Nat)
     (saveReady : Bool := true)
     (reason : String := "ok")
     (blockingErrorCount : Nat := 0)
     (warningCount : Nat := 0) : SyncFileResult := {
   path := "Demo.lean"
-  version
+  snapshot := ⟨"test-session", snapshot⟩
   diagnostics := { counts := { warning := warningCount } }
   readiness := {
     saveReady
@@ -241,13 +241,25 @@ private def syncReadinessJson (saveReady : Bool := true) : Json :=
     ("blockingMessages", toJson (#[] : Array SyncBlockingCommandMessage))
   ]
 
-private def syncFileResultJson (version : Nat) (readiness : Json) : Json :=
+private def syncFileResultJson (snapshot : Nat) (readiness : Json) : Json :=
   Json.mkObj [
     ("path", toJson "Demo.lean"),
-    ("version", toJson version),
+    ("snapshot", toJson (s!"test-session/{snapshot}")),
     ("diagnostics", Json.mkObj [("counts", syncDiagnosticCountsJson)]),
     ("readiness", readiness)
   ]
+
+private def checkSnapshotCodec : IO Unit := do
+  let snapshot : Beam.SnapshotRef := ⟨"session-a", 42⟩
+  require "snapshot is a JSON string" (toJson snapshot == toJson "session-a/42")
+  let decoded : Beam.SnapshotRef ← IO.ofExcept <| fromJson? (toJson snapshot)
+  require "snapshot codec round trips" (decoded == snapshot)
+  for invalid in [toJson (1 : Nat), Json.null, toJson "", toJson "session-a/0",
+      toJson "session-a/01", toJson "/1", toJson "session-a/1/2"] do
+    expectDecodeFailure Beam.SnapshotRef "malformed snapshot" invalid
+  let request := toJson <| sampleRequest .runAt
+  expectDecodeFailure Request "numeric snapshot" <| request.setObjVal! "snapshot" (toJson (7 : Nat))
+  expectDecodeFailure Request "removed version field" <| request.setObjVal! "version" (toJson (7 : Nat))
 
 private def checkResponseJsonShape : IO Unit := do
   let successJson := toJson <| Response.success (Json.mkObj [("value", toJson (1 : Nat))])
@@ -300,7 +312,7 @@ private def checkStreamMessageDecode : IO Unit := do
   let diagnostic : StreamDiagnostic := {
     path := "Demo.lean"
     uri := "file:///repo/Demo.lean"
-    version? := some 3
+    snapshot? := some ⟨"test-session", 3⟩
     severity? := some .warning
     range := lspRange 0 0 1
     message := "unused variable"
@@ -400,10 +412,10 @@ private def checkSaveResultJsonDecode : IO Unit := do
     (decodedSave.sourceHash == saveResult.sourceHash)
   require "save result derives its path from nested sync"
     (decodedSave.path == "Demo.lean")
-  require "save result derives its version from nested sync"
-    (decodedSave.version == 7)
-  require "save result round-trip preserves nested sync version"
-    (decodedSave.sync.version == saveResult.sync.version)
+  require "save result derives its snapshot from nested sync"
+    (decodedSave.snapshot == ⟨"test-session", 7⟩)
+  require "save result round-trip preserves nested sync snapshot"
+    (decodedSave.sync.snapshot == saveResult.sync.snapshot)
 
   let closeSaveResult : CloseSaveResult := { saved := saveResult }
   let decodedCloseSave ← expectOk "close-save result round-trip" <|
@@ -419,8 +431,8 @@ private def checkSaveResultJsonDecode : IO Unit := do
 
   expectDecodeFailure SaveOleanResult "save result path does not match nested sync" <|
     (toJson saveResult).setObjVal! "path" (toJson "Other.lean")
-  expectDecodeFailure SaveOleanResult "save result version does not match nested sync" <|
-    (toJson saveResult).setObjVal! "version" (toJson (8 : Nat))
+  expectDecodeFailure SaveOleanResult "save result snapshot does not match nested sync" <|
+    (toJson saveResult).setObjVal! "snapshot" (toJson "test-session/8")
 
   let malformedNestedSave := Json.mkObj [
     ("closed", toJson true),
@@ -445,7 +457,7 @@ private def checkOrderedJsonPretty : IO Unit := do
     "  \"ok\": true,",
     "  \"result\": {",
     "    \"path\": \"Demo.lean\",",
-    "    \"version\": 3,",
+    "    \"snapshot\": \"test-session/3\",",
     "    \"diagnostics\": {",
     "      \"counts\": {",
     "        \"error\": 0,",
@@ -581,11 +593,11 @@ private def checkDocumentVersionMismatchErrorData : IO Unit := do
   let data := documentVersionMismatchErrorData 1 2
     (currentVersion? := some 2)
     (uri? := some "file:///A.lean")
-  requireJsonString "version mismatch data" "reason" "documentVersionMismatch" data
-  requireJsonInt "version mismatch data" "expectedVersion" 1 data
-  requireJsonInt "version mismatch data" "acceptedVersion" 2 data
-  requireJsonInt "version mismatch data" "currentVersion" 2 data
-  requireJsonString "version mismatch data" "uri" "file:///A.lean" data
+  requireJsonString "backend version mismatch data" "reason" "documentVersionMismatch" data
+  requireJsonInt "backend version mismatch data" "expectedVersion" 1 data
+  requireJsonInt "backend version mismatch data" "acceptedVersion" 2 data
+  requireJsonInt "backend version mismatch data" "currentVersion" 2 data
+  requireJsonString "backend version mismatch data" "uri" "file:///A.lean" data
 
 private def checkReadinessBoundary : IO Unit := do
   let uri := "file:///workspace/SaveSmoke/A.lean"
@@ -654,7 +666,7 @@ private def checkReadinessBoundary : IO Unit := do
   require "readiness success response should keep fileProgress"
     (successResp.fileProgress? == some { updates := 5, done := true })
   let successResult ← requireResponseResult "readiness success response" successResp
-  requireJsonInt "readiness success payload" "version" 9 successResult
+  requireJsonString "readiness success payload" "snapshot" "test-session/9" successResult
   requireJsonString "readiness success payload" "path" "Demo.lean" successResult
   requireFieldAbsent "readiness success payload" "warningCount" successResult
   requireFieldAbsent "readiness success payload" "stateErrorCount" successResult
@@ -753,7 +765,7 @@ private def checkStaleDirectDepHints : IO Unit := do
     noopSyncHints.isEmpty
 
 private def checkRequestBoundary : IO Unit := do
-  expectDecodeFailure Request "run_at request missing version" <| Json.mkObj [
+  expectDecodeFailure Request "run_at request missing snapshot" <| Json.mkObj [
     ("op", toJson "run_at"),
     ("backend", toJson "lean"),
     ("path", toJson "Demo.lean"),
@@ -765,7 +777,7 @@ private def checkRequestBoundary : IO Unit := do
     ("op", toJson "run_at"),
     ("backend", toJson "lean"),
     ("path", toJson "Demo.lean"),
-    ("version", toJson 7),
+    ("snapshot", toJson "test-session/7"),
     ("line", toJson 1),
     ("character", toJson 2)
   ]
@@ -779,7 +791,7 @@ private def checkRequestBoundary : IO Unit := do
     ("op", toJson "code_action_resolve"),
     ("backend", toJson "lean"),
     ("path", toJson "Demo.lean"),
-    ("version", toJson 7)
+    ("snapshot", toJson "test-session/7")
   ]
 
   expectMethodError
@@ -1459,6 +1471,138 @@ private partial def waitForWorkspaceRoot
     IO.sleep 10
     waitForWorkspaceRoot runtime workspaceId expected (tries - 1)
 
+private def pendingDocument (runtime : ServerRuntime) (session : Session) : IO DocState := do
+  let doc? ← runtime.state.atomically do
+    let state ← get
+    pure <| state.workspaces.get? session.workspaceId |>.bind (·.lean.session?)
+      |>.bind (fun current => current.docs.get? (sessionUri (session.root / "Demo.lean")))
+  let some doc := doc? | throw <| IO.userError "missing pending test document"
+  pure doc
+
+private def withPendingDocument
+    (act : ServerRuntime → Session → IO Unit) : IO Unit := do
+  let root := System.FilePath.mk s!"/tmp/beam-pending-document-{← IO.monoNanosNow}"
+  IO.FS.createDirAll root
+  let root ← IO.FS.realPath root
+  IO.FS.writeFile (root / "Demo.lean") "def demo : Nat := 1\n"
+  let exit := root / "exit-backend"
+  let workspaceId := "pending-document"
+  let runtime ← ServerRuntime.create { root } workspaceId
+  let session ← pendingOnlySession workspaceId root exit
+  runtime.state.atomically do
+    modify fun state => { state with workspaces := state.workspaces.modify workspaceId fun workspace =>
+      { workspace with lean := { nextEpoch := 2, session? := some session } } }
+  try
+    let first ← runtime.dispatchRequest {
+      payload := .updateFile { path := "Demo.lean" }, workspaceId? := some workspaceId
+    }
+    require "initial update succeeds" first.ok
+    act runtime session
+  finally
+    IO.FS.writeFile exit "exit"
+    runtime.close
+    try
+      discard <| session.proc.wait
+    catch _ => pure ()
+    IO.FS.removeDirAll root
+
+private inductive PendingDocumentChange where
+  | unchanged | edit | close | reopen
+  deriving BEq, Repr
+
+private def checkCompletedDocumentIsolation : IO Unit := do
+  for sync in [false, true] do
+    for change in [PendingDocumentChange.unchanged, .edit, .close, .reopen] do
+      withPendingDocument fun runtime session => do
+        let label := s!"{if sync then "sync" else "hover"} completion after {repr change}"
+        let first ← pendingDocument runtime session
+        let snapshot : Beam.SnapshotRef := ⟨session.sessionToken, first.version⟩
+        let payload := if sync then RequestPayload.syncFile { path := "Demo.lean" }
+          else .hover { path := "Demo.lean", snapshot, line := 0, character := 4 }
+        let task ← IO.asTask (prio := Task.Priority.dedicated) <| runtime.dispatchRequest {
+          payload, workspaceId? := some session.workspaceId
+        }
+        let requests ← takePendingRequests session.pending 1
+        if change == .close || change == .reopen then
+          let closed ← runtime.dispatchRequest {
+            payload := .close { path := "Demo.lean" }, workspaceId? := some session.workspaceId
+          }
+          require s!"{label}: close succeeds" closed.ok
+        if change == .edit then
+          IO.FS.writeFile (session.root / "Demo.lean") "def demo : Nat := 2\n"
+        let currentSnapshot? ←
+          if change == .close then pure none
+          else do
+            let updated ← runtime.dispatchRequest {
+              payload := .updateFile { path := "Demo.lean" }, workspaceId? := some session.workspaceId
+            }
+            let updated : UpdateFileResult ← IO.ofExcept <|
+              fromJson? (← requireResponseResult label updated)
+            pure (some updated.snapshot)
+        for request in requests do
+          request.progressRef.set (some { updates := 99, done := true })
+          let result := if sync then toJson ({
+              version := first.version
+              saveReadiness := { version := first.version, textHash := first.textHash }
+            } : DiagnosticsBarrierResult) else Json.mkObj []
+          PendingRequest.resolveResponse request result
+        let response ← IO.ofExcept <| ← IO.wait task
+        if change == .unchanged then
+          require s!"{label}: unchanged document succeeds" response.ok
+          require s!"{label}: unchanged token is preserved" (currentSnapshot? == some snapshot)
+        else
+          require s!"{label}: replaced document returns contentModified"
+            (response.error?.any fun err => err.code == "contentModified")
+          let some err := response.error? | throw <| IO.userError s!"{label}: missing error"
+          let data ← requireErrorData label err
+          requireJsonString label "reason" "snapshotMismatch" data
+          requireJsonString label "expectedSnapshot" snapshot.encode data
+          match currentSnapshot? with
+          | some current => requireJsonString label "currentSnapshot" current.encode data
+          | none => requireFieldAbsent label "currentSnapshot" data
+          if change != .close then
+            let current ← pendingDocument runtime session
+            require s!"{label}: old progress does not overwrite the replacement"
+              current.fileProgress?.isNone
+            require s!"{label}: old sync does not mark the replacement synced"
+              (current.lastSyncEventSeq == 0)
+
+private def checkStaleCompletionDiagnostic : IO Unit :=
+  withPendingDocument fun runtime session => do
+    let first ← pendingDocument runtime session
+    discard <| runtime.dispatchRequest {
+      payload := .close { path := "Demo.lean" }, workspaceId? := some session.workspaceId
+    }
+    discard <| runtime.dispatchRequest {
+      payload := .updateFile { path := "Demo.lean" }, workspaceId? := some session.workspaceId
+    }
+    let current ← pendingDocument runtime session
+    let task ← IO.asTask (prio := Task.Priority.dedicated) <| runtime.dispatchRequest {
+      payload := .syncFile { path := "Demo.lean" }, workspaceId? := some session.workspaceId
+    }
+    let requests ← takePendingRequests session.pending 1
+    for request in requests do
+      PendingRequest.observePublishDiagnostics session.root session.sessionToken request {
+        uri := sessionUri (session.root / "Demo.lean")
+        version? := some first.version
+        diagnostics := #[{
+          range := lspRange 0 0 1
+          severity? := some .error
+          message := "Failed to build module dependencies."
+        }]
+      }
+      request.progressRef.set (some { updates := 1, done := true })
+      PendingRequest.resolveResponse request <| toJson ({
+        version := current.version
+        saveReadiness := { version := current.version, textHash := current.textHash }
+      } : DiagnosticsBarrierResult)
+    let response ← IO.ofExcept <| ← IO.wait task
+    let result : SyncFileResult ← IO.ofExcept <|
+      fromJson? (← requireResponseResult "old diagnostic must not block the current barrier" response)
+    require "current barrier remains save-ready" result.readiness.saveReady
+    require "current barrier returns the current snapshot"
+      (result.snapshot == ⟨session.sessionToken, current.version⟩)
+
 private def checkCompletedRequestResetIsolation : IO Unit := do
   let nonce ← IO.monoNanosNow
   let workspaceId := s!"completed-reset-{nonce}"
@@ -1482,7 +1626,7 @@ private def checkCompletedRequestResetIsolation : IO Unit := do
   let documentTask ← IO.asTask (prio := Task.Priority.dedicated) <| runtime.dispatchRequest {
     payload := .runAt {
       path := "Demo.lean"
-      version := 1
+      snapshot := ⟨session.sessionToken, 1⟩
       line := 0
       character := 0
       text := "rfl"
@@ -1644,6 +1788,7 @@ private def checkWrapperDaemonAuthorization : IO Unit := do
 def main : IO Unit := do
   checkDaemonReadinessProtocol
   checkServerHelloProtocol
+  checkSnapshotCodec
   checkResponseJsonShape
   checkStreamMessageDecode
   checkResponseJsonDecode
@@ -1661,6 +1806,8 @@ def main : IO Unit := do
   checkLifecycleTeardownConcurrency
   checkDeadSessionCleanupReleasesStateMutex
   checkWorkspaceSnapshotResetIsolation
+  checkCompletedDocumentIsolation
+  checkStaleCompletionDiagnostic
   checkCompletedRequestResetIsolation
   checkSessionCloseAdmission
   checkBrokerConfigBoundary

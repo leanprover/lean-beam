@@ -138,7 +138,7 @@ try {
     ),
     "lean_sync",
   );
-  require(typeof sync.version === "number", `lean_sync omitted its document version: ${JSON.stringify(sync)}`);
+  require(typeof sync.snapshot === "string", `lean_sync omitted its source snapshot: ${JSON.stringify(sync)}`);
   require(progress.length > 0, "the SDK did not receive lean_sync progress notifications");
   for (let index = 1; index < progress.length; index += 1) {
     require(

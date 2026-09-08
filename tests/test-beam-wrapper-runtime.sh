@@ -18,20 +18,20 @@ signal_root="$(beam_wrapper_prepare_project_root_with_scenario_docs runtime-sign
 
 run_sigint_probe() {
   local project_root="$1"
-  local version="$2"
+  local snapshot="$2"
   local out_path="$3"
   local err_path="$4"
   local progress_enabled="$5"
   local request_id="$6"
   local wait_mode="$7"
-  python3 - "$beam_script" "$project_root" "$version" "$out_path" "$err_path" "$progress_enabled" "$request_id" "$wait_mode" <<'PY'
+  python3 - "$beam_script" "$project_root" "$snapshot" "$out_path" "$err_path" "$progress_enabled" "$request_id" "$wait_mode" <<'PY'
 import os
 import signal
 import subprocess
 import sys
 import time
 
-beam_script, project_root, version, out_path, err_path, progress_enabled, request_id, wait_mode = sys.argv[1:]
+beam_script, project_root, snapshot, out_path, err_path, progress_enabled, request_id, wait_mode = sys.argv[1:]
 env = os.environ.copy()
 if progress_enabled == "1":
     env["BEAM_PROGRESS"] = "1"
@@ -64,7 +64,7 @@ with open(out_path, "wb") as out, open(err_path, "wb") as err:
             project_root,
             "run-at",
             "tests/scenario/docs/SlowPoll.lean",
-            version,
+            snapshot,
             "25",
             "2",
             "poll_sleep_cmd",
@@ -147,12 +147,12 @@ beam_wrapper_start_owner "$signal_root"
 signal_owner_pid="$beam_wrapper_last_owner_pid"
 (
   cd "$signal_root"
-  slow_version="$(beam_wrapper_update_version "signal SlowPoll" "$beam_script" --root "$signal_root" update tests/scenario/docs/SlowPoll.lean)"
-  command_version="$(beam_wrapper_update_version "signal CommandA" "$beam_script" --root "$signal_root" update tests/scenario/docs/CommandA.lean)"
+  slow_snapshot="$(beam_wrapper_update_snapshot "signal SlowPoll" "$beam_script" --root "$signal_root" update tests/scenario/docs/SlowPoll.lean)"
+  command_snapshot="$(beam_wrapper_update_snapshot "signal CommandA" "$beam_script" --root "$signal_root" update tests/scenario/docs/CommandA.lean)"
 
   interrupt_out="$(beam_wrapper_mktemp_file interrupt-out)"
   interrupt_err="$(beam_wrapper_mktemp_file interrupt-err)"
-  interrupt_status="$(run_sigint_probe "$signal_root" "$slow_version" "$interrupt_out" "$interrupt_err" 1 wrapper-sigint stderr)"
+  interrupt_status="$(run_sigint_probe "$signal_root" "$slow_snapshot" "$interrupt_out" "$interrupt_err" 1 wrapper-sigint stderr)"
   if [ "$interrupt_status" = "timeout" ] || [ "$interrupt_status" = "early-exit" ]; then
     cat "$interrupt_out" >&2
     cat "$interrupt_err" >&2
@@ -168,7 +168,7 @@ signal_owner_pid="$beam_wrapper_last_owner_pid"
 
   interrupt_anon_out="$(beam_wrapper_mktemp_file interrupt-anon-out)"
   interrupt_anon_err="$(beam_wrapper_mktemp_file interrupt-anon-err)"
-  interrupt_anon_status="$(run_sigint_probe "$signal_root" "$slow_version" "$interrupt_anon_out" "$interrupt_anon_err" 1 "" stderr)"
+  interrupt_anon_status="$(run_sigint_probe "$signal_root" "$slow_snapshot" "$interrupt_anon_out" "$interrupt_anon_err" 1 "" stderr)"
   if [ "$interrupt_anon_status" = "timeout" ] || [ "$interrupt_anon_status" = "early-exit" ]; then
     cat "$interrupt_anon_out" >&2
     cat "$interrupt_anon_err" >&2
@@ -182,7 +182,7 @@ signal_owner_pid="$beam_wrapper_last_owner_pid"
   fi
   expect_sigint_aborted "anonymous wrapper SIGINT path" "$interrupt_anon_out" "$interrupt_anon_err" ""
 
-  post_interrupt_hover="$("$beam_script" --root "$signal_root" hover tests/scenario/docs/CommandA.lean "$command_version" 0 4)"
+  post_interrupt_hover="$("$beam_script" --root "$signal_root" hover tests/scenario/docs/CommandA.lean "$command_snapshot" 0 4)"
   if [ "$(BEAM_JSON_PAYLOAD="$post_interrupt_hover" read_json_text_field ok)" != "true" ]; then
     echo "expected wrapper SIGINT interruption to preserve the isolated Beam daemon session" >&2
     printf '%s\n' "$post_interrupt_hover" >&2
@@ -191,14 +191,14 @@ signal_owner_pid="$beam_wrapper_last_owner_pid"
 
   interrupt_quiet_out="$(beam_wrapper_mktemp_file interrupt-quiet-out)"
   interrupt_quiet_err="$(beam_wrapper_mktemp_file interrupt-quiet-err)"
-  interrupt_quiet_status="$(python3 - "$beam_script" "$signal_root" "$slow_version" "$command_version" "$interrupt_quiet_out" "$interrupt_quiet_err" <<'PY'
+  interrupt_quiet_status="$(python3 - "$beam_script" "$signal_root" "$slow_snapshot" "$command_snapshot" "$interrupt_quiet_out" "$interrupt_quiet_err" <<'PY'
 import os
 import signal
 import subprocess
 import sys
 import time
 
-beam_script, project_root, slow_version, command_version, out_path, err_path = sys.argv[1:]
+beam_script, project_root, slow_snapshot, command_snapshot, out_path, err_path = sys.argv[1:]
 base_request_id = "wrapper-sigint-quiet"
 max_attempts = 5
 setup_race_count = 0
@@ -242,7 +242,7 @@ for attempt in range(1, max_attempts + 1):
                 project_root,
                 "run-at",
                 "tests/scenario/docs/SlowPoll.lean",
-                slow_version,
+                slow_snapshot,
                 "25",
                 "2",
                 "poll_sleep_cmd",
@@ -267,7 +267,7 @@ for attempt in range(1, max_attempts + 1):
                 project_root,
                 "hover",
                 "tests/scenario/docs/CommandA.lean",
-                command_version,
+                command_snapshot,
                 "0",
                 "4",
             ],
@@ -337,7 +337,7 @@ PY
 
   interrupt_quiet_anon_out="$(beam_wrapper_mktemp_file interrupt-quiet-anon-out)"
   interrupt_quiet_anon_err="$(beam_wrapper_mktemp_file interrupt-quiet-anon-err)"
-  interrupt_quiet_anon_status="$(run_sigint_probe "$signal_root" "$slow_version" "$interrupt_quiet_anon_out" "$interrupt_quiet_anon_err" 0 "" sleep)"
+  interrupt_quiet_anon_status="$(run_sigint_probe "$signal_root" "$slow_snapshot" "$interrupt_quiet_anon_out" "$interrupt_quiet_anon_err" 0 "" sleep)"
   if [ "$interrupt_quiet_anon_status" = "timeout" ] || [ "$interrupt_quiet_anon_status" = "early-exit" ]; then
     cat "$interrupt_quiet_anon_out" >&2
     cat "$interrupt_quiet_anon_err" >&2
@@ -361,21 +361,21 @@ beam_wrapper_start_owner "$signal_root"
 signal_owner_pid="$beam_wrapper_last_owner_pid"
 (
   cd "$signal_root"
-  slow_version="$(beam_wrapper_update_version "duplicate SlowPoll" "$beam_script" --root "$signal_root" update tests/scenario/docs/SlowPoll.lean)"
-  command_version="$(beam_wrapper_update_version "duplicate CommandA" "$beam_script" --root "$signal_root" update tests/scenario/docs/CommandA.lean)"
+  slow_snapshot="$(beam_wrapper_update_snapshot "duplicate SlowPoll" "$beam_script" --root "$signal_root" update tests/scenario/docs/SlowPoll.lean)"
+  command_snapshot="$(beam_wrapper_update_snapshot "duplicate CommandA" "$beam_script" --root "$signal_root" update tests/scenario/docs/CommandA.lean)"
 
   duplicate_slow_out="$(beam_wrapper_mktemp_file duplicate-slow-out)"
   duplicate_slow_err="$(beam_wrapper_mktemp_file duplicate-slow-err)"
   duplicate_out="$(beam_wrapper_mktemp_file duplicate-out)"
   duplicate_err="$(beam_wrapper_mktemp_file duplicate-err)"
   BEAM_PROGRESS=1 BEAM_REQUEST_ID=wrapper-duplicate-active \
-    "$beam_script" --root "$signal_root" run-at tests/scenario/docs/SlowPoll.lean "$slow_version" 25 2 "poll_sleep_cmd" \
+    "$beam_script" --root "$signal_root" run-at tests/scenario/docs/SlowPoll.lean "$slow_snapshot" 25 2 "poll_sleep_cmd" \
     >"$duplicate_slow_out" 2>"$duplicate_slow_err" &
   duplicate_slow_pid=$!
   sleep 1
 
   if BEAM_REQUEST_ID=wrapper-duplicate-active \
-      "$beam_script" --root "$signal_root" hover tests/scenario/docs/CommandA.lean "$command_version" 0 4 \
+      "$beam_script" --root "$signal_root" hover tests/scenario/docs/CommandA.lean "$command_snapshot" 0 4 \
       >"$duplicate_out" 2>"$duplicate_err"; then
     echo "expected duplicate active BEAM_REQUEST_ID wrapper request to fail" >&2
     cat "$duplicate_out" >&2

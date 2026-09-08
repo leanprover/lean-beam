@@ -148,7 +148,7 @@ private def runSyncOutcome
                 ok := true
                 saveReady? := some result.readiness.saveReady
                 errorCount? := some result.readiness.blockingErrorCount
-                detail := s!"ok version={result.version} saveReady={result.readiness.saveReady} elapsedMs={elapsedMs}"
+                detail := s!"ok snapshot={result.snapshot} saveReady={result.readiness.saveReady} elapsedMs={elapsedMs}"
               }
           | .error err =>
               pure {

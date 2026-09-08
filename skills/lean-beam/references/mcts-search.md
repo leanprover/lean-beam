@@ -4,12 +4,20 @@ Use this reference when the task is no longer “try one tactic at one position�
 “preserve a speculative proof state, branch from it, run linear playouts, and release side
 branches.”
 
+Read `Proofs.lean` and resolve the intended position before obtaining its token. Stop if `update` fails.
+The examples below use this `snapshot` variable:
+
+```bash
+update_json="$(lean-beam update "Proofs.lean")"
+snapshot="$(printf '%s\n' "$update_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["snapshot"])')"
+```
+
 ## Core pattern
 
 Use these commands:
 
 ```bash
-lean-beam run-at-handle "Proofs.lean" <version-from-update> 42 6 "constructor"
+lean-beam run-at-handle "Proofs.lean" "$snapshot" 42 6 "constructor"
 printf '%s\n' "$HANDLE_JSON" | lean-beam run-with "Proofs.lean" - "constructor"
 printf '%s\n' "$HANDLE_JSON" | lean-beam run-with-linear "Proofs.lean" - "exact trivial"
 printf '%s\n' "$HANDLE_JSON" | lean-beam release "Proofs.lean" -
@@ -18,7 +26,7 @@ printf '%s\n' "$HANDLE_JSON" | lean-beam release "Proofs.lean" -
 Or use the shorter helper:
 
 ```bash
-lean-beam-search mint "Proofs.lean" <version-from-update> 42 6 "constructor"
+lean-beam-search mint "Proofs.lean" "$snapshot" 42 6 "constructor"
 printf '%s\n' "$HANDLE_JSON" | lean-beam-search branch "Proofs.lean" "constructor"
 printf '%s\n' "$HANDLE_JSON" | lean-beam-search linear "Proofs.lean" "exact trivial"
 printf '%s\n' "$HANDLE_JSON" | lean-beam-search playout "Proofs.lean" "exact trivial" "exact trivial"
@@ -27,7 +35,7 @@ printf '%s\n' "$HANDLE_JSON" | lean-beam-search release "Proofs.lean"
 
 Rules:
 
-- `lean-beam run-at-handle` mints a preserved root handle from the explicit broker document version
+- `lean-beam run-at-handle` mints a preserved root handle from the explicit broker document snapshot
 - `lean-beam run-with` is non-linear: it preserves the current handle and returns a successor handle
 - `lean-beam run-with-linear` is linear: it consumes the current handle and returns a successor handle
 - `lean-beam release` explicitly drops a preserved handle you no longer need
@@ -37,7 +45,7 @@ Rules:
 
 ```bash
 # with `lean-beam serve` running in another process
-root="$(lean-beam run-at-handle "Proofs.lean" <version-from-update> 42 6 "constructor")"
+root="$(lean-beam run-at-handle "Proofs.lean" "$snapshot" 42 6 "constructor")"
 
 # writing handles to files avoids stdin conflicts in larger shell scripts
 printf '%s\n' "$root" > root.handle.json
@@ -58,7 +66,7 @@ Use this when you want to explore multiple children from the same preserved basi
 
 ```bash
 # with `lean-beam serve` running in another process
-root="$(lean-beam run-at-handle "Proofs.lean" <version-from-update> 42 6 "constructor")"
+root="$(lean-beam run-at-handle "Proofs.lean" "$snapshot" 42 6 "constructor")"
 # file-backed handles are often easier in longer shell loops
 printf '%s\n' "$root" > root.handle.json
 step1="$(lean-beam run-with-linear "Proofs.lean" --handle-file root.handle.json "constructor")"
@@ -88,7 +96,7 @@ Concrete shell sketch:
 
 ```bash
 # with `lean-beam serve` running in another process
-root="$(lean-beam run-at-handle "Proofs.lean" <version-from-update> 42 6 "constructor")"
+root="$(lean-beam run-at-handle "Proofs.lean" "$snapshot" 42 6 "constructor")"
 
 child_a="$(printf '%s\n' "$root" | lean-beam run-with "Proofs.lean" - "constructor")"
 child_b="$(printf '%s\n' "$root" | lean-beam run-with "Proofs.lean" - "aesop")"
@@ -103,7 +111,7 @@ The same sketch with the helper:
 
 ```bash
 # with `lean-beam serve` running in another process
-root="$(lean-beam-search mint "Proofs.lean" <version-from-update> 42 6 "constructor")"
+root="$(lean-beam-search mint "Proofs.lean" "$snapshot" 42 6 "constructor")"
 child_a="$(printf '%s\n' "$root" | lean-beam-search branch "Proofs.lean" "constructor")"
 child_b="$(printf '%s\n' "$root" | lean-beam-search branch "Proofs.lean" "aesop")"
 playout_a="$(printf '%s\n' "$child_a" | lean-beam-search playout "Proofs.lean" "exact trivial" "exact trivial")"
@@ -130,7 +138,7 @@ Do not try to salvage old handles.
 ```bash
 # make a real edit and save the source file to disk
 lean-beam update "Proofs.lean"
-root="$(lean-beam run-at-handle "Proofs.lean" <version-from-update> 42 6 "constructor")"
+root="$(lean-beam run-at-handle "Proofs.lean" "$snapshot" 42 6 "constructor")"
 ```
 
 ## When to stop using search

@@ -146,6 +146,7 @@ private def fakeSessionWithSyncedDoc
     root
     epoch := 1
     sessionToken := "fake-run-at-session"
+    nextDocumentVersion := version + 1
     proc
     stdin := IO.FS.Stream.ofHandle proc.stdin
     stdout := IO.FS.Stream.ofHandle proc.stdout
@@ -194,7 +195,7 @@ def checkRunAtStreamsSetupDiagnostics : IO Unit := do
     let resp ← server.dispatchRequest {
       payload := .runAt {
         path := "Tracked.lean"
-        version := 1
+        snapshot := ⟨session.sessionToken, 1⟩
         line := 0
         character := 2
         text := "#check tracked"

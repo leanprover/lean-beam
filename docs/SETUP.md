@@ -218,11 +218,11 @@ lean-beam serve
 # terminal/session 2
 update_json="$(lean-beam update "Foo.lean")"
 printf '%s\n' "$update_json"
-version="$(printf '%s\n' "$update_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["version"])')"
-lean-beam hover "Foo.lean" "$version" 10 2
-lean-beam definition "Foo.lean" "$version" 10 2
-lean-beam goals before "Foo.lean" "$version" 10 2
-lean-beam run-at "Foo.lean" "$version" 10 2 "exact trivial"
+snapshot="$(printf '%s\n' "$update_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["snapshot"])')"
+lean-beam hover "Foo.lean" "$snapshot" 10 2
+lean-beam definition "Foo.lean" "$snapshot" 10 2
+lean-beam goals before "Foo.lean" "$snapshot" 10 2
+lean-beam run-at "Foo.lean" "$snapshot" 10 2 "exact trivial"
 ```
 
 `lean-beam serve` is the only wrapper command that starts a project session. Its
@@ -314,8 +314,8 @@ human-readable stderr diagnostic and no JSON. Use MCP when a client requires str
 progress, diagnostics, or failures; Beam intentionally does not expose its raw port, session
 capability, or generic broker request record as an installed client interface.
 
-The `python3` line extracts `result.version` for shell examples. You can also copy that version
-number from the printed `lean-beam update` JSON.
+The `python3` line extracts `result.snapshot` for shell examples. You can also copy that snapshot
+string from the printed `lean-beam update` JSON.
 
 Beam reads the saved file on disk, not unsaved editor buffers. After a real source edit, save the
 file normally and then update or sync that workspace module before trusting later probes:
@@ -329,24 +329,26 @@ For multiline speculative Lean text, pass the text on stdin:
 
 ```bash
 printf '%s\n' 'example : True := by' '  trivial' |
-  lean-beam run-at "Foo.lean" "$version" 10 2 --stdin
+  lean-beam run-at "Foo.lean" "$snapshot" 10 2 --stdin
 ```
 
 Read those commands like this:
 
 - `lean-beam update` opens or updates the broker's LSP mirror and returns the current document
-  version without waiting for diagnostics
+  snapshot without waiting for diagnostics
 - `lean-beam run-at` tries speculative Lean text without editing the file
 - `lean-beam sync` waits for diagnostics/readiness after a real saved edit
 - `lean-beam refresh` is `lean-beam close` plus `lean-beam sync`
 - `lean-beam save` checkpoints one synced workspace module; it does not validate downstream importers
 - `lean-beam doctor` explains toolchain support and runtime bundle selection
 
-Position and range probes are version-bound. Use the `version` returned by `lean-beam update` or
+Position and range probes are snapshot-bound. Use the `snapshot` returned by `lean-beam update` or
 `lean-beam sync` for `run-at`, `hover`, `signature-help`, `definition`, `references`,
 `document-symbols`, `goals`, and `todo`. Workspace symbol queries are workspace-scoped and do not
-take a file version. If Beam reports `contentModified`, update or sync the file again and retry
-with the accepted current version rather than guessing.
+take a file snapshot. If Beam reports `contentModified`, update or sync the file again and retry
+only after reading the current source and resolving the intended target again. A fresh snapshot
+token does not repair old coordinates or code actions. See the
+[full snapshot and recovery contract](SYNC_AND_DIAGNOSTICS.md#command-model).
 
 Useful follow-up commands:
 
@@ -359,7 +361,7 @@ lean-beam save "MyPkg/Sub/Module.lean"
 `lean-beam open-files` reports only documents tracked by the current project daemon. Each file's
 `diskStatus` is `matchesTracked`, `differsFromTracked`, `missing`, or `unknown`, comparing the current
 on-disk source with the broker's tracked text. `checkpointed` means this daemon recorded a successful
-`lean-beam save` for that tracked version and the source still matches. It does not revalidate Lake
+`lean-beam save` for that tracked snapshot and the source still matches. It does not revalidate Lake
 artifacts or predict whether another save will succeed; `lean-beam save` is authoritative for those
 checks.
 

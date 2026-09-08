@@ -743,7 +743,7 @@ def expect_diagnostic_log(client, *, level, severity, path):
             and data.get("path") == path
         ):
             require(isinstance(data.get("uri"), str), f"diagnostic log missing uri: {notification}")
-            require(isinstance(data.get("version"), int), f"diagnostic log missing version: {notification}")
+            require(isinstance(data.get("snapshot"), str), f"diagnostic log missing snapshot: {notification}")
             require(isinstance(data.get("range"), dict), f"diagnostic log missing range: {notification}")
             require(isinstance(data.get("message"), str) and data["message"], f"diagnostic log missing message: {notification}")
             return notification
@@ -760,7 +760,7 @@ def expect_reply_diagnostic(sync, *, severity, path):
             and diagnostic.get("path") == path
         ):
             require(isinstance(diagnostic.get("uri"), str), f"reply diagnostic missing uri: {diagnostic}")
-            require(isinstance(diagnostic.get("version"), int), f"reply diagnostic missing version: {diagnostic}")
+            require(isinstance(diagnostic.get("snapshot"), str), f"reply diagnostic missing snapshot: {diagnostic}")
             require(isinstance(diagnostic.get("range"), dict), f"reply diagnostic missing range: {diagnostic}")
             require(isinstance(diagnostic.get("message"), str) and diagnostic["message"], f"reply diagnostic missing message: {diagnostic}")
             return diagnostic
@@ -824,24 +824,20 @@ def beam_cli_mcp_config(repo_root, root, timeout):
     return config
 
 
-def require_version_mismatch_data(error, expected_version, accepted_version, label, *, expected_uri_suffix=None):
+def require_snapshot_mismatch_data(error, expected_snapshot, accepted_snapshot, label, *, expected_uri_suffix=None):
     data = error.get("data")
     require(isinstance(data, dict), f"{label}: tool error missing data: {error}")
     require(
-        data.get("reason") == "documentVersionMismatch",
-        f"{label}: expected documentVersionMismatch data, got {error}",
+        data.get("reason") == "snapshotMismatch",
+        f"{label}: expected snapshotMismatch data, got {error}",
     )
     require(
-        data.get("expectedVersion") == expected_version,
-        f"{label}: expected expectedVersion={expected_version}, got {error}",
+        data.get("expectedSnapshot") == expected_snapshot,
+        f"{label}: expected expectedSnapshot={expected_snapshot}, got {error}",
     )
     require(
-        data.get("acceptedVersion") == accepted_version,
-        f"{label}: expected acceptedVersion={accepted_version}, got {error}",
-    )
-    require(
-        data.get("currentVersion") == accepted_version,
-        f"{label}: expected currentVersion={accepted_version}, got {error}",
+        data.get("currentSnapshot") == accepted_snapshot,
+        f"{label}: expected currentSnapshot={accepted_snapshot}, got {error}",
     )
     if expected_uri_suffix is not None:
         uri = data.get("uri")
@@ -966,27 +962,27 @@ def run_iteration(client, suffix):
         result_workspace_root(update, "lean_update").resolve() == client.project_root.resolve(),
         f"update returned wrong workspace descriptor: {update}",
     )
-    version = update.get("version")
-    require(isinstance(version, int), f"update did not return a document version: {update}")
+    snapshot = update.get("snapshot")
+    require(isinstance(snapshot, str), f"update did not return a document snapshot: {update}")
     changed = update.get("changed")
     require(isinstance(changed, bool), f"update did not return changed flag: {update}")
 
     command_update = client.call_tool("lean_update", {"path": "CommandA.lean"})
-    command_version = command_update.get("version")
-    require(isinstance(command_version, int), f"CommandA update did not return a version: {command_update}")
+    command_snapshot = command_update.get("snapshot")
+    require(isinstance(command_snapshot, str), f"CommandA update did not return a snapshot: {command_update}")
     command_path = client.project_root / "CommandA.lean"
     command_text = command_path.read_text(encoding="utf-8")
-    command_path.write_text(f"{command_text}\n-- mcp stale-version {suffix}\n", encoding="utf-8")
+    command_path.write_text(f"{command_text}\n-- mcp stale-snapshot {suffix}\n", encoding="utf-8")
     command_changed = client.call_tool("lean_update", {"path": "CommandA.lean"})
-    accepted_version = command_changed.get("version")
-    require(isinstance(accepted_version, int), f"CommandA changed update did not return a version: {command_changed}")
+    accepted_snapshot = command_changed.get("snapshot")
+    require(isinstance(accepted_snapshot, str), f"CommandA changed update did not return a snapshot: {command_changed}")
     stale_response = client.request(
         "tools/call",
         {
             "name": "lean_run_at",
             "arguments": {
                 "path": "CommandA.lean",
-                "version": command_version,
+                "snapshot": command_snapshot,
                 "line": 0,
                 "character": 2,
                 "text": "#check answerA",
@@ -994,10 +990,10 @@ def run_iteration(client, suffix):
         },
     )
     stale_error = expect_tool_error_code(stale_response, "contentModified")
-    require_version_mismatch_data(
+    require_snapshot_mismatch_data(
         stale_error,
-        command_version,
-        accepted_version,
+        command_snapshot,
+        accepted_snapshot,
         "stale MCP lean_run_at",
         expected_uri_suffix="/CommandA.lean",
     )
@@ -1006,7 +1002,7 @@ def run_iteration(client, suffix):
         "lean_run_at",
         {
             "path": "PositionEmptyLine.lean",
-            "version": version,
+            "snapshot": snapshot,
             "line": 1,
             "character": 0,
             "text": f"def mcpProbe{suffix} : Nat :=\n  42",
@@ -1019,7 +1015,7 @@ def run_iteration(client, suffix):
         "lean_run_at",
         {
             "path": "PositionEmptyLine.lean",
-            "version": version,
+            "snapshot": snapshot,
             "line": 1,
             "character": 0,
             "text": f"def mcpBroken{suffix} : Nat := \"bad\"",
@@ -1032,7 +1028,7 @@ def run_iteration(client, suffix):
         "lean_run_at_handle",
         {
             "path": "PositionEmptyLine.lean",
-            "version": version,
+            "snapshot": snapshot,
             "line": 1,
             "character": 0,
             "text": f"def mcpBase{suffix} : Nat := 1",
@@ -1070,14 +1066,14 @@ def run_iteration(client, suffix):
     client.call_tool("lean_release", {"path": "PositionEmptyLine.lean", "handle": base_handle})
 
     goal_update = client.call_tool("lean_update", {"path": "GoalSmoke.lean"})
-    goal_version = goal_update.get("version")
-    require(isinstance(goal_version, int), f"GoalSmoke update did not return a version: {goal_update}")
+    goal_snapshot = goal_update.get("snapshot")
+    require(isinstance(goal_snapshot, str), f"GoalSmoke update did not return a snapshot: {goal_update}")
 
     ascription = client.call_tool(
         "lean_run_at_handle",
         {
             "path": "GoalSmoke.lean",
-            "version": goal_version,
+            "snapshot": goal_snapshot,
             "line": 1,
             "character": 2,
             "text": "have htest := (Nat.succ : Nat)",
@@ -1092,7 +1088,7 @@ def run_iteration(client, suffix):
 
     goals_prev = client.call_tool(
         "lean_goals",
-        {"path": "GoalSmoke.lean", "version": goal_version, "line": 1, "character": 2, "mode": "before"},
+        {"path": "GoalSmoke.lean", "snapshot": goal_snapshot, "line": 1, "character": 2, "mode": "before"},
     )
     prev_goals = goals_prev.get("goals")
     require(isinstance(prev_goals, list) and prev_goals, f"goals before returned no goals: {goals_prev}")
@@ -1100,13 +1096,13 @@ def run_iteration(client, suffix):
 
     goals_after = client.call_tool(
         "lean_goals",
-        {"path": "GoalSmoke.lean", "version": goal_version, "line": 1, "character": 2, "mode": "after"},
+        {"path": "GoalSmoke.lean", "snapshot": goal_snapshot, "line": 1, "character": 2, "mode": "after"},
     )
     require(goals_after.get("goals") == [], f"goals after should return no goals: {goals_after}")
 
     client.call_tool("lean_close", {"path": "PositionEmptyLine.lean"})
     refreshed = client.call_tool("lean_refresh", {"path": "PositionEmptyLine.lean"})
-    require(isinstance(refreshed.get("version"), int), f"lean_refresh did not return a version: {refreshed}")
+    require(isinstance(refreshed.get("snapshot"), str), f"lean_refresh did not return a snapshot: {refreshed}")
     require("diagnostics" in refreshed, f"lean_refresh did not return diagnostic counts: {refreshed}")
     require("readiness" in refreshed, f"lean_refresh did not return readiness: {refreshed}")
     client.call_tool("lean_close", {"path": "PositionEmptyLine.lean"})
@@ -1765,8 +1761,8 @@ def run_concurrent_dispatch(repo_root, fixture_root, timeout, server_trace=False
         try:
             client.initialize()
             update = client.call_tool("lean_update", {"path": "McpConcurrency.lean"})
-            version = update.get("version")
-            require(isinstance(version, int), f"concurrency update missing version: {update}")
+            snapshot = update.get("snapshot")
+            require(isinstance(snapshot, str), f"concurrency update missing snapshot: {update}")
             other_update = client.call_tool(
                 "lean_update",
                 {
@@ -1774,10 +1770,10 @@ def run_concurrent_dispatch(repo_root, fixture_root, timeout, server_trace=False
                     "path": "McpConcurrency.lean",
                 },
             )
-            other_version = other_update.get("version")
+            other_snapshot = other_update.get("snapshot")
             require(
-                isinstance(other_version, int),
-                f"cross-workspace concurrency update missing version: {other_update}",
+                isinstance(other_snapshot, str),
+                f"cross-workspace concurrency update missing snapshot: {other_update}",
             )
             source_lines = (project_root / "McpConcurrency.lean").read_text(encoding="utf-8").splitlines()
             line = source_lines.index("  trivial")
@@ -1785,7 +1781,7 @@ def run_concurrent_dispatch(repo_root, fixture_root, timeout, server_trace=False
                 "name": "lean_run_at",
                 "arguments": {
                     "path": "McpConcurrency.lean",
-                    "version": version,
+                    "snapshot": snapshot,
                     "line": line,
                     "character": 2,
                     "text": "mcp_concurrency_gate",
@@ -1795,7 +1791,7 @@ def run_concurrent_dispatch(repo_root, fixture_root, timeout, server_trace=False
                 "name": "lean_run_at",
                 "arguments": {
                     "path": "McpConcurrency.lean",
-                    "version": version,
+                    "snapshot": snapshot,
                     "line": line,
                     "character": 2,
                     "text": "exact trivial",
@@ -1806,7 +1802,7 @@ def run_concurrent_dispatch(repo_root, fixture_root, timeout, server_trace=False
                 "arguments": {
                     "workspace": workspace_descriptor(other_project_root),
                     "path": "McpConcurrency.lean",
-                    "version": other_version,
+                    "snapshot": other_snapshot,
                     "line": line,
                     "character": 2,
                     "text": "exact trivial",
@@ -2077,12 +2073,12 @@ def run_concurrent_dispatch(repo_root, fixture_root, timeout, server_trace=False
                 isinstance(post_drop_update, dict),
                 f"post-drop concurrency update missing structured content: {post_drop_result}",
             )
-            version = post_drop_update.get("version")
+            snapshot = post_drop_update.get("snapshot")
             require(
-                isinstance(version, int),
-                f"post-drop concurrency update missing version: {post_drop_update}",
+                isinstance(snapshot, str),
+                f"post-drop concurrency update missing snapshot: {post_drop_update}",
             )
-            slow_params["arguments"]["version"] = version
+            slow_params["arguments"]["snapshot"] = snapshot
 
             started_path.unlink()
             release_path.unlink()
@@ -2163,14 +2159,14 @@ def run_concurrent_dispatch(repo_root, fixture_root, timeout, server_trace=False
             require_modern_result_envelope(update_result, "modern cancellation update")
             update = update_result.get("structuredContent")
             require(isinstance(update, dict), f"modern cancellation update has no result: {update_result}")
-            version = update.get("version")
-            require(isinstance(version, int), f"modern cancellation update missing version: {update}")
+            snapshot = update.get("snapshot")
+            require(isinstance(snapshot, str), f"modern cancellation update missing snapshot: {update}")
             modern_slow_params = with_modern_metadata(
                 {
                     "name": "lean_run_at",
                     "arguments": {
                         "path": "McpConcurrency.lean",
-                        "version": version,
+                        "snapshot": snapshot,
                         "line": line,
                         "character": 2,
                         "text": "mcp_concurrency_gate",
@@ -2318,8 +2314,8 @@ def run_concurrent_first_use(repo_root, fixture_root, timeout, server_trace=Fals
                 structured = result.get("structuredContent")
                 require(isinstance(structured, dict), f"concurrent first-use update missing content: {result}")
                 require(
-                    isinstance(structured.get("version"), int),
-                    f"concurrent first-use update missing version: {structured}",
+                    isinstance(structured.get("snapshot"), str),
+                    f"concurrent first-use update missing snapshot: {structured}",
                 )
             stats = client.call_tool("beam_stats")
             lean_stats = (
@@ -2362,8 +2358,8 @@ def run_concurrent_workspace_updates(client, roots, label):
             f"{label} request crossed workspace descriptors: {structured}",
         )
         require(
-            isinstance(structured.get("version"), int),
-            f"{label} update returned no version: {structured}",
+            isinstance(structured.get("snapshot"), str),
+            f"{label} update returned no snapshot: {structured}",
         )
 
 
@@ -2710,8 +2706,8 @@ def run_stateless_workspace_matrix(repo_root, fixture_root, timeout):
                 result_workspace_root(first_b, "first workspace B sync").resolve() == root_b.resolve(),
                 f"independent request did not lazily select workspace B: {first_b}",
             )
-            version_b = first_b.get("version")
-            require(isinstance(version_b, int), f"workspace B sync returned no version: {first_b}")
+            version_b = first_b.get("snapshot")
+            require(isinstance(version_b, str), f"workspace B sync returned no snapshot: {first_b}")
 
             stats = client.call_tool("beam_stats").get("workspaces", {})
             require(
@@ -2748,7 +2744,7 @@ def run_stateless_workspace_matrix(repo_root, fixture_root, timeout):
                 "lean_run_at_handle",
                 {
                     "path": "PositionEmptyLine.lean",
-                    "version": version_b,
+                    "snapshot": version_b,
                     "line": 1,
                     "character": 0,
                     "text": "def statelessWorkspaceBase : Nat := 1",
@@ -2946,13 +2942,13 @@ def run_cross_process_handle_rejection(repo_root, fixture_root, timeout):
         try:
             first.initialize()
             update = first.call_tool("lean_update", {"path": "PositionEmptyLine.lean"})
-            version = update.get("version")
-            require(isinstance(version, int), f"cross-process handle update returned no version: {update}")
+            snapshot = update.get("snapshot")
+            require(isinstance(snapshot, str), f"cross-process handle update returned no snapshot: {update}")
             minted = first.call_tool(
                 "lean_run_at_handle",
                 {
                     "path": "PositionEmptyLine.lean",
-                    "version": version,
+                    "snapshot": snapshot,
                     "line": 1,
                     "character": 0,
                     "text": "def crossProcessHandleBase : Nat := 1",

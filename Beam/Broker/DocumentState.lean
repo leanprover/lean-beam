@@ -63,6 +63,7 @@ inductive SyncFileAction where
 structure SyncFileDecision where
   action : SyncFileAction
   version : Nat
+  nextVersion : Nat
   docs : Docs
 
 structure VersionMarkResult where
@@ -103,7 +104,8 @@ private def docStateOfSnapshot (version : Nat) (snapshot : FileSnapshot) : DocSt
 
 /--
 Decide how a freshly read file snapshot should update the broker's LSP document
-mirror.
+mirror. `nextVersion` is the session-wide allocator, retained when documents close.
+Only opens and source changes consume a revision; unchanged and superseded reads preserve it.
 
 Request handlers reserve nonzero `readSeq` values before reading the filesystem.
 If an older read finishes after a newer read has already been applied, the older
@@ -114,13 +116,15 @@ newer LSP document versions.
 def syncFileDecision
     (docs : Docs)
     (uri : DocumentUri)
-    (snapshot : FileSnapshot) : SyncFileDecision :=
+    (snapshot : FileSnapshot)
+    (nextVersion : Nat) : SyncFileDecision :=
   match docs.get? uri with
   | none =>
-      let version := 1
+      let version := nextVersion
       {
         action := .open
         version
+        nextVersion := version + 1
         docs := docs.insert uri (docStateOfSnapshot version snapshot)
       }
   | some docState =>
@@ -128,12 +132,14 @@ def syncFileDecision
         {
           action := .unchanged
           version := docState.version
+          nextVersion
           docs
         }
       else if docState.textHash == snapshot.textHash then
         {
           action := .unchanged
           version := docState.version
+          nextVersion
           docs := docs.insert uri {
             docState with
             textTraceHash := snapshot.textTraceHash
@@ -143,10 +149,11 @@ def syncFileDecision
           }
         }
       else
-        let version := docState.version + 1
+        let version := nextVersion
         {
           action := .change
           version
+          nextVersion := version + 1
           docs := docs.insert uri {
             (docStateOfSnapshot version snapshot) with
             checkpointedVersion? := none

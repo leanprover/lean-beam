@@ -282,7 +282,7 @@ def ToolName.validateInputFields (tool : ToolName) (input : Json) : Except Strin
 abbrev RunAtInput := Beam.Lean.RunAtInput
 abbrev PositionInput := Beam.Lean.PositionInput
 abbrev ReferencesInput := Beam.Lean.ReferencesInput
-abbrev DocumentSymbolsInput := Beam.Lean.DocumentSymbolsInput
+abbrev DocumentInput := Beam.Lean.DocumentInput
 abbrev WorkspaceSymbolsInput := Beam.Lean.WorkspaceSymbolsInput
 abbrev GoalsInput := Beam.Lean.GoalsInput
 abbrev TodoInput := Beam.Lean.TodoInput
@@ -418,8 +418,8 @@ def diagnosticJson (diagnostic : Beam.Broker.StreamDiagnostic) : Json :=
     (match diagnostic.saveBlocking? with
     | some saveBlocking => [("save_blocking", toJson saveBlocking)]
     | none => []) ++
-    match diagnostic.version? with
-    | some version => [("version", toJson version)]
+    match diagnostic.snapshot? with
+    | some snapshot => [("snapshot", toJson snapshot)]
     | none => []
 
 private def blockingDiagnosticJson (diagnostic : Beam.Broker.SyncBlockingDiagnostic) : Json :=
@@ -445,7 +445,7 @@ private def syncResultJson (result : Beam.Broker.SyncFileResult) : Json :=
     | none => []
   Json.mkObj [
     ("path", toJson result.path),
-    ("version", toJson result.version),
+    ("snapshot", toJson result.snapshot),
     ("diagnostics", Json.mkObj <|
       [("counts", toJson result.diagnostics.counts)] ++ diagnosticFields),
     ("readiness", Json.mkObj [
@@ -469,7 +469,7 @@ private def saveResultJson (result : Beam.Broker.SaveOleanResult) : Json :=
     [
       ("path", toJson result.path),
       ("module", toJson result.module),
-      ("version", toJson result.version),
+      ("snapshot", toJson result.snapshot),
       ("source_hash", toJson result.sourceHash),
       ("olean", toJson result.olean),
       ("ilean", toJson result.ilean),

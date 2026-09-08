@@ -23,7 +23,7 @@ Use this reference as a short checklist of what not to assume in Lean `beam` wor
 - use `lean-beam definition`, `lean-beam references`, `lean-beam document-symbols`, and
   `lean-beam workspace-symbols` for semantic navigation
 - use `lean-beam goals before` / `lean-beam goals after` for existing proof state
-- use `lean-beam run-at` for one speculative snippet on an explicit broker document version
+- use `lean-beam run-at` for one speculative snippet on an explicit broker document snapshot
 - probe at the real source position with `lean-beam run-at`
 - pass multiline speculative text with `--stdin` instead of writing a temporary Lean file
 - use `lean-beam run-at-handle` plus `lean-beam run-with` / `lean-beam run-with-linear` for exact speculative chaining

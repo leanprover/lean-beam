@@ -377,17 +377,17 @@ private def checkToolsListShape : IO Unit := do
     ("beam_stats", #[]),
     ("beam_feedback_report", Beam.Feedback.requiredInputFields.push "workspace"),
     ("lean_drop_workspace", #["workspace"]),
-    ("lean_run_at", #["path", "version", "line", "character", "text", "workspace"]),
-    ("lean_run_at_handle", #["path", "version", "line", "character", "text", "workspace"]),
-    ("lean_hover", #["path", "version", "line", "character", "workspace"]),
-    ("lean_signature_help", #["path", "version", "line", "character", "workspace"]),
-    ("lean_definition", #["path", "version", "line", "character", "workspace"]),
-    ("lean_references", #["path", "version", "line", "character", "workspace"]),
-    ("lean_document_symbols", #["path", "version", "workspace"]),
+    ("lean_run_at", #["path", "snapshot", "line", "character", "text", "workspace"]),
+    ("lean_run_at_handle", #["path", "snapshot", "line", "character", "text", "workspace"]),
+    ("lean_hover", #["path", "snapshot", "line", "character", "workspace"]),
+    ("lean_signature_help", #["path", "snapshot", "line", "character", "workspace"]),
+    ("lean_definition", #["path", "snapshot", "line", "character", "workspace"]),
+    ("lean_references", #["path", "snapshot", "line", "character", "workspace"]),
+    ("lean_document_symbols", #["path", "snapshot", "workspace"]),
     ("lean_workspace_symbols", #["query", "workspace"]),
-    ("lean_goals", #["path", "version", "line", "character", "mode", "workspace"]),
-    ("lean_todo", #["path", "version", "start_line", "start_character", "end_line", "end_character", "workspace"]),
-    ("lean_code_action_resolve", #["path", "version", "code_action", "workspace"]),
+    ("lean_goals", #["path", "snapshot", "line", "character", "mode", "workspace"]),
+    ("lean_todo", #["path", "snapshot", "start_line", "start_character", "end_line", "end_character", "workspace"]),
+    ("lean_code_action_resolve", #["path", "snapshot", "code_action", "workspace"]),
     ("lean_run_with", #["path", "handle", "text", "workspace"]),
     ("lean_run_with_linear", #["path", "handle", "text", "workspace"]),
     ("lean_release", #["path", "handle", "workspace"]),
@@ -1371,7 +1371,7 @@ private def checkServerBasics : IO Unit := do
   let relativeWorkspaceResp ← handleRpcRequest state opts "relative workspace rejection" 32
       "tools/call" <| some <| toolCallParams "lean_run_at" <| Json.mkObj [
         ("path", toJson "Demo.lean"),
-        ("version", toJson (0 : Nat)),
+        ("snapshot", toJson "stale/1"),
         ("line", toJson (0 : Nat)),
         ("character", toJson (0 : Nat)),
         ("text", toJson "rfl"),
@@ -1622,7 +1622,7 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     let data ← requireObjVal "warning log params" "data" params
     discard <| requireObjVal "warning log data" "range" data
     discard <| requireObjVal "warning log data" "uri" data
-    discard <| requireObjVal "warning log data" "version" data
+    discard <| requireObjVal "warning log data" "snapshot" data
     requireJsonBool "warning log data" "completion_blocking" false data
     requireFieldAbsent "warning log data" "save_blocking" data
     let message ← IO.ofExcept <| data.getObjValAs? String "message"
@@ -1669,7 +1669,7 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     let refreshResult ← requireObjVal "lean_refresh response" "result" refreshResp
     requireJsonBool "lean_refresh result" "isError" false refreshResult
     let refreshStructured ← requireObjVal "lean_refresh result" "structuredContent" refreshResult
-    discard <| IO.ofExcept <| refreshStructured.getObjValAs? Nat "version"
+    discard <| IO.ofExcept <| refreshStructured.getObjValAs? Beam.SnapshotRef "snapshot"
     discard <| requireObjVal "lean_refresh structured result" "readiness" refreshStructured
     let refreshDiagnostics ← requireObjVal "lean_refresh structured result" "diagnostics" refreshStructured
     discard <| requireObjVal "lean_refresh diagnostics" "counts" refreshDiagnostics
@@ -1686,7 +1686,7 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     let closeSaveStructured ← requireObjVal "lean_close_save result" "structuredContent" closeSaveResult
     requireJsonBool "lean_close_save structured result" "closed" true closeSaveStructured
     let saved ← requireObjVal "lean_close_save structured result" "saved" closeSaveStructured
-    discard <| IO.ofExcept <| saved.getObjValAs? Nat "version"
+    discard <| IO.ofExcept <| saved.getObjValAs? Beam.SnapshotRef "snapshot"
     discard <| requireObjVal "lean_close_save saved result" "sync" saved
     let closeSaveWorkspace ←
       requireObjVal "lean_close_save structured result" "workspace" closeSaveStructured

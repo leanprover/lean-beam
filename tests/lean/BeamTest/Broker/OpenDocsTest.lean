@@ -59,6 +59,7 @@ private def checkDocProjection : IO Unit := do
         fileProgress? := some { updates := 3, done := true }
       }
     let session : OpenDocs.SessionView := {
+      sessionToken := "test-session"
       root
       docs
     }
@@ -67,6 +68,7 @@ private def checkDocProjection : IO Unit := do
     let file ← requireOnlyFile "open docs saved session" sessionJson
     requireJsonString "open docs file" "uri" uri file
     requireJsonString "open docs file" "path" "Demo.lean" file
+    requireJsonString "open docs file" "snapshot" "test-session/2" file
     requireJsonString "open docs file" "diskStatus" "matchesTracked" file
     requireFieldAbsent "open docs file" "status" file
     requireJsonBool "open docs file" "checkpointed" true file
@@ -92,6 +94,7 @@ private def checkDocProjection : IO Unit := do
 
     let nonFileUri := "https://example.invalid/Demo.lean"
     let nonFileSession : OpenDocs.SessionView := {
+      sessionToken := "test-session"
       root
       docs := Std.TreeMap.empty.insert nonFileUri {
         (mkDoc text 2) with checkpointedVersion? := some 2
