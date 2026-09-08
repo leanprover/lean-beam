@@ -1471,12 +1471,22 @@ private partial def waitForWorkspaceRoot
     IO.sleep 10
     waitForWorkspaceRoot runtime workspaceId expected (tries - 1)
 
-private def checkCompletedRequestReopenIsolation : IO Unit := do
-  let root := System.FilePath.mk s!"/tmp/beam-completed-reopen-{← IO.monoNanosNow}"
+private def pendingDocument (runtime : ServerRuntime) (session : Session) : IO DocState := do
+  let doc? ← runtime.state.atomically do
+    let state ← get
+    pure <| state.workspaces.get? session.workspaceId |>.bind (·.lean.session?)
+      |>.bind (fun current => current.docs.get? (sessionUri (session.root / "Demo.lean")))
+  let some doc := doc? | throw <| IO.userError "missing pending test document"
+  pure doc
+
+private def withPendingDocument
+    (act : ServerRuntime → Session → IO Unit) : IO Unit := do
+  let root := System.FilePath.mk s!"/tmp/beam-pending-document-{← IO.monoNanosNow}"
   IO.FS.createDirAll root
+  let root ← IO.FS.realPath root
   IO.FS.writeFile (root / "Demo.lean") "def demo : Nat := 1\n"
   let exit := root / "exit-backend"
-  let workspaceId := "completed-reopen"
+  let workspaceId := "pending-document"
   let runtime ← ServerRuntime.create { root } workspaceId
   let session ← pendingOnlySession workspaceId root exit
   runtime.state.atomically do
@@ -1486,33 +1496,8 @@ private def checkCompletedRequestReopenIsolation : IO Unit := do
     let first ← runtime.dispatchRequest {
       payload := .updateFile { path := "Demo.lean" }, workspaceId? := some workspaceId
     }
-    let first : UpdateFileResult ← IO.ofExcept <| fromJson? (← requireResponseResult "initial update" first)
-    let task ← IO.asTask (prio := Task.Priority.dedicated) <| runtime.dispatchRequest {
-      payload := .hover { path := "Demo.lean", snapshot := first.snapshot, line := 0, character := 4 }
-      workspaceId? := some workspaceId
-    }
-    let requests ← takePendingRequests session.pending 1
-    let closed ← runtime.dispatchRequest {
-      payload := .close { path := "Demo.lean" }, workspaceId? := some workspaceId
-    }
-    require "close while request pending succeeds" closed.ok
-    let reopened ← runtime.dispatchRequest {
-      payload := .updateFile { path := "Demo.lean" }, workspaceId? := some workspaceId
-    }
-    let reopened : UpdateFileResult ← IO.ofExcept <| fromJson? (← requireResponseResult "reopened update" reopened)
-    require "reopen uses a fresh snapshot" (reopened.snapshot != first.snapshot)
-    for request in requests do
-      request.progressRef.set (some { updates := 99, done := true })
-      PendingRequest.resolveResponse request (Json.mkObj [])
-    let response ← IO.ofExcept <| ← IO.wait task
-    require "an old document result cannot pass after reopen"
-      (response.error?.any fun err => err.code == "contentModified")
-    let docs ← runtime.state.atomically do
-      let state ← get
-      pure <| state.workspaces.get? workspaceId |>.bind (·.lean.session?) |>.map (·.docs)
-    let current? := docs.bind (·.get? (sessionUri (root / "Demo.lean")))
-    require "old request progress cannot overwrite the reopened document"
-      (current?.any fun doc => doc.version == reopened.snapshot.revision && doc.fileProgress?.isNone)
+    require "initial update succeeds" first.ok
+    act runtime session
   finally
     IO.FS.writeFile exit "exit"
     runtime.close
@@ -1520,6 +1505,103 @@ private def checkCompletedRequestReopenIsolation : IO Unit := do
       discard <| session.proc.wait
     catch _ => pure ()
     IO.FS.removeDirAll root
+
+private inductive PendingDocumentChange where
+  | unchanged | edit | close | reopen
+  deriving BEq, Repr
+
+private def checkCompletedDocumentIsolation : IO Unit := do
+  for sync in [false, true] do
+    for change in [PendingDocumentChange.unchanged, .edit, .close, .reopen] do
+      withPendingDocument fun runtime session => do
+        let label := s!"{if sync then "sync" else "hover"} completion after {repr change}"
+        let first ← pendingDocument runtime session
+        let snapshot : Beam.SnapshotRef := ⟨session.sessionToken, first.version⟩
+        let payload := if sync then RequestPayload.syncFile { path := "Demo.lean" }
+          else .hover { path := "Demo.lean", snapshot, line := 0, character := 4 }
+        let task ← IO.asTask (prio := Task.Priority.dedicated) <| runtime.dispatchRequest {
+          payload, workspaceId? := some session.workspaceId
+        }
+        let requests ← takePendingRequests session.pending 1
+        if change == .close || change == .reopen then
+          let closed ← runtime.dispatchRequest {
+            payload := .close { path := "Demo.lean" }, workspaceId? := some session.workspaceId
+          }
+          require s!"{label}: close succeeds" closed.ok
+        if change == .edit then
+          IO.FS.writeFile (session.root / "Demo.lean") "def demo : Nat := 2\n"
+        let currentSnapshot? ←
+          if change == .close then pure none
+          else do
+            let updated ← runtime.dispatchRequest {
+              payload := .updateFile { path := "Demo.lean" }, workspaceId? := some session.workspaceId
+            }
+            let updated : UpdateFileResult ← IO.ofExcept <|
+              fromJson? (← requireResponseResult label updated)
+            pure (some updated.snapshot)
+        for request in requests do
+          request.progressRef.set (some { updates := 99, done := true })
+          let result := if sync then toJson ({
+              version := first.version
+              saveReadiness := { version := first.version, textHash := first.textHash }
+            } : DiagnosticsBarrierResult) else Json.mkObj []
+          PendingRequest.resolveResponse request result
+        let response ← IO.ofExcept <| ← IO.wait task
+        if change == .unchanged then
+          require s!"{label}: unchanged document succeeds" response.ok
+          require s!"{label}: unchanged token is preserved" (currentSnapshot? == some snapshot)
+        else
+          require s!"{label}: replaced document returns contentModified"
+            (response.error?.any fun err => err.code == "contentModified")
+          let some err := response.error? | throw <| IO.userError s!"{label}: missing error"
+          let data ← requireErrorData label err
+          requireJsonString label "reason" "snapshotMismatch" data
+          requireJsonString label "expectedSnapshot" snapshot.encode data
+          match currentSnapshot? with
+          | some current => requireJsonString label "currentSnapshot" current.encode data
+          | none => requireFieldAbsent label "currentSnapshot" data
+          if change != .close then
+            let current ← pendingDocument runtime session
+            require s!"{label}: old progress does not overwrite the replacement"
+              current.fileProgress?.isNone
+            require s!"{label}: old sync does not mark the replacement synced"
+              (current.lastSyncEventSeq == 0)
+
+private def checkStaleCompletionDiagnostic : IO Unit :=
+  withPendingDocument fun runtime session => do
+    let first ← pendingDocument runtime session
+    discard <| runtime.dispatchRequest {
+      payload := .close { path := "Demo.lean" }, workspaceId? := some session.workspaceId
+    }
+    discard <| runtime.dispatchRequest {
+      payload := .updateFile { path := "Demo.lean" }, workspaceId? := some session.workspaceId
+    }
+    let current ← pendingDocument runtime session
+    let task ← IO.asTask (prio := Task.Priority.dedicated) <| runtime.dispatchRequest {
+      payload := .syncFile { path := "Demo.lean" }, workspaceId? := some session.workspaceId
+    }
+    let requests ← takePendingRequests session.pending 1
+    for request in requests do
+      PendingRequest.observePublishDiagnostics session.root session.sessionToken request {
+        uri := sessionUri (session.root / "Demo.lean")
+        version? := some first.version
+        diagnostics := #[{
+          range := lspRange 0 0 1
+          severity? := some .error
+          message := "Failed to build module dependencies."
+        }]
+      }
+      request.progressRef.set (some { updates := 1, done := true })
+      PendingRequest.resolveResponse request <| toJson ({
+        version := current.version
+        saveReadiness := { version := current.version, textHash := current.textHash }
+      } : DiagnosticsBarrierResult)
+    let response ← IO.ofExcept <| ← IO.wait task
+    let result : SyncFileResult ← IO.ofExcept <|
+      fromJson? (← requireResponseResult "old diagnostic must not block the current barrier" response)
+    require "current barrier remains save-ready" result.readiness.saveReady
+    require "current barrier returns the current snapshot"
+      (result.snapshot == ⟨session.sessionToken, current.version⟩)
 
 private def checkCompletedRequestResetIsolation : IO Unit := do
   let nonce ← IO.monoNanosNow
@@ -1724,7 +1806,8 @@ def main : IO Unit := do
   checkLifecycleTeardownConcurrency
   checkDeadSessionCleanupReleasesStateMutex
   checkWorkspaceSnapshotResetIsolation
-  checkCompletedRequestReopenIsolation
+  checkCompletedDocumentIsolation
+  checkStaleCompletionDiagnostic
   checkCompletedRequestResetIsolation
   checkSessionCloseAdmission
   checkBrokerConfigBoundary

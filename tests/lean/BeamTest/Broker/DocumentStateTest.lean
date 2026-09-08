@@ -54,9 +54,9 @@ private def mkSnapshot
 private def checkSyncFileDecisionOpen : IO Unit := do
   let uri := "file:///workspace/Foo.lean"
   let decision := DocumentState.syncFileDecision {} uri
-    (mkSnapshot 10) 1
+    (mkSnapshot 10) 17
   require "syncFileDecision opens unknown doc" (decision.action == .open)
-  require "syncFileDecision open starts at version 1" (decision.version == 1)
+  require "open consumes the session allocator" (decision.version == 17 && decision.nextVersion == 18)
   let some doc := decision.docs.get? uri
     | throw <| IO.userError "syncFileDecision open did not insert doc"
   require "syncFileDecision open records hash" (doc.textHash == 10)
@@ -72,7 +72,8 @@ private def checkSyncFileDecisionUnchanged : IO Unit := do
       fileProgress? := some { updates := 2, done := true }
       lastSyncEventSeq := 8
     }
-  let decision := DocumentState.syncFileDecision docs uri (mkSnapshot 10 (some "Foo")) 6
+  let decision := DocumentState.syncFileDecision docs uri (mkSnapshot 10 (some "Foo")) 11
+  require "unchanged preserves the allocator" (decision.nextVersion == 11)
   require "syncFileDecision unchanged has no LSP action" (decision.action == .unchanged)
   require "syncFileDecision unchanged preserves version" (decision.version == 5)
   let some doc := decision.docs.get? uri
@@ -93,9 +94,9 @@ private def checkSyncFileDecisionChange : IO Unit := do
       fileProgress? := some { updates := 2, done := true }
       lastSyncEventSeq := 8
     }
-  let decision := DocumentState.syncFileDecision docs uri (mkSnapshot 11 (some "Foo")) 6
+  let decision := DocumentState.syncFileDecision docs uri (mkSnapshot 11 (some "Foo")) 11
   require "syncFileDecision changed emits change action" (decision.action == .change)
-  require "syncFileDecision changed bumps version" (decision.version == 6)
+  require "change consumes the session allocator" (decision.version == 11 && decision.nextVersion == 12)
   let some doc := decision.docs.get? uri
     | throw <| IO.userError "syncFileDecision changed erased doc"
   require "syncFileDecision changed records hash" (doc.textHash == 11)
@@ -103,6 +104,31 @@ private def checkSyncFileDecisionChange : IO Unit := do
   require "syncFileDecision changed clears checkpointed version" (doc.checkpointedVersion?.isNone)
   require "syncFileDecision changed clears progress" (doc.fileProgress?.isNone)
   require "syncFileDecision changed preserves sync event seq" (doc.lastSyncEventSeq == 8)
+
+private def checkInterleavedDocumentRevisions : IO Unit := do
+  let a := "file:///workspace/A.lean"
+  let b := "file:///workspace/B.lean"
+  let openedA := DocumentState.syncFileDecision {} a { mkSnapshot 10 with readSeq := 1 } 1
+  let openedB := DocumentState.syncFileDecision openedA.docs b
+    { mkSnapshot 10 with readSeq := 2 } openedA.nextVersion
+  let changedA := DocumentState.syncFileDecision openedB.docs a
+    { mkSnapshot 20 with readSeq := 3 } openedB.nextVersion
+  require "files share one revision allocator"
+    ([openedA.version, openedB.version, changedA.version] == [1, 2, 3])
+  let superseded := DocumentState.syncFileDecision changedA.docs a
+    { mkSnapshot 10 with readSeq := 1 } changedA.nextVersion
+  require "an older read neither rolls back source nor consumes a revision"
+    (superseded.action == .unchanged && superseded.version == changedA.version &&
+      superseded.nextVersion == changedA.nextVersion &&
+      (superseded.docs.get? a).any (fun doc => doc.textHash == 20 && doc.syncSnapshotSeq == 3))
+  let unchanged := DocumentState.syncFileDecision superseded.docs b
+    { mkSnapshot 10 with readSeq := 4 } superseded.nextVersion
+  require "another file's unchanged read preserves its token and the allocator"
+    (unchanged.version == openedB.version && unchanged.nextVersion == changedA.nextVersion)
+  let reopened := DocumentState.syncFileDecision (unchanged.docs.erase a) a
+    { mkSnapshot 20 with readSeq := 5 } unchanged.nextVersion
+  require "closing and reopening does not reuse a document revision"
+    (reopened.version == 4 && reopened.nextVersion == 5)
 
 private def checkMarkSyncedVersion : IO Unit := do
   let uri := "file:///workspace/Foo.lean"
@@ -181,6 +207,7 @@ def main : IO Unit := do
   checkSyncFileDecisionOpen
   checkSyncFileDecisionUnchanged
   checkSyncFileDecisionChange
+  checkInterleavedDocumentRevisions
   checkMarkSyncedVersion
   checkMarkSavedVersion
 

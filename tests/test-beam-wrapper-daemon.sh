@@ -1288,7 +1288,9 @@ if ! grep -Fq "existing mode is 0755, expected 0700" "$tmp2/changed-mode.err"; t
   exit 1
 fi
 explicit_stop_command="lean-beam --root '$resolved_tmp2' --session-dir '$(beam_test_realpath "$explicit_control")' stop"
-if ! grep -Fq "$explicit_stop_command" "$tmp2/explicit-control-owner.err"; then
+# Descriptor publication precedes backend initialization and the foreground owner's message.
+if ! wait_for_file_text "$tmp2/explicit-control-owner.err" "$explicit_stop_command" \
+    "foreground owner stop command" 600; then
   echo "expected the foreground owner to print its exact stop command" >&2
   cat "$tmp2/explicit-control-owner.err" >&2
   exit 1

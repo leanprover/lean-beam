@@ -206,20 +206,22 @@ private def observeSyncFileProgress
       progress?
 
 private def trackedPublishDiagnosticsParam?
-    (trackedUri? : Option DocumentUri)
+    (tracked? : Option (DocumentUri × Nat))
     (diagnosticParam : PublishDiagnosticsParams) : Option PublishDiagnosticsParams :=
-  match trackedUri? with
-  | some uri =>
+  match tracked? with
+  | some (uri, version) =>
       let diagnosticParam := normalizePublishDiagnostics diagnosticParam
-      if diagnosticParam.uri == uri then
+      if diagnosticParam.uri == uri &&
+          diagnosticParam.version?.all (· == Int.ofNat version) then
         some diagnosticParam
       else
         none
   | none =>
       none
 
-private def diagnosticStreamKey (diagnostic : Diagnostic) : String :=
-  (toJson diagnostic).compress
+private def diagnosticStreamKey
+    (snapshot? : Option SnapshotRef) (diagnostic : Diagnostic) : String :=
+  (toJson (snapshot?, diagnostic)).compress
 
 private def emitNewTrackedDiagnostics
     (root : System.FilePath)
@@ -229,20 +231,20 @@ private def emitNewTrackedDiagnostics
     (diagnosticScope : DiagnosticScope)
     (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) :
     IO (Std.TreeSet String compare) := do
+  let snapshot? := diagnosticParam.version?.bind fun version =>
+    if version > 0 then some { session := sessionToken, revision := version.toNat }
+    else none
   let mut seen := seen
   let diagnostics := filterSyncDiagnostics diagnosticScope diagnosticParam.diagnostics
   for diagnostic in diagnostics do
-    let key := diagnosticStreamKey diagnostic
+    let key := diagnosticStreamKey snapshot? diagnostic
     if !seen.contains key then
       seen := seen.insert key
       match emitDiagnostic? with
       | some emitDiagnostic =>
           try
             emitDiagnostic <|
-              streamDiagnosticOfDiagnostic root diagnosticParam.uri
-                (diagnosticParam.version?.bind fun version =>
-                  if version > 0 then some { session := sessionToken, revision := version.toNat }
-                  else none) diagnostic
+              streamDiagnosticOfDiagnostic root diagnosticParam.uri snapshot? diagnostic
           catch _ =>
             pure ()
       | none =>
@@ -271,7 +273,7 @@ def observePublishDiagnostics
     (sessionToken : String)
     (pending : PendingRequest)
     (diagnosticParam : PublishDiagnosticsParams) : IO Unit := do
-  match trackedPublishDiagnosticsParam? (pending.tracked?.map Prod.fst) diagnosticParam with
+  match trackedPublishDiagnosticsParam? pending.tracked? diagnosticParam with
   | none =>
       pure ()
   | some diagnosticParam =>
@@ -281,18 +283,6 @@ def observePublishDiagnostics
       let seen ←
         emitNewTrackedDiagnostics root sessionToken seen diagnosticParam pending.diagnosticScope pending.emitDiagnostic?
       pending.seenDiagnosticKeysRef.set seen
-
-def observeDiagnostics
-    [ToJson α]
-    (root : System.FilePath)
-    (sessionToken : String)
-    (pending : PendingRequest)
-    (param : α) : IO Unit := do
-  match fromJson? (toJson param) with
-  | .ok (diagnosticParam : PublishDiagnosticsParams) =>
-      observePublishDiagnostics root sessionToken pending diagnosticParam
-  | .error _ =>
-      pure ()
 
 end PendingRequest
 

@@ -415,7 +415,7 @@ private def checkDiagnosticLineCanExceedProgressRange : IO Unit := do
   let pending ← mkPending
     (progress? := some finished)
     (tracked? := some ("file:///workspace/Foo.lean", 1))
-  PendingRequest.observeDiagnostics
+  PendingRequest.observePublishDiagnostics
     (System.FilePath.mk ".")
     "test-session"
     pending
@@ -437,7 +437,7 @@ private def observeStreamedDiagnostics
     (diagnosticScope := diagnosticScope)
     (emitDiagnostic? := some fun diagnostic =>
       streamedRef.modify (·.push diagnostic))
-  PendingRequest.observeDiagnostics
+  PendingRequest.observePublishDiagnostics
     (System.FilePath.mk "/workspace")
     "test-session"
     pending
@@ -451,7 +451,7 @@ private def checkDiagnosticEmitterFailureIsolation : IO Unit := do
     (diagnosticScope := .all)
     (emitDiagnostic? := some fun _ =>
       throw <| IO.userError "diagnostic sink failed")
-  PendingRequest.observeDiagnostics
+  PendingRequest.observePublishDiagnostics
     (System.FilePath.mk "/workspace")
     "test-session"
     pending
@@ -507,7 +507,35 @@ private def checkSetupFileProgressStreamsByScope : IO Unit := do
   require "all diagnostic scope streams user-facing setup-file status and warning"
     (allStreamed.map (·.message) == #[setupProgress.message, warning.message])
 
+private def checkDiagnosticSnapshotIsolation : IO Unit := do
+  let uri := "file:///workspace/Foo.lean"
+  let diagnostic := mkDiagnosticWithSeverity (mkRange 1 0 1 4) .warning "same warning"
+  let streamed ← IO.mkRef (#[] : Array StreamDiagnostic)
+  let pending ← mkPending (tracked? := some (uri, 2)) (diagnosticScope := .all)
+    (emitDiagnostic? := some fun diagnostic => streamed.modify (·.push diagnostic))
+  -- Explicit revisions belong to one document lifetime, even when the URI matches.
+  for version in [1, 3, 0, -1] do
+    PendingRequest.observePublishDiagnostics (System.FilePath.mk "/workspace") "test-session" pending {
+      uri, version? := some version, diagnostics := #[diagnostic]
+    }
+  require "other revisions do not establish completion evidence" (!(← pending.diagnosticsSeenRef.get))
+  require "other revisions do not replace current diagnostics" ((← pending.diagnosticsRef.get).isEmpty)
+  require "other revisions do not stream diagnostics" ((← streamed.get).isEmpty)
+  -- Unversioned observations remain best effort, but cannot consume a versioned stream event.
+  for version? in [none, some 2, some 2] do
+    PendingRequest.observePublishDiagnostics (System.FilePath.mk "/workspace") "test-session" pending {
+      uri, version?, diagnostics := #[diagnostic]
+    }
+  require "matching diagnostics establish completion evidence" (← pending.diagnosticsSeenRef.get)
+  require "deduplication preserves a newly identified snapshot"
+    ((← streamed.get).map (·.snapshot?) == #[none, some ⟨"test-session", 2⟩])
+  PendingRequest.observePublishDiagnostics (System.FilePath.mk "/workspace") "test-session" pending {
+    uri, version? := some 2, diagnostics := #[]
+  }
+  require "a current empty publication clears current diagnostics" ((← pending.diagnosticsRef.get).isEmpty)
+
 def main : IO Unit := do
+  checkDiagnosticSnapshotIsolation
   checkActiveRegistry
   checkActiveRegistryCloseDrain
   checkPendingCancellationIdentity
