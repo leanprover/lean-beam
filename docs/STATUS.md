@@ -381,7 +381,7 @@ Near-term work is mostly about hardening and simplifying:
 - keep the `sync`, `refresh`, `save`, and `close-save` projections aligned as the canonical
   sync-result schema evolves
 - keep Beam-daemon-side conveniences useful without turning them into a large public surface too early
-- add a short comparison against Pantograph in the docs, to clarify where `runAt` fits among nearby Lean tooling
+- keep the related-tools comparison current as nearby Lean agent and proof-search tooling evolves
 - keep cross-surface utility code such as root resolution and workspace-relative path derivation in
   shared Beam modules, not copied across CLI, broker, MCP, and test helpers
 

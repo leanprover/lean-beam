@@ -58,6 +58,10 @@ the real module context.
 Together, the LSP extensions, CLI, and MCP interface are intended to make that loop cheaper and more
 structured than repeatedly creating scratch files or using full `lake build` runs as the inner loop.
 
+People comparing Lean tool integrations should also see
+[docs/RELATED_TOOLS.md](docs/RELATED_TOOLS.md) for a descriptive comparison with `lean-lsp-mcp` and
+Pantograph.
+
 Beam is implemented in Lean, which lets it integrate more directly with Lean server state, saved
 snapshots, and synchronization where that matters.
 
@@ -147,6 +151,8 @@ For users:
   targets.
 - [docs/ROCQ.md](docs/ROCQ.md): optional Rocq goal probes for Rocq-to-Lean porting.
 - [docs/FEEDBACK.md](docs/FEEDBACK.md): feedback report cards for useful bug reports.
+- [docs/RELATED_TOOLS.md](docs/RELATED_TOOLS.md): descriptive comparison with nearby Lean agent and
+  proof-search tools.
 - [docs/STATUS.md](docs/STATUS.md): current scope, limitations, and direction.
 - [CHANGELOG.md](CHANGELOG.md): release-facing changes.
 
