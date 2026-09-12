@@ -1,0 +1,90 @@
+digraph BeamMessagePaths {
+  graph [
+    rankdir=LR,
+    bgcolor="#ffffff",
+    fontname="sans-serif",
+    fontsize=18,
+    label="Beam message paths",
+    labelloc=t,
+    nodesep=0.55,
+    ranksep=0.75,
+    pad=0.2
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#f7f8fa",
+    color="#52606d",
+    fontname="sans-serif",
+    fontsize=11,
+    margin="0.16,0.10"
+  ];
+  edge [color="#52606d", fontname="sans-serif", fontsize=9];
+
+  subgraph cluster_callers {
+    label="Callers";
+    color="#9fb3c8";
+    style="rounded,dashed";
+    human [label="Human or agent shell"];
+    mcp_client [label="MCP client / agent"];
+    { rank=same; human; mcp_client; }
+  }
+
+  subgraph cluster_cli {
+    label="CLI-owned project session";
+    color="#3e7cb1";
+    style="rounded";
+    wrapper [label="scripts/lean-beam\nruntime discovery", fillcolor="#e8f1fb"];
+    cli [label="beam-cli\ncommands and foreground owner", fillcolor="#e8f1fb"];
+    descriptor [
+      label="private session descriptor\ngeneration + endpoint + capability",
+      shape=cylinder,
+      style="filled",
+      fillcolor="#fff6db"
+    ];
+    daemon [label="beam-daemon\nTCP transport", fillcolor="#e8f1fb"];
+    cli_runtime [label="ServerRuntime\nfrozen project workspace", fillcolor="#e8f1fb"];
+
+    wrapper -> cli [label="exec"];
+    cli -> daemon [
+      label="serve: spawn + owner pipe\nconnect + capability-bound operation\nauthenticated stop\ninterrupt: close connection"
+    ];
+    daemon -> cli [
+      label="typed ready message\nServerHello: generation identity\nprogress, diagnostics, response"
+    ];
+    cli -> descriptor [
+      label="publish / read lifecycle state\nordinary call: select session",
+      dir=both
+    ];
+    daemon -> cli_runtime;
+  }
+
+  subgraph cluster_mcp {
+    label="MCP-owned multi-workspace session";
+    color="#7a5195";
+    style="rounded";
+    mcp [label="lean-beam-mcp\nJSON-RPC stdio transport", fillcolor="#f1eafa"];
+    projection [label="MCP tool projection\nworkspace selection", fillcolor="#f1eafa"];
+    mcp_runtime [label="ServerRuntime\nlazy workspace cache", fillcolor="#f1eafa"];
+
+    mcp -> projection [label="tool call / result", dir=both];
+    projection -> mcp_runtime [label="typed operation / result", dir=both];
+    mcp -> mcp_runtime [label="cancel notification", style=dashed];
+  }
+
+  subgraph cluster_backends {
+    label="Workspace backends";
+    color="#4c956c";
+    style="rounded";
+    lean [label="Lean language server\nBeam LSP plugin", fillcolor="#e8f5eb"];
+    rocq [label="coq-lsp\ntemporary Rocq path", fillcolor="#e8f5eb"];
+    { rank=same; lean; rocq; }
+  }
+
+  human -> wrapper;
+  mcp_client -> mcp [label="JSON-RPC stdio", dir=both];
+  cli_runtime -> lean [label="LSP requests and notifications", dir=both];
+  cli_runtime -> rocq [label="goal probes", dir=both];
+  mcp_runtime -> lean [label="LSP requests and notifications", dir=both];
+  mcp_runtime -> rocq [label="goal probes", dir=both];
+}

@@ -1,0 +1,61 @@
+digraph BeamConfigurationFlow {
+  graph [
+    rankdir=LR,
+    bgcolor="#ffffff",
+    fontname="sans-serif",
+    fontsize=18,
+    label="Wrapper backend configuration flow",
+    labelloc=t,
+    nodesep=0.45,
+    ranksep=0.75,
+    pad=0.2
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fillcolor="#f7f8fa",
+    color="#52606d",
+    fontname="sans-serif",
+    fontsize=11,
+    margin="0.16,0.10"
+  ];
+  edge [color="#52606d", fontname="sans-serif", fontsize=9];
+
+  root [label="canonical project root"];
+  required [label="required backend"];
+  resolver [label="desiredConfig", fillcolor="#e8f1fb"];
+  lean_resolve [label="resolve Lean bundle"];
+  rocq_resolve [label="resolve temporary Rocq command"];
+  lean_config [
+    label="LeanBackendConfig\ncommand + plugin\ntoolchain + bundleId",
+    fillcolor="#e8f5eb"
+  ];
+  rocq_config [label="RocqBackendConfig\ncommand", fillcolor="#e8f5eb"];
+  backend_set [
+    label="BackendSet\nnonempty and complete",
+    shape=hexagon,
+    fillcolor="#fff6db"
+  ];
+  desired [
+    label="DesiredConfig\nroot + backends + daemonBin",
+    fillcolor="#e8f1fb"
+  ];
+  hash [label="derived configuration hash\nstable ordered fields"];
+  args [label="daemon arguments"];
+  binding [label="WorkspaceBinding\nprivate wire shape"];
+  mcp_config [label="mcp-config output"];
+
+  root -> resolver;
+  required -> resolver;
+  resolver -> lean_resolve;
+  resolver -> rocq_resolve;
+  lean_resolve -> lean_config;
+  rocq_resolve -> rocq_config;
+  lean_config -> backend_set;
+  rocq_config -> backend_set;
+  backend_set -> desired;
+  desired -> hash;
+  desired -> args;
+  desired -> binding;
+  desired -> mcp_config;
+}

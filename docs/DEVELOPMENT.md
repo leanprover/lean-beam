@@ -29,6 +29,8 @@ If the question is "how do I work on the repo safely and efficiently?", start he
 
 ## Code Organization
 
+- [Architecture](ARCHITECTURE.md): rendered component message paths, runtime lifetimes, and wrapper
+  backend-configuration flow.
 - `Beam.LSP`: Lean LSP server plugin code, including the `$/lean/runAt` request for speculative
   execution at saved document positions.
 - `Beam`: shared broker, CLI, and MCP layer over Lean LSP plus Beam-specific extensions.
