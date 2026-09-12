@@ -279,7 +279,7 @@ private structure RequestStatusState where
   emitted : Bool := false
 
 private structure RequestStatusEmitter where
-  requestId : Json
+  requestId : RequestId
   tool : ToolName
   path? : Option String
   state : Std.Mutex RequestStatusState
@@ -332,7 +332,7 @@ private def RequestStatusEmitter.create
   let timer ← Std.Internal.UV.Timer.mk delayMs.toUInt64 false
   try
     let emitter : RequestStatusEmitter := {
-      requestId := requestId.json
+      requestId
       tool
       path?
       state := ← Std.Mutex.new {}

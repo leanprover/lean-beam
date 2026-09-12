@@ -34,26 +34,27 @@ def BrokerFailureCode.name : BrokerFailureCode → String
   | .saveTargetNotModule => saveTargetNotModuleCode
   | .internalError => "internalError"
 
-def BrokerFailureCode.all : Array BrokerFailureCode := #[
-  .invalidParams,
-  .requestCancelled,
-  .contentModified,
-  .workerExited,
-  .syncBarrierIncomplete,
-  .saveTraceStale,
-  .saveUnsupportedSetup,
-  .saveTargetNotModule,
-  .internalError
-]
+instance : ToJson BrokerFailureCode where
+  toJson code := toJson code.name
 
-def BrokerFailureCode.ofName? (name : String) : Option BrokerFailureCode :=
-  BrokerFailureCode.all.find? fun code => code.name == name
+instance : FromJson BrokerFailureCode where
+  fromJson?
+    | .str "invalidParams" => pure .invalidParams
+    | .str "requestCancelled" => pure .requestCancelled
+    | .str "contentModified" => pure .contentModified
+    | .str "workerExited" => pure .workerExited
+    | .str "syncBarrierIncomplete" => pure .syncBarrierIncomplete
+    | .str "saveTraceStale" => pure .saveTraceStale
+    | .str "saveUnsupportedSetup" => pure .saveUnsupportedSetup
+    | .str "saveTargetNotModule" => pure .saveTargetNotModule
+    | .str "internalError" => pure .internalError
+    | json => throw s!"expected Beam broker failure code, got {json.compress}"
 
 structure BrokerFailure where
   code : BrokerFailureCode
   message : String := ""
   data? : Option Json := none
-  deriving Inhabited
+  deriving Inhabited, FromJson, ToJson
 
 def BrokerFailure.toResponseFailure (failure : BrokerFailure) : ResponseFailure :=
   {

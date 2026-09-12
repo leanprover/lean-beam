@@ -426,7 +426,7 @@ instance : ToJson ToolStatusState where
   toJson state := toJson state.key
 
 structure ToolStatus where
-  requestId : Json
+  requestId : RequestId
   tool : String
   state : ToolStatusState
   message : String
@@ -437,7 +437,7 @@ instance : ToJson ToolStatus where
   toJson status :=
     Json.mkObj <|
       [
-        ("requestId", status.requestId),
+        ("requestId", status.requestId.json),
         ("tool", toJson status.tool),
         ("state", toJson status.state),
         ("message", toJson status.message)

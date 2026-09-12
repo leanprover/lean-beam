@@ -51,6 +51,43 @@ structure LakeHelperSaveSpec extends LakeHelperWriteTraceRequest where
 structure LakeHelperAck where
   deriving FromJson, ToJson
 
+private def requireOnlyResponseFields
+    (allowed : Array String) : Json → Except String Unit
+  | .obj fields =>
+      let unexpected := fields.foldl (init := #[]) fun unexpected field _ =>
+        if allowed.contains field then unexpected else unexpected.push field
+      unless unexpected.isEmpty do
+        throw s!"target Lake helper response accepts no undeclared fields: {String.intercalate ", " unexpected.toList}"
+  | other => throw s!"target Lake helper response must be an object, got {other.compress}"
+
+namespace LakeHelperResponse
+
+/-- Encode one typed result on the private target-built Lake helper boundary. -/
+def encode [ToJson α] : Except BrokerFailure α → Json
+  | .ok result => Json.mkObj [
+        ("ok", toJson true),
+        ("result", toJson result)
+      ]
+  | .error failure => Json.mkObj [
+        ("ok", toJson false),
+        ("error", toJson failure)
+      ]
+
+/-- Decode one typed result from the private target-built Lake helper boundary. -/
+def decode [FromJson α] (json : Json) : Except String (Except BrokerFailure α) := do
+  requireOnlyResponseFields #["ok", "result", "error"] json
+  let ok ← json.getObjValAs? Bool "ok"
+  if ok then
+    if (json.getObjVal? "error").isOk then
+      throw "target Lake helper response with ok=true must not include 'error'"
+    pure <| .ok (← json.getObjValAs? α "result")
+  else
+    if (json.getObjVal? "result").isOk then
+      throw "target Lake helper response with ok=false must not include 'result'"
+    pure <| .error (← json.getObjValAs? BrokerFailure "error")
+
+end LakeHelperResponse
+
 inductive LakeHelperOperation where
   | serverEnv
   | prepareSave
@@ -96,33 +133,16 @@ private def runLakeHelperRequest [ToJson α] [FromJson β]
           helperOutputSummary out.stdout out.stderr
     }
   let response ←
-    match Json.parse out.stdout >>= fromJson? (α := Response) with
+    match Json.parse out.stdout >>= LakeHelperResponse.decode (α := β) with
     | .ok response => pure response
     | .error err =>
         return .error {
           code := .internalError
           message :=
-            s!"target Lake helper '{operation.key}' returned invalid JSON: {err}: " ++
+            s!"target Lake helper '{operation.key}' returned an invalid response: {err}: " ++
               helperOutputSummary out.stdout out.stderr
         }
-  match response with
-  | .successResult result _ =>
-      match fromJson? result with
-      | .ok decoded => pure <| .ok decoded
-      | .error err =>
-          pure <| .error {
-            code := .internalError
-            message := s!"target Lake helper '{operation.key}' returned an invalid result: {err}"
-          }
-  | .errorResult failure =>
-      let error := failure.error
-      let some code := BrokerFailureCode.ofName? error.code
-        | return .error {
-            code := .internalError
-            message :=
-              s!"target Lake helper '{operation.key}' returned unknown error code '{error.code}'"
-          }
-      pure <| .error { code, message := error.message, data? := error.data? }
+  pure response
 
 /-- Ask the target-built helper for the Lean server environment. -/
 def runLakeHelperServerEnv

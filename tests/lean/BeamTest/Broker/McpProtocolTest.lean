@@ -723,8 +723,10 @@ private def checkProgressProtocol : IO Unit := do
         { setupDiagnostic with message := "ordinary Lean information" } ==
         .diagnostic
 
+  let statusRequestId ← expectOk "decode status request id" <|
+    Beam.Mcp.RequestId.fromJson? (toJson (42 : Nat))
   let statusNotification := Beam.Mcp.toolStatusNotification {
-    requestId := toJson (42 : Nat)
+    requestId := statusRequestId
     tool := "lean_sync"
     state := .preparingDependencies
     message := setupMessage

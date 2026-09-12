@@ -507,12 +507,6 @@ private def checkSyncFileResultDecode : IO Unit := do
     syncFileResultJson 7 incompleteReadiness
 
 private def checkFailureResponseConversions : IO Unit := do
-  for code in BrokerFailureCode.all do
-    require s!"broker failure code '{code.name}' should round-trip from its wire name"
-      (BrokerFailureCode.ofName? code.name == some code)
-  require "unknown broker failure code should remain unknown"
-    (BrokerFailureCode.ofName? "not-a-broker-failure" |>.isNone)
-
   let data := Json.mkObj [("uri", toJson "file:///A.lean")]
   let failure : BrokerFailure := {
     code := .contentModified
@@ -541,6 +535,78 @@ private def checkFailureResponseConversions : IO Unit := do
         (failure.error.code == "backendSpecific")
       require "response failure preserves progress metadata"
         (failure.fileProgress? == some progress)
+
+private def checkLakeHelperResponseProtocol : IO Unit := do
+  let failureCodes : Array BrokerFailureCode := #[
+    .invalidParams,
+    .requestCancelled,
+    .contentModified,
+    .workerExited,
+    .syncBarrierIncomplete,
+    .saveTraceStale,
+    .saveUnsupportedSetup,
+    .saveTargetNotModule,
+    .internalError
+  ]
+  for code in failureCodes do
+    require s!"broker failure code '{code.name}' should round-trip" <|
+      (fromJson? (α := BrokerFailureCode) (toJson code)).toOption == some code
+
+  let success : Except BrokerFailure LakeHelperAck := .ok {}
+  let successJson := LakeHelperResponse.encode success
+  requireJsonBool "Lake helper success" "ok" true successJson
+  discard <| requireObjVal "Lake helper success" "result" successJson
+  requireFieldAbsent "Lake helper success" "error" successJson
+  match LakeHelperResponse.decode (α := LakeHelperAck) successJson with
+  | .ok (.ok _) => pure ()
+  | .ok (.error failure) =>
+      throw <| IO.userError s!"Lake helper success decoded as failure: {failure.message}"
+  | .error err =>
+      throw <| IO.userError s!"Lake helper success failed to round-trip: {err}"
+
+  let data := Json.mkObj [("path", toJson "Demo.lean")]
+  let failure : BrokerFailure := {
+    code := .saveTraceStale
+    message := "save trace is stale"
+    data? := some data
+  }
+  let response : Except BrokerFailure LakeHelperAck := .error failure
+  let failureJson := LakeHelperResponse.encode response
+  requireJsonBool "Lake helper failure" "ok" false failureJson
+  requireFieldAbsent "Lake helper failure" "result" failureJson
+  let failurePayload ← requireObjVal "Lake helper failure" "error" failureJson
+  requireJsonString "Lake helper failure payload" "code" failure.code.name failurePayload
+  requireJsonString "Lake helper failure payload" "message" failure.message failurePayload
+  let failureData ← requireObjVal "Lake helper failure payload" "data" failurePayload
+  require "Lake helper failure payload preserves data" (failureData == data)
+  match LakeHelperResponse.decode (α := LakeHelperAck) failureJson with
+  | .ok (.error decoded) =>
+      require "Lake helper failure preserves its typed code" (decoded.code == failure.code)
+      require "Lake helper failure preserves its message" (decoded.message == failure.message)
+      require "Lake helper failure preserves its data" (decoded.data? == failure.data?)
+  | .ok (.ok _) =>
+      throw <| IO.userError "Lake helper failure decoded as success"
+  | .error err =>
+      throw <| IO.userError s!"Lake helper failure failed to round-trip: {err}"
+
+  let expectLakeHelperDecodeFailure (label : String) (json : Json) : IO Unit := do
+    match LakeHelperResponse.decode (α := LakeHelperAck) json with
+    | .ok _ => throw <| IO.userError s!"{label}: expected decode failure"
+    | .error _ => pure ()
+  expectLakeHelperDecodeFailure "Lake helper response rejects unknown failure codes" <| Json.mkObj [
+      ("ok", toJson false),
+      ("error", Json.mkObj [
+        ("code", toJson "not-a-broker-failure"),
+        ("message", toJson "unknown")
+      ])
+    ]
+  expectLakeHelperDecodeFailure "Lake helper response rejects mixed success and failure payloads" <| Json.mkObj [
+      ("ok", toJson true),
+      ("result", toJson ({} : LakeHelperAck)),
+      ("error", toJson failure)
+    ]
+  expectLakeHelperDecodeFailure "Lake helper response rejects undeclared fields" <|
+    (LakeHelperResponse.encode success).setObjVal! "legacy" Json.null
 
 private def checkTypedLakeSaveTraceFailure : IO Unit := do
   let missingHelper :=
@@ -1651,6 +1717,7 @@ def main : IO Unit := do
   checkOrderedJsonPretty
   checkSyncFileResultDecode
   checkFailureResponseConversions
+  checkLakeHelperResponseProtocol
   checkTypedLakeSaveTraceFailure
   checkDocumentVersionMismatchErrorData
   checkReadinessBoundary

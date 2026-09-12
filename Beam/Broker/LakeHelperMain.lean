@@ -16,25 +16,28 @@ private def readRequest [FromJson α] : IO α := do
   let json ← IO.ofExcept <| Json.parse input
   IO.ofExcept <| fromJson? json
 
-private def writeResponse (response : Response) : IO Unit := do
-  IO.println (toJson response).compress
+private def writeResponse [ToJson α] (response : Except BrokerFailure α) : IO Unit := do
+  IO.println (LakeHelperResponse.encode response).compress
+
+private def writeFailure (failure : BrokerFailure) : IO Unit :=
+  writeResponse (α := Json) <| .error failure
 
 private def runServerEnv : IO Unit := do
   let request : LakeHelperEnvRequest ← readRequest
   let serverEnv ← leanServerLakeEnv
     (System.FilePath.mk request.root) (some request.leanCmd)
-  writeResponse <| Response.success (toJson serverEnv)
+  writeResponse <| .ok serverEnv
 
 private def runPrepareSave : IO Unit := do
   let request : LakeHelperSaveRequest ← readRequest
   match ← lakeHelperSaveSpec request with
-  | .ok spec => writeResponse <| Response.success (toJson spec)
-  | .error failure => writeResponse failure.toResponse
+  | .ok spec => writeResponse <| .ok spec
+  | .error failure => writeFailure failure
 
 private def runWriteSaveTrace : IO Unit := do
   let request : LakeHelperWriteTraceRequest ← readRequest
   lakeHelperWriteLeanSaveTrace request
-  writeResponse <| Response.success (toJson ({} : LakeHelperAck))
+  writeResponse <| .ok ({} : LakeHelperAck)
 
 def main (args : List String) : IO Unit := do
   try
@@ -47,7 +50,7 @@ def main (args : List String) : IO Unit := do
         | none => throw <| IO.userError "invalid target Lake helper operation"
     | _ => throw <| IO.userError "invalid target Lake helper operation"
   catch error =>
-    writeResponse <| BrokerFailure.toResponse {
+    writeFailure {
       code := .internalError
       message := error.toString
     }
