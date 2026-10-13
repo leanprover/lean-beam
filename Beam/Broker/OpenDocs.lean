@@ -17,6 +17,7 @@ namespace OpenDocs
 
 structure SessionView where
   root : System.FilePath
+  sessionToken : String
   docs : DocumentState.Docs := {}
 
 inductive DiskStatus where
@@ -48,6 +49,7 @@ def docDiskStatus (path : System.FilePath) (docState : DocState) : IO DiskStatus
 
 def docJson
     (root : System.FilePath)
+    (sessionToken : String)
     (uri : DocumentUri)
     (docState : DocState) : IO Json := do
   let path? := System.Uri.fileUriToPath? uri
@@ -65,7 +67,7 @@ def docJson
   pure <| Json.mkObj <|
     [
       ("uri", toJson uri),
-      ("version", toJson docState.version),
+      ("snapshot", toJson ({ session := sessionToken, revision := docState.version } : SnapshotRef)),
       ("diskStatus", toJson status),
       ("checkpointed", toJson checkpointed)
     ] ++
@@ -84,7 +86,7 @@ def sessionJson (session? : Option SessionView) : IO Json := do
       ]
   | some session =>
       let files ← session.docs.toList.mapM fun (uri, docState) =>
-        docJson session.root uri docState
+        docJson session.root session.sessionToken uri docState
       pure <| Json.mkObj [
         ("active", toJson true),
         ("files", Json.arr files.toArray)

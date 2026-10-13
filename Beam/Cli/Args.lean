@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Lean
 import Beam.Broker.Protocol
+import Beam.Lean.Operation
 import Beam.Path
 import Beam.LSP.Todo
 
@@ -28,6 +29,17 @@ def parseNatArg (name value : String) : IO Nat := do
   let some n := value.toNat?
     | throw <| IO.userError s!"invalid {name} '{value}'"
   pure n
+
+def parseLeanDocumentArgs (path snapshotText : String) : IO Beam.Lean.DocumentInput := do
+  pure { path, snapshot := ← IO.ofExcept <| SnapshotRef.decode snapshotText }
+
+def parseLeanPositionArgs
+    (path snapshotText lineText characterText : String) : IO Beam.Lean.PositionInput := do
+  pure {
+    toDocumentInput := ← parseLeanDocumentArgs path snapshotText
+    line := ← parseNatArg "line" lineText
+    character := ← parseNatArg "character" characterText
+  }
 
 def joinTextArgs (args : List String) : Option String :=
   if args.isEmpty then none else some <| String.intercalate " " args
@@ -137,7 +149,7 @@ def parseLeanCloseSaveArgs (args : List String) : IO Beam.Broker.DiagnosticScope
   parseLeanDiagnosticScopeArgs "close-save" args
 
 def leanReferencesUsage : String :=
-  "usage: lean-beam [--root PATH] references <path> <version> <line> <character> [--include-declaration|--exclude-declaration]"
+  "usage: lean-beam [--root PATH] references <path> <snapshot> <line> <character> [--include-declaration|--exclude-declaration]"
 
 def parseLeanReferencesArgs (args : List String) : IO Bool := do
   match args with
@@ -147,7 +159,7 @@ def parseLeanReferencesArgs (args : List String) : IO Bool := do
   | _ => throw <| IO.userError leanReferencesUsage
 
 def leanGoalsUsage : String :=
-  "usage: lean-beam [--root PATH] goals before|after <path> <version> <line> <character>"
+  "usage: lean-beam [--root PATH] goals before|after <path> <snapshot> <line> <character>"
 
 def parseLeanGoalsModeArg (mode : String) : IO GoalMode := do
   match mode with
@@ -170,7 +182,7 @@ private def parseTodoSuggestArg (value : String) : IO Beam.LSP.Todo.TodoSuggestM
       throw <| IO.userError s!"invalid todo suggest mode '{value}' (expected one of: {allowed}): {err}"
 
 def leanTodoUsage : String :=
-  "usage: lean-beam [--root PATH] todo <path> <version> <startLine> <startCharacter> <endLine> <endCharacter> [--kind <kind> ...] [--suggest none|basic]"
+  "usage: lean-beam [--root PATH] todo <path> <snapshot> <startLine> <startCharacter> <endLine> <endCharacter> [--kind <kind> ...] [--suggest none|basic]"
 
 def parseLeanTodoArgs (args : List String) :
     IO (Option (Array Beam.LSP.Todo.TodoKind) × Option Beam.LSP.Todo.TodoSuggestMode) := do

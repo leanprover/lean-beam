@@ -345,7 +345,7 @@ set_option linter.unusedVariables true in
 theorem warnOnly (n : Nat) : True := by
   trivial
 
--- close-save fresh version
+-- close-save fresh snapshot
 EOF
 
   cat > SaveSmoke/B.lean <<'EOF'

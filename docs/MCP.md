@@ -240,8 +240,10 @@ the broken identity. Restart an agent or MCP client for `runtime_current: false`
 work.
 
 Direct MCP clients should call `lean_update` or `lean_sync` before snapshot-bound operations and
-pass the returned `version` for the same descriptor and path. `lean_workspace_symbols` is
-workspace-scoped but has no document version. `lean_run_with`, `lean_run_with_linear`, and
+pass the returned `snapshot` for the same descriptor and path. Token lifetimes and stale-state
+recovery follow the [source snapshot contract](SYNC_AND_DIAGNOSTICS.md#command-model).
+`lean_workspace_symbols` is
+workspace-scoped but has no document snapshot. `lean_run_with`, `lean_run_with_linear`, and
 `lean_release` take an opaque handle returned by a previous handle operation. The supplied workspace
 descriptor must resolve to the same private runtime identity carried by that handle. `lean_goals`
 also requires `mode: "before"` or `mode: "after"`.
@@ -261,7 +263,7 @@ needed. Both commands read the current on-disk file; neither applies or recovers
 
 `lean_code_action_resolve` takes a `code_action` payload previously returned by `lean_todo`. Clients
 apply any returned LSP `WorkspaceEdit` themselves, then call `lean_update` or `lean_sync` again so
-Beam observes the edited file and reports the new version. Use `lean_sync` instead of `lean_update`
+Beam observes the edited file and reports the new snapshot. Use `lean_sync` instead of `lean_update`
 when the client also needs the diagnostics/readiness barrier.
 
 `lean_save` and `lean_close_save` create development checkpoints from the accepted Lean server
@@ -397,7 +399,7 @@ The `structuredContent` for a clean `lean_sync` has this semantic shape (counts 
 {
   "workspace": {"root": "/work/demo"},
   "path": "Main.lean",
-  "version": 3,
+  "snapshot": "example-session/3",
   "diagnostics": {
     "counts": {"error": 0, "warning": 0, "information": 0, "hint": 0, "unknown": 0, "total": 0}
   },
@@ -413,7 +415,7 @@ The `structuredContent` for a clean `lean_sync` has this semantic shape (counts 
 ```
 
 `lean_save` returns artifact paths plus `sync` containing that same
-path/version/diagnostics/readiness object. Optional backend artifacts (`olean_server`,
+path/snapshot/diagnostics/readiness object. Optional backend artifacts (`olean_server`,
 `olean_private`, `ir`, and `bc`) appear only when Lean produced them:
 
 ```json
@@ -421,7 +423,7 @@ path/version/diagnostics/readiness object. Optional backend artifacts (`olean_se
   "workspace": {"root": "/work/demo"},
   "path": "Main.lean",
   "module": "Main",
-  "version": 3,
+  "snapshot": "example-session/3",
   "source_hash": "9a9bdc9950870951",
   "olean": "/work/demo/.lake/build/lib/lean/Main.olean",
   "ilean": "/work/demo/.lake/build/lib/lean/Main.ilean",
@@ -429,7 +431,7 @@ path/version/diagnostics/readiness object. Optional backend artifacts (`olean_se
   "trace": "/work/demo/.lake/build/lib/lean/Main.olean.trace",
   "sync": {
     "path": "Main.lean",
-    "version": 3,
+    "snapshot": "example-session/3",
     "diagnostics": {
       "counts": {"error": 0, "warning": 0, "information": 0, "hint": 0, "unknown": 0, "total": 0}
     },
@@ -474,11 +476,11 @@ tool arguments, but only on the tools listed below. Log delivery is session-wide
 
 | Tool or family | With `_meta.progressToken` | Without a token | Diagnostic arguments | Stable final result |
 | --- | --- | --- | --- | --- |
-| `lean_sync`, `lean_refresh` | Preparation, throttled Lake setup, and file-progress updates. | One `beam.status` on the first setup observation or after two seconds. | `diagnostic_scope`, `diagnostics_in_result` | Path/version, complete diagnostic counts, readiness, `document_progress`, and optional diagnostic items. |
+| `lean_sync`, `lean_refresh` | Preparation, throttled Lake setup, and file-progress updates. | One `beam.status` on the first setup observation or after two seconds. | `diagnostic_scope`, `diagnostics_in_result` | Path/snapshot, complete diagnostic counts, readiness, `document_progress`, and optional diagnostic items. |
 | `lean_save`, `lean_close_save` | Preparation, throttled Lake setup, and file-progress updates. | One `beam.status` on the first setup observation or after two seconds. | `diagnostic_scope` | Checkpoint result embedding the same sync/readiness result and `document_progress`; no diagnostic replay argument. |
 | `lean_run_at`, `lean_run_at_handle` | Preparation, Lake setup when observed, and file progress when Lean publishes it. | One `beam.status` on the first setup observation or after two seconds. | None | Run result messages, traces, proof state, and optional handle; no final `document_progress` or full-file diagnostic replay. |
 | `lean_run_with`, `lean_run_with_linear` | Preparation and file progress when Lean publishes it. | One `beam.status` after two seconds. | None | Continuation result and optional next handle. |
-| `lean_update` | Preparation phase only. | One `beam.status` after two seconds. | None | New document version and changed flag; no readiness barrier. |
+| `lean_update` | Preparation phase only. | One `beam.status` after two seconds. | None | New document snapshot and changed flag; no readiness barrier. |
 | `lean_hover`, `lean_signature_help`, `lean_definition`, `lean_references`, `lean_document_symbols`, `lean_goals`, `lean_todo`, `lean_code_action_resolve` | Preparation and file progress when Lean publishes it. | One `beam.status` after two seconds. | None | Operation-specific structured result. |
 | `lean_workspace_symbols` | Preparation phase only. | One pathless `beam.status` after two seconds. | None | Workspace-symbol result. |
 | `lean_release`, `lean_close` | Preparation, plus file progress for release when Lean publishes it. | One `beam.status` after two seconds if the normally short call is delayed. | None | Release/close result. |

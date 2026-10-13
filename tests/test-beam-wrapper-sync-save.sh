@@ -28,8 +28,8 @@ beam_wrapper_start_owner "$standalone_root"
     exit 1
   fi
 
-  probe_before_version="$(beam_wrapper_update_version "initial SaveSmoke/B.lean" "$beam_script" update SaveSmoke/B.lean)"
-  probe_before="$("$beam_script" run-at SaveSmoke/B.lean "$probe_before_version" 0 2 "#eval bVal")"
+  probe_before_snapshot="$(beam_wrapper_update_snapshot "initial SaveSmoke/B.lean" "$beam_script" update SaveSmoke/B.lean)"
+  probe_before="$("$beam_script" run-at SaveSmoke/B.lean "$probe_before_snapshot" 0 2 "#eval bVal")"
   if [ "$(BEAM_JSON_PAYLOAD="$probe_before" read_json_text_field ok)" != "true" ]; then
     echo "expected initial wrapper probe to succeed" >&2
     printf '%s\n' "$probe_before" >&2
@@ -71,8 +71,8 @@ beam_wrapper_start_owner "$standalone_root"
     printf '%s\n' "$sync_out" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$sync_out" read_json_text_field result.version)" != "2" ]; then
-    echo "expected sync after first edit to report version 2" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$sync_out" read_json_text_field result.snapshot)" = "$probe_before_snapshot" ]; then
+    echo "expected sync after first edit to return a fresh snapshot" >&2
     printf '%s\n' "$sync_out" >&2
     exit 1
   fi
@@ -96,8 +96,8 @@ beam_wrapper_start_owner "$standalone_root"
     exit 1
   fi
 
-  probe_after_version="$(json_text_field "$sync_out" result.version)"
-  probe_after="$("$beam_script" run-at SaveSmoke/B.lean "$probe_after_version" 0 2 "#eval bVal")"
+  probe_after_snapshot="$(json_text_field "$sync_out" result.snapshot)"
+  probe_after="$("$beam_script" run-at SaveSmoke/B.lean "$probe_after_snapshot" 0 2 "#eval bVal")"
   if [ "$(BEAM_JSON_PAYLOAD="$probe_after" read_json_text_field ok)" != "true" ]; then
     echo "expected wrapper probe after sync to succeed" >&2
     printf '%s\n' "$probe_after" >&2
@@ -116,13 +116,13 @@ beam_wrapper_start_owner "$standalone_root"
     exit 1
   fi
   assert_json_completed_file_progress "save after synced edit" "$save_out" fileProgress
-  if [ "$(BEAM_JSON_PAYLOAD="$save_out" read_json_text_field result.version)" != "2" ]; then
-    echo "expected save to report saved version 2" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$save_out" read_json_text_field result.snapshot)" != "$probe_after_snapshot" ]; then
+    echo "expected save to report the saved snapshot" >&2
     printf '%s\n' "$save_out" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$save_out" read_json_text_field result.sync.version)" != "2" ]; then
-    echo "expected save to include a sync verdict for version 2" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$save_out" read_json_text_field result.sync.snapshot)" != "$probe_after_snapshot" ]; then
+    echo "expected save to include a sync verdict for the saved snapshot" >&2
     printf '%s\n' "$save_out" >&2
     exit 1
   fi
@@ -163,8 +163,8 @@ beam_wrapper_start_owner "$standalone_root"
     printf '%s\n' "$sync_second" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$sync_second" read_json_text_field result.version)" != "3" ]; then
-    echo "expected second sync to report version 3" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$sync_second" read_json_text_field result.snapshot)" = "$probe_after_snapshot" ]; then
+    echo "expected second sync to return a fresh snapshot" >&2
     printf '%s\n' "$sync_second" >&2
     exit 1
   fi
@@ -185,8 +185,8 @@ beam_wrapper_start_owner "$standalone_root"
     printf '%s\n' "$sync_third" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$sync_third" read_json_text_field result.version)" != "3" ]; then
-    echo "expected unchanged third sync to preserve version 3" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$sync_third" read_json_text_field result.snapshot)" != "$(json_text_field "$sync_second" result.snapshot)" ]; then
+    echo "expected unchanged third sync to preserve the snapshot" >&2
     printf '%s\n' "$sync_third" >&2
     exit 1
   fi
@@ -213,8 +213,8 @@ beam_wrapper_start_owner "$standalone_root"
     exit 1
   fi
 
-  probe_second_version="$(json_text_field "$refresh_out" result.version)"
-  probe_second="$("$beam_script" run-at SaveSmoke/B.lean "$probe_second_version" 0 2 "#eval bVal")"
+  probe_second_snapshot="$(json_text_field "$refresh_out" result.snapshot)"
+  probe_second="$("$beam_script" run-at SaveSmoke/B.lean "$probe_second_snapshot" 0 2 "#eval bVal")"
   if [ "$(BEAM_JSON_PAYLOAD="$probe_second" read_json_text_field ok)" != "true" ]; then
     echo "expected wrapper probe after refresh to succeed" >&2
     printf '%s\n' "$probe_second" >&2
@@ -240,8 +240,8 @@ beam_wrapper_start_owner "$standalone_root"
     exit 1
   fi
 
-  probe_reopen_version="$(beam_wrapper_update_version "reopened SaveSmoke/B.lean" "$beam_script" update SaveSmoke/B.lean)"
-  probe_reopen="$("$beam_script" run-at SaveSmoke/B.lean "$probe_reopen_version" 0 2 "#eval bVal")"
+  probe_reopen_snapshot="$(beam_wrapper_update_snapshot "reopened SaveSmoke/B.lean" "$beam_script" update SaveSmoke/B.lean)"
+  probe_reopen="$("$beam_script" run-at SaveSmoke/B.lean "$probe_reopen_snapshot" 0 2 "#eval bVal")"
   if [ "$(BEAM_JSON_PAYLOAD="$probe_reopen" read_json_text_field ok)" != "true" ]; then
     echo "expected wrapper probe after close to reopen the document successfully" >&2
     printf '%s\n' "$probe_reopen" >&2

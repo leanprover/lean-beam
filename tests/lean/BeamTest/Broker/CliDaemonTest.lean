@@ -334,7 +334,7 @@ private def checkBrokerSendInterruption : IO Unit := do
       Beam.Broker.sendRequestWithCallbacksInterruptiblyResult endpoint {
         payload := .runAt {
           path := "Secret.lean"
-          version := 1
+          snapshot := ⟨"test-session", 1⟩
           line := 0
           character := 0
           text := largeText
@@ -389,7 +389,7 @@ private def checkWrongGreetingProtectsRequest : IO Unit := do
         (projectDaemonClientForTest endpoint (System.FilePath.mk "/tmp")) {
           payload := .runAt {
             path := "Secret.lean"
-            version := 1
+            snapshot := ⟨"test-session", 1⟩
             line := 0
             character := 0
             text := "secret speculative text"
@@ -584,15 +584,15 @@ private def checkSyncWaitSpecs : IO Unit := do
   let okResp :=
     (Beam.Broker.Response.success <| toJson ({
       path := "Demo.lean"
-      version := 5
+      snapshot := ⟨"test-session", 5⟩
       : Beam.Broker.SyncFileResult
     })).withFileProgress { updates := 2, done := true }
-  require "sync complete message should include version and progress"
+  require "sync complete message should include snapshot and progress"
     ((Beam.Cli.syncWaitSpec "Demo.lean").completeMsg okResp ==
-      "beam: sync complete for Demo.lean (version 5, fp updates=2)")
+      "beam: sync complete for Demo.lean (snapshot test-session/5, fp updates=2)")
   require "refresh complete message should share sync-like formatting"
     ((Beam.Cli.refreshWaitSpec "Demo.lean").completeMsg okResp ==
-      "beam: refresh complete for Demo.lean (version 5, fp updates=2)")
+      "beam: refresh complete for Demo.lean (snapshot test-session/5, fp updates=2)")
   let publicTodoSpec := Beam.Cli.leanTodoWaitSpec "Demo.lean" 1 0 2 3 "todo"
   require "todo wait action should accept public wrapper label"
     (publicTodoSpec.action == "todo")
@@ -629,7 +629,7 @@ private def checkSyncWaitSpecs : IO Unit := do
 
   let notReadyResp := Beam.Broker.Response.success <| toJson ({
       path := "Demo.lean"
-      version := 6
+      snapshot := ⟨"test-session", 6⟩
       readiness := {
         blockingErrorCount := 1
         saveReady := false
@@ -713,52 +713,53 @@ private def checkLeanOperationRequests : IO Unit := do
 
   let runAtInput : Beam.Lean.RunAtInput := {
     path
-    version := 12
+    snapshot := ⟨"test-session", 12⟩
     line := 4
     character := 2
     text := "exact h"
   }
   requireRequestJson "runAt request should share the Lean operation adapter"
-    (Beam.Cli.leanRunAtRequest path 12 4 2 "exact h")
+    (Beam.Cli.leanRunAtRequest runAtInput.toPositionInput "exact h")
     runAtInput.toBrokerRequest
   requireRequestJson "runAt handle request should share the Lean operation adapter"
-    (Beam.Cli.leanRunAtRequest path 12 4 2 "exact h" (storeHandle := true))
+    (Beam.Cli.leanRunAtRequest runAtInput.toPositionInput "exact h" (storeHandle := true))
     (runAtInput.toBrokerRequest (storeHandle := true))
   expectIoErrorContains "runAt missing text should fail at the CLI boundary"
-    "usage: lean-beam" (Beam.Cli.parseTextArg "run-at Demo.lean 12 4 2" [])
+    "usage: lean-beam" (Beam.Cli.parseTextArg "run-at Demo.lean test-session/12 4 2" [])
 
-  let positionInput : Beam.Lean.PositionInput := {
-    path
-    version := 13
-    line := 7
-    character := 3
-  }
+  let positionInput ← Beam.Cli.parseLeanPositionArgs path "test-session/13" "7" "3"
+  require "position parsing keeps the source token and coordinates"
+    (positionInput.snapshot == ⟨"test-session", 13⟩ && positionInput.line == 7 && positionInput.character == 3)
+  expectIoErrorContains "position parsing rejects a numeric token" "opaque token"
+    (Beam.Cli.parseLeanPositionArgs path "13" "7" "3")
+  expectIoErrorContains "position parsing rejects invalid coordinates" "invalid line"
+    (Beam.Cli.parseLeanPositionArgs path "test-session/13" "bad" "3")
   requireRequestJson "hover request should share the Lean operation adapter"
-    (Beam.Cli.leanHoverRequest path 13 7 3)
+    (Beam.Cli.leanHoverRequest positionInput)
     positionInput.toHoverBrokerRequest
   requireRequestJson "signature-help request should share the Lean operation adapter"
-    (Beam.Cli.leanSignatureHelpRequest path 13 7 3)
+    (Beam.Cli.leanSignatureHelpRequest positionInput)
     positionInput.toSignatureHelpBrokerRequest
   requireRequestJson "definition request should share the Lean operation adapter"
-    (Beam.Cli.leanDefinitionRequest path 13 7 3)
+    (Beam.Cli.leanDefinitionRequest positionInput)
     positionInput.toDefinitionBrokerRequest
   let referencesInput : Beam.Lean.ReferencesInput := {
     path
-    version := 13
+    snapshot := ⟨"test-session", 13⟩
     line := 7
     character := 3
     includeDeclaration? := some false
   }
   requireRequestJson "references request should share the Lean operation adapter"
-    (Beam.Cli.leanReferencesRequest path 13 7 3 false)
+    (Beam.Cli.leanReferencesRequest positionInput false)
     referencesInput.toBrokerRequest
-  let documentSymbolsInput : Beam.Lean.DocumentSymbolsInput := {
+  let documentSymbolsInput : Beam.Lean.DocumentInput := {
     path
-    version := 13
+    snapshot := ⟨"test-session", 13⟩
   }
   requireRequestJson "document-symbols request should share the Lean operation adapter"
-    (Beam.Cli.leanDocumentSymbolsRequest path 13)
-    documentSymbolsInput.toBrokerRequest
+    (Beam.Cli.leanDocumentSymbolsRequest documentSymbolsInput)
+    documentSymbolsInput.toDocumentSymbolsBrokerRequest
   let workspaceSymbolsInput : Beam.Lean.WorkspaceSymbolsInput := {
     query := "Demo"
   }
@@ -766,7 +767,7 @@ private def checkLeanOperationRequests : IO Unit := do
     (Beam.Cli.leanWorkspaceSymbolsRequest "Demo")
     workspaceSymbolsInput.toBrokerRequest
   requireRequestJson "goals request should share the Lean operation adapter"
-    (Beam.Cli.leanGoalsRequest path 13 7 3 .before)
+    (Beam.Cli.leanGoalsRequest positionInput .before)
     (positionInput.toGoalsBrokerRequest .before)
 
   let runWithInput : Beam.Lean.RunWithInput := {

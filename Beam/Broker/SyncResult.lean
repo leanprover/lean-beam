@@ -59,7 +59,7 @@ def syncResultReadiness
 
 def mkSyncFileResult
     (path : String)
-    (version : Nat)
+    (snapshot : SnapshotRef)
     (diagnostics : Array Diagnostic)
     (readiness : SyncSaveReadiness)
     (items? : Option (Array StreamDiagnostic) := none) : SyncFileResult :=
@@ -67,7 +67,7 @@ def mkSyncFileResult
   let readiness := normalizeSyncSaveReadiness diagnostics readiness
   {
     path
-    version
+    snapshot
     diagnostics := {
       counts := diagnosticCounts diagnostics
       items?

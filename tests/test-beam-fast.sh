@@ -437,9 +437,9 @@ tools = request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
 server_version = request({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "beam_version", "arguments": {}}})
 update = request({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "lean_update", "arguments": {"path": "TodoSmoke.lean", "workspace": workspace}}})
 update_content = update.get("result", {}).get("structuredContent", {})
-version = update_content.get("version")
-if not isinstance(version, int):
-    print(f"expected lean_update MCP smoke to return a document version: {update}", file=sys.stderr)
+snapshot = update_content.get("snapshot")
+if not isinstance(snapshot, str):
+    print(f"expected lean_update MCP smoke to return a document snapshot: {update}", file=sys.stderr)
     proc.kill()
     sys.exit(1)
 todo = request({
@@ -450,7 +450,7 @@ todo = request({
         "name": "lean_todo",
         "arguments": {
             "path": "TodoSmoke.lean",
-            "version": version,
+            "snapshot": snapshot,
             "start_line": 13,
             "start_character": 0,
             "end_line": 14,

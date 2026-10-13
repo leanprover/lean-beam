@@ -246,7 +246,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
 
   let runAtInput : Beam.Mcp.RunAtInput := {
     path := "Demo.lean"
-    version := 12
+    snapshot := ⟨"test-session", 12⟩
     line := 4
     character := 2
     text := "exact h"
@@ -259,7 +259,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
   require "runAt op" (runAtReq.op == .runAt)
   require "runAt backend" (runAt.backend == .lean)
   require "runAt path" (runAt.path == "Demo.lean")
-  require "runAt version" (runAt.version == 12)
+  require "runAt snapshot" (runAt.snapshot == ⟨"test-session", 12⟩)
   require "runAt line" (runAt.line == 4)
   require "runAt character" (runAt.character == 2)
   require "runAt text" (runAt.text == "exact h")
@@ -283,7 +283,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
 
   let positionInput : Beam.Mcp.PositionInput := {
     path := "Demo.lean"
-    version := 13
+    snapshot := ⟨"test-session", 13⟩
     line := 7
     character := 3
   }
@@ -293,7 +293,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | .hover request => some request
     | _ => none
   require "hover op" (hoverReq.op == .hover)
-  require "hover version" (hover.version == 13)
+  require "hover snapshot" (hover.snapshot == ⟨"test-session", 13⟩)
 
   let signatureHelpReq ← expectOk "signature-help tool request" <|
     Beam.Mcp.leanOperationToBrokerRequest .signatureHelp workspaceId
@@ -303,7 +303,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | _ => none
   require "signature-help op" (signatureHelpReq.op == .signatureHelp)
   require "signature-help backend" (signatureHelp.backend == .lean)
-  require "signature-help version" (signatureHelp.version == 13)
+  require "signature-help snapshot" (signatureHelp.snapshot == ⟨"test-session", 13⟩)
 
   let definitionReq ← expectOk "definition tool request" <|
     Beam.Mcp.leanOperationToBrokerRequest .definition workspaceId
@@ -313,11 +313,11 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | _ => none
   require "definition op" (definitionReq.op == .definition)
   require "definition backend" (definition.backend == .lean)
-  require "definition version" (definition.version == 13)
+  require "definition snapshot" (definition.snapshot == ⟨"test-session", 13⟩)
 
   let referencesInput : Beam.Mcp.ReferencesInput := {
     path := "Demo.lean"
-    version := 13
+    snapshot := ⟨"test-session", 13⟩
     line := 7
     character := 3
     includeDeclaration? := some false
@@ -329,7 +329,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | .references request => some request
     | _ => none
   require "references op" (referencesReq.op == .references)
-  require "references version" (references.version == 13)
+  require "references snapshot" (references.snapshot == ⟨"test-session", 13⟩)
   require "references include declaration" (references.includeDeclaration? == some false)
   let referencesJson := toJson referencesInput
   requireJsonBool "references input json" "include_declaration" false referencesJson
@@ -338,9 +338,9 @@ private def checkBrokerRequestAdapters : IO Unit := do
     fromJson? (α := Beam.Mcp.ReferencesInput) referencesJson
   require "decoded references include declaration" (decodedReferences.includeDeclaration? == some false)
 
-  let documentSymbolsInput : Beam.Mcp.DocumentSymbolsInput := {
+  let documentSymbolsInput : Beam.Mcp.DocumentInput := {
     path := "Demo.lean"
-    version := 13
+    snapshot := ⟨"test-session", 13⟩
   }
   let documentSymbolsReq ← expectOk "document-symbols tool request" <|
     Beam.Mcp.leanOperationToBrokerRequest .documentSymbols workspaceId
@@ -350,7 +350,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | _ => none
   require "document-symbols op" (documentSymbolsReq.op == .documentSymbols)
   require "document-symbols path" (documentSymbols.path == "Demo.lean")
-  require "document-symbols version" (documentSymbols.version == 13)
+  require "document-symbols snapshot" (documentSymbols.snapshot == ⟨"test-session", 13⟩)
 
   let workspaceSymbolsInput : Beam.Mcp.WorkspaceSymbolsInput := {
     query := "Demo"
@@ -366,7 +366,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
 
   let goalsBeforeInput : Beam.Mcp.GoalsInput := {
     path := "Demo.lean"
-    version := 13
+    snapshot := ⟨"test-session", 13⟩
     line := 7
     character := 3
     mode := .before
@@ -384,7 +384,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
 
   let goalsAfterInput : Beam.Mcp.GoalsInput := {
     path := "Demo.lean"
-    version := 13
+    snapshot := ⟨"test-session", 13⟩
     line := 7
     character := 3
     mode := .after
@@ -401,7 +401,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
 
   let todoInput : Beam.Mcp.TodoInput := {
     path := "Demo.lean"
-    version := 14
+    snapshot := ⟨"test-session", 14⟩
     startLine := 1
     startCharacter := 0
     endLine := 8
@@ -416,7 +416,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | _ => none
   require "todo op" (todoReq.op == .todo)
   require "todo backend" (todo.backend == .lean)
-  require "todo version" (todo.version == 14)
+  require "todo snapshot" (todo.snapshot == ⟨"test-session", 14⟩)
   require "todo start line" (todo.line == 1)
   require "todo start character" (todo.character == 0)
   require "todo end line" (todo.endLine == 8)
@@ -435,7 +435,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
   }
   let codeActionResolveInput : Beam.Mcp.CodeActionResolveInput := {
     path := "Demo.lean"
-    version := 15
+    snapshot := ⟨"test-session", 15⟩
     codeAction
   }
   let codeActionResolveReq ← expectOk "code-action-resolve tool request" <|
@@ -447,7 +447,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | _ => none
   require "code-action-resolve op" (codeActionResolveReq.op == .codeActionResolve)
   require "code-action-resolve backend" (codeActionResolve.backend == .lean)
-  require "code-action-resolve version" (codeActionResolve.version == 15)
+  require "code-action-resolve snapshot" (codeActionResolve.snapshot == ⟨"test-session", 15⟩)
   require "code-action-resolve title" (codeActionResolve.codeAction.title == codeAction.title)
   let codeActionResolveJson := toJson codeActionResolveInput
   discard <| requireObjVal "code-action-resolve input json" "code_action" codeActionResolveJson
@@ -572,13 +572,13 @@ private def checkRunAtNormalization : IO Unit := do
 
 private def sampleSyncResult : Beam.Broker.SyncFileResult := {
   path := "Demo.lean"
-  version := 7
+  snapshot := ⟨"test-session", 7⟩
   diagnostics := {
     counts := { error := 1, warning := 1 }
     items? := some #[{
       path := "Demo.lean"
       uri := "file:///repo/Demo.lean"
-      version? := some 7
+      snapshot? := some ⟨"test-session", 7⟩
       severity? := some .warning
       range := { start := { line := 1, character := 2 }, «end» := { line := 1, character := 5 } }
       message := "unused variable"
@@ -605,7 +605,7 @@ private def checkSyncAndSaveNormalization : IO Unit := do
         rangeEndLine? := some 20
       }
   requireJsonString "sync result" "path" "Demo.lean" normalizedSync
-  requireJsonInt "sync result" "version" 7 normalizedSync
+  requireJsonString "sync result" "snapshot" "test-session/7" normalizedSync
   let diagnostics ← requireObjVal "sync result" "diagnostics" normalizedSync
   let counts ← requireObjVal "sync diagnostics" "counts" diagnostics
   requireJsonInt "sync diagnostic counts" "error" 1 counts
@@ -630,7 +630,7 @@ private def checkSyncAndSaveNormalization : IO Unit := do
   let rawSave := Json.mkObj [
     ("path", toJson "Demo.lean"),
     ("module", toJson "Demo"),
-    ("version", toJson (7 : Nat)),
+    ("snapshot", toJson "test-session/7"),
     ("sourceHash", toJson "abc"),
     ("olean", toJson "/tmp/Demo.olean"),
     ("ilean", toJson "/tmp/Demo.ilean"),
@@ -678,7 +678,7 @@ private def checkTransportErrorNormalization : IO Unit := do
 
 private def checkTodoNormalization : IO Unit := do
   let rawTodo := Json.mkObj [
-    ("version", toJson (1 : Nat)),
+    ("snapshot", toJson "test-session/1"),
     ("range", toJson ({ start := { line := 0, character := 0 }, «end» := { line := 2, character := 0 } } : Lean.Lsp.Range)),
     ("items", Json.arr #[
       Json.mkObj [
@@ -728,7 +728,7 @@ private def checkTodoNormalization : IO Unit := do
 
 private def checkCodeActionResolveNormalization : IO Unit := do
   let rawResult := Json.mkObj [
-    ("version", toJson (15 : Nat)),
+    ("snapshot", toJson "test-session/15"),
     ("codeAction", Json.mkObj [
       ("title", toJson ("Replace fixture hole with zero" : String)),
       ("kind", toJson ("quickfix" : String))

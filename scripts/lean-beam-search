@@ -36,7 +36,7 @@ fi
 usage() {
   cat <<'EOF' >&2
 usage:
-  lean-beam-search [lean-beam opts...] mint <path> <version> <line> <character> <text...>
+  lean-beam-search [lean-beam opts...] mint <path> <snapshot> <line> <character> <text...>
   lean-beam-search [lean-beam opts...] branch <path> <text...>
   lean-beam-search [lean-beam opts...] linear <path> <text...>
   lean-beam-search [lean-beam opts...] playout <path> <step> [step...]
@@ -44,7 +44,7 @@ usage:
 
 notes:
   - branch, linear, playout, and release read a prior wrapper response or handle JSON from stdin
-  - mint requires the version returned by `lean-beam update <path>` or `lean-beam sync <path>`
+  - mint requires the snapshot returned by `lean-beam update <path>` or `lean-beam sync <path>`
   - lean-beam opts such as --root may appear before the subcommand
 EOF
   exit 1
@@ -77,14 +77,14 @@ case "$subcmd" in
   mint)
     [ "$#" -ge 5 ] || usage
     path="$1"
-    version="$2"
+    snapshot="$2"
     line="$3"
     character="$4"
     shift 4
     if [ -n "${prefix[*]-}" ]; then
-      exec "$cli_script" ${prefix[@]+"${prefix[@]}"} run-at-handle "$path" "$version" "$line" "$character" "$@"
+      exec "$cli_script" ${prefix[@]+"${prefix[@]}"} run-at-handle "$path" "$snapshot" "$line" "$character" "$@"
     else
-      exec "$cli_script" run-at-handle "$path" "$version" "$line" "$character" "$@"
+      exec "$cli_script" run-at-handle "$path" "$snapshot" "$line" "$character" "$@"
     fi
     ;;
   branch)

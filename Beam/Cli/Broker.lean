@@ -171,7 +171,7 @@ private def syncLikeCompleteMsg (completeLabel path : String) (resp : Response) 
   match decodeSyncFileResult? resp with
   | some result =>
       let suffix := syncFileProgressSuffix (responseFileProgress? resp)
-      s!"beam: {completeLabel} complete for {path} (version {result.version}{suffix}{syncReadinessSuffix result})"
+      s!"beam: {completeLabel} complete for {path} (snapshot {result.snapshot}{suffix}{syncReadinessSuffix result})"
   | none =>
       s!"beam: {completeLabel} complete for {path}"
 

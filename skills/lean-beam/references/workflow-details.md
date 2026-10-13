@@ -4,8 +4,8 @@ Use this reference when the task needs more than the default loop in `SKILL.md`.
 
 ## Position Semantics
 
-- `lean-beam run-at` and `lean-beam run-at-handle` take the broker document version before
-  Lean/LSP `Position` coordinates: `<version> <line> <character>`; use the version from `update`
+- `lean-beam run-at` and `lean-beam run-at-handle` take the broker document snapshot before
+  Lean/LSP `Position` coordinates: `<snapshot> <line> <character>`; use the snapshot from `update`
 - line `0` is the first line, and character `0` is the first UTF-16 code unit on that line
 - on a truly empty line, only character `0` is valid; character `1` is already out of range
 - on an indented blank line, either probe after the existing spaces using that exact character
@@ -37,16 +37,27 @@ example (a b : Nat) (h : a = b) : 0 + a = b := by
 | `1 3`: inside `simp` | After `simp`: `a = b` | Succeeds |
 | `2 2`: start of `exact h` | Before `exact h`: `a = b` | Succeeds |
 
-After updating the file, this replacement probe correctly returns `result.success=false`:
+Read the source and select the intended position first. Stop if `update` fails; after it succeeds,
+extract its token. This replacement probe correctly returns `result.success=false`:
 
 ```bash
-lean-beam run-at "BeamRunAtProbe.lean" <version-from-update> 1 2 -- "exact h"
+update_json="$(lean-beam update "BeamRunAtProbe.lean")"
+snapshot="$(printf '%s\n' "$update_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["snapshot"])')"
+lean-beam run-at "BeamRunAtProbe.lean" "$snapshot" 1 2 -- "exact h"
 ```
 
 Nested tactics and whitespace may select an enclosing or neighboring tactic. `goals before` and
 `goals after` inspect both sides of the selected tactic; they do not configure a later `run-at`.
 
 ## Command Details
+
+The following position examples use `Foo.lean`; obtain its token separately after reading that file.
+Stop if `update` fails.
+
+```bash
+update_json="$(lean-beam update "Foo.lean")"
+snapshot="$(printf '%s\n' "$update_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["snapshot"])')"
+```
 
 Continue from a stored handle:
 
@@ -65,7 +76,7 @@ printf '%s\n' "$HANDLE_JSON" | lean-beam release "Foo.lean" -
 Short search helper:
 
 ```bash
-lean-beam-search mint "Foo.lean" <version-from-update> 10 2 "constructor"
+lean-beam-search mint "Foo.lean" "$snapshot" 10 2 "constructor"
 printf '%s\n' "$HANDLE_JSON" | lean-beam-search branch "Foo.lean" "constructor"
 printf '%s\n' "$HANDLE_JSON" | lean-beam-search playout "Foo.lean" "exact trivial" "exact trivial"
 printf '%s\n' "$HANDLE_JSON" | lean-beam-search release "Foo.lean"
@@ -74,24 +85,24 @@ printf '%s\n' "$HANDLE_JSON" | lean-beam-search release "Foo.lean"
 Inspect Lean type/term information at a specific position:
 
 ```bash
-lean-beam hover "Foo.lean" <version-from-update> 10 2
-lean-beam signature-help "Foo.lean" <version-from-update> 10 2
+lean-beam hover "Foo.lean" "$snapshot" 10 2
+lean-beam signature-help "Foo.lean" "$snapshot" 10 2
 ```
 
 Follow semantic navigation and symbol information:
 
 ```bash
-lean-beam definition "Foo.lean" <version-from-update> 10 2
-lean-beam references "Foo.lean" <version-from-update> 10 2
-lean-beam document-symbols "Foo.lean" <version-from-update>
+lean-beam definition "Foo.lean" "$snapshot" 10 2
+lean-beam references "Foo.lean" "$snapshot" 10 2
+lean-beam document-symbols "Foo.lean" "$snapshot"
 lean-beam workspace-symbols "Foo.bar"
 ```
 
 Inspect Lean proof goals at an existing tactic position:
 
 ```bash
-lean-beam goals before "Foo.lean" <version-from-update> 10 2
-lean-beam goals after "Foo.lean" <version-from-update> 10 2
+lean-beam goals before "Foo.lean" "$snapshot" 10 2
+lean-beam goals after "Foo.lean" "$snapshot" 10 2
 ```
 
 These commands return structured goals in `result.goals`. A solved state uses
@@ -143,8 +154,8 @@ What is not a valid checkpoint target:
 - `lean-beam hover` and `lean-beam signature-help` are normal read-only semantic inspection
   commands for an existing position
 - `lean-beam definition`, `lean-beam references`, and `lean-beam document-symbols` are normal
-  read-only semantic navigation commands against a specific document version
-- `lean-beam workspace-symbols` is a read-only workspace query and does not take a document version
+  read-only semantic navigation commands against a specific document snapshot
+- `lean-beam workspace-symbols` is a read-only workspace query and does not take a document snapshot
 - `lean-beam goals before` and `lean-beam goals after` are the normal read-only proof-state
   inspection commands for an existing tactic position
 - `lean-beam goals before` / `lean-beam goals after` return `result.goals`, not speculative execution output,
@@ -152,7 +163,7 @@ What is not a valid checkpoint target:
 - `lean-beam` only sees the on-disk file, not unsaved editor buffers
 - actual source edits happen through the normal file-edit workflow
 - after every real source edit to a Lean file, save the file in the normal editor/file sense and
-  then run `lean-beam update "Foo.lean"` before the next version-bound probe; use
+  then run `lean-beam update "Foo.lean"` before the next snapshot-bound probe; use
   `lean-beam sync "Foo.lean"` when the workflow needs a diagnostics/readiness barrier
 - use `lean-beam refresh "Foo.lean"` when a tracked file needs `lean-beam close` plus `lean-beam sync`
   as one step, especially after saving an upstream dependency
@@ -167,7 +178,7 @@ What is not a valid checkpoint target:
   interactive progress text goes to stderr, while selector, setup, or transport failures may exit
   nonzero with no JSON
 - every `lean-beam run-at` request is an isolated read-only probe against one on-disk document
-  version
+  snapshot
 - `lean-beam run-at-handle` is the same style of isolated probe, but asks Lean to retain follow-up
   state
 - `lean-beam run-with` preserves the current handle and branches from it
@@ -185,9 +196,9 @@ What is not a valid checkpoint target:
   `lean-beam run-at` only waits for the snapshot it needs
 - if the same document changes while a request or stored handle is pending, expect
   `contentModified` or handle invalidation instead of hidden reuse
-- when `contentModified` includes `error.data.reason = "documentVersionMismatch"`,
-  `error.data.acceptedVersion` names the broker-accepted version to retry with, and
-  `error.data.currentVersion` may echo the current tracked document version
+- after `contentModified`, read the source and resolve the intended target or code action again;
+  call `update` or `sync` for a fresh `snapshot` before retrying. `currentSnapshot` identifies
+  the observed replacement; it does not rebase old coordinates or actions
 - `lean-beam save` / `lean-beam close-save` checkpoint the current synced Lake module only; they do not
   rebuild reverse dependencies or make downstream files fresh by themselves
 
@@ -236,9 +247,9 @@ Treat `fileProgress` as observability, not as proof that every call is a full ba
 # with `lean-beam serve` running in another process
 sync_out="$(lean-beam sync "Foo.lean")"
 printf '%s\n' "$sync_out"
-version="$(printf '%s\n' "$sync_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["version"])')"
+snapshot="$(printf '%s\n' "$sync_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["snapshot"])')"
 
-probe_out="$(lean-beam run-at "Foo.lean" "$version" 10 2 "exact trivial")"
+probe_out="$(lean-beam run-at "Foo.lean" "$snapshot" 10 2 "exact trivial")"
 printf '%s\n' "$probe_out"
 ```
 
@@ -335,8 +346,8 @@ itself to prove the dependency cone is fresh.
 # make a real edit in A.lean and save the source file to disk
 lean-beam sync "A.lean"
 b_update="$(lean-beam update "B.lean")"
-b_version="$(printf '%s\n' "$b_update" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["version"])')"
-lean-beam run-at "B.lean" "$b_version" 12 2 "#check someNameFromA"
+b_snapshot="$(printf '%s\n' "$b_update" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["snapshot"])')"
+lean-beam run-at "B.lean" "$b_snapshot" 12 2 "#check someNameFromA"
 ```
 
 Rules:
@@ -379,9 +390,9 @@ lean-beam stats
 
 `lean-beam open-files` shows the files currently tracked by the Beam daemon for the current project,
 along with on-disk `diskStatus`, the daemon-recorded `checkpointed` marker, and the last compact
-`fileProgress` observed for that tracked version. `diskStatus` is `matchesTracked`,
+`fileProgress` observed for that tracked snapshot. `diskStatus` is `matchesTracked`,
 `differsFromTracked`, `missing`, or `unknown`. `checkpointed` means this daemon successfully saved
-the unchanged tracked version; it does not revalidate Lake artifacts. Run `lean-beam save` to
+the unchanged tracked snapshot; it does not revalidate Lake artifacts. Run `lean-beam save` to
 perform the authoritative Lake module, readiness, trace, and setup checks.
 
 Stats are in-memory only and scoped to the current project Beam daemon.

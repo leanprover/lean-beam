@@ -23,10 +23,10 @@ private def jsonFieldPriority : String -> Nat
   | "result" => 1
   | "error" => 2
   | "reason" => 13
-  | "expectedVersion" => 4
+  | "expectedVersion" | "expectedSnapshot" => 4
   | "acceptedVersion" => 5
   | "path" => 10
-  | "version" => 11
+  | "snapshot" => 11
   | "saveReady" => 12
   | "changed" => 14
   | "diagnostics" => 20

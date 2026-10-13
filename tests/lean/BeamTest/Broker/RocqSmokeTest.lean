@@ -56,14 +56,14 @@ private def expectSurfacedError (resp : Beam.Broker.Response) : IO Unit := do
   if err.message.trimAscii.isEmpty then
     throw <| IO.userError s!"expected non-empty surfaced Rocq error, got {(toJson resp).compress}"
 
-private def updateVersion
+private def updateSnapshot
     (endpoint : Beam.Broker.Endpoint)
-    (path : String) : IO Nat := do
+    (path : String) : IO Beam.SnapshotRef := do
   let resp ← runClient endpoint {
     payload := .updateFile { backend := .rocq, path }
   }
-  let result ← requireUpdateFileResult s!"rocq update version for {path}" (← expectOk resp)
-  pure result.version
+  let result ← requireUpdateFileResult s!"rocq update snapshot for {path}" (← expectOk resp)
+  pure result.snapshot
 
 def main : IO Unit := do
   let endpoint ← freshTcpEndpoint
@@ -76,15 +76,15 @@ def main : IO Unit := do
       payload := .syncFile { backend := .rocq, path := "Demo.v" }
     }
     expectErrCode unsupportedSync "invalidParams"
-    let demoVersion ← updateVersion endpoint "Demo.v"
-    let semiVersion ← updateVersion endpoint "Semi.v"
-    let errorVersion ← updateVersion endpoint "Error.v"
-    let doneVersion ← updateVersion endpoint "Done.v"
+    let demoSnapshot ← updateSnapshot endpoint "Demo.v"
+    let semiSnapshot ← updateSnapshot endpoint "Semi.v"
+    let errorSnapshot ← updateSnapshot endpoint "Error.v"
+    let doneSnapshot ← updateSnapshot endpoint "Done.v"
     let goals ← expectOk <| ← runClient endpoint {
       payload := .goals {
         backend := .rocq
         path := "Demo.v"
-        version := demoVersion
+        snapshot := demoSnapshot
         line := 2
         character := 8
         mode? := some .after
@@ -97,7 +97,7 @@ def main : IO Unit := do
       payload := .goals {
         backend := .rocq
         path := "Semi.v"
-        version := semiVersion
+        snapshot := semiSnapshot
         line := 2
         character := 3
         mode? := some .before
@@ -111,7 +111,7 @@ def main : IO Unit := do
       payload := .goals {
         backend := .rocq
         path := "Error.v"
-        version := errorVersion
+        snapshot := errorSnapshot
         line := 2
         character := 8
         mode? := some .after
@@ -124,7 +124,7 @@ def main : IO Unit := do
       payload := .goals {
         backend := .rocq
         path := "Error.v"
-        version := errorVersion
+        snapshot := errorSnapshot
         line := 4
         character := 2
         mode? := some .after
@@ -137,7 +137,7 @@ def main : IO Unit := do
       payload := .goals {
         backend := .rocq
         path := "Done.v"
-        version := doneVersion
+        snapshot := doneSnapshot
         line := 3
         character := 0
         mode? := some .before
