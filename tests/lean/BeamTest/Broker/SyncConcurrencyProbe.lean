@@ -22,7 +22,7 @@ private abbrev tracedBrokerStdio : IO.Process.StdioConfig where
 private def spawnTracedLeanBrokerWithPlugin
     (endpoint : Beam.Broker.Endpoint)
     (root leanPlugin : System.FilePath)
-    (leanCmd : String := "lean") : IO (IO.Process.Child tracedBrokerStdio) := do
+    (leanCmd : String) : IO (IO.Process.Child tracedBrokerStdio) := do
   let port :=
     match endpoint with
     | .tcp port => port

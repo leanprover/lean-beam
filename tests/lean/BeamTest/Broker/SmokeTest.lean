@@ -987,7 +987,7 @@ def smokeMain : IO Unit := do
   let otherRoot ← IO.FS.realPath <| root / "tests" / "save_olean_project"
   let plugin ← pluginPath
   let leanCmd ← leanCmd
-  let broker ← spawnLeanBrokerWithPlugin endpoint root plugin leanCmd
+  let broker ← spawnLeanBrokerWithPlugin endpoint root plugin (some leanCmd)
   try
     waitForBrokerReadyForRoot endpoint root
     discard <| expectOk (← runClient endpoint Beam.Broker.Request.ensure)

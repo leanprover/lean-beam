@@ -97,7 +97,7 @@ private def printLeanDoctorInfo (home root : System.FilePath) : IO Unit := do
     support.acceptance.releaseLine?.map (·.versionText) |>.getD "(not applicable)"
   let leanCmd? ←
     if toolchainAccepted then
-      let leanCmd ← leanBin root
+      let leanCmd ← leanBin root toolchain
       pure (some leanCmd)
     else
       pure none

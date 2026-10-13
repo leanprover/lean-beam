@@ -105,8 +105,10 @@ def leanToolchain (root : System.FilePath) : IO String := do
     throw <| IO.userError s!"missing lean-toolchain in {root}"
   pure <| Beam.trimLine (← IO.FS.readFile path)
 
-def leanBin (root : System.FilePath) : IO String :=
-  Beam.readCmdTrim "elan" #["which", "lean"] (some root)
+def leanBin (root : System.FilePath) (toolchain : String) : IO String := do
+  -- Resolve the same explicit toolchain used for the bundle, even when the caller sets an
+  -- ELAN_TOOLCHAIN override or has an elan directory override for the project.
+  Beam.readCmdTrim "elan" #["run", toolchain, "elan", "which", "lean"] (some root)
 
 def rocqCandidates (root : System.FilePath) : List System.FilePath :=
   [root / "_opam" / "bin" / "coq-lsp", root / "_opam" / "_opam" / "bin" / "coq-lsp"]

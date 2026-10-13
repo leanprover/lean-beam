@@ -701,7 +701,7 @@ def desiredConfig (home root : System.FilePath) (required : Backend) : IO Desire
       let (bundle, bundleId) ← ensureToolchainBundle root home toolchain
       ensureLeanBundleExists bundle
       let lean : LeanBackendConfig := {
-        command := ← leanBin root
+        command := ← leanBin root toolchain
         plugin := bundle.plugin
         toolchain
         bundleId

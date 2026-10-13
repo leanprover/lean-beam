@@ -24,6 +24,16 @@ structure RequestOutcome where
 def pluginPath : IO System.FilePath := do
   IO.FS.realPath <| Beam.LSP.Lib.pluginSharedLibPath (System.FilePath.mk ".lake/build/lib")
 
+/-- Resolve before changing to a fixture directory, so Lean matches the repository-built plugin. -/
+def leanCmd : IO String := do
+  let out ← IO.Process.output { cmd := "elan", args := #["which", "lean"] }
+  if out.exitCode != 0 then
+    throw <| IO.userError s!"failed to resolve test Lean executable\n{out.stderr}"
+  let path := out.stdout.trimAscii.toString
+  if path.isEmpty then
+    throw <| IO.userError "elan returned an empty test Lean executable path"
+  pure path
+
 def errorCodeName : ErrorCode → String
   | .parseError => "parseError"
   | .invalidRequest => "invalidRequest"

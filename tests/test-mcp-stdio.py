@@ -806,11 +806,12 @@ def workspace_cache_key(root):
     return f"local:{Path(root).resolve()}"
 
 
-def beam_cli_mcp_config(repo_root, root, timeout):
+def beam_cli_mcp_config(repo_root, root, timeout, *, env=None):
     beam_cli = repo_root / ".lake" / "build" / "bin" / "beam-cli"
     completed = subprocess.run(
         [str(beam_cli), "--root", str(root), "mcp-config"],
         cwd=str(repo_root),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -2434,7 +2435,10 @@ def run_multi_toolchain_workspaces(repo_root, fixture_root, timeout, server_trac
             )
         (roots[1] / "lean-toolchain").write_text(current_toolchain + "\n", encoding="utf-8")
         expected_toolchains = [fixture_toolchain, current_toolchain]
-        configs = [beam_cli_mcp_config(repo_root, root, timeout) for root in roots]
+        # Configuration must use each workspace's declared toolchain, even when an outer
+        # development shell overrides elan's default selection for the Beam source checkout.
+        override_env = {**os.environ, "ELAN_TOOLCHAIN": current_toolchain}
+        configs = [beam_cli_mcp_config(repo_root, root, timeout, env=override_env) for root in roots]
         for root, expected_toolchain, config in zip(roots, expected_toolchains, configs):
             require(
                 config.get("toolchain") == expected_toolchain,
@@ -2476,8 +2480,18 @@ def run_multi_toolchain_workspaces(repo_root, fixture_root, timeout, server_trac
                 timeout=timeout,
                 check=False,
             )
+            expected_version = subprocess.run(
+                ["elan", "run", expected_toolchain, "lean", "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout,
+                check=False,
+            )
             require(
-                version.returncode == 0 and expected_toolchain.rsplit(":v", 1)[-1] in version.stdout,
+                version.returncode == 0 and expected_version.returncode == 0
+                and version.stdout.strip() == expected_version.stdout.strip(),
                 f"resolved Lean command did not match {expected_toolchain} for {root}: "
                 f"{version.stdout}{version.stderr}",
             )
