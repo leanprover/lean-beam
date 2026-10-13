@@ -16,10 +16,14 @@ cleanup() {
 trap cleanup EXIT
 
 if ! bash scripts/validate-defensive.sh -- bash -c '
-  if [ ! -d .git ]; then
-    echo "expected defensive validation to retain its independent Git directory" >&2
-    exit 1
-  fi
+  case "$(git rev-parse --absolute-git-dir)" in
+    /tmp/beam-validate-*/clone/.git)
+      ;;
+    *)
+      echo "validation clone Git metadata points outside its owned directory" >&2
+      exit 1
+      ;;
+  esac
 
   case "$HOME" in
     /tmp/beam-validate-*/home)
