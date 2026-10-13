@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.LSP.Save
+import Beam.Broker.LakeSave
 import BeamTest.LSP.Requests.Interference
 import BeamTest.LSP.Requests.Support
 
@@ -169,6 +170,8 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
       oleanServerFile := (outDir / "ModuleArtifacts.olean.server").toString
       oleanPrivateFile := (outDir / "ModuleArtifacts.olean.private").toString
       irFile := (outDir / "ModuleArtifacts.ir").toString
+      irSigFile? := (Beam.Broker.leanSaveIRSignaturePath?
+        (some (outDir / "ModuleArtifacts.ir"))).map (·.toString)
     }
     ileanFile := (outDir / "ModuleArtifacts.ilean").toString
     cFile := (outDir / "ModuleArtifacts.c").toString
@@ -180,6 +183,27 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
   expectFileExists "saveArtifacts module server olean" (outDir / "ModuleArtifacts.olean.server")
   expectFileExists "saveArtifacts module private olean" (outDir / "ModuleArtifacts.olean.private")
   expectFileExists "saveArtifacts module IR" (outDir / "ModuleArtifacts.ir")
+  if let some irSigFile := Beam.Broker.leanSaveIRSignaturePath?
+      (some (outDir / "ModuleArtifacts.ir")) then
+    expectFileExists "saveArtifacts module IR signature" irSigFile
+    let priorOlean ← IO.FS.readBinFile (outDir / "ModuleArtifacts.olean")
+    let priorSignature ← IO.FS.readBinFile irSigFile
+    let incompleteReq ← sendSaveArtifacts doc {
+      expectedVersionOverride? := some 1
+      expectedTextHashOverride? := some (hash text)
+      oleanFile := (outDir / "ModuleArtifacts.olean").toString
+      moduleArtifacts? := some {
+        oleanServerFile := (outDir / "ModuleArtifacts.olean.server").toString
+        oleanPrivateFile := (outDir / "ModuleArtifacts.olean.private").toString
+        irFile := (outDir / "ModuleArtifacts.ir").toString
+      }
+      ileanFile := (outDir / "ModuleArtifacts.ilean").toString
+      cFile := (outDir / "ModuleArtifacts.c").toString
+    }
+    expectErrorContains incompleteReq (Json.mkObj [("code", toJson "internalError")])
+    unless (← IO.FS.readBinFile (outDir / "ModuleArtifacts.olean")) == priorOlean &&
+        (← IO.FS.readBinFile irSigFile) == priorSignature do
+      throw <| IO.userError "incomplete module save changed prior artifacts"
   expectFileExists "saveArtifacts module ilean" (outDir / "ModuleArtifacts.ilean")
   expectFileExists "saveArtifacts module C" (outDir / "ModuleArtifacts.c")
   let entries ← outDir.readDir

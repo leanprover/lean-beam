@@ -637,6 +637,7 @@ private def checkSyncAndSaveNormalization : IO Unit := do
     ("c", toJson "/tmp/Demo.c"),
     ("trace", toJson "/tmp/Demo.olean.trace"),
     ("oleanServer", toJson "/tmp/Demo.olean.server"),
+    ("irSig", toJson "/tmp/Demo.ir.sig"),
     ("sync", toJson sampleSyncResult)
   ]
   let normalizedSave ← expectToolOk "normalize save result" <|
@@ -644,6 +645,8 @@ private def checkSyncAndSaveNormalization : IO Unit := do
       (Beam.Broker.Response.success rawSave).withFileProgress { updates := 4, done := true }
   requireJsonString "save result" "source_hash" "abc" normalizedSave
   requireJsonString "save result" "olean_server" "/tmp/Demo.olean.server" normalizedSave
+  requireJsonString "save result" "ir_sig" "/tmp/Demo.ir.sig" normalizedSave
+  requireFieldAbsent "save result" "irSig" normalizedSave
   requireFieldAbsent "save result" "sourceHash" normalizedSave
   let saveSync ← requireObjVal "save result" "sync" normalizedSave
   discard <| requireObjVal "save sync result" "readiness" saveSync

@@ -414,7 +414,7 @@ The `structuredContent` for a clean `lean_sync` has this semantic shape (counts 
 
 `lean_save` returns artifact paths plus `sync` containing that same
 path/version/diagnostics/readiness object. Optional backend artifacts (`olean_server`,
-`olean_private`, `ir`, and `bc`) appear only when Lean produced them:
+`olean_private`, `ir`, `ir_sig`, and `bc`) appear only when Lean produced them:
 
 ```json
 {

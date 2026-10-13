@@ -32,14 +32,29 @@ private def moduleOutputIsModuleName : Name :=
 private def moduleOutputOptionalCName : Name :=
   .str (.str (.str .anonymous "Lake") "ModuleOutputDescrs") "c?"
 
+private def moduleOutputIRSigName : Name :=
+  .str (.str (.str .anonymous "Lake") "ModuleOutputDescrs") "irSig?"
+
+-- Lean/Lake v4.35 split module IR into an `.ir.sig` / `.ir` artifact pair.
+elab "moduleIRSignaturePath?(" irPath:term ")" : term => do
+  if (← getEnv).contains moduleOutputIRSigName then
+    Lean.Elab.Term.elabTerm (← `(term|
+      ($irPath : Option FilePath).map (fun path => path.addExtension "sig"))) none
+  else
+    Lean.Elab.Term.elabTerm (← `(term|
+      (let _ : Option FilePath := $irPath; (none : Option FilePath)))) none
+
+def leanSaveIRSignaturePath? (irPath? : Option FilePath) : Option FilePath :=
+  moduleIRSignaturePath?(irPath?)
+
 -- Lake v4.30 added `ModuleOutputDescrs.isModule`; older supported Lake versions do not have it.
 -- Lake in nightly-2026-10-13 made `c` optional to support postponed code generation. Beam saves
 -- generated C, so that record shape must carry `some c` rather than leave the output absent.
 -- Select the record shape at elaboration time so save traces work across the supported range.
 elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServer:term ", "
-    oleanPrivate:term ", " ilean:term ", " ir:term ", " c:term ", " bc:term ")" : term => do
-  if (← getEnv).contains moduleOutputOptionalCName then
-    Lean.Elab.Term.elabTerm (← `(term| ({
+    oleanPrivate:term ", " ilean:term ", " ir:term ", " irSig:term ", " c:term ", " bc:term ")" : term => do
+  let outputs ← if (← getEnv).contains moduleOutputOptionalCName then
+    `(term| ({
       isModule := $isModule
       olean := $olean
       oleanServer? := $oleanServer
@@ -48,9 +63,9 @@ elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServe
       ir? := $ir
       c? := some $c
       bc? := $bc
-    } : ModuleOutputDescrs))) none
+    } : ModuleOutputDescrs))
   else if (← getEnv).contains moduleOutputIsModuleName then
-    Lean.Elab.Term.elabTerm (← `(term| ({
+    `(term| ({
       isModule := $isModule
       olean := $olean
       oleanServer? := $oleanServer
@@ -59,9 +74,9 @@ elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServe
       ir? := $ir
       c := $c
       bc? := $bc
-    } : ModuleOutputDescrs))) none
+    } : ModuleOutputDescrs))
   else
-    Lean.Elab.Term.elabTerm (← `(term| (
+    `(term| (
     let _ := $isModule
     {
       olean := $olean
@@ -71,7 +86,11 @@ elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServe
       ir? := $ir
       c := $c
       bc? := $bc
-    } : ModuleOutputDescrs))) none
+    } : ModuleOutputDescrs))
+  if (← getEnv).contains moduleOutputIRSigName then
+    Lean.Elab.Term.elabTerm (← `(term| ({ $outputs with irSig? := $irSig } : ModuleOutputDescrs))) none
+  else
+    Lean.Elab.Term.elabTerm (← `(term| (let _ : Option ArtifactDescr := $irSig; $outputs))) none
 
 inductive LeanSaveTracePlan where
   | inProcess (depTrace : BuildTrace)
@@ -86,6 +105,7 @@ structure LeanSaveSpec where
   oleanPrivatePath? : Option FilePath := none
   ileanPath : FilePath
   irPath? : Option FilePath := none
+  irSigPath? : Option FilePath := none
   cPath : FilePath
   bcPath? : Option FilePath := none
   tracePath : FilePath
@@ -125,20 +145,59 @@ private def sourceTrace (path : FilePath) (snapshot : SourceSnapshot) : BuildTra
     mtime := snapshot.mtime
   }
 
-private def buildDepTraceJob
+private structure SaveTraceInputs where
+  trace : BuildTrace
+  isModule : Bool
+  unsupportedSetupReason? : Option String
+  sourceMatchesSnapshot : Bool := true
+
+private def buildLegacyDepTraceJob
     (mod : Lake.Module)
-    (snapshot : SourceSnapshot) : FetchM (Job (BuildTrace × Bool × Option String)) := do
+    (snapshot : SourceSnapshot) : FetchM (Job SaveTraceInputs) := do
     let setupJob ← mod.setup.fetch
     setupJob.mapM (sync := true) fun setup => do
       addLeanTrace
       addTrace <| sourceTrace mod.leanFile snapshot
       addTrace <| traceOptions setup.options "options"
-      addPureTrace setup.isModule "isModule"
-      addHashablePureTrace mod.name "Module.name"
-      addHashablePureTrace mod.pkg.id? "Package.id?"
+      -- Lake v4.29 added these identity inputs. Adding them on v4.28 changes the dependency
+      -- hash and makes Lake rebuild even when the saved artifacts are complete.
+      if !Lean.versionString.startsWith "4.28." then
+        addPureTrace setup.isModule "isModule"
+        addHashablePureTrace mod.name "Module.name"
+        addHashablePureTrace mod.pkg.id? "Package.id?"
       addPureTrace mod.leanArgs "Module.leanArgs"
       setTraceCaption s!"{mod.name.toString}:leanArts"
-      return (← getTrace, setup.isModule, unsupportedZeroBuildSaveReason? mod)
+      return {
+        trace := ← getTrace
+        isModule := setup.isModule
+        unsupportedSetupReason? := unsupportedZeroBuildSaveReason? mod
+      }
+
+-- Lake v4.35 moved the full module build trace into `ModulePreSetup.trace`. Use that typed
+-- trace directly instead of appending a second copy of the source, options, and identity inputs.
+elab "buildSaveTraceJobCompat(" mod:term ", " snapshot:term ")" : term => do
+  let presetupTraceName := .str (.str (.str .anonymous "Lake") "ModulePreSetup") "trace"
+  if (← getEnv).contains presetupTraceName then
+    Lean.Elab.Term.elabTerm (← `(term| (do
+      let mod : Lake.Module := $mod
+      let snapshot : SourceSnapshot := $snapshot
+      let setupJob ← mod.presetup.fetch
+      setupJob.mapM (sync := true) fun setup => do
+        let input ← (← mod.input.fetch).await
+        return ({
+          trace := setup.trace
+          isModule := setup.isModule
+          unsupportedSetupReason? := unsupportedZeroBuildSaveReason? mod
+          sourceMatchesSnapshot := input.trace.hash == snapshot.hash &&
+            input.trace.mtime.sec == snapshot.mtime.sec &&
+            input.trace.mtime.nsec == snapshot.mtime.nsec
+        } : SaveTraceInputs)))) none
+  else
+    Lean.Elab.Term.elabTerm (← `(term| buildLegacyDepTraceJob $mod $snapshot)) none
+
+private def buildDepTraceJob
+    (mod : Lake.Module) (snapshot : SourceSnapshot) : FetchM (Job SaveTraceInputs) :=
+  buildSaveTraceJobCompat(mod, snapshot)
 
 private def saveTraceStaleMessage (root path : FilePath) : String :=
   let relPath := Beam.pathRelativeToRootOrSelf root path
@@ -170,7 +229,13 @@ private def buildDepTrace
   | .error failure => pure <| .error failure
   | .ok () =>
       try
-        .ok <$> ws.runBuild (cfg := quietTraceConfig) (buildDepTraceJob mod snapshot)
+        let inputs ← ws.runBuild (cfg := quietTraceConfig) (buildDepTraceJob mod snapshot)
+        if !inputs.sourceMatchesSnapshot then
+          return .error {
+            code := .contentModified
+            message := "source changed while preparing its Lake save trace"
+          }
+        return .ok (inputs.trace, inputs.isModule, inputs.unsupportedSetupReason?)
       catch e =>
         pure <| .error {
           code := .internalError
@@ -216,6 +281,7 @@ private def mkLeanSaveSpecInProcess
       oleanPrivatePath? := if isModule then some mod.oleanPrivateFile else none
       ileanPath := mod.ileanFile
       irPath? := if isModule then some mod.irFile else none
+      irSigPath? := leanSaveIRSignaturePath? (if isModule then some mod.irFile else none)
       cPath := mod.cFile
       bcPath? := if Lean.Internal.hasLLVMBackend () then some mod.bcFile else none
       tracePath := mod.traceFile
@@ -238,6 +304,7 @@ private def leanSaveSpecOfHelperSpec
     oleanPrivatePath? := spec.oleanPrivatePath?.map FilePath.mk
     ileanPath := FilePath.mk spec.ileanPath
     irPath? := spec.irPath?.map FilePath.mk
+    irSigPath? := spec.irSigPath?.map FilePath.mk
     cPath := FilePath.mk spec.cPath
     bcPath? := spec.bcPath?.map FilePath.mk
     tracePath := FilePath.mk spec.tracePath
@@ -278,7 +345,7 @@ private def leanSaveOutputs
     (oleanPath : FilePath)
     (oleanServerPath? oleanPrivatePath? : Option FilePath)
     (ileanPath : FilePath)
-    (irPath? : Option FilePath)
+    (irPath? irSigPath? : Option FilePath)
     (cPath : FilePath)
     (bcPath? : Option FilePath) : IO ModuleOutputDescrs := do
   let isModule := oleanServerPath?.isSome
@@ -287,10 +354,11 @@ private def leanSaveOutputs
   let oleanPrivate? ← oleanPrivatePath?.mapM (fun path => hashDescr path "olean.private")
   let ilean ← hashDescr ileanPath "ilean"
   let ir? ← irPath?.mapM (fun path => hashDescr path "ir")
+  let irSig? ← irSigPath?.mapM (fun path => hashDescr path "ir.sig")
   let c ← hashDescr cPath "c"
   let bc? ← bcPath?.mapM (fun path => hashDescr path "bc")
   pure <| mkModuleOutputDescrsCompat(
-    isModule, olean, oleanServer?, oleanPrivate?, ilean, ir?, c, bc?)
+    isModule, olean, oleanServer?, oleanPrivate?, ilean, ir?, irSig?, c, bc?)
 
 private def stagedTracePath (tracePath : FilePath) : IO FilePath := do
   let pid ← IO.Process.getPID
@@ -327,6 +395,7 @@ private def writeLeanSaveTraceWithMetadata
     (request.oleanPrivatePath?.map FilePath.mk)
     (FilePath.mk request.ileanPath)
     (request.irPath?.map FilePath.mk)
+    (request.irSigPath?.map FilePath.mk)
     (FilePath.mk request.cPath)
     (request.bcPath?.map FilePath.mk)
   let metadata := { metadata with outputs? := some <| toJson outputs }
@@ -339,7 +408,7 @@ def writeLeanSaveTrace (spec : LeanSaveSpec) : IO (Except BrokerFailure Unit) :=
     match spec.tracePlan with
     | .inProcess depTrace =>
         let outputs ← leanSaveOutputs spec.oleanPath spec.oleanServerPath?
-          spec.oleanPrivatePath? spec.ileanPath spec.irPath? spec.cPath spec.bcPath?
+          spec.oleanPrivatePath? spec.ileanPath spec.irPath? spec.irSigPath? spec.cPath spec.bcPath?
         writeTraceAtomically spec.tracePath fun stagedTrace =>
           writeBuildTrace stagedTrace depTrace outputs {}
         pure (.ok ())
@@ -390,6 +459,7 @@ def lakeHelperSaveSpec
         oleanPrivatePath? := spec.oleanPrivatePath?.map (·.toString)
         ileanPath := spec.ileanPath.toString
         irPath? := spec.irPath?.map (·.toString)
+        irSigPath? := spec.irSigPath?.map (·.toString)
         cPath := spec.cPath.toString
         bcPath? := spec.bcPath?.map (·.toString)
         tracePath := spec.tracePath.toString

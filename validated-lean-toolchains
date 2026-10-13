@@ -1,4 +1,5 @@
 # Validated Lean toolchains that beam is willing to serve.
+leanprover/lean4:v4.35.0
 leanprover/lean4:v4.35.0-rc4
 leanprover/lean4:v4.34.1
 leanprover/lean4:v4.34.0

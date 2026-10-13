@@ -246,7 +246,9 @@ care about and compare it explicitly.
 Successful broker and wrapper saves repeat the synced document's top-level `path` and `version`, add
 the checkpoint fields `module`, `sourceHash`, `olean`, `ilean`, `c`, and `trace`, and nest the
 canonical sync result under `sync`. Optional backend artifacts use `oleanServer`, `oleanPrivate`,
-`ir`, and `bc`. Close-save wraps the same save result as
+`ir`, `irSig` (Lean/Lake versions with split IR signatures), and `bc`. The `.ir.sig` file is published
+with the module's `.olean` and `.ir` companions, and its hash is included in the Lake save trace.
+Close-save wraps the same save result as
 `{ "closed": true, "saved": <save-result> }`. MCP uses snake_case for the multiword artifact fields;
 see the complete [`lean_save` result example](MCP.md#stable-result-shapes).
 

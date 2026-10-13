@@ -92,8 +92,8 @@ Default Beam entrypoints:
 Additional Beam lanes:
 
 - [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) `<toolchain>`: exact
-  validated or release-line-compatible bundle qualification, admission diagnostics, and stale-import
-  diagnostic wording compatibility
+  validated or release-line-compatible bundle qualification, admission diagnostics, module save/replay
+  (including `.ir.sig` when produced), and stale-import diagnostic wording compatibility
 - [tests/test-beam-rocq.sh](../tests/test-beam-rocq.sh): Rocq broker and wrapper coverage
 - [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh): external MCP `2025-11-25`
   conformance scenarios over the local Streamable HTTP bridge
@@ -189,7 +189,11 @@ BEAM_INSTALL_TEST_PRESEED_ELAN=require bash tests/test-beam-install.sh
 ```
 
 Use [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) to validate one
-supported bundle lane at a time. The lane also checks that Lean's stale-import diagnostic wording
+supported bundle lane at a time. The module-save case removes the batch-produced IR signature when
+present, edits `SaveSmoke.ModuleB`, and saves it through `close-save`. It checks the complete artifact
+family and requires `lake --no-cache build -v SaveSmoke/ModuleB.lean` to replay the saved outputs;
+`CheckModuleB.lean` then imports the saved definition and checks its new value. The lane also checks
+that Lean's stale-import diagnostic wording
 still matches Beam's temporary text-based detector while the structured Lean stale-dependency API is
 pending. If bundle installation stalls on a slow machine, raise
 `BEAM_TOOLCHAIN_COMPAT_TIMEOUT` from its default 600 seconds. On failure, the test prints the fake

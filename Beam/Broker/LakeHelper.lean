@@ -36,6 +36,7 @@ structure LakeHelperWriteTraceRequest where
   oleanPrivatePath? : Option String := none
   ileanPath : String
   irPath? : Option String := none
+  irSigPath? : Option String := none
   cPath : String
   bcPath? : Option String := none
   tracePath : String

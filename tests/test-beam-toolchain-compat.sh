@@ -45,6 +45,11 @@ stale_sync_stderr="$tmp_env_root/stale-sync.stderr"
 stale_owner_stdout="$tmp_env_root/stale-owner.stdout"
 stale_owner_stderr="$tmp_env_root/stale-owner.stderr"
 stale_owner_pid=""
+module_build_stdout="$tmp_env_root/module-build.stdout"
+module_build_stderr="$tmp_env_root/module-build.stderr"
+module_save_stdout="$tmp_env_root/module-save.stdout"
+module_save_stderr="$tmp_env_root/module-save.stderr"
+module_saved_trace="$tmp_env_root/module-saved.trace"
 toolchain_failed=false
 
 if [ -z "${ELAN_HOME:-}" ] && [ -d "$HOME/.elan" ]; then
@@ -122,6 +127,11 @@ print_toolchain_context() {
   tail_file "stale sync stderr" "$stale_sync_stderr"
   tail_file "stale owner stdout" "$stale_owner_stdout"
   tail_file "stale owner stderr" "$stale_owner_stderr"
+  tail_file "module build stdout" "$module_build_stdout"
+  tail_file "module build stderr" "$module_build_stderr"
+  tail_file "module save stdout" "$module_save_stdout"
+  tail_file "module save stderr" "$module_save_stderr"
+  tail_file "module saved trace" "$module_saved_trace"
 }
 
 run_build() {
@@ -370,7 +380,79 @@ EOF
   stop_stale_owner
 }
 
+run_module_artifact_compat() {
+  local has_ir_signature=false
+  # Use the same cache policy in the owner and the batch probes, as in test-beam-save-olean.sh.
+  # A warmed artifact cache must not hide whether Lake reuses the broker-written trace.
+  local LAKE_ARTIFACT_CACHE=false
+  export LAKE_ARTIFACT_CACHE
+  local signature="$stale_project_root/.lake/build/lib/lean/SaveSmoke/ModuleB.ir.sig"
+  prepare_stale_diagnostic_project
+  if ! (cd "$stale_project_root" && LAKE_ARTIFACT_CACHE=false lake --no-cache build \
+      SaveSmoke/ModuleB.lean > "$module_build_stdout" 2> "$module_build_stderr"); then
+    print_toolchain_context "module fixture build failed"
+    return 1
+  fi
+  if [ -f "$signature" ]; then
+    has_ir_signature=true
+    rm -f -- "$signature"
+  fi
+  # The file is not open in a broker yet. Change it before starting the owner, then save its
+  # current elaboration with the old module signature removed so leftover batch outputs cannot
+  # hide a missing companion artifact.
+  sed 's/public def moduleBVal : Nat := 1/public def moduleBVal : Nat := 2/' \
+    tests/save_olean_project/SaveSmoke/ModuleB.lean > "$stale_project_root/SaveSmoke/ModuleB.lean"
+  if ! start_stale_owner; then
+    return 1
+  fi
+  if ! run_stale_wrapper close-save SaveSmoke/ModuleB.lean \
+      > "$module_save_stdout" 2> "$module_save_stderr"; then
+    print_toolchain_context "module close-save failed"
+    return 1
+  fi
+  if ! python3 - "$module_save_stdout" "$has_ir_signature" "$module_saved_trace" <<'PY'
+import json
+import pathlib
+import sys
+
+saved = json.loads(pathlib.Path(sys.argv[1]).read_text())["result"]["saved"]
+for key in ["olean", "oleanServer", "oleanPrivate", "ir", "ilean", "c", "trace"]:
+    if not pathlib.Path(saved[key]).is_file():
+        raise SystemExit(f"module save omitted {key}: {saved}")
+metadata = json.loads(pathlib.Path(saved["trace"]).read_text())
+pathlib.Path(sys.argv[3]).write_text(json.dumps(metadata, indent=2) + "\n")
+if sys.argv[2] == "true":
+    signature = pathlib.Path(saved["irSig"])
+    if not signature.is_file():
+        raise SystemExit(f"module save omitted IR signature: {signature}")
+    if "rs" not in metadata["outputs"]:
+        raise SystemExit("module save trace omitted IR signature descriptor")
+elif "irSig" in saved:
+    raise SystemExit("older toolchain unexpectedly reported an IR signature")
+PY
+  then
+    print_toolchain_context "module artifact family was incomplete"
+    return 1
+  fi
+  if ! stop_stale_owner; then
+    return 1
+  fi
+  if ! (cd "$stale_project_root" && LAKE_ARTIFACT_CACHE=false lake --no-cache build -v \
+      SaveSmoke/ModuleB.lean > "$module_build_stdout" 2> "$module_build_stderr" &&
+      lake env lean CheckModuleB.lean >> "$module_build_stdout" 2>> "$module_build_stderr"); then
+    print_toolchain_context "saved module replay or import failed"
+    return 1
+  fi
+  if ! grep -Eq 'Replayed SaveSmoke\.ModuleB' "$module_build_stdout" "$module_build_stderr" ||
+      grep -Eq 'Built SaveSmoke\.ModuleB|Building SaveSmoke\.ModuleB' \
+        "$module_build_stdout" "$module_build_stderr"; then
+    print_toolchain_context "saved module was rebuilt instead of replayed"
+    return 1
+  fi
+}
+
 run_step "build beam-cli" run_build
 run_step "bundle install $toolchain" run_bundle_install
 run_step "toolchain admission $toolchain" run_toolchain_admission_check
+run_step "module artifact replay $toolchain" run_module_artifact_compat
 run_step "stale diagnostic wording $toolchain" run_stale_diagnostic_compat

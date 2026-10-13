@@ -190,6 +190,7 @@ jobs:
           - ubuntu-latest
           - macos-latest
         toolchain:
+          - leanprover/lean4:v4.35.0
           - leanprover/lean4:v4.35.0-rc4
           - leanprover/lean4:v4.34.1
           - leanprover/lean4:v4.34.0

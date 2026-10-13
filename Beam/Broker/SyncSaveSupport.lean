@@ -254,6 +254,7 @@ def leanSaveResult
   oleanServer? := spec.oleanServerPath?.map (·.toString)
   oleanPrivate? := spec.oleanPrivatePath?.map (·.toString)
   ir? := spec.irPath?.map (·.toString)
+  irSig? := spec.irSigPath?.map (·.toString)
   bc? := spec.bcPath?.map (·.toString)
   sync
 }

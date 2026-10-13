@@ -392,12 +392,15 @@ private def checkSaveResultJsonDecode : IO Unit := do
     c := "/tmp/Demo.c"
     trace := "/tmp/Demo.olean.trace"
     oleanServer? := some "/tmp/Demo.olean.server"
+    irSig? := some "/tmp/Demo.ir.sig"
     sync := syncResultFor 7
   }
   let decodedSave ← expectOk "save result round-trip" <|
     fromJson? (α := SaveOleanResult) (toJson saveResult)
   require "save result round-trip preserves source hash"
     (decodedSave.sourceHash == saveResult.sourceHash)
+  require "save result round-trip preserves IR signature"
+    (decodedSave.irSig? == saveResult.irSig?)
   require "save result derives its path from nested sync"
     (decodedSave.path == "Demo.lean")
   require "save result derives its version from nested sync"
@@ -550,7 +553,9 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
     let olean := root / "Saved.olean"
     let ilean := root / "Saved.ilean"
     let c := root / "Saved.c"
-    for path in #[olean, ilean, c] do
+    let ir := root / "Saved.ir"
+    let irSig? := leanSaveIRSignaturePath? (some ir)
+    for path in #[olean, ilean, c, ir] ++ irSig?.toArray do
       IO.FS.writeFile path s!"artifact {path.fileName.getD ""}\n"
     let depTrace := Lake.BuildTrace.ofHash (Lake.Hash.ofNat 73) "save inputs"
     let trace := root / "Saved.trace"
@@ -560,6 +565,8 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
       oleanPath := olean
       ileanPath := ilean
       cPath := c
+      irPath? := some ir
+      irSigPath? := irSig?
       tracePath := trace
       tracePlan := .inProcess depTrace
     }
@@ -567,6 +574,8 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
       oleanPath := olean.toString
       ileanPath := ilean.toString
       cPath := c.toString
+      irPath? := some ir.toString
+      irSigPath? := irSig?.map (·.toString)
       tracePath := trace.toString
       traceMetadata := toJson (Lake.BuildMetadata.ofBuild depTrace Json.null {})
     }
@@ -589,6 +598,10 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
         let actual ← IO.ofExcept <| outputs.getObjVal? key
         let expected := toJson (Lake.artifactWithExt (← Lake.computeHash path) ext)
         require s!"save trace includes current {ext} output" (actual.compress == expected.compress)
+      if let some irSig := irSig? then
+        let actual ← IO.ofExcept <| outputs.getObjVal? "rs"
+        let expected := toJson (Lake.artifactWithExt (← Lake.computeHash irSig) "ir.sig")
+        require "save trace includes current IR signature" (actual.compress == expected.compress)
       IO.FS.removeFile trace
     IO.FS.removeFile c
     match ← writeLeanSaveTrace spec with

@@ -1052,6 +1052,7 @@ structure SaveOleanResult where
   oleanServer? : Option String := none
   oleanPrivate? : Option String := none
   ir? : Option String := none
+  irSig? : Option String := none
   bc? : Option String := none
   sync : SyncFileResult
   deriving Inhabited
@@ -1084,6 +1085,9 @@ instance : ToJson SaveOleanResult where
       (match result.ir? with
       | some path => [("ir", toJson path)]
       | none => []) ++
+      (match result.irSig? with
+      | some path => [("irSig", toJson path)]
+      | none => []) ++
       (match result.bc? with
       | some path => [("bc", toJson path)]
       | none => []) ++
@@ -1093,7 +1097,7 @@ instance : FromJson SaveOleanResult where
   fromJson? json := do
     requireOnlyJsonFields "save result" #[
       "path", "module", "version", "sourceHash", "olean", "ilean", "c", "trace",
-      "oleanServer", "oleanPrivate", "ir", "bc", "sync"
+      "oleanServer", "oleanPrivate", "ir", "irSig", "bc", "sync"
     ] json
     let path ← json.getObjValAs? String "path"
     let module ← json.getObjValAs? String "module"
@@ -1106,6 +1110,7 @@ instance : FromJson SaveOleanResult where
     let oleanServer? ← optionalField? (α := String) json "oleanServer"
     let oleanPrivate? ← optionalField? (α := String) json "oleanPrivate"
     let ir? ← optionalField? (α := String) json "ir"
+    let irSig? ← optionalField? (α := String) json "irSig"
     let bc? ← optionalField? (α := String) json "bc"
     let sync ← json.getObjValAs? SyncFileResult "sync"
     unless path == sync.path do
@@ -1122,6 +1127,7 @@ instance : FromJson SaveOleanResult where
       oleanServer?
       oleanPrivate?
       ir?
+      irSig?
       bc?
       sync
     }

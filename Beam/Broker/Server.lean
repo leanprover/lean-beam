@@ -1987,6 +1987,7 @@ private def saveOleanCore
             oleanServerFile := oleanServerFile.toString
             oleanPrivateFile := oleanPrivateFile.toString
             irFile := irFile.toString
+            irSigFile? := spec.irSigPath?.map (·.toString)
           }
       | _, _, _ => none
     ileanFile := spec.ileanPath.toString

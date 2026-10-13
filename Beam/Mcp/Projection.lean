@@ -485,6 +485,9 @@ private def saveResultJson (result : Beam.Broker.SaveOleanResult) : Json :=
     (match result.ir? with
     | some path => [("ir", toJson path)]
     | none => []) ++
+    (match result.irSig? with
+    | some path => [("ir_sig", toJson path)]
+    | none => []) ++
     (match result.bc? with
     | some path => [("bc", toJson path)]
     | none => []) ++

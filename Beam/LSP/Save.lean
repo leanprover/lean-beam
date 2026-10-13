@@ -50,6 +50,7 @@ structure ModuleArtifactPaths where
   oleanServerFile : String
   oleanPrivateFile : String
   irFile : String
+  irSigFile? : Option String := none
   deriving FromJson, Repr, ToJson
 
 /-- Internal request payload for artifact serialization from the current worker snapshot. -/
@@ -304,6 +305,7 @@ private structure ModuleArtifactTargets where
   oleanServerFile : System.FilePath
   oleanPrivateFile : System.FilePath
   irFile : System.FilePath
+  irSigFile? : Option System.FilePath := none
 
 private def moduleArtifactFiles
     (env : Environment)
@@ -317,6 +319,8 @@ private def moduleArtifactFiles
     files := files.push targets.oleanServerFile
     files := files.push targets.oleanPrivateFile
     files := files.push targets.irFile
+    if let some irSigFile := targets.irSigFile? then
+      files := files.push irSigFile
   else
     unless moduleTargets?.isNone do
       throw <| IO.userError
@@ -326,18 +330,25 @@ private def moduleArtifactFiles
 private def stageModuleArtifacts
     (env : Environment)
     (oleanFile : System.FilePath)
+    (hasIRSignature : Bool)
     (moduleArtifacts : Array StagedArtifact) : IO Unit := do
   withTempSiblingDir oleanFile fun tmpDir => do
     let some fileName := oleanFile.fileName
       | throw <| IO.userError s!"module artifact path has no file name: {oleanFile}"
     let stagedOlean := tmpDir / fileName
     Lean.writeModule env stagedOlean
-    let generated :=
+    let stagedIRSignature := stagedOlean.withExtension "ir.sig"
+    if env.header.isModule && (← stagedIRSignature.pathExists) != hasIRSignature then
+      throw <| IO.userError
+        "module IR signature output path does not match this Lean build's artifact family"
+    let mut generated :=
       if env.header.isModule then
         #[stagedOlean, stagedOlean.addExtension "server", stagedOlean.addExtension "private",
           stagedOlean.withExtension "ir"]
       else
         #[stagedOlean]
+    if hasIRSignature then
+      generated := generated.push stagedIRSignature
     unless generated.size == moduleArtifacts.size do
       throw <| IO.userError "internal module artifact staging mismatch"
     for path in generated do
@@ -555,6 +566,7 @@ def saveCurrentArtifacts
     oleanServerFile := mkFilePath paths.oleanServerFile
     oleanPrivateFile := mkFilePath paths.oleanPrivateFile
     irFile := mkFilePath paths.irFile
+    irSigFile? := paths.irSigFile?.map mkFilePath
   } : ModuleArtifactTargets)
   let ileanFile := mkFilePath p.ileanFile
   let cFile := mkFilePath p.cFile
@@ -566,7 +578,8 @@ def saveCurrentArtifacts
   let trees := snaps.toArray.map (·.infoTree)
   try
     let moduleArtifacts := stagedArtifacts.extract 0 moduleFiles.size
-    stageModuleArtifacts env oleanFile moduleArtifacts
+    stageModuleArtifacts env oleanFile
+      (moduleTargets?.any fun targets => targets.irSigFile?.isSome) moduleArtifacts
     let ileanArtifact ← stagedArtifactAt stagedArtifacts moduleFiles.size "ilean"
     writeIlean doc.meta doc.initSnap.stx mainModule trees ileanArtifact.staged
     let cOutput ← emitCForSavedModule(env, mainModule)
