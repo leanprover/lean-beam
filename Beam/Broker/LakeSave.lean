@@ -29,11 +29,27 @@ open Lake
 private def moduleOutputIsModuleName : Name :=
   .str (.str (.str .anonymous "Lake") "ModuleOutputDescrs") "isModule"
 
+private def moduleOutputOptionalCName : Name :=
+  .str (.str (.str .anonymous "Lake") "ModuleOutputDescrs") "c?"
+
 -- Lake v4.30 added `ModuleOutputDescrs.isModule`; older supported Lake versions do not have it.
+-- Lake in nightly-2026-10-13 made `c` optional to support postponed code generation. Beam saves
+-- generated C, so that record shape must carry `some c` rather than leave the output absent.
 -- Select the record shape at elaboration time so save traces work across the supported range.
 elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServer:term ", "
     oleanPrivate:term ", " ilean:term ", " ir:term ", " c:term ", " bc:term ")" : term => do
-  if (← getEnv).contains moduleOutputIsModuleName then
+  if (← getEnv).contains moduleOutputOptionalCName then
+    Lean.Elab.Term.elabTerm (← `(term| ({
+      isModule := $isModule
+      olean := $olean
+      oleanServer? := $oleanServer
+      oleanPrivate? := $oleanPrivate
+      ilean := $ilean
+      ir? := $ir
+      c? := some $c
+      bc? := $bc
+    } : ModuleOutputDescrs))) none
+  else if (← getEnv).contains moduleOutputIsModuleName then
     Lean.Elab.Term.elabTerm (← `(term| ({
       isModule := $isModule
       olean := $olean

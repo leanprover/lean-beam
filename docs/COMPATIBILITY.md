@@ -17,6 +17,10 @@ A Lean release line is the canonical `major.minor` family recorded in
   variants must build and pass the local plugin qualification probe for their exact fingerprint.
   Shims must name the Lean/Lake API boundary they support and should be removed when the support
   window no longer needs them.
+- Source-build compatibility with `leanprover/lean4-nightly:nightly-2026-10-13`, including Lake's
+  optional `ModuleOutputDescrs.c?` output descriptor. This pinned nightly is a development target;
+  nightly toolchains still require explicit custom-toolchain admission and are not added to the
+  validated release registry.
 - Runtime bundle metadata schema 2 and install manifest schema 3. Install manifest schema 2 is
   cleanup-only compatibility during the 0.2 release line: identity and `lean-beam prune` may read it,
   but the installer does not reuse it. Remove the schema-2 decoder when 0.3 development opens.
