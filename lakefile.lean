@@ -176,6 +176,8 @@ lean_exe "lean-beam-mcp" where
 @[default_target]
 lean_exe "beam-cli" where
   root := `Beam.Cli
+  -- On Windows this also selects Lake's shared Lean runtime linker flags.
+  supportInterpreter := System.Platform.isWindows
   moreLinkLibs := #[beamSharedRuntime]
   moreLinkArgs := beamSharedRuntimeLinkArgs
 
