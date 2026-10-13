@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Mcp.Server
+import Beam.Mcp.SelfCheck
 import Beam.Mcp.Stdio
 import BeamTest.Broker.JsonAssert
 import BeamTest.Broker.TestUtil
@@ -1710,7 +1711,55 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     catch _ =>
       pure ()
 
-def main : IO Unit := do
+private def stderrFloodChild : IO Unit := do
+  let stdin ← IO.getStdin
+  let stdout ← IO.getStdout
+  let respond := fun json => do
+    stdout.putStrLn (Json.compress json)
+    stdout.flush
+  discard <| stdin.getLine
+  respond <| Json.mkObj [
+    ("jsonrpc", toJson "2.0"), ("id", toJson (1 : Nat)),
+    ("result", Json.mkObj [
+      ("resultType", toJson "complete"),
+      ("supportedVersions", toJson #[Beam.Mcp.protocolVersion])
+    ])
+  ]
+  discard <| stdin.getLine
+  let stderr ← IO.getStderr
+  -- Exceed Linux and Windows pipe capacity before sending the sync response. A self-check
+  -- that waits for process exit before draining stderr cannot make progress here.
+  let chunk := String.ofList (List.replicate 4096 'x')
+  for _ in [:64] do
+    stderr.putStr chunk
+  stderr.flush
+  respond <| Json.mkObj [
+    ("jsonrpc", toJson "2.0"), ("id", toJson (2 : Nat)),
+    ("result", Json.mkObj [
+      ("resultType", toJson "complete"),
+      ("structuredContent", Json.mkObj [("document_progress", Json.mkObj [])])
+    ])
+  ]
+  discard <| stdin.readToEnd
+
+private def checkSelfCheckStderrDrain : IO Unit := do
+  let result ← IO.Process.output {
+    cmd := (← IO.appPath).toString
+    args := #["--self-check-parent"]
+    env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some "2000")]
+  }
+  require "self-check rejects child stderr after completing the protocol"
+    (result.exitCode != 0 && result.stderr.contains "self-check child wrote stderr")
+  require "self-check drains stderr while awaiting protocol responses"
+    (!result.stderr.contains "timed out")
+
+def main (args : List String) : IO Unit := do
+  match args with
+  | ["--beam-cli", "stderr-flood"] => return ← stderrFloodChild
+  | ["--self-check-parent"] =>
+      return ← Beam.Mcp.SelfCheck.run { beamCli? := some "stderr-flood" } "lakefile.lean"
+  | _ => pure ()
+  checkSelfCheckStderrDrain
   checkJsonHelpers
   checkVersionIdentityJson
   checkIncoming

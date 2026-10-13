@@ -64,8 +64,16 @@ private def resolveFile (root : System.FilePath) (pathText : String) : IO System
 private def timeoutMessage (phase : String) (timeoutMs : Nat) : String :=
   s!"timed out after {timeoutMs} ms waiting for lean-beam-mcp self-check {phase}"
 
-private def childExitedMessage (child : IO.Process.Child stdio) (phase : String) : IO String := do
-  let stderr ← child.stderr.readToEnd
+private abbrev StderrTask := Task (Except IO.Error String)
+
+private def readStderr (stderrTask : StderrTask) (timeoutMs : Nat) : IO String := do
+  let some result ← Beam.waitTaskWithTimeout stderrTask timeoutMs
+    | throw <| IO.userError (timeoutMessage "stderr drain" timeoutMs)
+  IO.ofExcept result
+
+private def childExitedMessage
+    (stderrTask : StderrTask) (phase : String) (timeoutMs : Nat) : IO String := do
+  let stderr ← readStderr stderrTask timeoutMs
   let stderr := stderr.trimAscii.toString
   if stderr.isEmpty then
     pure s!"lean-beam-mcp self-check child exited during {phase}"
@@ -75,6 +83,7 @@ private def childExitedMessage (child : IO.Process.Child stdio) (phase : String)
 private def readLine
     (child : IO.Process.Child stdio)
     (stdout : IO.FS.Handle)
+    (stderrTask : StderrTask)
     (phase : String)
     (timeoutMs : Nat) : IO String := do
   let task ← IO.asTask stdout.getLine Task.Priority.dedicated
@@ -82,7 +91,7 @@ private def readLine
   | some line => pure <| Beam.Mcp.Stdio.stripLineEnding (← IO.ofExcept line)
   | none =>
       if (← child.tryWait).isSome then
-        throw <| IO.userError (← childExitedMessage child phase)
+        throw <| IO.userError (← childExitedMessage stderrTask phase timeoutMs)
       throw <| IO.userError (timeoutMessage phase timeoutMs)
 
 private def throwJsonFieldError (label field : String) (json : Json) (err : String) : IO α :=
@@ -108,12 +117,13 @@ private def expectResult (label : String) (json : Json) : IO Json := do
 private partial def readResponse
     (child : IO.Process.Child stdio)
     (stdout : IO.FS.Handle)
+    (stderrTask : StderrTask)
     (expectedId : Json)
     (phase : String)
     (timeoutMs : Nat) : IO Json := do
   if (← child.tryWait).isSome then
-    throw <| IO.userError (← childExitedMessage child phase)
-  let line ← readLine child stdout phase timeoutMs
+    throw <| IO.userError (← childExitedMessage stderrTask phase timeoutMs)
+  let line ← readLine child stdout stderrTask phase timeoutMs
   if line.isEmpty then
     throw <| IO.userError s!"lean-beam-mcp self-check child closed stdout during {phase}"
   let json ←
@@ -126,7 +136,7 @@ private partial def readResponse
       | .ok _ =>
           throw <| IO.userError s!"lean-beam-mcp self-check child sent unexpected request '{method}' during {phase}: {json.compress}"
       | .error _ =>
-          readResponse child stdout expectedId phase timeoutMs
+          readResponse child stdout stderrTask expectedId phase timeoutMs
   | .error _ =>
       let id ← requireObjVal "self-check response" "id" json
       if id == expectedId then
@@ -173,7 +183,12 @@ private def sendSync
   ]
 
 private def terminateChild {cfg : IO.Process.StdioConfig} (child : IO.Process.Child cfg) : IO Unit := do
-  if (← child.tryWait).isNone then
+  let running ← try
+    pure (← child.tryWait).isNone
+  catch _ =>
+    -- Older supported Lean runtimes throw after an earlier wait has reaped the child.
+    pure false
+  if running then
     try
       child.kill
     catch _ =>
@@ -194,10 +209,13 @@ def run (opts : Options) (pathText : String) : IO Unit := do
     args := (childArgs opts).toArray
     cwd := root.toString
   }
+  -- Drain while the child serves requests: Windows pipes can fill with diagnostic traces
+  -- before a response is sent. Keep the captured result typed until the diagnostic edge.
+  let stderrTask ← IO.asTask child.stderr.readToEnd Task.Priority.dedicated
   try
     sendDiscover child.stdin
     let discovery ← expectResult "server/discover" =<<
-      readResponse child child.stdout (toJson (1 : Nat)) "server/discover response" timeout
+      readResponse child child.stdout stderrTask (toJson (1 : Nat)) "server/discover response" timeout
     let resultType ← requireObjValAs (α := String) "server/discover result" "resultType" discovery
     if resultType != "complete" then
       throw <| IO.userError s!"server/discover returned resultType {resultType}, expected complete"
@@ -208,7 +226,7 @@ def run (opts : Options) (pathText : String) : IO Unit := do
         s!"server/discover did not advertise MCP protocol {protocolVersion}: {discovery.compress}"
     sendSync child.stdin root pathText
     let sync ← expectResult "lean_sync" =<<
-      readResponse child child.stdout (toJson (2 : Nat)) "lean_sync response" timeout
+      readResponse child child.stdout stderrTask (toJson (2 : Nat)) "lean_sync response" timeout
     let syncResultType ← requireObjValAs (α := String) "lean_sync result" "resultType" sync
     if syncResultType != "complete" then
       throw <| IO.userError s!"lean_sync returned resultType {syncResultType}, expected complete"
@@ -227,10 +245,9 @@ def run (opts : Options) (pathText : String) : IO Unit := do
     let some exitResult ← Beam.waitTaskWithTimeout waitTask timeout
       | throw <| IO.userError (timeoutMessage "EOF teardown" timeout)
     let exitCode ← IO.ofExcept exitResult
+    let stderr ← readStderr stderrTask timeout
     if exitCode != 0 then
-      let stderr ← child.stderr.readToEnd
       throw <| IO.userError s!"lean-beam-mcp self-check child exited with code {exitCode}\n{stderr}"
-    let stderr ← child.stderr.readToEnd
     unless stderr.trimAscii.toString.isEmpty do
       throw <| IO.userError s!"lean-beam-mcp self-check child wrote stderr:\n{stderr}"
     IO.println "Lean Beam MCP self-check passed"

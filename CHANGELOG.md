@@ -122,6 +122,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   cards show the complete source commit and runtime payload, and reusing an installed runtime
   refreshes its source commit so reports identify the checkout that performed the install
   ([#242](https://github.com/leanprover/lean-beam/pull/242), @ejgallego).
+- MCP self-check drains child stderr while serving protocol requests, preventing a full stderr
+  pipe from blocking completion while still rejecting unexpected stderr output
+  ([#269](https://github.com/leanprover/lean-beam/pull/269), @ejgallego).
 - MCP `lean_run_at` and `lean_todo` again advertise the read-only hint used by approval- and
   concurrency-aware clients. Codex MCP registration also enables parallel tool calls so independent
   probes need not be serialized by the client.
