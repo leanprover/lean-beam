@@ -89,7 +89,7 @@ private def acceptedLeanBundleDoctorInfo
   }
 
 private def printLeanDoctorInfo (home root : System.FilePath) : IO Unit := do
-  let toolchain ← leanToolchain root
+  let toolchain ← effectiveLeanToolchain root
   let support ← leanToolchainSupport home toolchain
   let toolchainValidated := support.acceptance == .validated
   let toolchainAccepted := support.acceptance.accepted
@@ -97,7 +97,7 @@ private def printLeanDoctorInfo (home root : System.FilePath) : IO Unit := do
     support.acceptance.releaseLine?.map (·.versionText) |>.getD "(not applicable)"
   let leanCmd? ←
     if toolchainAccepted then
-      let leanCmd ← leanBin root toolchain
+      let leanCmd ← leanBinForToolchain root toolchain
       pure (some leanCmd)
     else
       pure none

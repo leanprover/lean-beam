@@ -7,7 +7,6 @@ Author: Emilio J. Gallego Arias
 import Beam.Broker.Protocol
 import Beam.LSP.Lib.NativeLib
 import BeamTest.Broker.TestUtil
-import BeamTest.TestHarness
 import Lean
 
 open Lean
@@ -18,9 +17,6 @@ open BeamTest.Broker.TestUtil
 
 def repoRoot : IO System.FilePath := do
   IO.FS.realPath <| System.FilePath.mk "."
-
-def leanCmd : IO String := do
-  BeamTest.TestHarness.leanCmd
 
 def ensurePluginSharedBuilt (root : System.FilePath) : IO Unit := do
   let out ← IO.Process.output {

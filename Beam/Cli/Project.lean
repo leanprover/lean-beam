@@ -129,12 +129,12 @@ def selectedElanToolchain (state : Json) : Except String String := do
   | _, _ => throw "expected one Remote or Local Elan toolchain descriptor"
 
 /-- Ask Elan to select the workspace toolchain, including environment and directory overrides. -/
-def leanToolchain (root : System.FilePath) : IO String := do
+def effectiveLeanToolchain (root : System.FilePath) : IO String := do
   let state ← Beam.readCmdTrim "elan" #["dump-state", "--no-net"] (some root)
   IO.ofExcept <| (Json.parse state >>= selectedElanToolchain).mapError fun error =>
     s!"could not read Elan's toolchain selection for {root}: {error}"
 
-def leanBin (root : System.FilePath) (toolchain : String) : IO String := do
+def leanBinForToolchain (root : System.FilePath) (toolchain : String) : IO String := do
   -- Freeze the selection already used for admission and the bundle. An override changing
   -- during bundle preparation must not select a different Lean executable.
   Beam.readCmdTrim "elan" #["run", toolchain, "elan", "which", "lean"] (some root)

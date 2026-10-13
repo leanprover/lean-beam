@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import BeamTest.Broker.SmokeUtil
 import BeamTest.Broker.JsonAssert
 import BeamTest.Fixtures.TodoFixture
+import BeamTest.TestHarness
 
 set_option maxRecDepth 4096
 
@@ -986,7 +987,7 @@ def smokeMain : IO Unit := do
   let root ← repoRoot
   let otherRoot ← IO.FS.realPath <| root / "tests" / "save_olean_project"
   let plugin ← pluginPath
-  let leanCmd ← leanCmd
+  let leanCmd ← BeamTest.TestHarness.leanCmd
   let broker ← spawnLeanBrokerWithPlugin endpoint root plugin (some leanCmd)
   try
     waitForBrokerReadyForRoot endpoint root

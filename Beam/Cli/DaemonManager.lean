@@ -697,11 +697,11 @@ def desiredConfig (home root : System.FilePath) (required : Backend) : IO Desire
   | .lean =>
       unless ← hasLeanProject root do
         throw <| IO.userError s!"could not resolve Lean Beam daemon config for {root}"
-      let toolchain ← leanToolchain root
+      let toolchain ← effectiveLeanToolchain root
       let (bundle, bundleId) ← ensureToolchainBundle root home toolchain
       ensureLeanBundleExists bundle
       let lean : LeanBackendConfig := {
-        command := ← leanBin root toolchain
+        command := ← leanBinForToolchain root toolchain
         plugin := bundle.plugin
         toolchain
         bundleId

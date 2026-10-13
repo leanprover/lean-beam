@@ -303,7 +303,9 @@ Use `lean-beam`, not raw JSON and not raw LSP.
 - gives daemon startup authority only to `lean-beam serve`; ordinary wrapper commands attach
   to its registry generation and never start a daemon implicitly
 - owns stopping and descriptor handling
-- resolves Lean with `elan which lean`
+- captures Elan's effective workspace toolchain with `elan dump-state --no-net`, honoring
+  `ELAN_TOOLCHAIN` and directory overrides, then uses that selection for both the runtime bundle
+  and the executable lookup (`elan run TOOLCHAIN elan which lean`); requires Elan 4.2
 - builds and plugin-qualifies a local fallback bundle only when no matching installed bundle exists
   for the exact accepted toolchain fingerprint
 - fails early on toolchains that are neither validated, canonical members of a compatible release

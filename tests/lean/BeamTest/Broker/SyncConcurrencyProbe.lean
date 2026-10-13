@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import BeamTest.Broker.ProcessUtil
 import BeamTest.Broker.SmokeUtil
+import BeamTest.TestHarness
 
 open Lean
 
@@ -341,7 +342,7 @@ def main : IO Unit := do
   let traceRef ← IO.mkRef ""
   let broker ← spawnTracedLeanBrokerWithPlugin endpoint root
     (← BeamTest.Broker.SmokeTest.pluginPath)
-    (← BeamTest.Broker.SmokeTest.leanCmd)
+    (← BeamTest.TestHarness.leanCmd)
   let traceTask ← IO.asTask (prio := Task.Priority.dedicated) do
     try
       drainTrace (IO.FS.Stream.ofHandle broker.stderr) traceRef
