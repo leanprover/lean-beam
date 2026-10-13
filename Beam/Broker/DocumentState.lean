@@ -17,6 +17,8 @@ namespace Beam.Broker
 structure DocState where
   version : Nat
   textHash : UInt64
+  /-- Hash of the backend's document text; Lean normalizes CRLF to LF. -/
+  documentTextHash : UInt64 := textHash
   textTraceHash : Lake.Hash
   textMTime : Lake.MTime
   -- File contents may be read before the broker state mutex is held. This
@@ -48,6 +50,7 @@ abbrev ModuleHistories := Std.TreeMap String ModuleHistory
 
 structure FileSnapshot where
   textHash : UInt64
+  documentTextHash : UInt64 := textHash
   textTraceHash : Lake.Hash
   textMTime : Lake.MTime
   /-- Zero means in-session sync with no cross-request ordering token. -/
@@ -95,6 +98,7 @@ private def nextSnapshotSeq (docState : DocState) (snapshot : FileSnapshot) : Na
 private def docStateOfSnapshot (version : Nat) (snapshot : FileSnapshot) : DocState := {
   version
   textHash := snapshot.textHash
+  documentTextHash := snapshot.documentTextHash
   textTraceHash := snapshot.textTraceHash
   textMTime := snapshot.textMTime
   syncSnapshotSeq := snapshot.readSeq
@@ -136,6 +140,7 @@ def syncFileDecision
           version := docState.version
           docs := docs.insert uri {
             docState with
+            documentTextHash := snapshot.documentTextHash
             textTraceHash := snapshot.textTraceHash
             textMTime := snapshot.textMTime
             syncSnapshotSeq := nextSnapshotSeq docState snapshot

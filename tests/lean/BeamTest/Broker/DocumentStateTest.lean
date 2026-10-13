@@ -152,6 +152,28 @@ private def checkMarkSyncedVersion : IO Unit := do
     | throw <| IO.userError "stale markSyncedVersion erased existing doc"
   require "stale markSyncedVersion keeps sync event seq" (staleDoc.lastSyncEventSeq == 7)
 
+private def checkLineEndingVersion : IO Unit := do
+  let uri := "file:///workspace/Foo.lean"
+  let lf := "def value := 1\n"
+  let crlf := "def value := 1\r\n"
+  let opened := DocumentState.syncFileDecision {} uri {
+    (mkSnapshot (hash lf)) with
+    documentTextHash := hash lf
+    textTraceHash := Lake.Hash.ofText lf
+  }
+  let changed := DocumentState.syncFileDecision opened.docs uri {
+    (mkSnapshot (hash crlf)) with
+    documentTextHash := hash crlf.crlfToLf
+    textTraceHash := Lake.Hash.ofText crlf
+  }
+  require "line ending edits still advance the source version"
+    (changed.action == .change && changed.version == 2)
+  let some doc := changed.docs.get? uri
+    | throw <| IO.userError "line ending edit erased document state"
+  require "source hash retains saved bytes" (doc.textHash == hash crlf)
+  require "worker hash matches Lean's normalized document" (doc.documentTextHash == hash lf)
+  require "Lake fingerprint retains saved bytes" (doc.textTraceHash == Lake.Hash.ofText crlf)
+
 private def checkMarkSavedVersion : IO Unit := do
   let uri := "file:///workspace/Foo.lean"
   let docs : DocumentState.Docs := Std.TreeMap.empty.insert uri (mkDoc 4 (some "Foo"))
@@ -181,6 +203,7 @@ def main : IO Unit := do
   checkSyncFileDecisionOpen
   checkSyncFileDecisionUnchanged
   checkSyncFileDecisionChange
+  checkLineEndingVersion
   checkMarkSyncedVersion
   checkMarkSavedVersion
 

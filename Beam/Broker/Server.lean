@@ -800,6 +800,7 @@ private def readFileSyncSnapshot
     text
     file := {
       textHash := hash text
+      documentTextHash := hash (if backend == .lean then text.crlfToLf else text)
       textTraceHash := Lake.Hash.ofText text
       textMTime
       readSeq
@@ -1774,7 +1775,7 @@ private def startTrackedDiagnosticsBarrierIO
         leanConfig? := workspace.config.lean?
         uri
         version := synced.version
-        textHash := docState.textHash
+        textHash := docState.documentTextHash
         textTraceHash := docState.textTraceHash
         textMTime := docState.textMTime
         changed := synced.changed
@@ -1889,13 +1890,15 @@ private def syncBarrierOutcome
     (started : StartedTrackedBarrier)
     (progress? : Option SyncFileProgress)
     (diagnosticsSeen : Bool)
+    (elaborationComplete : Bool)
     (observedDiagnostics : Array Diagnostic)
     (directImports : Array String)
     (currentDiagnostics : Array Diagnostic) : HandlerM SyncBarrierOutcome := do
   let completionDiagnostics :=
     if diagnosticsSeen then observedDiagnostics else currentDiagnostics
   let decision :=
-    decideSyncBarrier started.uri started.version started.priorProgress? progress? completionDiagnostics
+    decideSyncBarrier started.uri started.version started.priorProgress? progress?
+      elaborationComplete completionDiagnostics
   let hints ← collectStaleDirectDepHintsForSession server started.session started.uri started.version
     directImports
   let staleDepsBlock := staleDirectDepsBlock started.changed hints
@@ -1942,7 +1945,7 @@ private def saveOleanCore
       syncSaveReadinessOfBarrierResult started.uri started.version started.textHash barrierResult
   let currentDiagnostics := saveReadiness.currentDiagnostics
   let barrierOutcome ← withFailureProgress barrier.progress? <|
-    syncBarrierOutcome server started barrier.progress? barrier.diagnosticsSeen
+    syncBarrierOutcome server started barrier.progress? barrier.diagnosticsSeen barrierResult.elaborationComplete
       barrier.diagnostics barrierResult.directImports currentDiagnostics
   let barrierProgress? := barrierOutcome.fileProgress?
   withFailureProgress barrierProgress? <|
@@ -2105,7 +2108,7 @@ private def handleSyncFileOp
       syncSaveReadinessOfBarrierResult started.uri started.version started.textHash barrierResult
   let currentDiagnostics := saveReadiness.currentDiagnostics
   let barrierOutcome ← withFailureProgress pending.progress? <|
-    syncBarrierOutcome server started pending.progress? pending.diagnosticsSeen
+    syncBarrierOutcome server started pending.progress? pending.diagnosticsSeen barrierResult.elaborationComplete
       pending.diagnostics barrierResult.directImports currentDiagnostics
   let fileProgress? := barrierOutcome.fileProgress?
   withFailureProgress fileProgress? <|

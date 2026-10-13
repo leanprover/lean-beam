@@ -15,6 +15,7 @@ namespace Beam.Broker
 handler without importing the handler module into the broker. -/
 structure DiagnosticsBarrierResult where
   version : Nat
+  elaborationComplete : Bool
   directImports : Array String := #[]
   saveReadiness : Beam.LSP.Save.SaveReadinessResult
   deriving Lean.FromJson, Lean.ToJson

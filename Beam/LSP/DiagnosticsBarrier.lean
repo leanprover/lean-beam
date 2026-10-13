@@ -23,6 +23,7 @@ def method : String := "$/beam/waitForDiagnostics"
 
 structure Result where
   version : Nat
+  elaborationComplete : Bool
   directImports : Array String := #[]
   saveReadiness : Save.SaveReadinessResult
   deriving FromJson, ToJson
@@ -46,6 +47,7 @@ def resultOfDocument
     (doc : Lean.Server.FileWorker.EditableDocument)
     (saveReadiness : Save.SaveReadinessResult) : Result := {
   version := doc.meta.version
+  elaborationComplete := !(Lean.Language.toSnapshotTree doc.initSnap).getAll.any (·.isFatal)
   directImports := importsOfHeader ⟨doc.initSnap.stx⟩
   saveReadiness
 }

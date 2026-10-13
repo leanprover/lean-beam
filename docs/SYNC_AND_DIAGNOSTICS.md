@@ -29,6 +29,10 @@ version from `lean-beam update`, the internal broker `update_file` operation, or
 `lean-beam sync`, the internal broker `sync_file` operation, and MCP `lean_sync` also return the
 current version when the caller needs the diagnostics/readiness barrier.
 
+Beam checks Lean's accepted document after Lean normalizes CRLF line endings to LF. Changes to
+the saved bytes still advance the document version, and Lake source fingerprints retain those
+saved bytes.
+
 When the broker rejects a position- or range-bound request because the supplied version is stale,
 the failure uses `contentModified` and includes `error.data.reason = "documentVersionMismatch"`.
 The same payload reports `expectedVersion`, the currently accepted `acceptedVersion`, and
@@ -209,8 +213,9 @@ only. Final machine decisions should use the readiness and diagnostic result fie
 final `document_progress` only for `lean_sync`, `lean_refresh`, `lean_save`, and
 `lean_close_save`; it is not inherited by `runAt` or unrelated tools.
 
-For `sync`, `refresh`, `save`, and `close-save`, completed Lean file progress is one input to the
-diagnostics-complete barrier. For non-barrier calls, file progress may be partial because the
+For `sync`, `refresh`, `save`, and `close-save`, final completion comes from the accepted elaborated
+snapshot and dependency checks. A delayed busy progress notification cannot reject a completed
+snapshot. For non-barrier calls, file progress may be partial because the
 request can return before the whole file reaches `done = true`.
 
 ## Readiness
