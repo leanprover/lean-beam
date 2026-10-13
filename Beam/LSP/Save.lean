@@ -4,7 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: Emilio J. Gallego Arias
 -/
 
-import Lean.Compiler.IR
+import Lean.Compiler
 import Lean.Elab.Term
 import Lean.Shell
 import Lean.Server.FileWorker.RequestHandling
@@ -492,6 +492,24 @@ private def saveBlockingCommandMessages
     completionBlocking := false
   }
 
+-- The option can be scoped to a declaration and reset by EOF while compilation remains pending.
+-- Older supported Lean versions have no postponed-compilation extension.
+elab "hasPostponedCompilation(" env:term ")" : term => do
+  if (← getEnv).contains `Lean.Compiler.LCNF.postponedCompileDeclsExt then
+    Lean.Elab.Term.elabTerm (← `(term|
+      !(Lean.Compiler.LCNF.postponedCompileDeclsExt.getState $env).isEmpty)) none
+  else
+    Lean.Elab.Term.elabTerm (← `(term| (let _ := $env; false))) none
+
+def saveReadinessDeferredCompilationReason : String := "deferredCompilation"
+
+private def deferredCompilationMessage? (state : Elab.Command.State) : Option String :=
+  if state.scopes.head!.opts.getBool `compiler.postponeCompile false ||
+      hasPostponedCompilation(state.env) then
+    some "Beam cannot save deferred compilation from compiler.postponeCompile; use lake build instead."
+  else
+    none
+
 def collectSaveReadiness
     (doc : Lean.Server.FileWorker.EditableDocument) :
     RequestM
@@ -532,7 +550,8 @@ def collectSaveReadiness
       blockingCommandMessages := fallbackBlockingCommandMessages
       : SaveReadinessResult
     }, none, diagnosticErrors, commandErrors)
-  let saveReady := frontendErrorCount == 0
+  let deferredMessage? := deferredCompilationMessage? cmdState
+  let saveReady := frontendErrorCount == 0 && deferredMessage?.isNone
   let readiness : SaveReadinessResult := {
     version := doc.meta.version
     textHash
@@ -540,11 +559,16 @@ def collectSaveReadiness
     currentWarningCount :=
       if frontendWarningCount == 0 then diagnosticWarnings.size else frontendWarningCount
     saveReady := saveReady
-    saveReadyReason := if saveReady then "ok" else saveReadinessDocumentErrorsReason
+    saveReadyReason :=
+      if frontendErrorCount != 0 then saveReadinessDocumentErrorsReason
+      else if deferredMessage?.isSome then saveReadinessDeferredCompilationReason
+      else "ok"
     saveReadyMessage? :=
-      if saveReady then none else some (saveArtifactsErrorMessage diagnosticErrors commandErrors)
+      if frontendErrorCount != 0 then some (saveArtifactsErrorMessage diagnosticErrors commandErrors)
+      else deferredMessage?
     blockingDiagnostics := if saveReady then #[] else frontendBlockingDiagnostics
-    blockingCommandMessages := if saveReady then #[] else frontendBlockingCommandMessages
+    blockingCommandMessages := frontendBlockingCommandMessages ++
+      saveBlockingCommandMessages deferredMessage?.toArray
   }
   pure (readiness, some cmdState, diagnosticErrors, commandErrors)
 
@@ -556,7 +580,8 @@ def saveCurrentArtifacts
   checkExpectedDocument doc p.expectedVersion p.expectedTextHash
   let (readiness, cmdState?, diagnosticErrors, commandErrors) ← collectSaveReadiness doc
   unless readiness.saveReady do
-    throw <| RequestError.invalidParams (saveArtifactsErrorMessage diagnosticErrors commandErrors)
+    throw <| RequestError.invalidParams <| readiness.saveReadyMessage?.getD
+      (saveArtifactsErrorMessage diagnosticErrors commandErrors)
   let some cmdState := cmdState?
     | throw <| RequestError.invalidParams "document did not elaborate successfully"
   let env := cmdState.env

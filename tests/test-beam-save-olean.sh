@@ -562,6 +562,8 @@ if grep -Eq "Built SaveSmoke\\.ModuleB|Building SaveSmoke\\.ModuleB" "$log6"; th
   exit 1
 fi
 
+python3 tests/test-beam-deferred-save.py
+
 (cd "$tmp7" && lake_build BatchOnly/NeedsBatch.lean StructuredSetup/UsesOption.lean > /dev/null)
 (cd "$tmp7" && LAKE_ARTIFACT_CACHE=false "$lake_cmd" env lean CheckBatchOnly.lean > /dev/null)
 (cd "$tmp7" && LAKE_ARTIFACT_CACHE=false "$lake_cmd" env lean CheckStructured.lean > /dev/null)

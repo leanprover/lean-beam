@@ -67,6 +67,13 @@ are intentionally batch-only. Save target resolution delegates to Lake's workspa
 project's real `lakefile.lean` or `lakefile.toml`; the broker does not synthesize fallback Lake
 configuration from `lakefile.lean` text and never batch-builds as part of `save`.
 
+A snapshot with `compiler.postponeCompile` enabled, or with declarations still waiting for deferred
+compilation, is not a complete checkpoint. Its sync result has `readiness.saveReady: false` and
+`readiness.reason: "deferredCompilation"`, even when elaboration has no errors. `save` and
+`close-save` reject it with `saveUnsupportedSetup` before changing artifacts or the Lake trace;
+use `lake build` for this compilation pipeline. This also applies to declaration-scoped
+`set_option compiler.postponeCompile true in`, whose option resets before the end of the file.
+
 Beam assumes Lake workspace configuration remains unchanged for the lifetime of the running Lean
 server. The server and existing file workers are not guaranteed to pick up edits to a lakefile,
 manifest, package override, `lean-toolchain`, Lean options, plugins, or dynamic libraries. After any
@@ -228,7 +235,7 @@ including a blocking command message when Lean did not attach a diagnostic. It c
 from `diagnostics.counts.error`. Warning counts are reported once, under `diagnostics.counts.warning`.
 
 Lean-side readiness applies the frontend artifact gate to the current synced snapshot: current
-save-blocking frontend errors block save. This verdict answers whether Beam may checkpoint that
+save-blocking frontend errors and deferred compilation block save. This verdict answers whether Beam may checkpoint that
 server snapshot; it is not a batch-equivalence verdict. Diagnostic streams, diagnostic summaries,
 and message history are observations; clients should not reconstruct save readiness from them.
 

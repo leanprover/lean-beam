@@ -3,3 +3,7 @@ defaultTargets = ["SaveSmoke"]
 
 [[lean_lib]]
 name = "SaveSmoke"
+
+[[lean_exe]]
+name = "checkModuleBNative"
+root = "CheckModuleBNative"

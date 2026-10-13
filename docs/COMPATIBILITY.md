@@ -21,8 +21,8 @@ A Lean release line is the canonical `major.minor` family recorded in
   optional `ModuleOutputDescrs.c?` output descriptor. This pinned nightly is a development target;
   nightly toolchains still require explicit custom-toolchain admission and are not added to the
   validated release registry.
-- Lean/Lake v4.35 and newer module saves publish the `.ir.sig` companion and its Lake output
-  descriptor. Save traces use Lake's full module pre-setup trace on v4.35 and newer; older supported
+- Lean/Lake v4.33 and newer module saves publish the `.ir.sig` companion and its Lake output
+  descriptor. Save traces use Lake's full module pre-setup trace on v4.33 and newer; older supported
   versions reconstruct the matching inputs, omitting identity inputs that v4.28 did not trace.
 - Runtime bundle metadata schema 2 and install manifest schema 3. Install manifest schema 2 is
   cleanup-only compatibility during the 0.2 release line: identity and `lean-beam prune` may read it,

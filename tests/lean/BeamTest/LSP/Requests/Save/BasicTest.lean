@@ -186,8 +186,10 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
   if let some irSigFile := Beam.Broker.leanSaveIRSignaturePath?
       (some (outDir / "ModuleArtifacts.ir")) then
     expectFileExists "saveArtifacts module IR signature" irSigFile
-    let priorOlean ← IO.FS.readBinFile (outDir / "ModuleArtifacts.olean")
-    let priorSignature ← IO.FS.readBinFile irSigFile
+    let paths := #[outDir / "ModuleArtifacts.olean", outDir / "ModuleArtifacts.olean.server",
+      outDir / "ModuleArtifacts.olean.private", outDir / "ModuleArtifacts.ir", irSigFile,
+      outDir / "ModuleArtifacts.ilean", outDir / "ModuleArtifacts.c"]
+    let prior ← paths.mapM (fun path => liftM (IO.FS.readBinFile path))
     let incompleteReq ← sendSaveArtifacts doc {
       expectedVersionOverride? := some 1
       expectedTextHashOverride? := some (hash text)
@@ -201,8 +203,7 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
       cFile := (outDir / "ModuleArtifacts.c").toString
     }
     expectErrorContains incompleteReq (Json.mkObj [("code", toJson "internalError")])
-    unless (← IO.FS.readBinFile (outDir / "ModuleArtifacts.olean")) == priorOlean &&
-        (← IO.FS.readBinFile irSigFile) == priorSignature do
+    unless (← paths.mapM (fun path => liftM (IO.FS.readBinFile path))) == prior do
       throw <| IO.userError "incomplete module save changed prior artifacts"
   expectFileExists "saveArtifacts module ilean" (outDir / "ModuleArtifacts.ilean")
   expectFileExists "saveArtifacts module C" (outDir / "ModuleArtifacts.c")
@@ -213,6 +214,31 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
       s!"saveArtifacts module family: temporary artifacts leaked: {entries.map (·.fileName)}"
 
   closeDoc doc
+
+elab "supportsPostponedCompilation" : term => do
+  Lean.Elab.Term.elabTerm (← `(term| $(quote <|
+    (← getEnv).contains `Lean.Compiler.LCNF.postponedCompileDeclsExt))) none
+
+def checkDeferredCompilationReadiness : ScenarioM Unit := do
+  if !supportsPostponedCompilation then return
+  for fixture in ["DeferredGlobal", "DeferredScoped"] do
+    let doc ← openDoc s!"tests/lean/BeamTest/Fixtures/Save/{fixture}.lean"
+    let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs (← sendSaveReadiness doc)
+    unless !readiness.saveReady && readiness.saveReadyReason == "deferredCompilation" &&
+        readiness.saveReadyMessage?.any (·.contains "lake build") &&
+        readiness.currentDiagnostics.isEmpty && !readiness.blockingCommandMessages.isEmpty do
+      throw <| IO.userError s!"{fixture}: incorrect deferred readiness: {(toJson readiness).compress}"
+    let outDir ← mkTmpDir "beam-save-deferred"
+    let paths := #[outDir / "Deferred.olean", outDir / "Deferred.ilean", outDir / "Deferred.c"]
+    for path in paths do IO.FS.writeFile path "prior artifact"
+    let request ← sendSaveArtifacts doc {
+      oleanFile := paths[0]!.toString
+      ileanFile := paths[1]!.toString
+      cFile := paths[2]!.toString
+    }
+    expectErrorContains request (Json.mkObj [("code", toJson "invalidParams")])
+    for path in paths do expectFileContents "deferred save" path "prior artifact"
+    closeDoc doc
 
 def checkSaveArtifactsFailurePreservesPriorArtifacts : ScenarioM Unit := do
   let doc ← openDoc depAFixture
@@ -489,6 +515,7 @@ def run : ScenarioM Unit := do
   checkSaveArtifactsStaleHash
   checkSaveArtifactsWrite
   checkSaveArtifactsWriteModuleFamily
+  checkDeferredCompilationReadiness
   checkSaveArtifactsFailurePreservesPriorArtifacts
   checkSaveArtifactsCancellationPreservesPriorArtifacts
   checkConcurrentSameWorkerSavesPublishWholeSet

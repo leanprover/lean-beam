@@ -449,6 +449,11 @@ PY
     print_toolchain_context "saved module was rebuilt instead of replayed"
     return 1
   fi
+  if ! (cd "$stale_project_root" && lake --no-cache build checkModuleBNative >> "$module_build_stdout" 2>> "$module_build_stderr" &&
+      test "$(.lake/build/bin/checkModuleBNative)" = 2); then
+    print_toolchain_context "saved module native compilation or execution failed"
+    return 1
+  fi
 }
 
 run_step "build beam-cli" run_build

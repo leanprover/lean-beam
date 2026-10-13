@@ -629,7 +629,7 @@ private def checkTypedLakeSaveTraceFailure : IO Unit := do
     ileanPath := unusedPath
     cPath := unusedPath
     tracePath := unusedPath
-    tracePlan := .targetProcess missingHelper request
+    tracePlan := .targetProcess missingHelper request.traceMetadata
   }
   let expected ← runLakeHelperWriteSaveTrace missingHelper request
   let actual ← writeLeanSaveTrace spec

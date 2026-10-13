@@ -112,7 +112,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
-- Module saves publish IR signature companions on Lean 4.35 and newer, and write the matching Lake
+- Saves reject deferred compilation before changing artifacts or the Lake trace, including
+  declaration-scoped `compiler.postponeCompile`, and report the unsupported readiness reason
+  ([#263](https://github.com/leanprover/lean-beam/pull/263), @ejgallego).
+- Module saves publish IR signature companions on Lean 4.33 and newer, and write the matching Lake
   dependency trace across supported toolchains so a subsequent build reuses the saved artifacts
   ([#263](https://github.com/leanprover/lean-beam/pull/263), @ejgallego).
 - Backend handshake and worker-exit failures now include a bounded stderr tail. Feedback report

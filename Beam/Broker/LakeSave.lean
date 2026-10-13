@@ -35,7 +35,7 @@ private def moduleOutputOptionalCName : Name :=
 private def moduleOutputIRSigName : Name :=
   .str (.str (.str .anonymous "Lake") "ModuleOutputDescrs") "irSig?"
 
--- Lean/Lake v4.35 split module IR into an `.ir.sig` / `.ir` artifact pair.
+-- Lean/Lake v4.33 split module IR into an `.ir.sig` / `.ir` artifact pair.
 elab "moduleIRSignaturePath?(" irPath:term ")" : term => do
   if (← getEnv).contains moduleOutputIRSigName then
     Lean.Elab.Term.elabTerm (← `(term|
@@ -94,7 +94,7 @@ elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServe
 
 inductive LeanSaveTracePlan where
   | inProcess (depTrace : BuildTrace)
-  | targetProcess (helper : FilePath) (request : LakeHelperWriteTraceRequest)
+  | targetProcess (helper : FilePath) (traceMetadata : Json)
 
 structure LeanSaveSpec where
   relPath : String
@@ -173,7 +173,7 @@ private def buildLegacyDepTraceJob
         unsupportedSetupReason? := unsupportedZeroBuildSaveReason? mod
       }
 
--- Lake v4.35 moved the full module build trace into `ModulePreSetup.trace`. Use that typed
+-- Lake v4.33 moved the full module build trace into `ModulePreSetup.trace`. Use that typed
 -- trace directly instead of appending a second copy of the source, options, and identity inputs.
 elab "buildSaveTraceJobCompat(" mod:term ", " snapshot:term ")" : term => do
   let presetupTraceName := .str (.str (.str .anonymous "Lake") "ModulePreSetup") "trace"
@@ -224,7 +224,7 @@ private def buildDepTrace
     (ws : Workspace)
     (root path : FilePath)
     (mod : Lake.Module)
-    (snapshot : SourceSnapshot) : IO (Except BrokerFailure (BuildTrace × Bool × Option String)) := do
+    (snapshot : SourceSnapshot) : IO (Except BrokerFailure SaveTraceInputs) := do
   match ← ensureSaveTraceReady ws root path mod snapshot with
   | .error failure => pure <| .error failure
   | .ok () =>
@@ -235,7 +235,7 @@ private def buildDepTrace
             code := .contentModified
             message := "source changed while preparing its Lake save trace"
           }
-        return .ok (inputs.trace, inputs.isModule, inputs.unsupportedSetupReason?)
+        return .ok inputs
       catch e =>
         pure <| .error {
           code := .internalError
@@ -267,7 +267,7 @@ private def mkLeanSaveSpecInProcess
             "lean-beam save only works for synced files that belong to the current Lake workspace package graph."
         }
     let depTraceResult ← buildDepTrace ws root path mod snapshot
-    let (depTrace, isModule, unsupportedSetupReason?) ←
+    let inputs ←
       match depTraceResult with
       | .ok result => pure result
       | .error failure => return .error failure
@@ -275,17 +275,17 @@ private def mkLeanSaveSpecInProcess
     pure <| .ok {
       relPath
       moduleName := mod.name.toString
-      unsupportedSetupReason?
+      unsupportedSetupReason? := inputs.unsupportedSetupReason?
       oleanPath := mod.oleanFile
-      oleanServerPath? := if isModule then some mod.oleanServerFile else none
-      oleanPrivatePath? := if isModule then some mod.oleanPrivateFile else none
+      oleanServerPath? := if inputs.isModule then some mod.oleanServerFile else none
+      oleanPrivatePath? := if inputs.isModule then some mod.oleanPrivateFile else none
       ileanPath := mod.ileanFile
-      irPath? := if isModule then some mod.irFile else none
-      irSigPath? := leanSaveIRSignaturePath? (if isModule then some mod.irFile else none)
+      irPath? := if inputs.isModule then some mod.irFile else none
+      irSigPath? := leanSaveIRSignaturePath? (if inputs.isModule then some mod.irFile else none)
       cPath := mod.cFile
       bcPath? := if Lean.Internal.hasLLVMBackend () then some mod.bcFile else none
       tracePath := mod.traceFile
-      tracePlan := .inProcess depTrace
+      tracePlan := .inProcess inputs.trace
     }
   catch e =>
     pure <| .error {
@@ -308,7 +308,7 @@ private def leanSaveSpecOfHelperSpec
     cPath := FilePath.mk spec.cPath
     bcPath? := spec.bcPath?.map FilePath.mk
     tracePath := FilePath.mk spec.tracePath
-    tracePlan := .targetProcess helper spec.toLakeHelperWriteTraceRequest
+    tracePlan := .targetProcess helper spec.traceMetadata
   }
 
 private def mkLeanSaveSpecWithHelper
@@ -412,7 +412,19 @@ def writeLeanSaveTrace (spec : LeanSaveSpec) : IO (Except BrokerFailure Unit) :=
         writeTraceAtomically spec.tracePath fun stagedTrace =>
           writeBuildTrace stagedTrace depTrace outputs {}
         pure (.ok ())
-    | .targetProcess helper request =>
+    | .targetProcess helper traceMetadata =>
+        let request : LakeHelperWriteTraceRequest := {
+          oleanPath := spec.oleanPath.toString
+          oleanServerPath? := spec.oleanServerPath?.map (·.toString)
+          oleanPrivatePath? := spec.oleanPrivatePath?.map (·.toString)
+          ileanPath := spec.ileanPath.toString
+          irPath? := spec.irPath?.map (·.toString)
+          irSigPath? := spec.irSigPath?.map (·.toString)
+          cPath := spec.cPath.toString
+          bcPath? := spec.bcPath?.map (·.toString)
+          tracePath := spec.tracePath.toString
+          traceMetadata
+        }
         match ← runLakeHelperWriteSaveTrace helper request with
         | .ok _ => pure (.ok ())
         | .error failure => pure (.error failure)

@@ -188,11 +188,18 @@ grep -v '^[[:space:]]*#' validated-lean-toolchains | sed '/^[[:space:]]*$/d' |
 BEAM_INSTALL_TEST_PRESEED_ELAN=require bash tests/test-beam-install.sh
 ```
 
+The save suite also runs [tests/test-beam-deferred-save.py](../tests/test-beam-deferred-save.py).
+On toolchains with deferred compilation it checks both Lake options and declaration-scoped
+`compiler.postponeCompile`: sync must report the unsupported readiness reason, both save commands
+must reject the checkpoint, and every prior artifact and the Lake trace must remain unchanged.
+
 Use [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) to validate one
 supported bundle lane at a time. The module-save case removes the batch-produced IR signature when
 present, edits `SaveSmoke.ModuleB`, and saves it through `close-save`. It checks the complete artifact
 family and requires `lake --no-cache build -v SaveSmoke/ModuleB.lean` to replay the saved outputs;
-`CheckModuleB.lean` then imports the saved definition and checks its new value. The lane also checks
+`CheckModuleB.lean` then imports the saved definition and checks its new value.
+`lake --no-cache build checkModuleBNative` compiles and links a consumer that calls the saved
+`@[noinline]` definition; running it must print the new value. The lane also checks
 that Lean's stale-import diagnostic wording
 still matches Beam's temporary text-based detector while the structured Lean stale-dependency API is
 pending. If bundle installation stalls on a slow machine, raise

@@ -690,7 +690,7 @@ deleting obsolete compatibility code over preserving stale branches.
   `FileSource` instances route through `Lean.Lsp.fileSource p.textDocument` to bridge the older
   `FileIdent` return type and the newer `DocumentUri` API.
 - `Beam/Broker/LakeSave.lean`: `hashOfHashable` / `addHashablePureTrace` exist because Lake
-  older supported releases lack the newer generic `ComputeHash [Hashable α]` instance that makes plain
+  v4.28 lacks the newer generic `ComputeHash [Hashable α]` instance that makes plain
   `addPureTrace mod.name` and `addPureTrace mod.pkg.id?` work upstream in newer Lean versions.
 - `Beam/LSP/Save.lean`: `emitCForSavedModule` selects between the older `Lean.IR.emitC` API and
   the newer `Lean.Compiler.LCNF.emitC` API.
@@ -699,8 +699,12 @@ deleting obsolete compatibility code over preserving stale branches.
   `EditableDocumentCore.collectCurrentDiagnostics` API.
 - `Beam/Broker/Transport.lean`: the transport uses `Std.Internal.UV.TCP` directly because the async
   TCP wrapper moved from `Std.Internal.Async.TCP` to `Std.Async.TCP`.
-- `Beam/Broker/LakeSave.lean`: `mkModuleOutputDescrsCompat` selects between the older
-  `ModuleOutputDescrs` record shape and the newer shape with `isModule`.
+- `Beam/Broker/LakeSave.lean`: `mkModuleOutputDescrsCompat` selects the supported Lake output
+  descriptors: `isModule` starts in v4.30, `irSig?` in v4.33, and optional `c?` in
+  nightly-2026-10-13. `buildSaveTraceJobCompat` uses the full `ModulePreSetup.trace` from v4.33
+  onward and reconstructs the legacy trace on older releases, omitting module identity on v4.28.
+- `Beam/LSP/Save.lean`: `hasPostponedCompilation` checks the pending compiler declarations on
+  Lean versions with that extension. The final option alone misses declaration-scoped postponement.
 
 ## Process
 
