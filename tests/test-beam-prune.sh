@@ -86,6 +86,10 @@ write_runtime_manifest current-payload "$current_runtime/manifest.json"
 write_runtime_manifest old-payload "$old_runtime/manifest.json"
 cp scripts/lean-beam "$current_runtime/bin/lean-beam"
 cp "$beam_cli" "$current_runtime/libexec/beam-cli"
+mkdir -p "$current_runtime/lib/lean"
+while IFS= read -r shared_lib; do
+  cp ".lake/build/$(beam_runtime_shared_lib_dir)/$shared_lib" "$current_runtime/lib/lean/$shared_lib"
+done < <(beam_runtime_shared_lib_names)
 ln -s "$current_runtime" "$install_root/current"
 
 resolved_current_runtime="$(beam_test_realpath "$current_runtime")"
@@ -123,6 +127,11 @@ write_bundle_artifacts() {
   mkdir -p "$workspace/.lake/build/bin" "$workspace/.lake/build/lib"
   : >"$workspace/.lake/build/bin/beam-daemon"
   : >"$workspace/.lake/build/lib/$bundle_plugin_name"
+  local shared_lib
+  mkdir -p "$workspace/.lake/build/$(beam_runtime_shared_lib_dir)"
+  while IFS= read -r shared_lib; do
+    : >"$workspace/.lake/build/$(beam_runtime_shared_lib_dir)/$shared_lib"
+  done < <(beam_runtime_shared_lib_names)
 }
 write_complete_bundle() {
   local bundle_dir="$1"

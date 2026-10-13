@@ -188,6 +188,19 @@ def main():
     version = run([beam, "version"], cwd=scratch, env=env).stdout
     assert version.startswith("lean-beam "), version
     assert metadata["payloadHash"] in version and metadata["leanVersion"] in version, version
+    if os.name != "nt":
+        # A relocated Beam executable must load its containing toolchain's libraries. The
+        # original build prefix is still present: hiding the relocated library detects an
+        # accidental static link or an absolute fallback to that build prefix.
+        suffix = "dylib" if os.uname().sysname == "Darwin" else "so"
+        core = relocated / "lib" / "lean" / f"libleanshared.{suffix}"
+        parked_core = core.with_name(core.name + ".parked")
+        core.rename(parked_core)
+        try:
+            missing_core = run([beam, "version"], cwd=scratch, env=env, ok=False)
+            assert missing_core.returncode != 0 and "libleanshared" in missing_core.stderr, missing_core
+        finally:
+            parked_core.rename(core)
     mcp = relocated / "bin" / f"lean-beam-mcp{EXE}"
     mcp_version = run([mcp, "--version"], cwd=scratch, env=env).stdout
     assert "lean-beam-mcp" in mcp_version and metadata["payloadHash"] in mcp_version, mcp_version

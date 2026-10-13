@@ -63,6 +63,11 @@ The executables locate these files relative to themselves. The MCP server uses t
 `lean-beam` automatically and rejects runtime options selecting a different toolchain. Provenance
 records the Beam source commit, a SHA-256 identity of the CLI, daemon, MCP server, and plugin payload,
 and the selected Lean/Lake identities.
+The three Beam executables dynamically link to the containing installation's Lean and Lake
+shared libraries. Unix executables use a relative `lib/lean` search path; Windows loads the
+matching DLLs from `bin`. The install script does not copy another Lean runtime or retain a
+search path into the build machine's toolchain. Keep the complete Lean shared-library set,
+including the split-library stubs, with the installation when relocating or packaging it.
 `lean-beam version` and `lean-beam --root PROJECT doctor` read this installed record. The payload
 identity also participates in session configuration: replacing it requires stopping the old
 foreground owner before attaching to a new session.

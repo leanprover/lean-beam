@@ -80,6 +80,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   are no longer admitted by the standard toolchain registries; projects on those releases must
   upgrade Lean or retain an older Beam checkout
   ([#273](https://github.com/leanprover/lean-beam/pull/273), @ejgallego).
+- The CLI, daemon, and MCP server dynamically link to one matching Lean/Lake shared-library set.
+  Standalone installs and target-toolchain bundles include that set; native Lean installations
+  reuse their existing libraries. Executables use relative library paths when relocated.
+
 - Clarify zero-based `run-at` coordinates and how tactic positions select before/after proof states,
   with guidance for probing tactic replacements
   ([#253](https://github.com/leanprover/lean-beam/pull/253), @ejgallego).

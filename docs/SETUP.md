@@ -50,6 +50,12 @@ immutable runtime payload and its provenance manifest. After reinstalling, resta
 sessions so they launch the new runtime instead of continuing to use an already-running server
 process.
 
+The CLI, daemon, and MCP server share one matching Lean/Lake library set. The standalone installer
+includes those libraries in the immutable runtime, and each target-toolchain bundle includes its
+own matching set. Commands locate the libraries relative to their executable; the source checkout
+and its build toolchain are not needed to load the installed commands. Native Lean distributions
+use the containing toolchain's libraries instead; see [TOOLCHAIN_BUNDLING.md](TOOLCHAIN_BUNDLING.md).
+
 The agent flags install the bundled Lean skill into the corresponding agent home. Rocq goal
 probes and the Rocq skill are installed separately from the frozen [rocq-beam](https://github.com/ejgallego/rocq-beam) project.
 
