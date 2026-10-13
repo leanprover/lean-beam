@@ -8,6 +8,8 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Added
 
+- Validated Lean `v4.35.0` final support and made it the repository's default Lean toolchain
+  ([#263](https://github.com/leanprover/lean-beam/pull/263), @ejgallego).
 - Validated Lean `v4.35.0-rc4` support and made it the repository's default Lean toolchain.
 - Validated the missing stable Lean toolchains `v4.28.1`, `v4.29.1`, `v4.32.1`, `v4.32.2`,
   `v4.33.1`, `v4.34.0`, and `v4.34.1`. Canonical RC and patch variants from the `4.35`
@@ -110,6 +112,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- Module saves publish IR signature companions on Lean 4.35 and newer, and write the matching Lake
+  dependency trace across supported toolchains so a subsequent build reuses the saved artifacts
+  ([#263](https://github.com/leanprover/lean-beam/pull/263), @ejgallego).
 - Backend handshake and worker-exit failures now include a bounded stderr tail. Feedback report
   cards show the complete source commit and runtime payload, and reusing an installed runtime
   refreshes its source commit so reports identify the checkout that performed the install
