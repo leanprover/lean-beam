@@ -122,6 +122,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- Sync and save accept Lean's normalized CRLF document text while preserving saved-byte versions
+  and Lake fingerprints. Completed elaboration snapshots remain authoritative when busy progress
+  notifications arrive late
+  ([#268](https://github.com/leanprover/lean-beam/pull/268), @ejgallego).
 - Saves reject deferred compilation before changing artifacts or the Lake trace, including
   declaration-scoped `compiler.postponeCompile`, and report the unsupported readiness reason
   ([#263](https://github.com/leanprover/lean-beam/pull/263), @ejgallego).
