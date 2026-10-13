@@ -10,6 +10,8 @@ A Lean release line is the canonical `major.minor` family recorded in
 `compatible-lean-release-lines`. An exact toolchain variant is a canonical immutable
 `major.minor.patch` or `major.minor.patch-rcN` name within that family.
 
+- Elan 4.2 machine-readable selection through `elan dump-state --no-net`. Beam honors Elan
+  precedence and applies its existing admission policy to the selected exact or custom name.
 - The core product goal is still the small Lean request shaped like `runAt(pos, "lean text")`,
   with typed request and response data.
 - The supported Lean release window is 4.31–4.35. Lean 4.28–4.30, including their RC and patch

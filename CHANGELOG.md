@@ -116,8 +116,8 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
-- Workspace Lean executables follow the declared `lean-toolchain`, keeping them aligned with the
-  selected plugin even when the caller sets an elan environment or directory override
+- Workspace Lean executables and Beam plugins follow Elan's effective toolchain selection,
+  including `ELAN_TOOLCHAIN` and directory overrides
   ([#264](https://github.com/leanprover/lean-beam/pull/264), @ejgallego).
 - Saves reject deferred compilation before changing artifacts or the Lake trace, including
   declaration-scoped `compiler.postponeCompile`, and report the unsupported readiness reason

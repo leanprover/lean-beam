@@ -99,15 +99,44 @@ def explicitProjectRoot (opts : CliOptions) (action : String) : IO System.FilePa
   | none =>
       throw <| IO.userError s!"{action} requires an explicit --root PATH"
 
+-- Elan 4.2 exposes its selected descriptor through `dump-state --no-net`. Decode only that
+-- descriptor; channel resolution and installed-toolchain paths are not admission authorities.
+private structure ElanRemoteToolchain where
+  origin : String
+  release : String
+  deriving FromJson
+
+private structure ElanLocalToolchain where
+  name : String
+  deriving FromJson
+
+/-- Decode Elan's selected name without parsing its human-readable selection/provenance text. -/
+def selectedElanToolchain (state : Json) : Except String String := do
+  let toolchains ← state.getObjVal? "toolchains"
+  let active ← toolchains.getObjVal? "active_override"
+  let selected ←
+    if active == Json.null then
+      (← toolchains.getObjVal? "default").getObjVal? "unresolved"
+    else
+      active.getObjVal? "unresolved"
+  match selected.getObjVal? "Remote", selected.getObjVal? "Local" with
+  | .ok remote, .error _ =>
+      let remote : ElanRemoteToolchain ← fromJson? remote
+      pure s!"{remote.origin}:{remote.release}"
+  | .error _, .ok localToolchain =>
+      let localToolchain : ElanLocalToolchain ← fromJson? localToolchain
+      pure localToolchain.name
+  | _, _ => throw "expected one Remote or Local Elan toolchain descriptor"
+
+/-- Ask Elan to select the workspace toolchain, including environment and directory overrides. -/
 def leanToolchain (root : System.FilePath) : IO String := do
-  let path := root / "lean-toolchain"
-  unless ← path.pathExists do
-    throw <| IO.userError s!"missing lean-toolchain in {root}"
-  pure <| Beam.trimLine (← IO.FS.readFile path)
+  let state ← Beam.readCmdTrim "elan" #["dump-state", "--no-net"] (some root)
+  IO.ofExcept <| (Json.parse state >>= selectedElanToolchain).mapError fun error =>
+    s!"could not read Elan's toolchain selection for {root}: {error}"
 
 def leanBin (root : System.FilePath) (toolchain : String) : IO String := do
-  -- Resolve the same explicit toolchain used for the bundle, even when the caller sets an
-  -- ELAN_TOOLCHAIN override or has an elan directory override for the project.
+  -- Freeze the selection already used for admission and the bundle. An override changing
+  -- during bundle preparation must not select a different Lean executable.
   Beam.readCmdTrim "elan" #["run", toolchain, "elan", "which", "lean"] (some root)
 
 def rocqCandidates (root : System.FilePath) : List System.FilePath :=

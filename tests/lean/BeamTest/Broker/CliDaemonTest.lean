@@ -72,6 +72,31 @@ private def ensureTestControlDir (root : System.FilePath) : IO System.FilePath :
   Beam.ensurePrivateDir "test Beam session directory" control
   pure control
 
+private def checkElanSelectionDecode : IO Unit := do
+  let remote := Json.mkObj [("Remote", Json.mkObj [
+    ("origin", toJson "leanprover/lean4"), ("release", toJson "v4.35.0")])]
+  let localToolchain := Json.mkObj [("Local", Json.mkObj [("name", toJson "lean4-dev")])]
+  let state (active : Json) (default := remote) := Json.mkObj [("toolchains", Json.mkObj [
+    ("active_override", active), ("default", Json.mkObj [("unresolved", default)])])]
+  for (label, input, expected) in [
+      ("active remote", state (Json.mkObj [("unresolved", remote)]) localToolchain, "leanprover/lean4:v4.35.0"),
+      ("active custom", state (Json.mkObj [("unresolved", localToolchain)]), "lean4-dev"),
+      ("default", state Json.null, "leanprover/lean4:v4.35.0")
+    ] do
+    require s!"Elan selection {label}" ((← IO.ofExcept (Beam.Cli.selectedElanToolchain input)) == expected)
+  let channel := Json.mkObj [("Remote", Json.mkObj [
+    ("origin", toJson "leanprover/lean4"), ("release", toJson "stable")])]
+  let cachedChannel := (state (Json.mkObj [("unresolved", channel)])).setObjVal! "toolchains"
+    (Json.mkObj [("active_override", Json.mkObj [("unresolved", channel)]),
+      ("resolved_active", Json.mkObj [("cached", toJson "leanprover/lean4:v4.35.0")])])
+  require "Elan's cached channel must not bypass toolchain admission"
+    ((← IO.ofExcept (Beam.Cli.selectedElanToolchain cachedChannel)) == "leanprover/lean4:stable")
+  for input in [Json.null, state (Json.mkObj [("unresolved", Json.null)]),
+      state (Json.mkObj [("unresolved", Json.mkObj [("Remote", Json.mkObj [])])])] do
+    match Beam.Cli.selectedElanToolchain input with
+    | .error _ => pure ()
+    | .ok name => throw <| IO.userError s!"malformed Elan selection accepted {name}"
+
 private def checkBackendConfigLowering : IO Unit := do
   let root := System.FilePath.mk "/tmp/beam-backend-config-project"
   let daemonBin := System.FilePath.mk "/bundle/bin/beam-daemon"
@@ -1721,6 +1746,7 @@ private def checkRuntimeBundleMetadataAcceptance : IO Unit := do
       pure ()
 
 def main : IO Unit := do
+  checkElanSelectionDecode
   checkBackendConfigLowering
   checkProjectDaemonRequestSealing
   checkClientResponsePresentation

@@ -60,7 +60,7 @@ skill:
 `--opencode`, `--vibe`, `--all-skills`, or an interactive skill target. Rocq-specific setup is
 documented in [ROCQ.md](ROCQ.md).
 
-The installer requires `elan` on `PATH`. Make sure `~/.local/bin` is on `PATH` before using the
+The installer requires Elan 4.2 on `PATH`. Make sure `~/.local/bin` is on `PATH` before using the
 installed wrappers directly.
 
 ## Validated And Compatible Toolchains
@@ -90,6 +90,15 @@ aliases, linked toolchains, other vendors, or malformed version spellings. Relea
 not the same claim as exact CI validation: Beam builds a bundle for the exact resolved toolchain
 fingerprint and loads the resulting plugin in a small Lean elaboration probe before marking that
 bundle ready.
+
+For each workspace, Beam asks Elan to select the toolchain in that workspace's root. This honors
+`ELAN_TOOLCHAIN` and Elan directory overrides, using the project file when no higher-priority
+selection applies. Admission, the Beam runtime bundle, and the Lean executable all use this one
+selection. `lean-beam doctor` reports it as `project toolchain`.
+
+Selecting an override does not bypass Beam's admission policy. Unsupported versions and mutable
+channel aliases still fail early; use an admitted exact toolchain name or an explicitly registered
+custom name. Stop the existing Beam session before changing the effective toolchain.
 
 The repository's [`lean-toolchain`](../lean-toolchain) is the default toolchain prebuilt by the
 installer. If your target projects use another validated toolchain or a compatible canonical
