@@ -53,7 +53,52 @@ private def expectErrorSyncVerdict
       s!"expected {label} sync.readiness.saveReady = {expectedSaveReady}, got {(toJson sync).compress}"
   pure sync
 
+private def checkCrlfSyncSaveReplay : IO Unit := do
+  let endpoint ← freshTcpEndpoint
+  let root ← mkTempProjectRoot "beam-crlf-save-replay"
+  copySaveProjectFixture root
+  let source := root / "SaveSmoke" / "B.lean"
+  let crlf := "def bVal : Nat := 42\r\n"
+  IO.FS.writeFile source crlf
+  let broker ← spawnLeanBroker endpoint root
+  try
+    waitForBrokerReadyForRoot endpoint root
+    discard <| expectOk (← runClient endpoint Beam.Broker.Request.ensure)
+    let synced ← runClient endpoint { payload := .syncFile { path := "SaveSmoke/B.lean" } }
+    let result ← requireSyncFileResult "CRLF sync" (← expectOk synced)
+    unless result.readiness.saveReady && (← requireFileProgress "CRLF sync" synced).done do
+      throw <| IO.userError s!"expected CRLF sync to complete and permit save: {(toJson result).compress}"
+    discard <| expectOk (← runClient endpoint { payload := .saveOlean { path := "SaveSmoke/B.lean" } })
+    unless (← IO.FS.readBinFile source) == crlf.toUTF8 do
+      throw <| IO.userError "CRLF sync/save rewrote source bytes"
+    let selected ← IO.Process.output {
+      cmd := "lean"
+      args := #["--print-prefix"]
+      cwd := (← repoRoot).toString
+    }
+    unless selected.exitCode == 0 do
+      throw <| IO.userError s!"failed to locate the test compiler: {selected.stderr}"
+    let leanPrefix := System.FilePath.mk selected.stdout.trimAscii.toString
+    let replay ← IO.Process.output {
+      -- The copied fixture may declare an older release; replay must use the broker's compiler.
+      cmd := (leanPrefix / "bin" / "lake").toString
+      args := #["--no-cache", "-v", "build", "SaveSmoke.B"]
+      cwd := root.toString
+    }
+    let output := replay.stdout ++ replay.stderr
+    unless replay.exitCode == 0 && output.contains "Replayed SaveSmoke.B" &&
+        !output.contains "Built SaveSmoke.B" do
+      throw <| IO.userError s!"Lake did not replay the CRLF checkpoint:\n{output}"
+    unless (← IO.FS.readBinFile source) == crlf.toUTF8 do
+      throw <| IO.userError "Lake replay rewrote CRLF source bytes"
+    discard <| expectOk (← runClient endpoint Beam.Broker.Request.shutdown)
+  finally
+    try broker.kill catch _ => pure ()
+    discard <| broker.tryWait
+    IO.FS.removeDirAll root
+
 def main : IO Unit := do
+  checkCrlfSyncSaveReplay
   let endpoint ← freshTcpEndpoint
   let root ← mkTempProjectRoot "beam-daemon-save-stream"
   copySaveProjectFixture root

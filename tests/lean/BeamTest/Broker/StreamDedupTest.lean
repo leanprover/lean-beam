@@ -134,8 +134,8 @@ private def fakeSessionWithSyncedDoc
   let uri := Beam.Broker.sessionUri path
   let docs := ({} : Std.TreeMap String Beam.Broker.DocState).insert uri {
     version
-    textHash := hash text
-    textTraceHash := Lake.Hash.ofText text
+    rawSourceHash := hash text
+    lakeTraceHash := Lake.Hash.ofText text
     textMTime
     syncSnapshotSeq := 1
   }

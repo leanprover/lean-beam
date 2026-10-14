@@ -790,7 +790,7 @@ private def checkStaleDirectDepHints : IO Unit := do
       path := "SaveSmoke/B.lean"
       lastSyncEventSeq := 9
       lastSaveEventSeq := 2
-      lastTextHash? := some 11
+      lastRawSourceHash? := some 11
       lastTextChangeEventSeq := 9
     } : ModuleHistory)
   let unsavedHints := collectStaleDirectDepHints directImports 7 unsavedHistory
@@ -807,7 +807,7 @@ private def checkStaleDirectDepHints : IO Unit := do
       path := "SaveSmoke/B.lean"
       lastSyncEventSeq := 9
       lastSaveEventSeq := 10
-      lastTextHash? := some 11
+      lastRawSourceHash? := some 11
       lastTextChangeEventSeq := 9
     } : ModuleHistory)
   let savedHints := collectStaleDirectDepHints directImports 7 savedHistory
@@ -820,7 +820,7 @@ private def checkStaleDirectDepHints : IO Unit := do
       path := "SaveSmoke/B.lean"
       lastSyncEventSeq := 10
       lastSaveEventSeq := 2
-      lastTextHash? := some 11
+      lastRawSourceHash? := some 11
       lastTextChangeEventSeq := 4
     } : ModuleHistory)
   let noopSyncHints := collectStaleDirectDepHints directImports 7 noopSyncHistory

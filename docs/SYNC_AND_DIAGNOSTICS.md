@@ -29,9 +29,10 @@ version from `lean-beam update`, the internal broker `update_file` operation, or
 `lean-beam sync`, the internal broker `sync_file` operation, and MCP `lean_sync` also return the
 current version when the caller needs the diagnostics/readiness barrier.
 
-Beam checks Lean's accepted document after Lean normalizes CRLF line endings to LF. Changes to
-the saved bytes still advance the document version, and Lake source fingerprints retain those
-saved bytes.
+Beam checks Lean's accepted document using a document hash after Lean normalizes CRLF line endings
+to LF. A separate raw source hash tracks saved bytes for document versioning and freshness checks;
+line-ending-only edits still advance the version. Lake trace hashes use `Lake.Hash.ofText`, which
+also normalizes CRLF to LF. Sync and save preserve the source file's saved bytes.
 
 When the broker rejects a position- or range-bound request because the supplied version is stale,
 the failure uses `contentModified` and includes `error.data.reason = "documentVersionMismatch"`.

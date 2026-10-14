@@ -25,8 +25,8 @@ private def requireOnlyFile (label : String) (sessionJson : Json) : IO Json := d
 
 private def mkDoc (text : String) (version : Nat := 1) : DocState := {
   version
-  textHash := hash text
-  textTraceHash := default
+  rawSourceHash := hash text
+  lakeTraceHash := default
   textMTime := default
 }
 

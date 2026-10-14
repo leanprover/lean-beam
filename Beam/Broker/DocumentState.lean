@@ -16,10 +16,12 @@ namespace Beam.Broker
 
 structure DocState where
   version : Nat
-  textHash : UInt64
+  /-- Saved source text without line-ending normalization; controls versions and freshness. -/
+  rawSourceHash : UInt64
   /-- Hash of the backend's document text; Lean normalizes CRLF to LF. -/
-  documentTextHash : UInt64 := textHash
-  textTraceHash : Lake.Hash
+  documentHash : UInt64 := rawSourceHash
+  /-- Lake's source trace hash; `Lake.Hash.ofText` normalizes CRLF independently. -/
+  lakeTraceHash : Lake.Hash
   textMTime : Lake.MTime
   -- File contents may be read before the broker state mutex is held. This
   -- records the newest ordered request snapshot applied to the LSP document.
@@ -37,8 +39,8 @@ structure ModuleHistory where
   lastSyncEventSeq : Nat := 0
   /-- Broker event sequence of the latest successful save checkpoint for this module. -/
   lastSaveEventSeq : Nat := 0
-  /-- Latest source hash observed by a successful sync/save for this module. -/
-  lastTextHash? : Option UInt64 := none
+  /-- Latest raw source hash observed by a successful sync/save for this module. -/
+  lastRawSourceHash? : Option UInt64 := none
   /-- Broker event sequence of the latest observed source text change after the initial baseline. -/
   lastTextChangeEventSeq : Nat := 0
 
@@ -49,9 +51,12 @@ abbrev Docs := Std.TreeMap String DocState
 abbrev ModuleHistories := Std.TreeMap String ModuleHistory
 
 structure FileSnapshot where
-  textHash : UInt64
-  documentTextHash : UInt64 := textHash
-  textTraceHash : Lake.Hash
+  /-- Saved source text without line-ending normalization. -/
+  rawSourceHash : UInt64
+  /-- Text accepted by the backend, normalized to LF for Lean. -/
+  documentHash : UInt64 := rawSourceHash
+  /-- Lake's normalized source trace hash. -/
+  lakeTraceHash : Lake.Hash
   textMTime : Lake.MTime
   /-- Zero means in-session sync with no cross-request ordering token. -/
   readSeq : Nat := 0
@@ -97,9 +102,9 @@ private def nextSnapshotSeq (docState : DocState) (snapshot : FileSnapshot) : Na
 
 private def docStateOfSnapshot (version : Nat) (snapshot : FileSnapshot) : DocState := {
   version
-  textHash := snapshot.textHash
-  documentTextHash := snapshot.documentTextHash
-  textTraceHash := snapshot.textTraceHash
+  rawSourceHash := snapshot.rawSourceHash
+  documentHash := snapshot.documentHash
+  lakeTraceHash := snapshot.lakeTraceHash
   textMTime := snapshot.textMTime
   syncSnapshotSeq := snapshot.readSeq
   moduleName? := snapshot.moduleName?
@@ -134,14 +139,14 @@ def syncFileDecision
           version := docState.version
           docs
         }
-      else if docState.textHash == snapshot.textHash then
+      else if docState.rawSourceHash == snapshot.rawSourceHash then
         {
           action := .unchanged
           version := docState.version
           docs := docs.insert uri {
             docState with
-            documentTextHash := snapshot.documentTextHash
-            textTraceHash := snapshot.textTraceHash
+            documentHash := snapshot.documentHash
+            lakeTraceHash := snapshot.lakeTraceHash
             textMTime := snapshot.textMTime
             syncSnapshotSeq := nextSnapshotSeq docState snapshot
             moduleName? := snapshot.moduleName?
@@ -163,18 +168,18 @@ def syncFileDecision
 def updateModuleHistorySync
     (moduleHistory : ModuleHistories)
     (moduleName path : String)
-    (textHash : UInt64)
+    (rawSourceHash : UInt64)
     (eventSeq : Nat) : ModuleHistories :=
   let history := (moduleHistory.get? moduleName).getD { path }
   let textChanged :=
-    match history.lastTextHash? with
-    | some lastTextHash => lastTextHash != textHash
+    match history.lastRawSourceHash? with
+    | some lastRawSourceHash => lastRawSourceHash != rawSourceHash
     | none => false
   moduleHistory.insert moduleName {
     history with
     path
     lastSyncEventSeq := eventSeq
-    lastTextHash? := some textHash
+    lastRawSourceHash? := some rawSourceHash
     lastTextChangeEventSeq :=
       if textChanged then eventSeq else history.lastTextChangeEventSeq
   }
@@ -182,7 +187,7 @@ def updateModuleHistorySync
 def updateModuleHistorySave
     (moduleHistory : ModuleHistories)
     (moduleName path : String)
-    (textHash : UInt64)
+    (rawSourceHash : UInt64)
     (eventSeq : Nat) : ModuleHistories :=
   let history := (moduleHistory.get? moduleName).getD { path }
   moduleHistory.insert moduleName {
@@ -190,7 +195,7 @@ def updateModuleHistorySave
     path
     lastSyncEventSeq := eventSeq
     lastSaveEventSeq := eventSeq
-    lastTextHash? := some textHash
+    lastRawSourceHash? := some rawSourceHash
   }
 
 def markSyncedVersion
@@ -206,7 +211,7 @@ def markSyncedVersion
         let moduleHistory :=
           match docState.moduleName? with
           | some moduleName =>
-              updateModuleHistorySync moduleHistory moduleName path docState.textHash eventSeq
+              updateModuleHistorySync moduleHistory moduleName path docState.rawSourceHash eventSeq
           | none => moduleHistory
         {
           docs := docs.insert uri {
@@ -234,7 +239,7 @@ def markSavedVersion
         let moduleHistory :=
           match docState.moduleName? with
           | some moduleName =>
-              updateModuleHistorySave moduleHistory moduleName path docState.textHash eventSeq
+              updateModuleHistorySave moduleHistory moduleName path docState.rawSourceHash eventSeq
           | none => moduleHistory
         {
           docs := docs.insert uri {

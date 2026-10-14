@@ -14,8 +14,8 @@ namespace BeamTest.Broker.DocumentStateTest
 
 private def mkDoc (version : Nat := 1) (moduleName? : Option String := none) : DocState := {
   version
-  textHash := 0
-  textTraceHash := default
+  rawSourceHash := 0
+  lakeTraceHash := default
   textMTime := default
   moduleName?
 }
@@ -43,10 +43,10 @@ private def checkRecordFileProgress : IO Unit := do
   require "recordFileProgress ignores unknown docs" (docs.toList.length == 1)
 
 private def mkSnapshot
-    (textHash : UInt64)
+    (rawSourceHash : UInt64)
     (moduleName? : Option String := some "Foo") : DocumentState.FileSnapshot := {
-  textHash
-  textTraceHash := default
+  rawSourceHash
+  lakeTraceHash := default
   textMTime := default
   moduleName?
 }
@@ -59,7 +59,7 @@ private def checkSyncFileDecisionOpen : IO Unit := do
   require "syncFileDecision open starts at version 1" (decision.version == 1)
   let some doc := decision.docs.get? uri
     | throw <| IO.userError "syncFileDecision open did not insert doc"
-  require "syncFileDecision open records hash" (doc.textHash == 10)
+  require "syncFileDecision open records hash" (doc.rawSourceHash == 10)
   require "syncFileDecision open records module" (doc.moduleName? == some "Foo")
 
 private def checkSyncFileDecisionUnchanged : IO Unit := do
@@ -67,7 +67,7 @@ private def checkSyncFileDecisionUnchanged : IO Unit := do
   let docs : DocumentState.Docs :=
     Std.TreeMap.empty.insert uri {
       (mkDoc 5 (some "OldFoo")) with
-      textHash := 10
+      rawSourceHash := 10
       checkpointedVersion? := some 5
       fileProgress? := some { updates := 2, done := true }
       lastSyncEventSeq := 8
@@ -88,7 +88,7 @@ private def checkSyncFileDecisionChange : IO Unit := do
   let docs : DocumentState.Docs :=
     Std.TreeMap.empty.insert uri {
       (mkDoc 5 (some "OldFoo")) with
-      textHash := 10
+      rawSourceHash := 10
       checkpointedVersion? := some 5
       fileProgress? := some { updates := 2, done := true }
       lastSyncEventSeq := 8
@@ -98,7 +98,7 @@ private def checkSyncFileDecisionChange : IO Unit := do
   require "syncFileDecision changed bumps version" (decision.version == 6)
   let some doc := decision.docs.get? uri
     | throw <| IO.userError "syncFileDecision changed erased doc"
-  require "syncFileDecision changed records hash" (doc.textHash == 11)
+  require "syncFileDecision changed records hash" (doc.rawSourceHash == 11)
   require "syncFileDecision changed records module" (doc.moduleName? == some "Foo")
   require "syncFileDecision changed clears checkpointed version" (doc.checkpointedVersion?.isNone)
   require "syncFileDecision changed clears progress" (doc.fileProgress?.isNone)
@@ -116,26 +116,26 @@ private def checkMarkSyncedVersion : IO Unit := do
     | throw <| IO.userError "markSyncedVersion did not update module history"
   require "markSyncedVersion updates module sync event seq" (history.lastSyncEventSeq == 7)
   require "markSyncedVersion leaves save event seq untouched" (history.lastSaveEventSeq == 0)
-  require "markSyncedVersion records baseline text hash" (history.lastTextHash? == some 0)
+  require "markSyncedVersion records baseline text hash" (history.lastRawSourceHash? == some 0)
   require "markSyncedVersion does not count initial text as a change"
     (history.lastTextChangeEventSeq == 0)
 
   let changedDocs := result.docs.insert uri {
     (mkDoc 4 (some "Foo")) with
-    textHash := 11
+    rawSourceHash := 11
   }
   let changed := DocumentState.markSyncedVersion changedDocs result.moduleHistory uri 4 "Foo.lean" 8
   require "markSyncedVersion applies changed version" changed.applied
   let some changedHistory := changed.moduleHistory.get? "Foo"
     | throw <| IO.userError "changed markSyncedVersion did not update module history"
   require "markSyncedVersion records changed text hash"
-    (changedHistory.lastTextHash? == some 11)
+    (changedHistory.lastRawSourceHash? == some 11)
   require "markSyncedVersion records text change event seq"
     (changedHistory.lastTextChangeEventSeq == 8)
 
   let unchangedDocs := changed.docs.insert uri {
     (mkDoc 5 (some "Foo")) with
-    textHash := 11
+    rawSourceHash := 11
   }
   let unchanged := DocumentState.markSyncedVersion unchangedDocs changed.moduleHistory uri 5 "Foo.lean" 9
   require "markSyncedVersion applies unchanged text version" unchanged.applied
@@ -158,21 +158,21 @@ private def checkLineEndingVersion : IO Unit := do
   let crlf := "def value := 1\r\n"
   let opened := DocumentState.syncFileDecision {} uri {
     (mkSnapshot (hash lf)) with
-    documentTextHash := hash lf
-    textTraceHash := Lake.Hash.ofText lf
+    documentHash := hash lf
+    lakeTraceHash := Lake.Hash.ofText lf
   }
   let changed := DocumentState.syncFileDecision opened.docs uri {
     (mkSnapshot (hash crlf)) with
-    documentTextHash := hash crlf.crlfToLf
-    textTraceHash := Lake.Hash.ofText crlf
+    documentHash := hash crlf.crlfToLf
+    lakeTraceHash := Lake.Hash.ofText crlf
   }
   require "line ending edits still advance the source version"
     (changed.action == .change && changed.version == 2)
   let some doc := changed.docs.get? uri
     | throw <| IO.userError "line ending edit erased document state"
-  require "source hash retains saved bytes" (doc.textHash == hash crlf)
-  require "worker hash matches Lean's normalized document" (doc.documentTextHash == hash lf)
-  require "Lake fingerprint retains saved bytes" (doc.textTraceHash == Lake.Hash.ofText crlf)
+  require "source hash retains saved bytes" (doc.rawSourceHash == hash crlf)
+  require "worker hash matches Lean's normalized document" (doc.documentHash == hash lf)
+  require "Lake trace hash normalizes CRLF" (doc.lakeTraceHash == Lake.Hash.ofText lf && Lake.Hash.ofText lf == Lake.Hash.ofText crlf)
 
 private def checkMarkSavedVersion : IO Unit := do
   let uri := "file:///workspace/Foo.lean"
@@ -187,7 +187,7 @@ private def checkMarkSavedVersion : IO Unit := do
     | throw <| IO.userError "markSavedVersion did not update module history"
   require "markSavedVersion updates module sync event seq" (history.lastSyncEventSeq == 9)
   require "markSavedVersion updates module save event seq" (history.lastSaveEventSeq == 9)
-  require "markSavedVersion records text hash" (history.lastTextHash? == some 0)
+  require "markSavedVersion records text hash" (history.lastRawSourceHash? == some 0)
   require "markSavedVersion leaves text change event seq untouched"
     (history.lastTextChangeEventSeq == 0)
 
