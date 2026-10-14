@@ -19,7 +19,7 @@ structure DocState where
   /-- Saved source text without line-ending normalization; controls versions and freshness. -/
   rawSourceHash : UInt64
   /-- Hash of the backend's document text; Lean normalizes CRLF to LF. -/
-  documentHash : UInt64 := rawSourceHash
+  documentHash : UInt64
   /-- Lake's source trace hash; `Lake.Hash.ofText` normalizes CRLF independently. -/
   lakeTraceHash : Lake.Hash
   textMTime : Lake.MTime
@@ -54,13 +54,37 @@ structure FileSnapshot where
   /-- Saved source text without line-ending normalization. -/
   rawSourceHash : UInt64
   /-- Text accepted by the backend, normalized to LF for Lean. -/
-  documentHash : UInt64 := rawSourceHash
+  documentHash : UInt64
   /-- Lake's normalized source trace hash. -/
   lakeTraceHash : Lake.Hash
   textMTime : Lake.MTime
   /-- Zero means in-session sync with no cross-request ordering token. -/
   readSeq : Nat := 0
   moduleName? : Option String := none
+
+/--
+Capture the three hash representations from one source text before synchronizing the document.
+
+Raw source identity controls versions and disk freshness. The document identity matches the
+backend's text contract: normalize CRLF to LF for Lean and keep the supplied text for Rocq. Lake
+uses that same normalized text through its own `Hash.ofText` contract, including its hash mixing.
+Keep the Lake result instead of reconstructing it from the worker hash; the LSP worker does not
+need to depend on Lake's hash representation. LF/CRLF changes can therefore advance the source
+version while retaining both the Lean document identity and Lake source trace identity.
+-/
+def FileSnapshot.ofText
+    (backend : Backend)
+    (text : String)
+    (textMTime : Lake.MTime)
+    (readSeq : Nat := 0)
+    (moduleName? : Option String := none) : FileSnapshot := {
+  rawSourceHash := hash text
+  documentHash := hash (if backend == .lean then text.crlfToLf else text)
+  lakeTraceHash := Lake.Hash.ofText text
+  textMTime
+  readSeq
+  moduleName?
+}
 
 inductive SyncFileAction where
   | open
@@ -100,7 +124,8 @@ def recordFileProgress
 private def nextSnapshotSeq (docState : DocState) (snapshot : FileSnapshot) : Nat :=
   if snapshot.readSeq == 0 then docState.syncSnapshotSeq else snapshot.readSeq
 
-private def docStateOfSnapshot (version : Nat) (snapshot : FileSnapshot) : DocState := {
+/-- Initialize tracked state by copying all hash representations from the same snapshot. -/
+def FileSnapshot.toDocState (snapshot : FileSnapshot) (version : Nat) : DocState := {
   version
   rawSourceHash := snapshot.rawSourceHash
   documentHash := snapshot.documentHash
@@ -130,7 +155,7 @@ def syncFileDecision
       {
         action := .open
         version
-        docs := docs.insert uri (docStateOfSnapshot version snapshot)
+        docs := docs.insert uri (snapshot.toDocState version)
       }
   | some docState =>
       if snapshot.readSeq != 0 && snapshot.readSeq < docState.syncSnapshotSeq then
@@ -158,7 +183,7 @@ def syncFileDecision
           action := .change
           version
           docs := docs.insert uri {
-            (docStateOfSnapshot version snapshot) with
+            (snapshot.toDocState version) with
             checkpointedVersion? := none
             fileProgress? := none
             lastSyncEventSeq := docState.lastSyncEventSeq

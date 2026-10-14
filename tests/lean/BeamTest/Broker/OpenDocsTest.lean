@@ -23,12 +23,8 @@ private def requireOnlyFile (label : String) (sessionJson : Json) : IO Json := d
   require s!"{label}: expected one file, got {files.size}" (files.size == 1)
   pure files[0]!
 
-private def mkDoc (text : String) (version : Nat := 1) : DocState := {
-  version
-  rawSourceHash := hash text
-  lakeTraceHash := default
-  textMTime := default
-}
+private def mkDoc (text : String) (version : Nat := 1) : DocState :=
+  (DocumentState.FileSnapshot.ofText .lean text default).toDocState version
 
 private def checkInactivePayload : IO Unit := do
   let root := System.FilePath.mk "/workspace"
