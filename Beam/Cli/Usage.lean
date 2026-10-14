@@ -36,6 +36,7 @@ def usage (maintenance : List String) : String :=
     "  lean-beam [--root PATH] feedback-report --stdin|--input <path> [--bundle none|dir|zip] [--output-dir <path>] [--no-redact]",
   ] ++ maintenance ++ [
     "  lean-beam [--root PATH] doctor",
+    "  lean-beam [--root PATH] doctor clients [codex|claude|pi|opencode|vibe] [--config PATH] [--json | --verbose]",
     "  lean-beam [--root PATH] open-files",
     "  lean-beam [--root PATH] cancel <request-id>",
     "  lean-beam [--root PATH] stats",

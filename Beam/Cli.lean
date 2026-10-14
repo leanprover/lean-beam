@@ -10,7 +10,7 @@ import Beam.Cli.Installation
 
 namespace Beam.Cli
 
-def main (args : List String) : IO Unit := do
+def main (args : List String) : IO UInt32 := do
   let installation ← Installation.current
   let opts ← parseCliOptions {} args
   runCommand installation opts
