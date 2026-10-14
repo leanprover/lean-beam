@@ -81,7 +81,7 @@ private def renderVerbose (report : Report) : String := Id.run do
   for client in report.clients do
     lines := lines.push s!"\n{client.client.name}:"
     for source in client.sources do
-      if source.purpose != "Lean skill" || source.state != .notConfigured then
+      if source.role != .leanSkill || source.state != .notConfigured then
         lines := lines.push s!"  source [{source.state.name}] {quoted source.path} ({source.purpose})"
     for finding in client.findings do
       lines := lines.push s!"  {finding.status.name} [{finding.code}] {finding.message}"
@@ -102,19 +102,27 @@ def renderText (report : Report) : String := Id.run do
   let mut unknowns := 0
   let mut warnings := 0
   for client in report.clients do
-    let has := fun code => client.findings.any (·.code == code)
     let issues := client.findings.filter fun finding =>
       finding.status == .error || finding.status == .unknown || finding.status == .warning
     let label := if issues.any (·.status == .error) then "needs attention"
       else if issues.any (·.status == .unknown) then "partly checked"
       else if issues.any (·.status == .warning) then "check recommendation"
+      else if client.mcp != .checked && client.skill != .checked then "not configured"
       else "checked"
-    let mcp := if client.client == .pi then "CLI skill integration"
-      else if has "mcp.notConfigured" then "MCP not configured (optional)"
-      else if has "launch.file" then "MCP config checked"
-      else "MCP config incomplete"
-    let skill := if report.scope == "explicitConfigFile" then "skills outside selected scope"
-      else if has "skill.readable" then "Lean skill found" else "Lean skill not found"
+    let mcp := match client.mcp with
+      | .notApplicable => "MCP not applicable"
+      | .notConfigured => "MCP not configured (optional)"
+      | .checked => "MCP config checked"
+      | .unverified => "MCP config unverified"
+      | .error => "MCP config needs attention"
+      | .outOfScope => "MCP outside selected scope"
+    let skill := match client.skill with
+      | .checked => "Lean skill found"
+      | .notConfigured => "Lean skill not found"
+      | .unverified => "Lean skill inspection incomplete"
+      | .error => "Lean skill needs attention"
+      | .outOfScope => "skills outside selected scope"
+      | .notApplicable => "Lean skill not applicable"
     lines := lines.push s!"{client.client.name}: {label} — {mcp}; {skill}"
     for finding in issues do
       let kind := match finding.status with

@@ -607,7 +607,9 @@ Read-only client inspection is implemented by
 and diagnostic exit status; `Locations` describes client-specific file candidates; `Parse` uses
 Lake's in-process TOML parser and the Lean JSON parser with JSONC comment/trailing-comma handling;
 `Inspect` reads bounded regular files, extracts Beam registrations, and reuses install metadata
-classification. Human and JSON output share the typed report. Client config contents and parser/IO
+classification. Typed source roles drive config selection independently of display labels. MCP and
+skill states are recorded during inspection; rendering does not reconstruct state from finding
+codes. Human and JSON output share the typed report. Client config contents and parser/IO
 exception text are never used as diagnostic display strings. Client inspection does not source the
 shell installer or invoke client CLIs. The shell wrappers remain launchers and the installer
 retains ownership of config writes. Location formulas intentionally mirror the shell installer;

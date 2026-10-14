@@ -25,10 +25,13 @@ private def strings (value : Json) : Except Unit (Array String) := do
   let values ← value.getArr? |>.mapError (fun _ => ())
   values.mapM string
 
-private def add (report : ClientReport) (code : String) (status : Status)
+private def add (report : ClientReport) (area : CheckArea) (code : String) (status : Status)
     (message : String) (source? : Option String := none) (key? : Option String := none)
     (remediation? : Option String := none) : ClientReport :=
-  { report with findings := report.findings.push { code, status, message, source?, key?, remediation? } }
+  { report with
+    mcp := if area == .mcp then report.mcp.observe status else report.mcp
+    skill := if area == .skill then report.skill.observe status else report.skill
+    findings := report.findings.push { code, status, message, source?, key?, remediation? } }
 
 private inductive FileRead where
   | missing | unreadable | notFile | tooLarge | text (value : String)
@@ -61,22 +64,22 @@ private def readFile (path : System.FilePath) : IO FileRead := do
       | _ => return .unreadable
   | _ => return .unreadable
 
-private def readProblem (report : ClientReport) (path purpose : String)
-    (result : FileRead) : ClientReport :=
+private def readProblem (report : ClientReport) (path : String) (role : SourceRole)
+    (area : CheckArea) (result : FileRead) (conditional := false) : ClientReport :=
   let state := match result with
     | .missing => Status.notConfigured
     | .notFile => .error
     | _ => .unknown
   let report := { report with
-    sources := report.sources.push { path, purpose, state }
+    sources := report.sources.push { path, role, conditional, state }
     discovered := report.discovered || state != .notConfigured }
   match result with
   | .missing => report
-  | .tooLarge => add report "file.tooLarge" .unknown
+  | .tooLarge => add report area "file.tooLarge" .unknown
       "File exceeds the 1 MiB inspection limit." path
-  | .notFile => add report "file.notRegular" .error
+  | .notFile => add report area "file.notRegular" .error
       "Expected a regular file; this path is a directory or special file." path
-  | _ => add report "file.unreadable" .unknown
+  | _ => add report area "file.unreadable" .unknown
       "File cannot be read as UTF-8, or its symlink target is unavailable." path
 
 private structure Entry where
@@ -168,17 +171,17 @@ private def inspectSettings (context : Context) (client : Client) (source : Conf
     if client == .pi && key == "skills" then continue
     if let some setting := field? value key then
       if mentionsBeam setting then
-        report := add report "policy.notEvaluated" .unknown
+        report := add report (if key == "skills" then .skill else .mcp) "policy.notEvaluated" .unknown
           "Beam-specific tool or skill policy is present; its effective permissions are not evaluated." path key
   if client == .codex then
     if (field? value "profile").isSome || ((field? value "profiles").any mentionsBeam) then
-      report := add report "config.profile" .unknown
+      report := add report .mcp "config.profile" .unknown
         "Profile selection may change this configuration; profile overrides are not evaluated." path
   if client == .claude then
     if let some projects := (field? value "projects").bind (·.getObj?.toOption) then
       if projects.toArray.any (fun (key, _) => key != context.workspace.toString &&
           (Beam.pathRelativeToRoot? (System.FilePath.mk key) context.workspace).isSome) then
-        report := add report "config.projectContext" .unknown
+        report := add report .mcp "config.projectContext" .unknown
           "The user config records an ancestor workspace. Local-scope selection may depend on the client's launch context; inspect that workspace with --root."
           path
     let project? := (field? value "projects").bind (field? · context.workspace.toString)
@@ -187,7 +190,7 @@ private def inspectSettings (context : Context) (client : Client) (source : Conf
         for key in ["disabledMcpServers", "disabledMcpjsonServers"] do
           if let some setting := field? parent key then
             if (strings setting).toOption.any (·.contains "lean-beam") then
-              report := add report "mcp.disabled" .error
+              report := add report .mcp "mcp.disabled" .error
                 "Beam is explicitly disabled for this workspace." path key
   return report
 
@@ -201,92 +204,92 @@ private def inspectRuntime (path : System.FilePath) (entry : Entry)
       match ← readFile path with
       | .text _ => pure ()
       | .missing | .notFile =>
-          return add report "runtime.invalid" .error
+          return add report .mcp "runtime.invalid" .error
             "The configured installed runtime has missing or non-regular installation metadata." entry.source entry.key
       | _ =>
-          return add report "runtime.unreadable" .unknown
+          return add report .mcp "runtime.unreadable" .unknown
             "Installed runtime metadata could not be read within the inspection limit." entry.source entry.key
     match ← checkInstallRootMarker location.installRoot with
     | .error _ =>
-        return add report "runtime.invalid" .error
+        return add report .mcp "runtime.invalid" .error
           "The configured installed runtime has an invalid or missing ownership marker." entry.source entry.key
     | .ok () => pure ()
     match ← resolveRuntimeHome home with
     | .invalidInstalled _ | .source _ =>
-        return add report "runtime.invalid" .error
+        return add report .mcp "runtime.invalid" .error
           "The configured installed runtime has invalid installation metadata." entry.source entry.key
     | .installed _ =>
         let current := location.installRoot / "current"
         if !(← current.pathExists) then
-          return add report "runtime.currentMissing" .error
+          return add report .mcp "runtime.currentMissing" .error
             "The install root's current runtime link is missing or broken." entry.source entry.key
         if (← current.symlinkMetadata).type != .symlink then
-          return add report "runtime.currentInvalid" .error
+          return add report .mcp "runtime.currentInvalid" .error
             "The install root's current selection is not a symbolic link." entry.source entry.key
         let currentHome ← Beam.resolveExistingPath current
         if (← currentHome.metadata).type != .dir then
-          return add report "runtime.currentInvalid" .error
+          return add report .mcp "runtime.currentInvalid" .error
             "The install root's current link does not select a runtime directory." entry.source entry.key
         match ← readFile (currentHome / "manifest.json") with
         | .text _ => pure ()
         | _ =>
-            return add report "runtime.currentInvalid" .error
+            return add report .mcp "runtime.currentInvalid" .error
               "The current runtime's manifest is missing, unreadable, or exceeds the inspection limit." entry.source entry.key
         match ← resolveRuntimeHome currentHome with
         | .installed runtime =>
             if runtime.location.installRoot != location.installRoot then
-              return add report "runtime.currentInvalid" .error
+              return add report .mcp "runtime.currentInvalid" .error
                 "The current link selects a different install root." entry.source entry.key
         | _ =>
-            return add report "runtime.currentInvalid" .error
+            return add report .mcp "runtime.currentInvalid" .error
               "The current link selects a runtime with invalid installation metadata." entry.source entry.key
         if !(← Beam.sameFilePath current home) then
-          return add report "runtime.superseded" .warning
+          return add report .mcp "runtime.superseded" .warning
             "The registration resolves to a superseded runtime. Prefer the installed wrapper and restart the client after changing it."
             entry.source entry.key
-        return add report "runtime.metadata" .ok
+        return add report .mcp "runtime.metadata" .ok
           "The executable's installed runtime metadata is valid and selected by current." entry.source entry.key
   catch _ =>
-    return add report "runtime.unreadable" .unknown
+    return add report .mcp "runtime.unreadable" .unknown
       "Installed runtime metadata could not be inspected." entry.source entry.key
 
 private def inspectExecutable (entry : Entry) (command : String)
     (report : ClientReport) : IO ClientReport := do
   if command.isEmpty then
-    return add report "launch.empty" .error
+    return add report .mcp "launch.empty" .error
       "The launch command is empty." entry.source entry.key
   if command.contains "$" || command.contains "{" || command.startsWith "~" then
-    return add report "launch.expansion" .unknown
+    return add report .mcp "launch.expansion" .unknown
       "The launch command requires client-specific expansion; it was not evaluated." entry.source entry.key
   let path := System.FilePath.mk command
   if !path.isAbsolute then
     let message := if path.components.length > 1 then
       "The command depends on the client's working directory; it was not resolved."
     else "The command depends on the client's PATH; it was not resolved."
-    return add report "launch.relative" .unknown message entry.source entry.key
+    return add report .mcp "launch.relative" .unknown message entry.source entry.key
       "Use an absolute path to the installed lean-beam-mcp wrapper for predictable launches."
   try
     let resolved ← Beam.resolveExistingPath path
     let metadata ← resolved.metadata
     if metadata.type != .file then
-      return add report "launch.notFile" .error
+      return add report .mcp "launch.notFile" .error
         "The configured executable is not a regular file." entry.source entry.key
     if (← Beam.fileModeNoFollow resolved).toNat &&& 73 == 0 then
-      return add report "launch.notExecutable" .error
+      return add report .mcp "launch.notExecutable" .error
         "The configured executable has no execute permission bits." entry.source entry.key
-    let report := add report "launch.file" .ok
+    let report := add report .mcp "launch.file" .ok
       "The configured executable exists and has execute permission bits; it was not run." entry.source entry.key
     if path.fileName != some "lean-beam-mcp" then
-      return add report "launch.custom" .unknown
+      return add report .mcp "launch.custom" .unknown
         "A custom launcher is configured; its behavior is not inspected." entry.source entry.key
     inspectRuntime resolved entry report
   catch
   | .noFileOrDirectory .. =>
-      return add report "launch.missing" .error
+      return add report .mcp "launch.missing" .error
         "The configured executable or a symlink target does not exist." entry.source entry.key
         "Update the registration to an existing installed lean-beam-mcp wrapper."
   | _ =>
-      return add report "launch.unreadable" .unknown
+      return add report .mcp "launch.unreadable" .unknown
         "The configured executable could not be inspected." entry.source entry.key
 
 private def inspectEntry (client : Client) (entry : Entry)
@@ -295,21 +298,24 @@ private def inspectEntry (client : Client) (entry : Entry)
   let mut report := report
   -- Overrides may legally provide only some fields. Validate launches only after selection.
   if !checkLaunch then
-    return add report "mcp.definition" .ok
+    return add report .mcp "mcp.definition" .ok
       "A Beam definition was found; launch fields are not validated without effective selection."
       entry.source entry.key
+  if field? value "enabled" == some (.bool false) then
+    return add report .mcp "mcp.disabled" .error
+      "Beam's MCP registration is explicitly disabled." entry.source entry.key
+      "Enable the registration in this client if you intend to use Beam through MCP."
   if client == .opencode && (object value).isOk &&
       (field? value "command").isNone && (field? value "type").isNone &&
       (field? value "enabled").any (·.getBool?.isOk) then
-    return add report "config.partial" .unknown
+    return add report .mcp "config.partial" .unknown
       "This OpenCode entry only overrides an inherited server; its base definition is outside the inspected files."
       entry.source entry.key
       "Provide the complete local server definition to verify its launch command."
-  let decoded : Except Unit (String × Array String × Bool) := do
+  let decoded : Except Unit (String × Array String) := do
     let _ ← object value
-    let enabled ← match field? value "enabled" with
-      | none => pure true
-      | some enabled => enabled.getBool? |>.mapError (fun _ => ())
+    if let some enabled := field? value "enabled" then
+      let _ ← enabled.getBool? |>.mapError (fun _ => ())
     let (command, args) ← if client == .opencode then do
       let some raw := field? value "command" | throw ()
       let values ← strings raw
@@ -338,32 +344,28 @@ private def inspectEntry (client : Client) (entry : Entry)
       let some rawName := field? value "name" | throw ()
       let name ← string rawName
       if name.isEmpty then throw ()
-    return (command, args, enabled)
+    return (command, args)
   match decoded with
   | .error () =>
-      return add report "mcp.invalidEntry" .error
+      return add report .mcp "mcp.invalidEntry" .error
         "Beam's local MCP entry has missing or incorrectly typed launch fields, or a non-stdio transport."
         entry.source entry.key
         (if client == .opencode then "Use type = local and a non-empty command array of strings."
          else if client == .vibe then "Provide name, transport = stdio, and a command string; args must be an array of strings."
          else "Provide a command string for stdio; args must be an array of strings.")
-  | .ok (command, args, enabled) =>
-      report := add report "mcp.entry" .ok "Beam's local MCP launch fields have valid types." entry.source entry.key
-      if !enabled then
-        return add report "mcp.disabled" .error
-          "Beam's MCP registration is explicitly disabled." entry.source entry.key
-          "Enable the registration in this client if you intend to use Beam through MCP."
+  | .ok (command, args) =>
+      report := add report .mcp "mcp.entry" .ok "Beam's local MCP launch fields have valid types." entry.source entry.key
       if client == .codex && field? value "supports_parallel_tool_calls" != some (.bool true) then
-        report := add report "codex.parallelCalls" .warning
+        report := add report .mcp "codex.parallelCalls" .warning
           "supports_parallel_tool_calls is not true; Beam's documented Codex adapter recommends it for independent probes."
           entry.source (entry.key ++ ".supports_parallel_tool_calls")
       for key in ["enabled_tools", "disabled_tools", "env", "environment", "cwd"] do
         if (field? value key).any (fun setting => setting != Json.mkObj [] && setting != .arr #[]) then
-          report := add report "launch.overrides" .unknown
+          report := add report .mcp "launch.overrides" .unknown
             "Tool filters, environment, or working-directory overrides are configured; their effect is not verified."
             entry.source (entry.key ++ "." ++ key)
       if !args.isEmpty then
-        report := add report "launch.arguments" .unknown
+        report := add report .mcp "launch.arguments" .unknown
           "Additional launch arguments are configured; their behavior is not verified." entry.source entry.key
       inspectExecutable { entry with source := entry.commandSource?.getD entry.source } command report
 
@@ -373,13 +375,13 @@ private def inspectSkill (path : System.FilePath) (report : ClientReport) : IO C
   | .text text =>
       let report := { report with
         discovered := true
-        sources := report.sources.push { path := path.toString, purpose := "Lean skill", state := .ok } }
+        sources := report.sources.push { path := path.toString, role := .leanSkill, state := .ok } }
       if text.trimAscii.isEmpty then
-        return add report "skill.empty" .error "The Lean skill file is empty." path.toString
+        return add report .skill "skill.empty" .error "The Lean skill file is empty." path.toString
       -- Presence/readability is useful without pretending to implement each client's skill loader.
-      return add report "skill.readable" .ok
+      return add report .skill "skill.readable" .ok
         "A non-empty Lean skill file is present and readable; client loading and custom skill sources are not verified." path.toString
-  | other => return readProblem report path.toString "Lean skill" other
+  | other => return readProblem report path.toString .leanSkill .skill other
 
 /-- Only classify package sources whose cached manifest makes skill discovery unambiguous.
     Unavailable packages and filters remain unknown; never ask npm or Pi to resolve them. -/
@@ -389,7 +391,7 @@ private def inspectPiSettings (context : Context) (source : ConfigSource) (value
   for key in ["skills", "packages"] do
     if let some setting := field? value key then
       let .ok values := setting.getArr?
-        | return add report "settings.invalid" .error "Skill/package sources must be arrays."
+        | return add report .skill "settings.invalid" .error "Skill/package sources must be arrays."
             source.path.toString key
       let mut unresolved := false
       for item in values do
@@ -425,7 +427,7 @@ private def inspectPiSettings (context : Context) (source : ConfigSource) (value
           | .missing => .notConfigured
           | _ => .unknown
         report := { report with sources := report.sources.push {
-          path := manifestPath.toString, purpose := "Pi package manifest", state } }
+          path := manifestPath.toString, role := .packageManifest, state } }
         match contents with
         | .text text =>
             let .ok manifest := Json.parse text | unresolved := true; continue
@@ -435,12 +437,12 @@ private def inspectPiSettings (context : Context) (source : ConfigSource) (value
               unresolved := true
         | _ => unresolved := true
       if unresolved then
-        report := add report "skills.customSources" .unknown
+        report := add report .skill "skills.customSources" .unknown
           "Additional Pi skill sources or uncached packages need review; package code was not run."
           source.path.toString key
           "Review the skills/packages setting in Pi. Doctor checks standard Lean skill locations only."
       else if !values.isEmpty then
-        report := add report "pi.packages" .ok
+        report := add report .general "pi.packages" .ok
           "Cached package manifests or explicit filters declare no additional skills."
           source.path.toString key
   return report
@@ -478,16 +480,23 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
       path
       format := if client == .codex || client == .vibe then .toml
         else if client == .opencode then .jsonc else .json
-      purpose := "explicit config file"
+      role := .explicitConfig
       settingsOnly := client == .pi
     }
     plan := { plan with configs := #[source], skills := #[] }
-  let mut report : ClientReport := { client }
+  let mut report : ClientReport := {
+    client
+    mcp := if client == .pi then .notApplicable else .notConfigured
+    skill := if configOverride?.isSome then .outOfScope else .notConfigured }
+  let configArea := if client == .pi then CheckArea.general else .mcp
   if !(clientHome context client).isAbsolute && configOverride?.isNone then
-    return add { report with discovered := true } "location.relative" .error
+    return add { report with
+      discovered := true
+      mcp := if client == .pi then .notApplicable else .unverified
+      skill := .unverified } .general "location.relative" .error
       "The client home override must be an absolute path. No client files were inspected."
   if client == .claude && (context.env? "CLAUDE_CONFIG_DIR").isSome && configOverride?.isNone then
-    report := add { report with discovered := true } "config.clientHome" .unknown
+    report := add { report with discovered := true } .mcp "config.clientHome" .unknown
       "CLAUDE_CONFIG_DIR selects a client home outside the installer's location conventions. Use --config to inspect its MCP config explicitly."
   let mut found : Array Entry := #[]
   let mut conditional := false
@@ -495,29 +504,29 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
   let mut opencodeDirectories := 0
   for source in plan.configs do
     if !source.path.isAbsolute then
-      report := add { report with discovered := true } "location.relative" .unknown
+      report := add { report with discovered := true } configArea "location.relative" .unknown
         "A config override is relative; it was not resolved against an assumed client launch directory."
       continue
     match ← readFile source.path with
     | .text text =>
         report := { report with
           discovered := true
-          sources := report.sources.push { path := source.path.toString, purpose := source.purpose, state := .ok } }
+          sources := report.sources.push { path := source.path.toString, role := source.role, conditional := source.conditional, state := .ok } }
         match ← parseConfig source.format text with
         | .error () =>
-            report := add report "config.syntax" .error
+            report := add report configArea "config.syntax" .error
               "Configuration is not valid JSON/TOML for this client; source text is omitted." source.path.toString
         | .ok value =>
             match entries context client source value with
             | .error () =>
-                report := add report "config.shape" .error
+                report := add report configArea "config.shape" .error
                   "Expected a config object and correctly shaped MCP server container." source.path.toString
             | .ok selected =>
                 found := found ++ selected
                 if client == .opencode && (field? value "mcp").isSome then
-                  if source.purpose == "project configuration" then
+                  if source.role == .projectConfig then
                     opencodeProjects := opencodeProjects + 1
-                  if source.purpose == "project .opencode configuration" then
+                  if source.role == .projectDirectory then
                     opencodeDirectories := opencodeDirectories + 1
                 -- A Vibe project config may replace the server collection even with an empty array.
                 conditional := conditional || (source.conditional &&
@@ -525,20 +534,20 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
                 report := inspectSettings context client source value report
                 if client == .pi then report ← inspectPiSettings context source value report configOverride?.isNone
     | other =>
-        report := readProblem report source.path.toString source.purpose other
+        report := readProblem report source.path.toString source.role configArea other source.conditional
         if configOverride?.isSome then report := { report with discovered := true }
         if configOverride?.isSome then
           if let .missing := other then
-            report := add report "config.missing" .error
+            report := add report configArea "config.missing" .error
               "The explicitly selected config file does not exist." source.path.toString
   if client == .opencode && (context.env? "OPENCODE_CONFIG_CONTENT").isSome then
     report := { report with discovered := true }
-    report := add report "config.inlineOverride" .unknown
+    report := add report .mcp "config.inlineOverride" .unknown
       "OPENCODE_CONFIG_CONTENT is set; its value and effects are not inspected."
   if client == .vibe && found.size > 1 && found.any (fun entry =>
       (found.filter (fun other => other.source == entry.source &&
         field? other.value "name" == field? entry.value "name")).size > 1) then
-    report := add report "mcp.duplicate" .error
+    report := add report .mcp "mcp.duplicate" .error
       "More than one Beam server entry is defined in the same Vibe config."
   if client == .opencode then
     found := mergeOpenCode found
@@ -549,18 +558,18 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
   let checkLaunch := (selected.size == 1 || client == .opencode) && !selectionConditional &&
     !(client == .opencode && (context.env? "OPENCODE_CONFIG_CONTENT").isSome)
   if (selected.size > 1 && client != .opencode) || selectionConditional then
-    report := add report "config.layers" .unknown
+    report := add report .mcp "config.layers" .unknown
       "Multiple Beam definitions or trust/approval-dependent project settings are present. Effective selection/merging is not verified."
   for entry in selected do
     report ← inspectEntry client entry report checkLaunch
-  if found.isEmpty then
-    report := add report (if client == .pi then "mcp.notApplicable" else "mcp.notConfigured") .notConfigured
+  if found.isEmpty && (report.mcp == .notConfigured || report.mcp == .notApplicable) then
+    report := add report .general (if client == .pi then "mcp.notApplicable" else "mcp.notConfigured") .notConfigured
       (if client == .pi then "Beam uses Pi's CLI skill; no native Pi MCP configuration is inspected."
        else "No Beam MCP registration was found in the inspected files. MCP is optional for CLI/skill use.")
   let before := report.findings.size
   for path in plan.skills do report ← inspectSkill path report
   if report.findings.size == before && configOverride?.isNone then
-    report := add report "skill.notConfigured" .notConfigured
+    report := add report .general "skill.notConfigured" .notConfigured
       "No Lean skill was found in the inspected standard locations. Skills are optional for MCP use."
   return report
 

@@ -165,7 +165,9 @@ executable sentinels detect configured/client/toolchain command launches, and se
 detect config or exception-text disclosure. Run it directly after `lake build beam-cli` when
 changing client discovery, parsing, findings, or rendering. The install suite also runs
 [tests/test-client-doctor-installed.py](../tests/test-client-doctor-installed.py) against the published
-CLI after installing all five Lean skills and registering Codex, Claude, and Vibe MCP servers.
+CLI after installing all five Lean skills and registering Codex, Claude, and Vibe MCP servers. It
+also repeats OpenCode skill installation and discovery with `XDG_CONFIG_HOME` set and
+`OPENCODE_CONFIG_DIR` unset, to catch drift between shell and Lean defaults.
 
 Run the Beam surface when the change touches broker protocol or transport, request/progress/diagnostics streams, daemon session or restart logic, wrapper CLI behavior, bundle resolution, install layout, `doctor`, `validated-toolchains`, save replay, save barriers, and MCP.
 

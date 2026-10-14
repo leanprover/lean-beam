@@ -14,8 +14,8 @@ import sys
 
 cli, root = Path(sys.argv[1]), Path(sys.argv[2])
 workspace = root / "doctor-workspace"
-workspace.mkdir()
-(workspace / ".git").mkdir()
+workspace.mkdir(exist_ok=True)
+(workspace / ".git").mkdir(exist_ok=True)
 
 
 def snapshot():
@@ -41,6 +41,7 @@ assert set(clients) == {"codex", "claude", "pi", "opencode", "vibe"}, report
 for name, client in clients.items():
     findings = {finding["code"] for finding in client["findings"]}
     assert "skill.readable" in findings, (name, client)
+    assert client["skill"] == "checked", (name, client)
     assert not any(f["status"] in ["error", "unknown"] for f in client["findings"]), client
     if name in ["codex", "claude", "vibe"]:
         assert {"launch.file", "runtime.metadata"} <= findings, (name, client)
@@ -48,6 +49,10 @@ for name, client in clients.items():
         assert "mcp.notApplicable" in findings, client
     else:
         assert "mcp.notConfigured" in findings, client
+opencode_home = Path(os.environ.get("OPENCODE_CONFIG_DIR") or (
+    str(Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")) / "opencode")))
+assert any(source["path"] == str(opencode_home / "skills/lean-beam/SKILL.md")
+           and source["state"] == "ok" for source in clients["opencode"]["sources"]), clients["opencode"]
 text = subprocess.run([str(cli), "doctor", "clients"], cwd=workspace,
                       text=True, capture_output=True, timeout=15, check=True).stdout
 assert "0 errors, 0 unverified checks, 0 recommendations." in text, text
