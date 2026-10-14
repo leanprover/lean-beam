@@ -81,53 +81,27 @@ bundle tests check that the layouts agree.
 Size measurements must distinguish the executable files from the library set. Native SDK installs
 reuse Lean's existing libraries; standalone installs and target-toolchain bundles carry their own.
 
-### Build And Install Layouts
+### Installation Cases
 
-The table below shows Unix paths relative to each artifact root. `PLUGIN` means
-`libbeam_Beam_LSP.so` on Linux or `libbeam_Beam_LSP.dylib` on macOS. The runtime library set is
-`libInit_shared`, `libleanshared_1`, `libleanshared_2`, `libleanshared`, and `libLake_shared`, with
-the platform's shared-library extension.
+Beam has two installation cases:
 
-| Artifact root | Executables | Lean/Lake runtime libraries | Beam LSP plugin |
-| --- | --- | --- | --- |
-| Source build: `REPO/.lake/build` | `bin/beam-cli`, `bin/beam-daemon`, `bin/lean-beam-mcp` | `lib/lean/` (staged copies) | `lib/PLUGIN` |
-| Standalone payload: `BEAM_INSTALL_ROOT/versions/PAYLOAD` | `libexec/beam-cli`, `libexec/beam-daemon`, `libexec/lean-beam-mcp` | `lib/lean/` (packaged copies) | `libexec/PLUGIN` |
-| Target-toolchain bundle: `CACHE/PLATFORM/ID/workspace/.lake/build` | `bin/beam-daemon` | `lib/lean/` (staged copies for that toolchain) | `lib/PLUGIN` |
-| Native build: `REPO/.lake/toolchain-build` | `bin/beam-cli`, `bin/beam-daemon`, `bin/lean-beam-mcp` | `lib/lean/` (staged copies) | `lib/PLUGIN` |
-| Installed native SDK: `PREFIX` | `bin/lean-beam`, `bin/beam-daemon`, `bin/lean-beam-mcp` | `lib/lean/` (already supplied by the SDK) | `lib/lean-beam/PLUGIN` |
+- **Included in a Lean toolchain distribution**, which elan installs with Lean. Beam commands
+  live in the toolchain's `bin`, the LSP plugin in `lib/lean-beam`, and the executables reuse the
+  toolchain's Lean/Lake shared libraries. Release builders use the
+  [toolchain build/install interface](TOOLCHAIN_BUNDLING.md) to prepare this payload.
+- **Installed from a checkout with `scripts/install-beam.sh`.** Wrapper links live in
+  `~/.local/bin`; private commands live in the installed payload's `libexec`. The installer
+  packages their matching Lean/Lake libraries. Lean requests use an internal bundle containing
+  a daemon and plugin built for the project's toolchain. The project still needs that Lean toolchain.
 
-On Windows, executables have an `.exe` suffix and the plugin is `beam_Beam_LSP.dll`. Build trees
-stage the Lean/Lake DLLs in `bin`; the standalone install layout puts them in `libexec`, and an
-installed native SDK already has them in `bin`. Native CI exercises Windows installation and
-relocation; the shell installer and target-toolchain bundle CI matrix runs on Linux and macOS.
+Both cases use the same Lake linking target and load the matching LSP plugin through Lean's
+`--plugin=PATH`. Unix executable library lookup is relative to `../lib/lean`; Windows runtime
+DLLs live beside the executables, in toolchain `bin` or standalone `libexec`.
 
-`lake build Beam.LSP:shared beam-cli beam-daemon lean-beam-mcp` produces the ordinary source
-layout. The shell installer rebuilds it, stages an immutable payload, and publishes wrapper links
-through `BEAM_INSTALL_ROOT/current`; those wrappers choose the payload's `libexec` commands.
-The native CMake builder uses an explicitly supplied `LEAN_PREFIX` and a separate Lake configuration
-and output tree. Its installer renames `beam-cli` to `lean-beam` and copies only the Beam payload
-into `PREFIX`. The native build tree supports build-info inspection; normal native use requires
-the installed SDK layout, including Lean, Lake, their libraries, and Beam provenance. Exact commands
-and prerequisites are in [TOOLCHAIN_BUNDLING.md](TOOLCHAIN_BUNDLING.md).
-
-In source and standalone wrapper use, a Lean request selects a target-toolchain bundle's daemon
-and plugin. The bundle builder invokes the selected toolchain's Lake to build only `beam-daemon`
-and `Beam.LSP:shared`, then qualifies the plugin in that Lean process. The wrapper first reuses a
-matching installed bundle cache and otherwise builds under the project's `.beam/bundles` (or
-`BEAM_BUNDLE_DIR`). The CLI and MCP executable keep their own build-toolchain library set; the
-target daemon also acts as the MCP server's Lake helper. The base payload's plugin copy is not
-the plugin selected by this normal wrapper path. Consequently, a standalone payload and its
-pinned-toolchain bundle each carry a runtime set, even when their Lean versions match.
-
-The Beam LSP plugin is loaded by the selected Lean process using an absolute `--plugin=PATH`.
-Lake supplies that process's target runtime library environment and project module paths. The
-plugin has no custom Beam runtime search path; it must match the selected Lean/Lake build. In
-native mode, the containing SDK supplies the daemon and plugin directly, without bundle caches.
-
-Relative executable library paths make complete payloads relocatable for startup. A target
-bundle cache is still tied to its SDK fingerprint and absolute workspace metadata, so copying
-that cache to another location is not a supported relocation mechanism. A standalone install
-still needs the project's Lean toolchain to execute Lean requests.
+`.lake/build` and `.lake/toolchain-build` are staging outputs for these installers.
+Target-toolchain bundles and caches are implementation details of the checkout installation.
+Their SDK fingerprints and absolute workspace metadata still govern reuse; they are not a
+separate installation interface or a relocatable distribution format.
 
 ## Human And AI Roles
 

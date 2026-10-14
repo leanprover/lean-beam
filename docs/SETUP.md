@@ -1,7 +1,12 @@
 # Setup
 
-The checkout installer below targets Linux and macOS. Lean release builders, including Windows
-x86_64 builders, can use the separate [native toolchain build/install interface](TOOLCHAIN_BUNDLING.md).
+Beam has two installation cases:
+
+- If your elan-installed Lean toolchain includes Beam, use the Beam commands from that toolchain.
+  Release builders prepare that payload with the [toolchain build/install interface](TOOLCHAIN_BUNDLING.md).
+- Otherwise, install Beam from a checkout with `./scripts/install-beam.sh`, as described below.
+
+The checkout installer targets Linux and macOS; Windows x86_64 uses the bundled toolchain runtime.
 
 Use this document as the single path from a Lean Beam checkout to a working `lean-beam` command.
 It covers installation, validated and compatible Lean toolchains, first CLI use, MCP registration,
@@ -56,8 +61,6 @@ own matching set. Commands locate the libraries relative to their executable; th
 and its build toolchain are not needed to load the installed commands. Native Lean distributions
 use the containing toolchain's libraries instead; see [TOOLCHAIN_BUNDLING.md](TOOLCHAIN_BUNDLING.md).
 Executable size measurements exclude the shared-library set.
-Maintainer build and artifact layouts are compared in
-[DEVELOPMENT.md](DEVELOPMENT.md#build-and-install-layouts).
 
 The agent flags install the bundled Lean skill into the corresponding agent home. Rocq goal
 probes and the Rocq skill are installed separately from the frozen [rocq-beam](https://github.com/ejgallego/rocq-beam) project.
