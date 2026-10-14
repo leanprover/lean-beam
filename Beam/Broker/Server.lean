@@ -1883,7 +1883,7 @@ private def syncBarrierOutcome
     (started : StartedTrackedBarrier)
     (progress? : Option SyncFileProgress)
     (diagnosticsSeen : Bool)
-    (elaborationComplete : Bool)
+    (hasFatalSnapshot : Bool)
     (observedDiagnostics : Array Diagnostic)
     (directImports : Array String)
     (currentDiagnostics : Array Diagnostic) : HandlerM SyncBarrierOutcome := do
@@ -1891,7 +1891,7 @@ private def syncBarrierOutcome
     if diagnosticsSeen then observedDiagnostics else currentDiagnostics
   let decision :=
     decideSyncBarrier started.uri started.version started.priorProgress? progress?
-      elaborationComplete completionDiagnostics
+      hasFatalSnapshot completionDiagnostics
   let hints ← collectStaleDirectDepHintsForSession server started.session started.uri started.version
     directImports
   let staleDepsBlock := staleDirectDepsBlock started.changed hints
@@ -1938,7 +1938,7 @@ private def saveOleanCore
       syncSaveReadinessOfBarrierResult started.uri started.version started.documentHash barrierResult
   let currentDiagnostics := saveReadiness.currentDiagnostics
   let barrierOutcome ← withFailureProgress barrier.progress? <|
-    syncBarrierOutcome server started barrier.progress? barrier.diagnosticsSeen barrierResult.elaborationComplete
+    syncBarrierOutcome server started barrier.progress? barrier.diagnosticsSeen barrierResult.hasFatalSnapshot
       barrier.diagnostics barrierResult.directImports currentDiagnostics
   let barrierProgress? := barrierOutcome.fileProgress?
   withFailureProgress barrierProgress? <|
@@ -2101,7 +2101,7 @@ private def handleSyncFileOp
       syncSaveReadinessOfBarrierResult started.uri started.version started.documentHash barrierResult
   let currentDiagnostics := saveReadiness.currentDiagnostics
   let barrierOutcome ← withFailureProgress pending.progress? <|
-    syncBarrierOutcome server started pending.progress? pending.diagnosticsSeen barrierResult.elaborationComplete
+    syncBarrierOutcome server started pending.progress? pending.diagnosticsSeen barrierResult.hasFatalSnapshot
       pending.diagnostics barrierResult.directImports currentDiagnostics
   let fileProgress? := barrierOutcome.fileProgress?
   withFailureProgress fileProgress? <|

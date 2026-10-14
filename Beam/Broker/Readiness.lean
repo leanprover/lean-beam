@@ -32,11 +32,11 @@ def decideSyncBarrier
     (version : Nat)
     (priorProgress? : Option SyncFileProgress)
     (progress? : Option SyncFileProgress)
-    (elaborationComplete : Bool)
+    (hasFatalSnapshot : Bool)
     (diagnostics : Array Diagnostic) : SyncBarrierDecision :=
-  -- Lean sends its final progress notification asynchronously. The completed snapshot returned
-  -- by our barrier is authoritative; a delayed busy notification must not reject a valid sync.
-  let incomplete := !elaborationComplete || diagnosticsIndicateIncompleteBarrier diagnostics
+  -- The barrier has waited for document processing. Its snapshot's fatal status is authoritative;
+  -- Lean's asynchronous final progress notification may still be delayed at the broker.
+  let incomplete := hasFatalSnapshot || diagnosticsIndicateIncompleteBarrier diagnostics
   let progress := (progress?.or priorProgress?).getD {}
   let fileProgress? := some { progress with done := !incomplete }
   {

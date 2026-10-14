@@ -657,26 +657,26 @@ private def checkDocumentVersionMismatchErrorData : IO Unit := do
 
 private def checkReadinessBoundary : IO Unit := do
   let uri := "file:///workspace/SaveSmoke/A.lean"
-  let clean := decideSyncBarrier uri 7 (some { updates := 1, done := true }) none true #[]
+  let clean := decideSyncBarrier uri 7 (some { updates := 1, done := true }) none false #[]
   require "clean readiness barrier should be complete" (!clean.incomplete)
   require "clean readiness barrier preserves prior progress"
     (clean.fileProgress? == some { updates := 1, done := true })
 
-  let partialBarrier := decideSyncBarrier uri 7 none (some { updates := 2, done := false }) false #[]
-  require "partial readiness barrier should be incomplete" partialBarrier.incomplete
-  require "partial readiness barrier should explain the incomplete barrier"
-    (partialBarrier.message?.any (·.contains "Lean diagnostics barrier did not complete"))
+  let fatalBusy := decideSyncBarrier uri 7 none (some { updates := 2, done := false }) true #[]
+  require "fatal snapshot with busy progress should leave the barrier incomplete" fatalBusy.incomplete
+  require "fatal snapshot should explain the incomplete barrier"
+    (fatalBusy.message?.any (·.contains "Lean diagnostics barrier did not complete"))
 
-  let completed := decideSyncBarrier uri 7 none (some { updates := 2, done := false }) true #[]
+  let completed := decideSyncBarrier uri 7 none (some { updates := 2, done := false }) false #[]
   require "accepted completed snapshot overrides a delayed progress notification" (!completed.incomplete)
   require "completed snapshot retains progress evidence and marks completion"
     (completed.fileProgress? == some { updates := 2, done := true })
-  let fatal := decideSyncBarrier uri 7 none (some { updates := 2, done := true }) false #[]
+  let fatal := decideSyncBarrier uri 7 none (some { updates := 2, done := true }) true #[]
   require "fatal snapshot cannot be completed by a progress notification" fatal.incomplete
 
   let incompleteDiagnostic := diagnostic .information "Failed to build module dependencies."
   let diagnosticBarrier :=
-    decideSyncBarrier uri 7 none (some { updates := 4, done := true }) true #[incompleteDiagnostic]
+    decideSyncBarrier uri 7 none (some { updates := 4, done := true }) false #[incompleteDiagnostic]
   require "stale dependency diagnostic should force an incomplete barrier" diagnosticBarrier.incomplete
   require "stale dependency diagnostic should force progress done=false"
     (diagnosticBarrier.fileProgress? == some { updates := 4, done := false })
