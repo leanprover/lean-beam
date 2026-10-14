@@ -218,29 +218,6 @@ def syncBarrierIncompleteMessage
     s!"fileProgress={toJson progress |>.compress}. An imported target may be stale or broken, " ++
     s!"or the Lean worker may have exited. Run `lake build` or fix the upstream module first."
 
-def syncBarrierIncomplete?
-    (progress? : Option SyncFileProgress)
-    (diagnostics : Array Diagnostic := #[]) : Bool :=
-  if diagnosticsIndicateIncompleteBarrier diagnostics then
-    true
-  else
-    match progress? with
-    | some progress => !progress.done
-    | none => false
-
-def effectiveSyncBarrierProgress
-    (priorProgress? : Option SyncFileProgress)
-    (progress? : Option SyncFileProgress)
-    (diagnostics : Array Diagnostic) : Option SyncFileProgress :=
-  if diagnosticsIndicateIncompleteBarrier diagnostics then
-    some <| incompleteBarrierProgress (progress?.or priorProgress?)
-  else
-    match progress? with
-    | some progress =>
-        some progress
-    | none =>
-        some <| priorProgress?.getD {}
-
 def leanSaveResult
     (spec : LeanSaveSpec)
     (sourceHash : Lake.Hash)
