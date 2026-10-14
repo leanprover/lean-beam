@@ -265,14 +265,15 @@ def ensureToolchainBundleIn (cacheRoot home : System.FilePath) (toolchain : Stri
   ensureToolchainBundleInForFingerprint cacheRoot home toolchain fingerprint
 
 def ensureToolchainBundle (root home : System.FilePath) (toolchain : String) :
-    IO (LeanBundlePaths × String) := do
+    IO (LeanBundlePaths × String × ToolchainFingerprint) := do
   ensureAcceptedLeanToolchain home toolchain
   let fingerprint ← toolchainFingerprint toolchain
   match ← existingToolchainBundleInAnyForFingerprint? (← installBundleCacheRoots) home toolchain fingerprint with
-  | some bundle => pure bundle
+  | some (paths, bundleId) => pure (paths, bundleId, fingerprint)
   | none =>
       let cacheRoot ← runtimeBundleCacheRootForWrite root
-      ensureToolchainBundleInForFingerprint cacheRoot home toolchain fingerprint
+      let (paths, bundleId) ← ensureToolchainBundleInForFingerprint cacheRoot home toolchain fingerprint
+      pure (paths, bundleId, fingerprint)
 
 def ensureDefaultDaemon (home : System.FilePath) : IO System.FilePath := do
   let daemon ← defaultDaemonPath home

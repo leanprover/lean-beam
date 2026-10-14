@@ -8,6 +8,10 @@ toolchains from lines in `compatible-lean-release-lines` do not need this opt-in
 accepts an explicitly named toolchain outside those policy registries, typically a linked name,
 nightly, other vendor, or other noncanonical toolchain.
 
+Use a dated nightly or exact vendor release. Moving selectors such as `stable`, `beta`, `nightly`,
+and `lean-toolchain` cannot be registered as custom names. Workspace channel selection is resolved
+to a concrete release first, and that concrete release must be admitted independently.
+
 ## Install
 
 Link the local Lean build with elan, then install Beam with the same toolchain name:

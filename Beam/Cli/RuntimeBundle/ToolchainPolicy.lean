@@ -12,6 +12,11 @@ open Lean
 
 namespace Beam.Cli
 
+/-- Moving Elan selectors cannot serve as admitted runtime identities. -/
+def isMovingLeanToolchain (name : String) : Bool :=
+  ["stable", "beta", "nightly", "lean-toolchain"].contains
+    ((name.splitOn ":").getLast?.getD name)
+
 def nonCommentLines (text : String) : List String :=
   (text.splitOn "\n").filterMap fun raw =>
     let line := Beam.trimLine raw
@@ -158,7 +163,9 @@ def leanToolchainSupport (home : System.FilePath) (toolchain : String) : IO Lean
   let (compatiblePath, compatibleReleaseLines) ← compatibleLeanReleaseLines home
   let (customPath, customToolchains) ← customLeanToolchains home
   let acceptance :=
-    if validatedToolchains.elem toolchain then
+    if isMovingLeanToolchain toolchain then
+      .unsupported
+    else if validatedToolchains.elem toolchain then
       .validated
     else
       match parseCanonicalLeanToolchain? toolchain with

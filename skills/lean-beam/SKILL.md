@@ -304,8 +304,12 @@ Use `lean-beam`, not raw JSON and not raw LSP.
   to its registry generation and never start a daemon implicitly
 - owns stopping and descriptor handling
 - captures Elan's effective workspace toolchain with `elan dump-state --no-net`, honoring
-  `ELAN_TOOLCHAIN` and directory overrides, then uses that selection for both the runtime bundle
-  and the executable lookup (`elan run TOOLCHAIN elan which lean`); requires Elan 4.2
+  `ELAN_TOOLCHAIN` and directory overrides; requires Elan 4.0 or newer
+- resolves moving channels once through `elan dump-state` with the captured selector, using the
+  installed fallback only after a live lookup failure; admission applies to the concrete release,
+  and `--custom-toolchain` cannot register a moving channel
+- uses the same concrete toolchain and fingerprinted compiler installation for the runtime bundle
+  and Lean executable; `doctor` reports both the original selector and concrete toolchain
 - builds and plugin-qualifies a local fallback bundle only when no matching installed bundle exists
   for the exact accepted toolchain fingerprint
 - fails early on toolchains that are neither validated, canonical members of a compatible release

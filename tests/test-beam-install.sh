@@ -350,7 +350,7 @@ if (
   echo "expected install to reject elan without the JSON selection interface" >&2
   exit 1
 fi
-assert_contains_literal "$unsupported_elan_err" "Beam requires Elan 4.2's JSON selection interface"
+assert_contains_literal "$unsupported_elan_err" "Beam requires Elan 4.0's JSON selection interface"
 assert_contains_literal "$unsupported_elan_err" 'elan self update'
 if [ "$(cat "$unsupported_elan_calls")" != 'dump-state --no-net --help' ]; then
   echo "expected unsupported-elan rejection before resolving or downloading a toolchain" >&2
@@ -366,6 +366,21 @@ assert_not_exists "$OPENCODE_CONFIG_DIR"
 assert_not_exists "$BEAM_INSTALL_ROOT/current"
 assert_version_count "$BEAM_INSTALL_ROOT/versions" 0
 assert_not_exists "$BEAM_INSTALL_ROOT/state"
+
+for moving_toolchain in stable leanprover/lean4:beta leanprover/lean4-nightly:nightly leanprover/lean4:lean-toolchain; do
+  moving_err="$tmp_root/moving-toolchain.err"
+  if (
+    cd "$source_checkout"
+    bash scripts/install-beam.sh --dont-ask --custom-toolchain "$moving_toolchain" \
+      > /dev/null 2>"$moving_err"
+  ); then
+    echo "expected custom installation to reject moving selector $moving_toolchain" >&2
+    exit 1
+  fi
+  assert_contains_literal "$moving_err" 'not a moving channel'
+  assert_not_exists "$BEAM_INSTALL_ROOT/current"
+  assert_not_exists "$BEAM_INSTALL_ROOT/state"
+done
 
 relative_root_err="$(mktemp "$tmp_root/install-relative-root-XXXXXX")"
 if (

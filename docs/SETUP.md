@@ -60,7 +60,7 @@ skill:
 `--opencode`, `--vibe`, `--all-skills`, or an interactive skill target. Rocq-specific setup is
 documented in [ROCQ.md](ROCQ.md).
 
-The installer requires Elan 4.2 on `PATH`. Make sure `~/.local/bin` is on `PATH` before using the
+The installer requires Elan 4.0 or newer on `PATH`. Make sure `~/.local/bin` is on `PATH` before using the
 installed wrappers directly. Before writing install state, it checks Elan's JSON selection command;
 if that command is unavailable, run `elan self update` before retrying the installation.
 
@@ -95,11 +95,15 @@ bundle ready.
 For each workspace, Beam asks Elan to select the toolchain in that workspace's root. This honors
 `ELAN_TOOLCHAIN` and Elan directory overrides, using the project file when no higher-priority
 selection applies. Admission, the Beam runtime bundle, and the Lean executable all use this one
-selection. `lean-beam doctor` reports it as `project toolchain`.
+selection. Moving channels such as `stable` are resolved once, with Elan's normal network lookup
+and installed fallback on lookup failure, before Beam checks the concrete toolchain's admission.
+`lean-beam doctor` reports the concrete release as `project toolchain` and the original selection
+as `project toolchain selector`. Exact releases and linked names do not need a network channel lookup.
 
-Selecting an override does not bypass Beam's admission policy. Unsupported versions and mutable
-channel aliases still fail early; use an admitted exact toolchain name or an explicitly registered
-custom name. Stop the existing Beam session before changing the effective toolchain.
+Selecting an override or channel does not bypass Beam's admission policy. Unsupported concrete
+versions fail before Beam fingerprints or builds their runtime. Custom registration must name
+an exact release, dated nightly, or linked local installation; registering a moving channel is
+rejected. Stop the existing Beam session before changing the effective toolchain.
 
 The repository's [`lean-toolchain`](../lean-toolchain) is the default toolchain prebuilt by the
 installer. If your target projects use another validated toolchain or a compatible canonical

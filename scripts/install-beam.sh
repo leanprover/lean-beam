@@ -215,7 +215,7 @@ Environment:
                         override the Claude Code user .claude.json path used by --claude-mcp
 
 Requirements:
-  Elan 4.2 must be on PATH, with its JSON toolchain selection interface
+  Elan 4.0 or newer must be on PATH, with its JSON toolchain selection interface
   custom toolchains must already be known to elan, for example through elan toolchain link
 EOF
 }
@@ -835,6 +835,9 @@ validate_custom_toolchain_name() {
     die "custom Lean toolchain must not be empty"
   fi
   case "$toolchain" in
+    stable|beta|nightly|lean-toolchain|*:stable|*:beta|*:nightly|*:lean-toolchain)
+      die "custom toolchain must name a concrete release or linked installation, not a moving channel: $toolchain"
+      ;;
     *[[:space:]]*)
       die "custom Lean toolchain must not contain whitespace: $toolchain"
       ;;
@@ -1217,7 +1220,7 @@ require_elan() {
     exit 1
   fi
   if ! elan dump-state --no-net --help > /dev/null 2>&1; then
-    echo "Beam requires Elan 4.2's JSON selection interface (elan dump-state --no-net); run 'elan self update' before installing Beam" >&2
+    echo "Beam requires Elan 4.0's JSON selection interface (elan dump-state --no-net); run 'elan self update' before installing Beam" >&2
     exit 1
   fi
 }

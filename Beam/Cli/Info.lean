@@ -61,8 +61,7 @@ private def rejectedLeanBundleDoctorInfo : LeanBundleDoctorInfo := {
 
 private def acceptedLeanBundleDoctorInfo
     (home runtimeRoot : System.FilePath)
-    (toolchain : String) : IO LeanBundleDoctorInfo := do
-  let fingerprint ← toolchainFingerprint toolchain
+    (toolchain : String) (fingerprint : ToolchainFingerprint) : IO LeanBundleDoctorInfo := do
   let installed? ← existingToolchainBundleInAnyForFingerprint?
     (← installBundleCacheRoots) home toolchain fingerprint
   let runtime? ← existingToolchainBundleForFingerprint? runtimeRoot home toolchain fingerprint
@@ -89,27 +88,24 @@ private def acceptedLeanBundleDoctorInfo
   }
 
 private def printLeanDoctorInfo (home root : System.FilePath) : IO Unit := do
-  let toolchain ← effectiveLeanToolchain root
+  let selection ← effectiveLeanToolchain root
+  let toolchain := selection.toolchain
   let support ← leanToolchainSupport home toolchain
   let toolchainValidated := support.acceptance == .validated
   let toolchainAccepted := support.acceptance.accepted
   let releaseLine :=
     support.acceptance.releaseLine?.map (·.versionText) |>.getD "(not applicable)"
-  let leanCmd? ←
-    if toolchainAccepted then
-      let leanCmd ← leanBinForToolchain root toolchain
-      pure (some leanCmd)
-    else
-      pure none
+  let fingerprint? ←
+    if toolchainAccepted then pure (some (← toolchainFingerprint toolchain)) else pure none
   let runtimeRoot ← runtimeBundleCacheRoot root
   let platform ← bundlePlatform
   let srcHash ← sourceHash home
   let bundleInfo ←
-    if toolchainAccepted then
-      acceptedLeanBundleDoctorInfo home runtimeRoot toolchain
-    else
-      pure rejectedLeanBundleDoctorInfo
+    match fingerprint? with
+    | some fingerprint => acceptedLeanBundleDoctorInfo home runtimeRoot toolchain fingerprint
+    | none => pure rejectedLeanBundleDoctorInfo
   IO.println s!"project toolchain: {toolchain}"
+  IO.println s!"project toolchain selector: {selection.selector}"
   IO.println s!"project toolchain admission: {support.acceptance.label}"
   IO.println s!"project toolchain validated: {boolText toolchainValidated}"
   IO.println s!"project toolchain release line: {releaseLine}"
@@ -117,7 +113,8 @@ private def printLeanDoctorInfo (home root : System.FilePath) : IO Unit := do
   IO.println s!"validated toolchains registry: {support.validatedPath}"
   IO.println s!"compatible release lines registry: {support.compatiblePath}"
   IO.println s!"custom toolchains registry: {support.customPath}"
-  IO.println s!"lean binary: {leanCmd?.getD rejectedToolchainDiagnosticText}"
+  let leanCmd := fingerprint?.map (·.leanCommand) |>.getD rejectedToolchainDiagnosticText
+  IO.println s!"lean binary: {leanCmd}"
   IO.println s!"bundle platform: {platform}"
   IO.println s!"bundle source: {bundleInfo.source}"
   IO.println s!"bundle source hash: {srcHash}"

@@ -83,19 +83,38 @@ private def checkElanSelectionDecode : IO Unit := do
       ("active custom", state (Json.mkObj [("unresolved", localToolchain)]), "lean4-dev"),
       ("default", state Json.null, "leanprover/lean4:v4.35.0")
     ] do
-    require s!"Elan selection {label}" ((← IO.ofExcept (Beam.Cli.selectedElanToolchain input)) == expected)
+    require s!"Elan selection {label}"
+      ((← IO.ofExcept (Beam.Cli.selectedElanToolchain input)) == .fixed expected)
   let channel := Json.mkObj [("Remote", Json.mkObj [
     ("origin", toJson "leanprover/lean4"), ("release", toJson "stable")])]
   let cachedChannel := (state (Json.mkObj [("unresolved", channel)])).setObjVal! "toolchains"
     (Json.mkObj [("active_override", Json.mkObj [("unresolved", channel)]),
       ("resolved_active", Json.mkObj [("cached", toJson "leanprover/lean4:v4.35.0")])])
-  require "Elan's cached channel must not bypass toolchain admission"
-    ((← IO.ofExcept (Beam.Cli.selectedElanToolchain cachedChannel)) == "leanprover/lean4:stable")
+  require "offline channel selection must request live resolution"
+    ((← IO.ofExcept (Beam.Cli.selectedElanToolchain cachedChannel)) == .channel "leanprover/lean4:stable")
+  let resolved (live cached : Json) := Json.mkObj [("toolchains", Json.mkObj [
+    ("resolved_active", Json.mkObj [("live", live), ("cached", cached)])])]
+  require "live resolution must take precedence over an older cached release"
+    ((← IO.ofExcept <| Beam.Cli.resolvedElanToolchain <| resolved
+      (Json.mkObj [("Ok", toJson "leanprover/lean4:v4.35.0")])
+      (toJson "leanprover/lean4:v4.30.0")) == "leanprover/lean4:v4.35.0")
+  require "a failed live query may use Elan's installed fallback"
+    ((← IO.ofExcept <| Beam.Cli.resolvedElanToolchain <| resolved
+      (Json.mkObj [("Err", toJson "network unavailable")])
+      (toJson "leanprover/lean4:v4.30.0")) == "leanprover/lean4:v4.30.0")
+  for input in [
+      resolved (Json.mkObj [("Err", toJson "network unavailable")]) Json.null,
+      resolved (Json.mkObj [("Ok", toJson "leanprover/lean4:stable")]) Json.null,
+      resolved (Json.mkObj [("Ok", toJson "")]) Json.null,
+      resolved (Json.mkObj [("Ok", toJson "lean4-dev"), ("Err", toJson "ambiguous")]) Json.null] do
+    match Beam.Cli.resolvedElanToolchain input with
+    | .error _ => pure ()
+    | .ok name => throw <| IO.userError s!"invalid Elan channel resolution accepted {name}"
   for input in [Json.null, state (Json.mkObj [("unresolved", Json.null)]),
       state (Json.mkObj [("unresolved", Json.mkObj [("Remote", Json.mkObj [])])])] do
     match Beam.Cli.selectedElanToolchain input with
     | .error _ => pure ()
-    | .ok name => throw <| IO.userError s!"malformed Elan selection accepted {name}"
+    | .ok selector => throw <| IO.userError s!"malformed Elan selection accepted {repr selector}"
 
 private def checkBackendConfigLowering : IO Unit := do
   let root := System.FilePath.mk "/tmp/beam-backend-config-project"
@@ -1563,6 +1582,13 @@ private def checkLeanToolchainAdmission : IO Unit := do
       let support ← Beam.Cli.leanToolchainSupport root unsupported
       require s!"expected unsupported admission for {unsupported}"
         (support.acceptance == .unsupported)
+
+    IO.FS.writeFile (Beam.Cli.customLeanToolchainsPath root)
+      "stable\nleanprover/lean4:stable\nleanprover/lean4:beta\nleanprover/lean4-nightly:nightly\nleanprover/lean4:lean-toolchain\n"
+    for moving in ["stable", "leanprover/lean4:stable", "leanprover/lean4:beta",
+        "leanprover/lean4-nightly:nightly", "leanprover/lean4:lean-toolchain"] do
+      require s!"custom registration must not admit moving identity {moving}"
+        ((← Beam.Cli.leanToolchainSupport root moving).acceptance == .unsupported)
 
     IO.FS.writeFile (Beam.Cli.validatedLeanToolchainsPath root)
       "leanprover/lean4:v4.31.0-rc01\n"
