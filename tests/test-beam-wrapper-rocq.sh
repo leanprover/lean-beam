@@ -49,7 +49,7 @@ cleanup() {
 trap cleanup EXIT
 
 rsync -a \
-  --exclude='.git/' \
+  --exclude='.git' \
   --exclude='.lake/' \
   --exclude='.beam/' \
   --exclude='_opam/' \

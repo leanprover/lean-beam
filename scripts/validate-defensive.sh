@@ -381,6 +381,11 @@ log "overlaying current working tree state"
   --exclude='.codex-worktrees/' \
   "$repo_root"/ "$clone_root"/
 
+# A worktree's .git is a file pointing outside the checkout, so exclude both Git metadata shapes.
+if [ ! -d "$clone_root/.git" ] || [ -L "$clone_root/.git" ]; then
+  die "validation checkout must retain its independent Git directory"
+fi
+
 if [ "$print_root" -eq 1 ]; then
   printf '%s\n' "$validation_root"
 fi
