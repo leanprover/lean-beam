@@ -119,6 +119,16 @@ class ClientDoctorTest(unittest.TestCase):
         self.assertIn("pi: not configured", text)
         self.assertNotIn("CLI skill integration", text)
 
+    def test_explicit_settings_scope_does_not_claim_skills_are_absent(self):
+        config = self.root / "settings.json"
+        self.json_file(config, {})
+        report = self.run_doctor("pi", "--config", str(config))
+        self.assertEqual(report["clients"][0]["skill"], "outOfScope")
+        text = self.run_doctor("pi", "--config", str(config), as_json=False).stdout
+        self.assertIn("pi: checked", text)
+        self.assertIn("skills outside selected scope", text)
+        self.assertNotIn("pi: not configured", text)
+
     def test_failed_config_inspection_is_not_absence(self):
         config = self.home / ".codex/config.toml"
         self.write(config, "[broken\n")

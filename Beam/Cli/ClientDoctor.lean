@@ -107,7 +107,8 @@ def renderText (report : Report) : String := Id.run do
     let label := if issues.any (·.status == .error) then "needs attention"
       else if issues.any (·.status == .unknown) then "partly checked"
       else if issues.any (·.status == .warning) then "check recommendation"
-      else if client.mcp != .checked && client.skill != .checked then "not configured"
+      else if client.skill == .notConfigured &&
+          (client.mcp == .notConfigured || client.mcp == .notApplicable) then "not configured"
       else "checked"
     let mcp := match client.mcp with
       | .notApplicable => "MCP not applicable"
