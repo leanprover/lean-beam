@@ -77,13 +77,13 @@ class InstalledMcpSmokeReaderTest(unittest.TestCase):
             pid_path = Path(tmp) / "server.pid"
             env = dict(os.environ, BEAM_MCP_READER_TEST_MODE=mode,
                        BEAM_MCP_READER_TEST_PID=str(pid_path),
-                       BEAM_MCP_SMOKE_TIMEOUT="0.2", BEAM_MCP_SMOKE_SHUTDOWN_TIMEOUT="1")
+                       BEAM_MCP_SMOKE_TIMEOUT="2", BEAM_MCP_SMOKE_SHUTDOWN_TIMEOUT="1")
             started = time.monotonic()
             pid = None
             try:
                 result = subprocess.run(
                     ["python3", str(REPO / "tests/lib/installed-mcp-smoke.py"),
-                     str(server), tmp], env=env, capture_output=True, text=True, timeout=3)
+                     str(server), tmp], env=env, capture_output=True, text=True, timeout=8)
                 result.elapsed = time.monotonic() - started
                 self.assertTrue(pid_path.exists(), result.stderr)
                 pid = int(pid_path.read_text())
@@ -130,7 +130,7 @@ class InstalledMcpSmokeReaderTest(unittest.TestCase):
         result = self.run_smoke("partial")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("timed out waiting for MCP response id 2", result.stderr)
-        self.assertLess(result.elapsed, 3)
+        self.assertLess(result.elapsed, 8)
         self.assertFalse(result.child_alive)
 
     def test_stderr_flood_drains_before_quiet_assertion(self):

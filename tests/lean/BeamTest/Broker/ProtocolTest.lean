@@ -610,9 +610,14 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
   finally
     IO.FS.removeDirAll root
 
+private def lakeSaveTraceFailureFixture : BrokerFailure := {
+  code := .saveUnsupportedSetup
+  message := "synthetic Lake save trace failure"
+  data? := some <| Json.mkObj [("fixture", toJson "write-save-trace")]
+}
+
 private def checkTypedLakeSaveTraceFailure : IO Unit := do
-  let missingHelper :=
-    System.FilePath.mk s!"/tmp/beam-missing-lake-helper-{← IO.monoNanosNow}"
+  let helper ← IO.appPath
   let unusedPath := System.FilePath.mk "/tmp/beam-unused-save-artifact"
   let request : LakeHelperWriteTraceRequest := {
     oleanPath := unusedPath.toString
@@ -628,21 +633,19 @@ private def checkTypedLakeSaveTraceFailure : IO Unit := do
     ileanPath := unusedPath
     cPath := unusedPath
     tracePath := unusedPath
-    tracePlan := .targetProcess missingHelper request.traceMetadata
+    tracePlan := .targetProcess helper request.traceMetadata
   }
-  let expected ← runLakeHelperWriteSaveTrace missingHelper request
+  let expected := lakeSaveTraceFailureFixture
   let actual ← writeLeanSaveTrace spec
-  match expected, actual with
-  | .error expected, .error actual =>
+  match actual with
+  | .error actual =>
       require "write save trace should preserve the helper failure code"
         (actual.code == expected.code)
       require "write save trace should preserve the helper failure message"
         (actual.message == expected.message)
       require "write save trace should preserve the helper failure data"
         (actual.data? == expected.data?)
-  | .ok _, _ =>
-      throw <| IO.userError "missing target Lake helper unexpectedly succeeded"
-  | _, .ok _ =>
+  | .ok _ =>
       throw <| IO.userError "write save trace unexpectedly discarded the helper failure"
 
 private def checkDocumentVersionMismatchErrorData : IO Unit := do
@@ -1709,7 +1712,11 @@ private def checkWrapperDaemonAuthorization : IO Unit := do
     finally
       IO.FS.removeDirAll base
 
-def main : IO Unit := do
+def main (args : List String) : IO Unit := do
+  if args == ["lake-helper", "write-save-trace"] then
+    discard <| (← IO.getStdin).readToEnd
+    IO.println (toJson lakeSaveTraceFailureFixture.toResponse).compress
+    return
   checkDaemonReadinessProtocol
   checkServerHelloProtocol
   checkResponseJsonShape
