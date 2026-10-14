@@ -11,6 +11,7 @@ import BeamTest.LSP.Requests.Support
 open Lean
 open BeamTest.LSP.Scenario
 open BeamTest.LSP.Requests.Interference
+open BeamTest.LSP.Requests.Support
 
 namespace BeamTest.LSP.Requests.DiagnosticsBarrier.BasicTest
 
@@ -22,6 +23,8 @@ def requireDepAResult (label : String) (result : Beam.LSP.DiagnosticsBarrier.Res
   let expectedTextHash := hash (← IO.FS.readFile depAFixture)
   if result.version != 1 then
     throw <| IO.userError s!"{label}: expected version 1, got {result.version}"
+  unless result.elaborationComplete do
+    throw <| IO.userError s!"{label}: expected completed elaboration for a valid file"
   if result.directImports != #["BeamTest.Fixtures.Deps.DepB"] then
     throw <| IO.userError
       s!"{label}: unexpected imports {(toJson result.directImports).compress}"
@@ -70,9 +73,34 @@ def checkDiagnosticsBarrierWithStandardLspInterference : ScenarioM Unit := do
   closeDoc barrierDoc
   closeDoc editDoc
 
+def checkRealCompletionFlags : ScenarioM Unit := do
+  let root ← mkTmpDir "beam-diagnostics-completion"
+  try
+    for (name, text, complete, saveReady) in [
+        ("Valid", "import Lean\ndef value : Nat := 1\n", true, true),
+        ("Nonfatal", "import Lean\ndef value : Nat := \"not a Nat\"\n", true, false),
+        ("Fatal", "import BeamTest.Fixtures.DefinitelyMissing\n", false, false)] do
+      let path := root / s!"{name}.lean"
+      IO.FS.writeFile path text
+      let doc ← openDoc path
+      try
+        let req ← sendDiagnosticsBarrier doc
+        let result : Beam.LSP.DiagnosticsBarrier.Result ← awaitResponseAs req
+        unless result.elaborationComplete == complete do
+          throw <| IO.userError
+            s!"{name}: unexpected real barrier completion flag: {(toJson result).compress}"
+        unless result.saveReadiness.saveReady == saveReady do
+          throw <| IO.userError
+            s!"{name}: unexpected real save readiness: {(toJson result).compress}"
+      finally
+        closeDoc doc
+  finally
+    IO.FS.removeDirAll root
+
 def run : ScenarioM Unit := do
   checkDiagnosticsBarrier
   checkDiagnosticsBarrierAcceptsSatisfiedVersion
   checkDiagnosticsBarrierWithStandardLspInterference
+  checkRealCompletionFlags
 
 end BeamTest.LSP.Requests.DiagnosticsBarrier.BasicTest

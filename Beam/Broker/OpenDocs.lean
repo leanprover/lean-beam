@@ -38,7 +38,7 @@ instance : ToJson DiskStatus where
 def docDiskStatus (path : System.FilePath) (docState : DocState) : IO DiskStatus := do
   try
     let text ← IO.FS.readFile path
-    pure <| if hash text == docState.textHash then .matchesTracked else .differsFromTracked
+    pure <| if hash text == docState.rawSourceHash then .matchesTracked else .differsFromTracked
   catch e => do
     let pathStillExists ← path.pathExists
     if pathStillExists then
