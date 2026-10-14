@@ -215,12 +215,7 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
 
   closeDoc doc
 
-elab "supportsPostponedCompilation" : term => do
-  Lean.Elab.Term.elabTerm (← `(term| $(quote <|
-    (← getEnv).contains `Lean.Compiler.LCNF.postponedCompileDeclsExt))) none
-
 def checkDeferredCompilationReadiness : ScenarioM Unit := do
-  if !supportsPostponedCompilation then return
   for fixture in ["DeferredGlobal", "DeferredScoped"] do
     let doc ← openDoc s!"tests/lean/BeamTest/Fixtures/Save/{fixture}.lean"
     let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs (← sendSaveReadiness doc)

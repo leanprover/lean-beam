@@ -189,7 +189,9 @@ BEAM_INSTALL_TEST_PRESEED_ELAN=require bash tests/test-beam-install.sh
 ```
 
 The save suite also runs [tests/test-beam-deferred-save.py](../tests/test-beam-deferred-save.py).
-On toolchains with deferred compilation it checks both Lake options and declaration-scoped
+It uses the oldest supported Lean release pinned by `tests/save_olean_project/lean-toolchain`.
+Deferred compilation is required on all supported releases; both the wrapper and LSP tests run
+without a feature-availability skip. The wrapper test checks both Lake options and declaration-scoped
 `compiler.postponeCompile`: sync must report the unsupported readiness reason, both save commands
 must reject the checkpoint, and every prior artifact and the Lake trace must remain unchanged.
 

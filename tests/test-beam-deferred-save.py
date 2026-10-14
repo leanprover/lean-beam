@@ -82,21 +82,11 @@ def check_deferred_save(root, scoped):
 
 
 def main():
-    # The extension did not exist on the oldest supported compilers. Probe the option without
-    # changing a fixture or asking for a save; unexpected compiler errors remain failures.
-    probe = subprocess.run(["lake", "env", "lean", "--stdin"], cwd=REPO,
-                           input="import Lean\nset_option compiler.postponeCompile true in\n#check Nat\n",
-                           text=True, capture_output=True, timeout=60)
-    if probe.returncode != 0:
-        if "Unknown option" in probe.stdout or "unknown option" in probe.stdout:
-            print("deferred compilation: unavailable on this toolchain")
-            return
-        raise RuntimeError(probe.stdout + probe.stderr)
+    # The save fixture pins the oldest supported release; postponed compilation is required there.
     with tempfile.TemporaryDirectory(prefix="beam-save-olean-deferred-", dir=os.getenv("TMPDIR", "/tmp")) as tmp:
         for scoped in [False, True]:
             root = Path(tmp) / ("scoped" if scoped else "global")
             shutil.copytree(REPO / "tests/save_olean_project", root, ignore=shutil.ignore_patterns(".lake", ".beam"))
-            (root / "lean-toolchain").write_text((REPO / "lean-toolchain").read_text())
             check_deferred_save(root, scoped)
 
 
