@@ -49,6 +49,8 @@ the recorded toolchain build. Git metadata is needed only for the build.
 Native configuration and outputs live separately under `.lake/toolchain-lakefile.lean` and
 `.lake/toolchain-build`. A warmed standalone configuration or CLI is preserved; the native
 scripts explicitly reconfigure their own Lake file for the requested build mode.
+That output tree is a staging layout; normal native commands run after installation into a complete
+Lean SDK. See [DEVELOPMENT.md](DEVELOPMENT.md#build-and-install-layouts) for the artifact layout comparison.
 
 `PREFIX` is the destination Lean installation, with its corresponding Lean files installed by the
 release builder. It may equal `LEAN_PREFIX`. Spaces are supported. The installed Beam files are:
