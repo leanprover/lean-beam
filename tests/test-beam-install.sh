@@ -307,12 +307,7 @@ assert_install_rejects_marker() {
   remove_tmp_file "$marker_err"
 }
 
-rsync -a \
-  --exclude='.git' \
-  --exclude='.lake/' \
-  --exclude='.beam/' \
-  --exclude='.codex-worktrees/' \
-  ./ "$source_checkout"/
+beam_test_overlay_install_source . "$source_checkout"
 path_no_elan="$(path_without_elan)"
 if PATH="$path_no_elan" command -v elan >/dev/null 2>&1; then
   echo "failed to construct a PATH without elan for the negative install test" >&2

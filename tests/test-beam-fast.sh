@@ -47,6 +47,8 @@ run_quiet_test() {
   rm -f "$log"
 }
 
+run_quiet_test "defensive validation Git isolation" bash tests/test-validate-defensive.sh
+
 run_quiet_lake_build \
   Beam.LSP:shared \
   beam-cli \

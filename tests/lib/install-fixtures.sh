@@ -11,6 +11,15 @@
 # shellcheck source=tests/lib/tmp-guards.sh
 . tests/lib/tmp-guards.sh
 
+beam_test_overlay_install_source() {
+  rsync -a \
+    --exclude='.git' \
+    --exclude='.lake/' \
+    --exclude='.beam/' \
+    --exclude='.codex-worktrees/' \
+    "$1"/ "$2"/
+}
+
 expect_owned_tmp_dir() {
   beam_test_expect_owned_tmp_dir "$1" beam-install
 }

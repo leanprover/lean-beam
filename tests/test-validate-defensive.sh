@@ -7,23 +7,24 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# shellcheck source=tests/lib/install-fixtures.sh
+. tests/lib/install-fixtures.sh
 
 outside_root="$(mktemp -d /tmp/defensive-outside-XXXXXX)"
+fixture_root="$(mktemp -d /tmp/beam-overlay-git-XXXXXX)"
+fixture_root="$(cd "$fixture_root" && pwd -P)"
 
 cleanup() {
   rm -rf -- "$outside_root"
+  rm -rf -- "$fixture_root"
 }
 trap cleanup EXIT
 
 if ! bash scripts/validate-defensive.sh -- bash -c '
-  case "$(git rev-parse --absolute-git-dir)" in
-    /tmp/beam-validate-*/clone/.git)
-      ;;
-    *)
-      echo "validation clone Git metadata points outside its owned directory" >&2
-      exit 1
-      ;;
-  esac
+  if [ ! -d .git ] || [ "$(git rev-parse --absolute-git-dir)" != "$(pwd -P)/.git" ]; then
+    echo "validation clone Git metadata points outside its owned directory" >&2
+    exit 1
+  fi
 
   case "$HOME" in
     /tmp/beam-validate-*/home)
@@ -90,30 +91,56 @@ if [ ! -d "$outside_root" ]; then
   exit 1
 fi
 
-# Linked worktrees have a .git file, which must not replace the validation clone's .git directory.
-fixture_repo="$outside_root/repo"
-fixture_worktree="$outside_root/worktree"
-mkdir -p "$fixture_repo/scripts"
-cp scripts/validate-defensive.sh "$fixture_repo/scripts/"
-git -C "$fixture_repo" init -q
-git -C "$fixture_repo" add scripts/validate-defensive.sh
-git -C "$fixture_repo" -c user.name='Beam Defensive Test' \
-  -c user.email=beam-defensive-test@example.invalid \
-  commit --no-gpg-sign -q -m 'defensive validation fixture'
-git -C "$fixture_repo" worktree add -q -b linked "$fixture_worktree"
-fixture_head="$(git -C "$fixture_worktree" rev-parse HEAD)"
-(
-  cd "$fixture_worktree"
-  bash scripts/validate-defensive.sh -- bash -c '
-    if [ ! -d .git ]; then
-      echo "expected linked-worktree validation to retain an independent Git directory" >&2
-      exit 1
-    fi
-    git -c user.name="Beam Defensive Test" -c user.email=beam-defensive-test@example.invalid \
-      commit --allow-empty --no-gpg-sign -q -m "validation clone commit"
+# Both source shapes are explicit fixtures; CI's checkout shape must not choose coverage.
+fixture_checkout="$fixture_root/ordinary"
+linked_checkout="$fixture_root/linked"
+git -c init.defaultBranch=fixture init -q "$fixture_checkout"
+mkdir -p "$fixture_checkout/scripts"
+cp scripts/validate-defensive.sh "$fixture_checkout/scripts/"
+printf '%s\n' 'committed fixture' > "$fixture_checkout/overlay.txt"
+git -C "$fixture_checkout" config user.name 'Original Fixture'
+git -C "$fixture_checkout" config user.email 'original-fixture@example.invalid'
+git -C "$fixture_checkout" add .
+git -C "$fixture_checkout" commit --no-gpg-sign -q -m 'create isolated overlay fixture'
+git -C "$fixture_checkout" worktree add -q -b linked-fixture "$linked_checkout"
+[ -d "$fixture_checkout/.git" ]
+[ -f "$linked_checkout/.git" ]
+
+for fixture_source in "$fixture_checkout" "$linked_checkout"; do
+  fixture_head="$(git -C "$fixture_source" rev-parse HEAD)"
+  fixture_branch="$(git -C "$fixture_source" symbolic-ref HEAD)"
+  printf '%s\n' 'uncommitted overlay' > "$fixture_source/overlay.txt"
+  fixture_copy="$fixture_root/copy-$(basename "$fixture_source")"
+  mkdir -p "$fixture_copy"
+  beam_test_overlay_install_source "$fixture_source" "$fixture_copy"
+  if [ -e "$fixture_copy/.git" ]; then
+    echo "installer source overlay copied foreign Git metadata from $fixture_source" >&2
+    exit 1
+  fi
+  git -c init.defaultBranch=disposable init -q "$fixture_copy"
+  if [ ! -d "$fixture_copy/.git" ] ||
+      [ "$(git -C "$fixture_copy" rev-parse --absolute-git-dir)" != "$fixture_copy/.git" ]; then
+    echo "installer source overlay copied foreign Git metadata from $fixture_source" >&2
+    exit 1
+  fi
+  grep -qxF 'uncommitted overlay' "$fixture_copy/overlay.txt"
+  git -C "$fixture_copy" config user.name 'Disposable Fixture'
+  git -C "$fixture_copy" config user.email 'disposable-fixture@example.invalid'
+  git -C "$fixture_copy" commit --allow-empty --no-gpg-sign -q -m 'commit inside installer copy'
+  [ "$(git -C "$fixture_copy" rev-parse HEAD)" != "$fixture_head" ]
+
+  bash "$fixture_source/scripts/validate-defensive.sh" -- bash -c '
+    [ -d .git ]
+    [ "$(git rev-parse --absolute-git-dir)" = "$(pwd -P)/.git" ]
+    grep -qxF "uncommitted overlay" overlay.txt
+    fixture_head="$(git rev-parse HEAD)"
+    git config user.name "Disposable Validation"
+    git config user.email "disposable-validation@example.invalid"
+    git commit --allow-empty --no-gpg-sign -q -m "commit inside defensive clone"
+    [ "$(git rev-parse HEAD)" != "$fixture_head" ]
   '
-)
-if [ "$(git -C "$fixture_worktree" rev-parse HEAD)" != "$fixture_head" ]; then
-  echo "defensive validation changed the source worktree HEAD" >&2
-  exit 1
-fi
+  [ "$(git -C "$fixture_source" rev-parse HEAD)" = "$fixture_head" ]
+  [ "$(git -C "$fixture_source" symbolic-ref HEAD)" = "$fixture_branch" ]
+  [ "$(git -C "$fixture_source" config user.name)" = 'Original Fixture' ]
+  [ "$(git -C "$fixture_source" config user.email)" = 'original-fixture@example.invalid' ]
+done
