@@ -246,7 +246,11 @@ class McpClient:
                 )
         env = os.environ.copy()
         if extra_env is not None:
-            env.update({str(key): str(value) for key, value in extra_env.items()})
+            for key, value in extra_env.items():
+                if value is None:
+                    env.pop(str(key), None)
+                else:
+                    env[str(key)] = str(value)
         if self.server_trace:
             env["LEAN_BEAM_MCP_TRACE"] = "1"
             env["LEAN_BEAM_BROKER_TRACE"] = "1"
@@ -806,11 +810,12 @@ def workspace_cache_key(root):
     return f"local:{Path(root).resolve()}"
 
 
-def beam_cli_mcp_config(repo_root, root, timeout):
+def beam_cli_mcp_config(repo_root, root, timeout, *, env=None):
     beam_cli = repo_root / ".lake" / "build" / "bin" / "beam-cli"
     completed = subprocess.run(
         [str(beam_cli), "--root", str(root), "mcp-config"],
         cwd=str(repo_root),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -2434,7 +2439,9 @@ def run_multi_toolchain_workspaces(repo_root, fixture_root, timeout, server_trac
             )
         (roots[1] / "lean-toolchain").write_text(current_toolchain + "\n", encoding="utf-8")
         expected_toolchains = [fixture_toolchain, current_toolchain]
-        configs = [beam_cli_mcp_config(repo_root, root, timeout) for root in roots]
+        # Establish the project-file baseline independently of the shell running this test.
+        clean_env = {key: value for key, value in os.environ.items() if key != "ELAN_TOOLCHAIN"}
+        configs = [beam_cli_mcp_config(repo_root, root, timeout, env=clean_env) for root in roots]
         for root, expected_toolchain, config in zip(roots, expected_toolchains, configs):
             require(
                 config.get("toolchain") == expected_toolchain,
@@ -2476,8 +2483,18 @@ def run_multi_toolchain_workspaces(repo_root, fixture_root, timeout, server_trac
                 timeout=timeout,
                 check=False,
             )
+            expected_version = subprocess.run(
+                ["elan", "run", expected_toolchain, "lean", "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout,
+                check=False,
+            )
             require(
-                version.returncode == 0 and expected_toolchain.rsplit(":v", 1)[-1] in version.stdout,
+                version.returncode == 0 and expected_version.returncode == 0
+                and version.stdout.strip() == expected_version.stdout.strip(),
                 f"resolved Lean command did not match {expected_toolchain} for {root}: "
                 f"{version.stdout}{version.stderr}",
             )
@@ -2494,6 +2511,152 @@ def run_multi_toolchain_workspaces(repo_root, fixture_root, timeout, server_trac
             f"different toolchains resolved to the same target Lake helper: {configs}",
         )
 
+        def require_override_config(root, expected_toolchain, env):
+            config = beam_cli_mcp_config(repo_root, root, timeout, env=env)
+            require(config.get("toolchain") == expected_toolchain, f"wrong override selection: {config}")
+            which = subprocess.run(
+                ["elan", "which", "lean"], cwd=root, env=env,
+                capture_output=True, text=True, timeout=timeout, check=True,
+            )
+            require(Path(config["lean_cmd"]).samefile(which.stdout.strip()),
+                    f"Beam disagreed with Elan: {config}")
+            helper = subprocess.run(
+                [config["lean_lake_helper"], "lake-helper", "server-env"],
+                input=json.dumps({"root": str(root), "leanCmd": config["lean_cmd"]}),
+                cwd=root, env=env, capture_output=True, text=True, timeout=timeout, check=True,
+            )
+            server_env = json.loads(helper.stdout)["result"]
+            plugin_env = env.copy()
+            for key, value in server_env["env"]:
+                if value is None:
+                    plugin_env.pop(key, None)
+                else:
+                    plugin_env[key] = value
+            # Loading the selected plugin checks the ABI, rather than trusting only config labels.
+            loaded = subprocess.run(
+                [config["lean_cmd"], *server_env["moreServerArgs"],
+                 "--plugin=" + config["lean_plugin"], "-Dexperimental.module=true", "--stdin"],
+                input="#check Nat\n", cwd=root, env=plugin_env,
+                capture_output=True, text=True, timeout=timeout, check=False,
+            )
+            require(loaded.returncode == 0, f"override plugin load failed: {loaded.stdout}{loaded.stderr}")
+            doctor = subprocess.run(
+                [str(repo_root / ".lake/build/bin/beam-cli"), "--root", str(root), "doctor"],
+                cwd=repo_root, env=env, capture_output=True, text=True, timeout=timeout, check=True,
+            )
+            require(f"project toolchain: {expected_toolchain}" in doctor.stdout,
+                    f"doctor disagreed with runtime selection: {doctor.stdout}")
+
+        for root, selected in zip(roots, [current_toolchain, fixture_toolchain]):
+            require_override_config(root, selected, {**clean_env, "ELAN_TOOLCHAIN": selected})
+
+        # Use a private Elan settings directory; never alter the caller's directory overrides.
+        elan_home = tmp_root / "elan-overrides"
+        (elan_home / "toolchains").mkdir(parents=True)
+        for selected in expected_toolchains:
+            which = subprocess.run(
+                ["elan", "run", selected, "elan", "which", "lean"], env=clean_env,
+                capture_output=True, text=True, timeout=timeout, check=True,
+            )
+            prefix = Path(which.stdout.strip()).parent.parent
+            (elan_home / "toolchains" / prefix.name).symlink_to(prefix, target_is_directory=True)
+        directory_env = {**clean_env, "ELAN_HOME": str(elan_home)}
+        subprocess.run(["elan", "override", "set", current_toolchain], cwd=roots[0], env=directory_env,
+                       capture_output=True, text=True, timeout=timeout, check=True)
+        require_override_config(roots[0], current_toolchain, directory_env)
+        require_override_config(roots[0], fixture_toolchain,
+                                {**directory_env, "ELAN_TOOLCHAIN": fixture_toolchain})
+
+        # Change only the private override database after selection, during fingerprinting.
+        # The executable must use the captured installation even though ambient Elan now differs.
+        subprocess.run(["elan", "override", "set", fixture_toolchain], cwd=roots[0], env=directory_env,
+                       capture_output=True, text=True, timeout=timeout, check=True)
+        before_change = beam_cli_mcp_config(repo_root, roots[0], timeout, env=directory_env)
+        real_elan = shutil.which("elan", path=clean_env["PATH"])
+        require(real_elan is not None, "missing Elan for captured-selection regression")
+        hook_bin = tmp_root / "capture-elan-bin"
+        hook_bin.mkdir()
+        changed = tmp_root / "override-changed"
+        hook = hook_bin / "elan"
+        hook.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, subprocess, sys\n"
+            "from pathlib import Path\n"
+            f"real_elan = {real_elan!r}\n"
+            f"changed = Path({str(changed)!r})\n"
+            f"if sys.argv[1:] == ['run', {fixture_toolchain!r}, 'lean', '--version'] and not changed.exists():\n"
+            f"    subprocess.run([real_elan, 'override', 'set', {current_toolchain!r}],\n"
+            f"                   cwd={str(roots[0])!r}, check=True, capture_output=True)\n"
+            "    changed.write_text('changed')\n"
+            "os.execv(real_elan, [real_elan, *sys.argv[1:]])\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o700)
+        captured = beam_cli_mcp_config(
+            repo_root, roots[0], timeout,
+            env={**directory_env, "PATH": str(hook_bin) + os.pathsep + clean_env["PATH"]},
+        )
+        require(changed.is_file(), "override was not changed during captured-selection regression")
+        for field in ["toolchain", "lean_cmd", "lean_plugin", "lean_lake_helper"]:
+            require(captured[field] == before_change[field],
+                    f"captured {field} changed during bundle preparation: {captured}")
+        ambient = subprocess.run([real_elan, "which", "lean"], cwd=roots[0], env=directory_env,
+                                 capture_output=True, text=True, timeout=timeout, check=True)
+        require(not Path(captured["lean_cmd"]).samefile(ambient.stdout.strip()),
+                "captured-selection regression did not produce a different ambient executable")
+        require_override_config(roots[0], current_toolchain, directory_env)
+
+        # Channel metadata is controlled locally; no live release lookup enters this test.
+        channel_bin = tmp_root / "channel-elan-bin"
+        channel_bin.mkdir()
+        channel_hook = channel_bin / "elan"
+        shutil.copyfile(repo_root / "tests/fixtures/elan-channel.py", channel_hook)
+        channel_hook.chmod(0o700)
+        for mode, selected in [("live", current_toolchain), ("fallback", fixture_toolchain),
+                               ("unsupported", None), ("unavailable", None)]:
+            channel_log = tmp_root / f"channel-{mode}.log"
+            channel_env = {
+                **directory_env,
+                "PATH": str(channel_bin) + os.pathsep + clean_env["PATH"],
+                "ELAN_TOOLCHAIN": "stable",
+                "BEAM_TEST_REAL_ELAN": real_elan,
+                "BEAM_TEST_ELAN_LOG": str(channel_log),
+                "BEAM_TEST_CHANNEL_MODE": mode,
+                "BEAM_TEST_CURRENT_TOOLCHAIN": current_toolchain,
+                "BEAM_TEST_CACHED_TOOLCHAIN": fixture_toolchain,
+                "BEAM_TEST_CHANNEL_MOVED": str(tmp_root / f"channel-{mode}.moved"),
+            }
+            if selected is not None:
+                config = beam_cli_mcp_config(repo_root, roots[0], timeout, env=channel_env)
+                baseline = configs[expected_toolchains.index(selected)]
+                for field in ["toolchain", "lean_cmd", "lean_plugin", "lean_lake_helper"]:
+                    require(config[field] == baseline[field],
+                            f"{mode} channel did not retain the resolved runtime: {config}")
+            else:
+                rejected_channel = subprocess.run(
+                    [str(repo_root / ".lake/build/bin/beam-cli"), "--root", str(roots[0]), "mcp-config"],
+                    cwd=repo_root, env=channel_env, capture_output=True, text=True, timeout=timeout,
+                )
+                expected_error = ("unsupported Lean toolchain: leanprover/lean4:v9.99.0"
+                                  if mode == "unsupported" else "network unavailable")
+                require(rejected_channel.returncode != 0 and expected_error in rejected_channel.stderr,
+                        f"wrong channel rejection: {rejected_channel.stdout}{rejected_channel.stderr}")
+            calls = [json.loads(line) for line in channel_log.read_text().splitlines()]
+            require(sum(call["args"] == ["dump-state"] for call in calls) == 1,
+                    f"channel was resolved more than once: {calls}")
+            if selected is None:
+                require(all(call["args"][0] == "dump-state" for call in calls),
+                        f"rejected channel performed toolchain work: {calls}")
+
+        rejected_env = {**clean_env, "ELAN_TOOLCHAIN": "leanprover/lean4:v9.99.0"}
+        rejected = subprocess.run(
+            [str(repo_root / ".lake/build/bin/beam-cli"), "--root", str(roots[0]), "mcp-config"],
+            cwd=repo_root, env=rejected_env, capture_output=True, text=True, timeout=timeout, check=False,
+        )
+        require(rejected.returncode != 0 and
+                "unsupported Lean toolchain: leanprover/lean4:v9.99.0" in rejected.stderr,
+                f"an unsupported override bypassed admission: {rejected.stdout}{rejected.stderr}")
+
         client = McpClient(
             repo_root,
             roots[0],
@@ -2501,6 +2664,7 @@ def run_multi_toolchain_workspaces(repo_root, fixture_root, timeout, server_trac
             label="multi-toolchain-workspaces",
             server_trace=server_trace,
             resolve_with_beam_cli=True,
+            extra_env={"ELAN_TOOLCHAIN": None},
         )
         try:
             client.initialize()

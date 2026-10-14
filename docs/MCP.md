@@ -131,9 +131,12 @@ with the same descriptor recreates the runtime lazily. Retain the canonical desc
 operation, non-confidential feedback result, or drop result echoes it: cache eviction accepts that
 absolute descriptor even if the project directory or its Lean/Lake markers have since disappeared.
 
-After editing a lakefile, manifest, package override, `lean-toolchain`, Lean options, plugins, or
-dynamic libraries, drop that workspace or restart the MCP server before the next request. Re-syncing
-inside the old Lean process is not sufficient to reload workspace configuration.
+After editing a lakefile, manifest, package override, `lean-toolchain`, Elan directory override,
+Lean options, plugins, or dynamic libraries, drop that workspace or restart the MCP server before
+the next request. Re-syncing inside the old Lean process is not sufficient to reload workspace
+configuration. Toolchain selection uses the canonical workspace root and the MCP server's inherited
+environment. To change `ELAN_TOOLCHAIN`, restart the MCP server with the new environment; changing
+the calling shell and dropping a workspace does not change the existing server's environment.
 
 ## Transport Lifetime
 

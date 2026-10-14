@@ -20,6 +20,11 @@ structure ToolchainFingerprint where
   lakeVersion : String
   deriving BEq, Repr, FromJson, ToJson
 
+/-- Reuse the installation fingerprinted for the bundle instead of selecting a compiler again. -/
+def ToolchainFingerprint.leanCommand (fingerprint : ToolchainFingerprint) : String :=
+  let suffix := if System.Platform.isWindows then ".exe" else ""
+  ((System.FilePath.mk fingerprint.leanPrefix) / "bin" / ("lean" ++ suffix)).toString
+
 def bundlePlatform : IO String := do
   let system := ← Beam.readCmdTrim "uname" #["-s"]
   let machine := ← Beam.readCmdTrim "uname" #["-m"]

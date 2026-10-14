@@ -116,6 +116,11 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- Workspace Lean executables and Beam plugins follow Elan's effective toolchain selection,
+  including `ELAN_TOOLCHAIN` and directory overrides. Moving channels resolve once before
+  admission; custom registration requires a concrete identity. Installation checks Elan's JSON
+  selection interface before writing install state
+  ([#264](https://github.com/leanprover/lean-beam/pull/264), @ejgallego).
 - Saves reject deferred compilation before changing artifacts or the Lake trace, including
   declaration-scoped `compiler.postponeCompile`, and report the unsupported readiness reason
   ([#263](https://github.com/leanprover/lean-beam/pull/263), @ejgallego).

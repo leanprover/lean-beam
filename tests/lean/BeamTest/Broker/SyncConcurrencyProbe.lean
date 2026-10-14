@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import BeamTest.Broker.ProcessUtil
 import BeamTest.Broker.SmokeUtil
+import BeamTest.TestHarness
 
 open Lean
 
@@ -22,7 +23,7 @@ private abbrev tracedBrokerStdio : IO.Process.StdioConfig where
 private def spawnTracedLeanBrokerWithPlugin
     (endpoint : Beam.Broker.Endpoint)
     (root leanPlugin : System.FilePath)
-    (leanCmd : String := "lean") : IO (IO.Process.Child tracedBrokerStdio) := do
+    (leanCmd : String) : IO (IO.Process.Child tracedBrokerStdio) := do
   let port :=
     match endpoint with
     | .tcp port => port
@@ -341,7 +342,7 @@ def main : IO Unit := do
   let traceRef ← IO.mkRef ""
   let broker ← spawnTracedLeanBrokerWithPlugin endpoint root
     (← BeamTest.Broker.SmokeTest.pluginPath)
-    (← BeamTest.Broker.SmokeTest.leanCmd)
+    (← BeamTest.TestHarness.leanCmd)
   let traceTask ← IO.asTask (prio := Task.Priority.dedicated) do
     try
       drainTrace (IO.FS.Stream.ofHandle broker.stderr) traceRef

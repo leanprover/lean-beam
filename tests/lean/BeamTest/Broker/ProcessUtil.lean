@@ -145,7 +145,7 @@ def killLeanServerForEndpoint
 def spawnLeanBrokerWithPlugin
     (endpoint : Beam.Broker.Endpoint)
     (root leanPlugin : System.FilePath)
-    (leanCmd : String := "lean")
+    (leanCmd? : Option String := none)
     (identity? : Option Beam.Broker.DaemonIdentity := none) : IO (IO.Process.Child nullBrokerStdio) := do
   let port :=
     match endpoint with
@@ -157,7 +157,7 @@ def spawnLeanBrokerWithPlugin
       "--port", toString port.toNat,
       "--root", root.toString,
       "--workspace-id", testWorkspaceId,
-      "--lean-cmd", leanCmd,
+      "--lean-cmd", (← leanCmd?.getDM BeamTest.TestHarness.leanCmd),
       "--lean-plugin", leanPlugin.toString
     ] ++ match identity? with
       | some identity => #[
@@ -171,9 +171,9 @@ def spawnLeanBrokerWithPlugin
 def spawnLeanBroker
     (endpoint : Beam.Broker.Endpoint)
     (root : System.FilePath)
-    (leanCmd : String := "lean")
+    (leanCmd? : Option String := none)
     (identity? : Option Beam.Broker.DaemonIdentity := none) : IO (IO.Process.Child nullBrokerStdio) := do
-  spawnLeanBrokerWithPlugin endpoint root (← BeamTest.TestHarness.pluginPath) leanCmd identity?
+  spawnLeanBrokerWithPlugin endpoint root (← BeamTest.TestHarness.pluginPath) leanCmd? identity?
 
 def spawnRocqBroker
     (endpoint : Beam.Broker.Endpoint)

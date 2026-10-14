@@ -8,6 +8,12 @@ toolchains from lines in `compatible-lean-release-lines` do not need this opt-in
 accepts an explicitly named toolchain outside those policy registries, typically a linked name,
 nightly, other vendor, or other noncanonical toolchain.
 
+Use a dated nightly or exact vendor release. Moving selectors such as `stable`, `beta`, `nightly`,
+and `lean-toolchain` cannot be registered as custom names. Workspace channel selection is resolved
+to a concrete release first, and that concrete release must be admitted independently.
+Local builds must use an Elan-linked name; direct filesystem-path toolchain selectors are not
+supported by the standalone wrapper.
+
 ## Install
 
 Link the local Lean build with elan, then install Beam with the same toolchain name:
@@ -28,9 +34,9 @@ toolchain prebuild options are documented in
 
 When a project requests a Lean toolchain, Beam resolves helpers in this order:
 
-1. an installed bundle cache under the Beam install state
-2. a project-local runtime fallback under `.beam/bundles/`
-3. failure for toolchains that are neither validated, release-line-compatible, nor explicitly custom
+1. resolve any moving selector and check admission of the concrete toolchain; reject unsupported names
+2. fingerprint the accepted installation and look for a matching installed bundle
+3. build and qualify a project-local runtime fallback under `.beam/bundles/` if no installed bundle matches
 
 The installed bundle path avoids rebuilding inside each project. The fallback path exists so an
 accepted toolchain can still run when no matching installed bundle is available, but it may need a
@@ -40,7 +46,7 @@ full `lake build` and network access on a cold machine.
 
 Bundle keys include all of these inputs:
 
-- the requested toolchain name
+- the concrete admitted toolchain name, after channel resolution
 - the resolved Lean/Lake fingerprint for that name
 - the current platform
 - the Beam runtime source hash
@@ -75,7 +81,8 @@ bundle toolchain fingerprint: ...
 ```
 
 For a rejected toolchain, doctor reports the rejection without resolving the toolchain fingerprint.
-That keeps unsupported names from triggering arbitrary local elan resolution during diagnostics.
+Doctor skips compiler fingerprinting and bundle preparation for rejected concrete names. A moving
+selector still needs channel resolution before its concrete name can be checked for admission.
 
 ## Stage0 Smoke
 

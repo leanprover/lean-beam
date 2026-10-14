@@ -605,6 +605,17 @@ Beam runtime source hash and the resolved Lean/Lake fingerprint so local custom 
 and reported identity changes cannot silently reuse stale helpers. The user-facing model is in
 [CUSTOM_TOOLCHAINS.md](CUSTOM_TOOLCHAINS.md).
 
+Standalone workspace selection is isolated in `effectiveLeanToolchain`: it captures Elan's
+descriptor and resolves moving channels to a concrete name before admission. Bundle resolution
+returns the fingerprint it used, and startup derives the Lean executable from that installation
+instead of consulting ambient selection again. Doctor uses the same fingerprint for its bundle
+and compiler output. Local linked installations must not be rebuilt or relinked during startup.
+
+For the planned bundled distribution, resolve the containing installation before entering this
+standalone path. Its compiler, plugin, and daemon should come from the same installation and be
+checked against bundled build provenance; the standalone Elan JSON adapter is not a requirement
+for that path. Keep this integration in the separate native distribution change.
+
 Install manifests describe required staged artifacts, not optional future layout. New manifests
 write schema 3 and name creation-time toolchain provenance explicitly. Schema 2 remains readable for
 identity and `lean-beam prune`, but installer reuse requires the current schema; the compatibility

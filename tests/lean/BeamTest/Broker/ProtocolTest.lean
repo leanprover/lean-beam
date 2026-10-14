@@ -1467,7 +1467,12 @@ private def checkWorkspaceSnapshotResetIsolation : IO Unit := do
     if !(← releaseWriter.pathExists) then
       IO.FS.writeFile releaseWriter "release"
     if (← writer.tryWait).isNone then
-      writer.kill
+      try
+        writer.kill
+      catch error =>
+        -- Releasing the FIFO may let its writer exit between tryWait and kill (ESRCH on macOS).
+        -- Ignore a failed signal only once the child has actually exited; keep other failures.
+        if (← writer.tryWait).isNone then throw error
     discard <| writer.wait
     runtime.close
     if ← oldRoot.pathExists then

@@ -99,14 +99,81 @@ def explicitProjectRoot (opts : CliOptions) (action : String) : IO System.FilePa
   | none =>
       throw <| IO.userError s!"{action} requires an explicit --root PATH"
 
-def leanToolchain (root : System.FilePath) : IO String := do
-  let path := root / "lean-toolchain"
-  unless ← path.pathExists do
-    throw <| IO.userError s!"missing lean-toolchain in {root}"
-  pure <| Beam.trimLine (← IO.FS.readFile path)
+-- Elan 4.0 exposes selected descriptors through `dump-state --no-net`.
+private structure ElanRemoteToolchain where
+  origin : String
+  release : String
+  deriving FromJson
 
-def leanBin (root : System.FilePath) : IO String :=
-  Beam.readCmdTrim "elan" #["which", "lean"] (some root)
+private structure ElanLocalToolchain where
+  name : String
+  deriving FromJson
+
+inductive ElanToolchainSelector where
+  | fixed (name : String)
+  | channel (name : String)
+  deriving BEq, Repr
+
+/-- Decode only the selected descriptor, without parsing human-readable Elan output. -/
+def selectedElanToolchain (state : Json) : Except String ElanToolchainSelector := do
+  let toolchains ← state.getObjVal? "toolchains"
+  let active ← toolchains.getObjVal? "active_override"
+  let selected ←
+    if active == Json.null then
+      (← toolchains.getObjVal? "default").getObjVal? "unresolved"
+    else
+      active.getObjVal? "unresolved"
+  match selected.getObjVal? "Remote", selected.getObjVal? "Local" with
+  | .ok remote, .error _ =>
+      let remote : ElanRemoteToolchain ← fromJson? remote
+      let name := s!"{remote.origin}:{remote.release}"
+      pure <| if isMovingLeanToolchain name then .channel name else .fixed name
+  | .error _, .ok localToolchain =>
+      let localToolchain : ElanLocalToolchain ← fromJson? localToolchain
+      pure (.fixed localToolchain.name)
+  | _, _ => throw "expected one Remote or Local Elan toolchain descriptor"
+
+/-- Use a live channel resolution, or Elan's installed fallback after a network failure. -/
+def resolvedElanToolchain (state : Json) : Except String String := do
+  let resolution ← (← state.getObjVal? "toolchains").getObjVal? "resolved_active"
+  let live ← resolution.getObjVal? "live"
+  let name ← match live.getObjVal? "Ok", live.getObjVal? "Err" with
+    | .ok value, .error _ => value.getStr?
+    | .error _, .ok error => do
+        let reason ← error.getStr?
+        let cached ← resolution.getObjValAs? (Option String) "cached"
+        match cached with
+        | some name => pure name
+        | none => throw s!"Elan could not resolve the selected channel: {reason}"
+    | _, _ => throw "expected one Ok or Err Elan resolution"
+  if name.isEmpty || isMovingLeanToolchain name then
+    throw s!"Elan did not resolve a concrete toolchain: {name}"
+  pure name
+
+structure LeanToolchainSelection where
+  selector : String
+  toolchain : String
+  deriving Repr
+
+/-- Capture selection once; resolve moving channels before admission or runtime construction. -/
+def effectiveLeanToolchain (root : System.FilePath) : IO LeanToolchainSelection := do
+  let state ← Beam.readCmdTrim "elan" #["dump-state", "--no-net"] (some root)
+  let selected ← IO.ofExcept <| (Json.parse state >>= selectedElanToolchain).mapError fun error =>
+    s!"could not read Elan's toolchain selection for {root}: {error}"
+  match selected with
+  | .fixed name => pure { selector := name, toolchain := name }
+  | .channel name =>
+      -- Pin the captured selector while resolving it. An offline query's cached candidate
+      -- alone may differ from what ordinary Elan would select online.
+      let out ← IO.Process.output {
+        cmd := "elan", args := #["dump-state"], cwd := root.toString
+        env := #[("ELAN_TOOLCHAIN", some name)]
+      }
+      if out.exitCode != 0 then
+        throw <| IO.userError s!"Elan failed to resolve {name}: {out.stderr}"
+      let resolved ← IO.ofExcept <| (Json.parse out.stdout >>= resolvedElanToolchain).mapError fun error =>
+        s!"could not resolve Elan channel {name}: {error}"
+      pure { selector := name, toolchain := resolved }
 
 def rocqCandidates (root : System.FilePath) : List System.FilePath :=
   [root / "_opam" / "bin" / "coq-lsp", root / "_opam" / "_opam" / "bin" / "coq-lsp"]

@@ -82,6 +82,10 @@ jobs:
       - name: Beam Fast Test
         run: bash tests/test-beam-fast.sh
 
+      - name: Minimum Elan Selection Interface
+        if: runner.os == 'Linux'
+        run: python3 tests/test-beam-elan-compat.py
+
   mcp-conformance:
     name: mcp-conformance (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

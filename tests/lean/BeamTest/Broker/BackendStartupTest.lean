@@ -97,7 +97,7 @@ private def checkStartupFailure
     (forbidden? : Option String := none)
     (maxMessageLength? : Option Nat := none) : IO Unit := do
   let endpoint ← freshTcpEndpoint
-  let broker ← spawnLeanBrokerWithPlugin endpoint root plugin fakeServer.toString
+  let broker ← spawnLeanBrokerWithPlugin endpoint root plugin (some fakeServer.toString)
   try
     waitForBrokerReadyForRoot endpoint root
     let resp ← runClient endpoint Beam.Broker.Request.ensure

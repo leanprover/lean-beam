@@ -333,7 +333,10 @@ Run these when the change touches [scripts/codex-harness.sh](../scripts/codex-ha
 The current GitHub Actions workflow maps to the testing surfaces like this:
 
 - `lsp`: [tests/test-lsp.sh](../tests/test-lsp.sh)
-- `beam-fast`: [tests/test-beam-fast.sh](../tests/test-beam-fast.sh)
+- `beam-fast`: [tests/test-beam-fast.sh](../tests/test-beam-fast.sh); the Linux job also runs
+  [tests/test-beam-elan-compat.py](../tests/test-beam-elan-compat.py) against the official Elan 4.0
+  binary in a private home, checking project-file selection, environment overrides, linked-name
+  decoding, and the compiler reported by `doctor`
 - `mcp-conformance`: [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh)
 - `mcp-modern`: [tests/test-mcp-modern-sdk.sh](../tests/test-mcp-modern-sdk.sh) followed by
   [tests/test-mcp-modern-conformance.sh](../tests/test-mcp-modern-conformance.sh)

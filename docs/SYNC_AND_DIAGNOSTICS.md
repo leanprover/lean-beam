@@ -76,8 +76,9 @@ use `lake build` for this compilation pipeline. This also applies to declaration
 
 Beam assumes Lake workspace configuration remains unchanged for the lifetime of the running Lean
 server. The server and existing file workers are not guaranteed to pick up edits to a lakefile,
-manifest, package override, `lean-toolchain`, Lean options, plugins, or dynamic libraries. After any
-such change, run `lean-beam --root ROOT stop` before the next command that uses the Lean server;
+manifest, package override, `lean-toolchain`, Lean options, plugins, or dynamic libraries. Changing
+`ELAN_TOOLCHAIN` or an Elan directory override also changes the effective toolchain. After any such
+change, run `lean-beam --root ROOT stop` before the next command that uses the Lean server;
 `lean-beam refresh` only reopens the file within the current server and is not sufficient. Beam does
 not detect this configuration drift, so reusing a running session after such an edit is unsupported.
 

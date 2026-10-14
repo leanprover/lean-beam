@@ -60,8 +60,9 @@ skill:
 `--opencode`, `--vibe`, `--all-skills`, or an interactive skill target. Rocq-specific setup is
 documented in [ROCQ.md](ROCQ.md).
 
-The installer requires `elan` on `PATH`. Make sure `~/.local/bin` is on `PATH` before using the
-installed wrappers directly.
+The installer requires Elan 4.0 or newer on `PATH`. Make sure `~/.local/bin` is on `PATH` before using the
+installed wrappers directly. Before writing install state, it checks Elan's JSON selection command;
+if that command is unavailable, run `elan self update` before retrying the installation.
 
 ## Validated And Compatible Toolchains
 
@@ -90,6 +91,48 @@ aliases, linked toolchains, other vendors, or malformed version spellings. Relea
 not the same claim as exact CI validation: Beam builds a bundle for the exact resolved toolchain
 fingerprint and loads the resulting plugin in a small Lean elaboration probe before marking that
 bundle ready.
+
+For each workspace, Beam asks Elan to select the toolchain in that workspace's root. This honors
+`ELAN_TOOLCHAIN` and Elan directory overrides, using the project file when no higher-priority
+selection applies. Admission, the Beam runtime bundle, and the Lean executable all use this one
+selection. Moving channels such as `stable` are resolved once, with Elan's normal network lookup
+and installed fallback on lookup failure, before Beam checks the concrete toolchain's admission.
+`lean-beam doctor` reports the concrete release as `project toolchain` and the original selection
+as `project toolchain selector`. Exact releases and linked names do not need a network channel lookup.
+
+Selecting an override or channel does not bypass Beam's admission policy. Unsupported concrete
+versions fail before Beam fingerprints or builds their runtime. Custom registration must name
+an exact release, dated nightly, or linked local installation; registering a moving channel is
+rejected. Stop the existing Beam session before changing the effective toolchain.
+
+For Elan-managed toolchain selection, Beam follows the same rules as `lake build` launched from
+that root with the same environment. The standalone wrapper adds these runtime requirements:
+
+| Behavior | Elan-launched `lake build` | Standalone Beam |
+| --- | --- | --- |
+| Selection directory | The command's current directory | The canonical workspace root, inferred or supplied with `--root` |
+| Selection interface | Elan's launcher selects and starts Lake directly | Beam queries the Elan 4.0 JSON interface |
+| Admission | Elan can launch any valid available or downloadable toolchain | The concrete toolchain must be validated, release-line-compatible, or explicitly custom |
+| Matching components | Lake uses its selected Lean installation | Beam also locates or builds and qualifies a matching plugin and helper bundle |
+| Selection lifetime | One Lake invocation | One running CLI session or cached MCP workspace |
+
+A directory override below the workspace root affects `lake build` launched from that directory,
+but does not change Beam's root-level selection. To select a compiler explicitly for both tools,
+use the same environment override from the project root:
+
+```bash
+ELAN_TOOLCHAIN=leanprover/lean4:v4.35.0 lake build
+ELAN_TOOLCHAIN=leanprover/lean4:v4.35.0 lean-beam serve
+```
+
+Elan also accepts `lake +4.35.0 build`; the standalone Beam wrapper uses `ELAN_TOOLCHAIN` for this
+choice. New Lake invocations reselect their toolchain. Beam keeps a running runtime's compiler
+and plugin together: stop and restart `lean-beam serve` after configuration changes. For MCP, drop
+the workspace to re-read project or directory settings; restart the MCP server to change its
+inherited `ELAN_TOOLCHAIN`. See [MCP runtime setup](MCP.md#runtime-setup).
+
+These distinctions concern the standalone wrapper. The bundled distribution is tracked separately
+in [#262](https://github.com/leanprover/lean-beam/pull/262).
 
 The repository's [`lean-toolchain`](../lean-toolchain) is the default toolchain prebuilt by the
 installer. If your target projects use another validated toolchain or a compatible canonical
