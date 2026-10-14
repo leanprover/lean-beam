@@ -39,7 +39,7 @@ class ClientDoctorTest(unittest.TestCase):
         self.write(self.executable, f"#!/bin/sh\ntouch '{self.marker}'\nexit 99\n")
         self.executable.chmod(0o755)
         sentinel_bin = self.root / "client-sentinels"
-        for name in ["codex", "claude", "pi", "opencode", "vibe", "lean", "lake", "elan", "coq-lsp"]:
+        for name in ["codex", "claude", "pi", "opencode", "vibe", "lean", "lake", "elan"]:
             sentinel = sentinel_bin / name
             self.write(sentinel, self.executable.read_text())
             sentinel.chmod(0o755)
@@ -280,6 +280,161 @@ class ClientDoctorTest(unittest.TestCase):
             "projects": {str(self.workspace): {"disabledMcpServers": ["lean-beam"]}},
         })
         self.has_code(self.run_doctor("claude", expected=1), "mcp.disabled", "error")
+
+    def test_claude_local_alias_does_not_hide_another_user_server(self):
+        self.json_file(self.home / ".claude.json", {
+            "mcpServers": {"lean-beam": {"command": "/missing/lean-beam-mcp"}},
+            "projects": {str(self.workspace): {
+                "mcpServers": {"beam-local": {"command": str(self.executable)}},
+            }},
+        })
+        report = self.run_doctor("claude", expected=1)
+        self.has_code(report, "launch.missing", "error")
+        self.has_code(report, "launch.file", "ok")
+
+    def test_claude_disabled_alias_is_not_checked_as_healthy(self):
+        self.json_file(self.home / ".claude.json", {
+            "mcpServers": {"beam-alias": {"command": str(self.executable)}},
+            "projects": {str(self.workspace): {"disabledMcpServers": ["beam-alias"]}},
+        })
+        report = self.run_doctor("claude", expected=1)
+        self.has_code(report, "mcp.disabled", "error")
+        self.assertNotIn("launch.file", {f["code"] for f in self.findings(report)})
+
+    def test_claude_project_alias_does_not_prevent_checking_user_registration(self):
+        self.json_file(self.home / ".claude.json", {
+            "mcpServers": {"lean-beam": {"command": str(self.executable)}},
+        })
+        self.json_file(self.workspace / ".mcp.json", {
+            "mcpServers": {"beam-project": {"command": "/missing/lean-beam-mcp"}},
+        })
+        report = self.run_doctor("claude", expected=2)
+        self.has_code(report, "config.layers", "unknown")
+        self.has_code(report, "launch.file", "ok")
+        self.assertNotIn("launch.missing", {f["code"] for f in self.findings(report)})
+
+    def test_claude_scope_precedence_replaces_whole_entries(self):
+        self.json_file(self.home / ".claude.json", {
+            "mcpServers": {"lean-beam": {"command": "/missing/lean-beam-mcp", "args": [42]}},
+        })
+        self.json_file(self.workspace / ".mcp.json", {
+            "mcpServers": {"lean-beam": {"command": str(self.executable)}},
+        })
+        report = self.run_doctor("claude", expected=2)
+        self.has_code(report, "mcp.definition", "ok")
+        self.assertNotIn("mcp.invalidEntry", {f["code"] for f in self.findings(report)})
+        self.json_file(self.home / ".claude.json", {
+            "mcpServers": {"lean-beam": {"command": "/missing/lean-beam-mcp", "args": [42]}},
+            "projects": {str(self.workspace): {
+                "mcpServers": {"lean-beam": {"command": str(self.executable)}},
+            }},
+        })
+        self.has_code(self.run_doctor("claude"), "launch.file", "ok")
+
+    def test_claude_project_rejection_does_not_disable_user_or_local_scope(self):
+        self.json_file(self.home / ".claude/settings.json", {
+            "disabledMcpjsonServers": ["lean-beam"],
+        })
+        config = self.home / ".claude.json"
+        self.json_file(config, {"mcpServers": {"lean-beam": {"command": str(self.executable)}}})
+        self.has_code(self.run_doctor("claude"), "launch.file", "ok")
+        self.json_file(self.workspace / ".mcp.json", {
+            "mcpServers": {"lean-beam": {"command": "/missing/lean-beam-mcp"}},
+        })
+        self.json_file(config, {"projects": {str(self.workspace): {
+            "mcpServers": {"lean-beam": {"command": str(self.executable)}},
+        }}})
+        self.has_code(self.run_doctor("claude"), "launch.file", "ok")
+        self.json_file(config, {})
+        self.has_code(self.run_doctor("claude", expected=1), "mcp.disabled", "error")
+
+    def test_claude_malformed_local_alias_does_not_fall_back_to_user(self):
+        self.json_file(self.home / ".claude.json", {
+            "mcpServers": {"beam-alias": {"command": str(self.executable)}},
+            "projects": {str(self.workspace): {"mcpServers": {"beam-alias": None}}},
+        })
+        report = self.run_doctor("claude", expected=2)
+        self.has_code(report, "config.entryShape", "unknown")
+        self.assertNotIn("launch.file", {f["code"] for f in self.findings(report)})
+
+    def test_claude_malformed_policy_lists_are_unverified_and_private(self):
+        for setting in [None, "DOCTOR_SECRET_SENTINEL", {}, ["lean-beam", 7]]:
+            for project_only in [False, True]:
+                with self.subTest(setting=setting, project_only=project_only):
+                    self.json_file(self.home / ".claude.json", {
+                        "mcpServers": {"lean-beam": {"command": str(self.executable)}},
+                        "projects": {str(self.workspace): {} if project_only else {"disabledMcpServers": setting}},
+                    })
+                    self.json_file(self.home / ".claude/settings.json", {
+                        "disabledMcpjsonServers": setting,
+                    } if project_only else {})
+                    report = self.run_doctor("claude", expected=2)
+                    self.has_code(report, "config.policyShape", "unknown")
+                    self.assertEqual(report["clients"][0]["mcp"], "unverified")
+                    self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+
+    def test_changed_server_and_launch_field_types_are_private(self):
+        config = self.home / ".claude.json"
+        for value in [None, False, 7, [], "DOCTOR_SECRET_SENTINEL"]:
+            with self.subTest(value=value):
+                self.json_file(config, {"mcpServers": {"lean-beam": value}})
+                report = self.run_doctor("claude", expected=2)
+                self.has_code(report, "config.entryShape", "unknown")
+                self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+        for field, value in [
+            ("command", ["DOCTOR_SECRET_SENTINEL"]), ("args", ["DOCTOR_SECRET_SENTINEL", 7]),
+            ("env", {"SECRET": {"token": "DOCTOR_SECRET_SENTINEL"}}), ("enabled", "DOCTOR_SECRET_SENTINEL"),
+        ]:
+            with self.subTest(field=field):
+                self.json_file(config, {"mcpServers": {"lean-beam": {"command": str(self.executable), field: value}}})
+                report = self.run_doctor("claude", expected=1)
+                self.has_code(report, "mcp.invalidEntry", "error")
+                self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+
+    def test_config_shape_changes_preserve_other_clients_and_recover(self):
+        self.codex_config()
+        config = self.home / ".claude.json"
+        for value, expected, code in [
+            ({"mcpServers": {"lean-beam": {"command": str(self.executable)}}}, 0, "launch.file"),
+            ({"mcpServers": ["DOCTOR_SECRET_SENTINEL"]}, 2, "config.shape"),
+            ("{broken DOCTOR_SECRET_SENTINEL", 1, "config.syntax"),
+            ({"mcpServers": {"lean-beam": {"command": str(self.executable)}}}, 0, "launch.file"),
+        ]:
+            with self.subTest(expected=expected):
+                if isinstance(value, str):
+                    self.write(config, value)
+                else:
+                    self.json_file(config, value)
+                report = self.run_doctor(expected=expected)
+                self.assertEqual({c["client"] for c in report["clients"]}, {"codex", "claude"})
+                self.assertEqual(report["clients"][0]["mcp"], "checked")
+                self.assertIn(code, {f["code"] for f in self.findings(report, "claude")})
+                self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+
+    def test_unsupported_containers_are_unverified_across_clients(self):
+        for client, filename, content in [
+            ("codex", "config.toml", 'mcp_servers = "DOCTOR_SECRET_SENTINEL"'),
+            ("claude", "config.json", '{"projects": []}'),
+            ("pi", "config.json", '[]'),
+            ("opencode", "config.json", '{"mcp": []}'),
+            ("vibe", "config.toml", 'mcp_servers = "DOCTOR_SECRET_SENTINEL"'),
+        ]:
+            with self.subTest(client=client):
+                config = self.root / filename
+                self.write(config, content)
+                report = self.run_doctor(client, "--config", str(config), expected=2)
+                self.has_code(report, "config.shape", "unknown")
+                self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+                self.assertNotIn("mcp.notConfigured", {f["code"] for f in self.findings(report)})
+
+    def test_invalid_utf8_is_unverified_and_does_not_hide_other_clients(self):
+        self.codex_config()
+        config = self.home / ".claude.json"
+        config.write_bytes(b'\xffDOCTOR_SECRET_SENTINEL')
+        report = self.run_doctor(expected=2)
+        self.has_code(report, "file.unreadable", "unknown")
+        self.assertEqual({c["client"] for c in report["clients"]}, {"codex", "claude"})
+        self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
 
     def test_opencode_partial_override_and_inline_config(self):
         self.json_file(self.home / ".config/opencode/opencode.json", {

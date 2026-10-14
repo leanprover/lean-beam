@@ -82,12 +82,20 @@ private def readProblem (report : ClientReport) (path : String) (role : SourceRo
   | _ => add report area "file.unreadable" .unknown
       "File cannot be read as UTF-8, or its symlink target is unavailable." path
 
+private inductive EntryScope where
+  | user | project | local
+  deriving BEq
+
+private def EntryScope.priority : EntryScope → Nat
+  | .user => 0 | .project => 1 | .local => 2
+
 private structure Entry where
   source : String
   key : String
+  name : String
   value : Json
   conditional : Bool
-  localScope : Bool := false
+  scope : EntryScope := .user
   commandSource? : Option String := none
 
 private def command? (client : Client) (value : Json) : Option String := do
@@ -104,13 +112,16 @@ private def namedEntries (client : Client) (source : ConfigSource)
     (keyPrefix : String) (value : Json) (localScope := false) : Except Unit (Array Entry) := do
   let values ← object value
   return values.filterMap fun (name, value) =>
-    if client == .opencode || isBeam client name value then
+    -- Claude replaces whole entries by name; a later non-Beam entry can shadow an alias.
+    if client == .opencode || client == .claude || isBeam client name value then
       some {
         source := source.path.toString
         key := s!"{keyPrefix}.{name}"
+        name
         value
         conditional := source.conditional
-        localScope
+        scope := if localScope then .local
+          else if source.role == .projectConfig then .project else .user
       }
     else none
 
@@ -151,6 +162,7 @@ private def entries (context : Context) (client : Client) (source : ConfigSource
               result := result.push {
                 source := source.path.toString
                 key := "mcp_servers[lean-beam]"
+                name := (field? entry "name").bind (·.getStr?.toOption) |>.getD ""
                 value := entry
                 conditional := source.conditional
               }
@@ -184,15 +196,43 @@ private def inspectSettings (context : Context) (client : Client) (source : Conf
         report := add report .mcp "config.projectContext" .unknown
           "The user config records an ancestor workspace. Local-scope selection may depend on the client's launch context; inspect that workspace with --root."
           path
-    let project? := (field? value "projects").bind (field? · context.workspace.toString)
-    for parent in #[some value, project?] do
-      if let some parent := parent then
-        for key in ["disabledMcpServers", "disabledMcpjsonServers"] do
-          if let some setting := field? parent key then
-            if (strings setting).toOption.any (·.contains "lean-beam") then
-              report := add report .mcp "mcp.disabled" .error
-                "Beam is explicitly disabled for this workspace." path key
   return report
+
+private structure ClaudePolicy where
+  source : String
+  key : String
+  names : Array String
+  projectOnly : Bool
+
+private def claudePolicies (context : Context) (source : ConfigSource) (value : Json)
+    (report : ClientReport) : ClientReport × Array ClaudePolicy := Id.run do
+  let mut report := report
+  let mut policies := #[]
+  let project? := (field? value "projects").bind (field? · context.workspace.toString)
+  for (keyPrefix, parent?) in #[("", some value), ("projects.<workspace>.", project?)] do
+    if let some parent := parent? then
+      for key in ["disabledMcpServers", "disabledMcpjsonServers"] do
+        if let some setting := field? parent key then
+          match strings setting with
+          | .error () =>
+              report := add report .mcp "config.policyShape" .unknown
+                "A Claude disabled-server setting has an unsupported shape; expected an array of server names."
+                source.path.toString (keyPrefix ++ key)
+                "Review this setting against the installed client's configuration format."
+          | .ok names =>
+              policies := policies.push {
+                source := source.path.toString
+                key := keyPrefix ++ key
+                names
+                projectOnly := key == "disabledMcpjsonServers" }
+  return (report, policies)
+
+/-- Claude precedence is per name, local > project > user, with whole-entry replacement.
+    Retain formerly recognized aliases if an override changes their shape or launcher. -/
+private def selectClaude (entries : Array Entry) : Array Entry :=
+  entries.filter fun entry =>
+    (entries.any fun other => other.name == entry.name && isBeam .claude other.name other.value) &&
+    !(entries.any fun other => other.name == entry.name && other.scope.priority > entry.scope.priority)
 
 private def inspectRuntime (path : System.FilePath) (entry : Entry)
     (report : ClientReport) : IO ClientReport := do
@@ -296,6 +336,11 @@ private def inspectEntry (client : Client) (entry : Entry)
     (report : ClientReport) (checkLaunch : Bool) : IO ClientReport := do
   let value := entry.value
   let mut report := report
+  if !(object value).isOk then
+    return add report .mcp "config.entryShape" .unknown
+      "A Beam server definition has an unsupported shape; expected a server object."
+      entry.source entry.key
+      "Review this definition against the installed client's MCP configuration format."
   -- Overrides may legally provide only some fields. Validate launches only after selection.
   if !checkLaunch then
     return add report .mcp "mcp.definition" .ok
@@ -488,7 +533,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
     client
     mcp := if client == .pi then .notApplicable else .notConfigured
     skill := if configOverride?.isSome then .outOfScope else .notConfigured }
-  let configArea := if client == .pi then CheckArea.general else .mcp
+  let configArea := if client == .pi then CheckArea.skill else .mcp
   if !(clientHome context client).isAbsolute && configOverride?.isNone then
     return add { report with
       discovered := true
@@ -499,6 +544,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
     report := add { report with discovered := true } .mcp "config.clientHome" .unknown
       "CLAUDE_CONFIG_DIR selects a client home outside the installer's location conventions. Use --config to inspect its MCP config explicitly."
   let mut found : Array Entry := #[]
+  let mut policies : Array ClaudePolicy := #[]
   let mut conditional := false
   let mut opencodeProjects := 0
   let mut opencodeDirectories := 0
@@ -517,10 +563,18 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
             report := add report configArea "config.syntax" .error
               "Configuration is not valid JSON/TOML for this client; source text is omitted." source.path.toString
         | .ok value =>
+            report := inspectSettings context client source value report
+            if client == .claude then
+              let (updated, collected) := claudePolicies context source value report
+              report := updated
+              policies := policies ++ collected
             match entries context client source value with
             | .error () =>
-                report := add report configArea "config.shape" .error
-                  "Expected a config object and correctly shaped MCP server container." source.path.toString
+                report := add report configArea "config.shape" .unknown
+                  (if client == .pi then "Configuration has an unsupported shape; expected a settings object."
+                   else "Configuration has an unsupported shape; expected a config object and the client's MCP server container.")
+                  source.path.toString none
+                  "Review this file against the installed client's configuration format."
             | .ok selected =>
                 found := found ++ selected
                 if client == .opencode && (field? value "mcp").isSome then
@@ -531,7 +585,6 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
                 -- A Vibe project config may replace the server collection even with an empty array.
                 conditional := conditional || (source.conditional &&
                   (!selected.isEmpty || (client == .vibe && (field? value "mcp_servers").isSome)))
-                report := inspectSettings context client source value report
                 if client == .pi then report ← inspectPiSettings context source value report configOverride?.isNone
     | other =>
         report := readProblem report source.path.toString source.role configArea other source.conditional
@@ -552,17 +605,31 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
   if client == .opencode then
     found := mergeOpenCode found
     conditional := !found.isEmpty && (opencodeProjects > 1 || opencodeDirectories > 1)
-  let localEntries := found.filter (·.localScope)
-  let selected := if client == .claude && !localEntries.isEmpty then localEntries else found
-  let selectionConditional := conditional && !(client == .claude && !localEntries.isEmpty)
+  let selected := if client == .claude then selectClaude found else found
+  let selectionConditional := if client == .claude then
+      selected.any fun entry => entry.conditional || (selected.filter (·.name == entry.name)).size > 1
+    else conditional
   let checkLaunch := (selected.size == 1 || client == .opencode) && !selectionConditional &&
     !(client == .opencode && (context.env? "OPENCODE_CONFIG_CONTENT").isSome)
-  if (selected.size > 1 && client != .opencode) || selectionConditional then
+  if (selected.size > 1 && client != .opencode && client != .claude) || selectionConditional then
     report := add report .mcp "config.layers" .unknown
       "Multiple Beam definitions or trust/approval-dependent project settings are present. Effective selection/merging is not verified."
   for entry in selected do
-    report ← inspectEntry client entry report checkLaunch
-  if found.isEmpty && (report.mcp == .notConfigured || report.mcp == .notApplicable) then
+    if client == .claude then
+      let disabled := policies.filter fun policy => policy.names.contains entry.name &&
+        (!policy.projectOnly || entry.scope == .project)
+      if !disabled.isEmpty then
+        for policy in disabled do
+          report := add report .mcp "mcp.disabled" .error
+            s!"Beam server {(toJson entry.name).compress} is explicitly disabled for the selected scope."
+            policy.source policy.key
+            "Remove this server's name from the disabled list if you intend to use it through MCP."
+        continue
+    let checkEntry := if client == .claude then
+        !entry.conditional && (selected.filter (·.name == entry.name)).size == 1
+      else checkLaunch
+    report ← inspectEntry client entry report checkEntry
+  if selected.isEmpty && (report.mcp == .notConfigured || report.mcp == .notApplicable) then
     report := add report .general (if client == .pi then "mcp.notApplicable" else "mcp.notConfigured") .notConfigured
       (if client == .pi then "Beam uses Pi's CLI skill; no native Pi MCP configuration is inspected."
        else "No Beam MCP registration was found in the inspected files. MCP is optional for CLI/skill use.")

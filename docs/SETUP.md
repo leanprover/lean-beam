@@ -352,7 +352,7 @@ executable paths, and existing installed-runtime metadata where identifiable. Op
 comments and trailing commas are supported. Pi receives settings and Lean skill checks; no native
 Pi MCP configuration is required or inspected. Skill checks establish that a non-empty file is
 readable in the listed standard locations, not that the running client loaded it. MCP and skills
-are independent optional integrations; absent Rocq support is not a finding.
+are independent optional integrations.
 
 Discovery follows the installer home overrides listed below, plus `XDG_CONFIG_HOME`, OpenCode's
 `OPENCODE_CONFIG` path, and standard workspace files. `OPENCODE_CONFIG_DIR` is inspected in addition
@@ -388,8 +388,11 @@ OpenCode local config objects are merged in the documented precedence order; lat
 and command arrays replace earlier values. Multiple project candidates remain unverified when their
 selection is ambiguous. Other ambiguous layers produce `config.layers` as
 `unknown`, including trust/approval-dependent project registrations. Individual partial definitions
-are not validated as complete launches when selection is unresolved. A Claude workspace-local registration
-in the user config can supersede its user-global registration. Custom launchers, relative commands,
+are not validated as complete launches when selection is unresolved. Claude registrations are selected
+by server name, with whole-entry precedence local > project > user. Independent aliases are checked
+separately. Disabled-server lists match those names; project rejection lists apply only to project
+registrations, not user or local registrations. Unsupported config containers, server definitions,
+and disabled-list shapes are reported as unverified rather than absent. Custom launchers, relative commands,
 client-specific expansion, tool filters, and non-empty environment/argument overrides are reported
 as unverified. Running clients, launch flags, system/cloud/managed configuration, and effective tool
 approval policy are outside this inspection scope.
@@ -397,7 +400,8 @@ approval policy are outside this inspection scope.
 The command never edits, repairs, builds, downloads, executes configured commands, or creates Beam
 state. It accepts symlinked config files, refuses special files, and limits config/skill reads to
 1 MiB each. Reports omit raw config bodies, environment values, argument values, and parser error
-text that might contain secrets. Config paths and source keys remain visible. This is separate from
+text that might contain secrets. Unexpected inspection failures are contained to the affected client;
+other clients still receive reports. Config paths and source keys remain visible. This is separate from
 `lean-beam-mcp --self-check`, which starts a child server and can build a bundle.
 
 ## MCP Setup
