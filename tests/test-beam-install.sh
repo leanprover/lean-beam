@@ -330,6 +330,34 @@ if ! grep -q 'missing elan on PATH' "$missing_elan_err"; then
   exit 1
 fi
 remove_tmp_file "$missing_elan_err"
+
+unsupported_elan_bin="$tmp_root/unsupported-elan-bin"
+unsupported_elan_calls="$tmp_root/unsupported-elan.calls"
+unsupported_elan_err="$tmp_root/unsupported-elan.err"
+mkdir -p "$unsupported_elan_bin"
+cat > "$unsupported_elan_bin/elan" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$BEAM_TEST_ELAN_CALLS"
+exit 1
+SH
+chmod +x "$unsupported_elan_bin/elan"
+if (
+  cd "$source_checkout"
+  PATH="$unsupported_elan_bin:$PATH" BEAM_TEST_ELAN_CALLS="$unsupported_elan_calls" \
+    bash scripts/install-beam.sh --dont-ask --toolchain "$toolchain" --all-skills \
+      > /dev/null 2>"$unsupported_elan_err"
+); then
+  echo "expected install to reject elan without the JSON selection interface" >&2
+  exit 1
+fi
+assert_contains_literal "$unsupported_elan_err" "Beam requires Elan 4.2's JSON selection interface"
+assert_contains_literal "$unsupported_elan_err" 'elan self update'
+if [ "$(cat "$unsupported_elan_calls")" != 'dump-state --no-net --help' ]; then
+  echo "expected unsupported-elan rejection before resolving or downloading a toolchain" >&2
+  cat "$unsupported_elan_calls" >&2
+  exit 1
+fi
+remove_tmp_file "$unsupported_elan_err"
 assert_not_exists "$HOME/.local"
 assert_not_exists "$CODEX_HOME"
 assert_not_exists "$CLAUDE_HOME"

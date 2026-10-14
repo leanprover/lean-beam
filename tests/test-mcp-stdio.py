@@ -2566,6 +2566,45 @@ def run_multi_toolchain_workspaces(repo_root, fixture_root, timeout, server_trac
         require_override_config(roots[0], fixture_toolchain,
                                 {**directory_env, "ELAN_TOOLCHAIN": fixture_toolchain})
 
+        # Change only the private override database after selection, during fingerprinting.
+        # Executable lookup must keep using the captured name even though ambient Elan now differs.
+        subprocess.run(["elan", "override", "set", fixture_toolchain], cwd=roots[0], env=directory_env,
+                       capture_output=True, text=True, timeout=timeout, check=True)
+        before_change = beam_cli_mcp_config(repo_root, roots[0], timeout, env=directory_env)
+        real_elan = shutil.which("elan", path=clean_env["PATH"])
+        require(real_elan is not None, "missing Elan for captured-selection regression")
+        hook_bin = tmp_root / "capture-elan-bin"
+        hook_bin.mkdir()
+        changed = tmp_root / "override-changed"
+        hook = hook_bin / "elan"
+        hook.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, subprocess, sys\n"
+            "from pathlib import Path\n"
+            f"real_elan = {real_elan!r}\n"
+            f"changed = Path({str(changed)!r})\n"
+            f"if sys.argv[1:] == ['run', {fixture_toolchain!r}, 'lean', '--version'] and not changed.exists():\n"
+            f"    subprocess.run([real_elan, 'override', 'set', {current_toolchain!r}],\n"
+            f"                   cwd={str(roots[0])!r}, check=True, capture_output=True)\n"
+            "    changed.write_text('changed')\n"
+            "os.execv(real_elan, [real_elan, *sys.argv[1:]])\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o700)
+        captured = beam_cli_mcp_config(
+            repo_root, roots[0], timeout,
+            env={**directory_env, "PATH": str(hook_bin) + os.pathsep + clean_env["PATH"]},
+        )
+        require(changed.is_file(), "override was not changed during captured-selection regression")
+        for field in ["toolchain", "lean_cmd", "lean_plugin", "lean_lake_helper"]:
+            require(captured[field] == before_change[field],
+                    f"captured {field} changed during bundle preparation: {captured}")
+        ambient = subprocess.run([real_elan, "which", "lean"], cwd=roots[0], env=directory_env,
+                                 capture_output=True, text=True, timeout=timeout, check=True)
+        require(ambient.stdout.strip() != captured["lean_cmd"],
+                "captured-selection regression did not produce a different ambient executable")
+        require_override_config(roots[0], current_toolchain, directory_env)
+
         rejected_env = {**clean_env, "ELAN_TOOLCHAIN": "leanprover/lean4:v9.99.0"}
         rejected = subprocess.run(
             [str(repo_root / ".lake/build/bin/beam-cli"), "--root", str(roots[0]), "mcp-config"],

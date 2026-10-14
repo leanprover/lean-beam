@@ -61,7 +61,8 @@ skill:
 documented in [ROCQ.md](ROCQ.md).
 
 The installer requires Elan 4.2 on `PATH`. Make sure `~/.local/bin` is on `PATH` before using the
-installed wrappers directly.
+installed wrappers directly. Before writing install state, it checks Elan's JSON selection command;
+if that command is unavailable, run `elan self update` before retrying the installation.
 
 ## Validated And Compatible Toolchains
 

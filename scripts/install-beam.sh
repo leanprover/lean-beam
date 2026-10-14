@@ -215,7 +215,7 @@ Environment:
                         override the Claude Code user .claude.json path used by --claude-mcp
 
 Requirements:
-  elan must be on PATH so the installer can prebuild the selected Lean bundle(s)
+  Elan 4.2 must be on PATH, with its JSON toolchain selection interface
   custom toolchains must already be known to elan, for example through elan toolchain link
 EOF
 }
@@ -1214,6 +1214,10 @@ repo_source_commit() {
 require_elan() {
   if ! command -v elan >/dev/null 2>&1; then
     echo "missing elan on PATH; beam install requires elan to prebuild the pinned Lean bundle" >&2
+    exit 1
+  fi
+  if ! elan dump-state --no-net --help > /dev/null 2>&1; then
+    echo "Beam requires Elan 4.2's JSON selection interface (elan dump-state --no-net); run 'elan self update' before installing Beam" >&2
     exit 1
   fi
 }
