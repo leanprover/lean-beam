@@ -65,11 +65,15 @@ installed wrappers directly.
 
 ## Validated And Compatible Toolchains
 
-The supported Lean release window is 4.31–4.35. Projects on Lean 4.28–4.30 must upgrade their Lean
+The supported Lean release window is 4.33–4.35. Projects on Lean 4.28–4.32 must upgrade their Lean
 toolchain or keep a Beam checkout that still supports their release line.
 
 Lean Beam distinguishes exact validated toolchains from compatible release lines. Exact toolchains
-listed in [`validated-lean-toolchains`](../validated-lean-toolchains) receive the full CI matrix.
+listed in [`validated-lean-toolchains`](../validated-lean-toolchains) receive dedicated Linux
+compatibility jobs. The [CI macOS mode](TESTING.md#ci-map) selects one combined job or the full
+macOS matrix. Installer tests prebuild every validated toolchain in either mode.
+That list contains the latest stable point release in each supported line: 4.33.1, 4.34.1, and
+4.35.0. CI does not build RCs or superseded stable points.
 The wrapper reports that validated allowlist with:
 
 ```bash
@@ -84,8 +88,8 @@ those lines after install with:
 lean-beam compatible-release-lines
 ```
 
-For example, a `leanprover/lean4:v4.31` entry admits canonical immutable names such as
-`leanprover/lean4:v4.31.0-rc1` and `leanprover/lean4:v4.31.2`. It does not admit nightlies, mutable
+For example, a `leanprover/lean4:v4.33` entry admits canonical immutable names such as
+`leanprover/lean4:v4.33.0-rc1` and `leanprover/lean4:v4.33.2`. It does not admit nightlies, mutable
 aliases, linked toolchains, other vendors, or malformed version spellings. Release-line admission is
 not the same claim as exact CI validation: Beam builds a bundle for the exact resolved toolchain
 fingerprint and loads the resulting plugin in a small Lean elaboration probe before marking that
@@ -96,8 +100,8 @@ installer. If your target projects use another validated toolchain or a compatib
 RC/patch variant, prebuild those bundles by exact name:
 
 ```bash
-./scripts/install-beam.sh --toolchain leanprover/lean4:v4.31.0
-./scripts/install-beam.sh --toolchain leanprover/lean4:v4.31.0-rc1
+./scripts/install-beam.sh --toolchain leanprover/lean4:v4.33.1
+./scripts/install-beam.sh --toolchain leanprover/lean4:v4.33.0-rc1
 ./scripts/install-beam.sh --all-validated
 ```
 

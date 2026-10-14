@@ -367,7 +367,6 @@ EOF
 }
 
 run_module_artifact_compat() {
-  local has_ir_signature=false
   # Use the same cache policy in the owner and the batch probes, as in test-beam-save-olean.sh.
   # A warmed artifact cache must not hide whether Lake reuses the broker-written trace.
   local LAKE_ARTIFACT_CACHE=false
@@ -379,10 +378,11 @@ run_module_artifact_compat() {
     print_toolchain_context "module fixture build failed"
     return 1
   fi
-  if [ -f "$signature" ]; then
-    has_ir_signature=true
-    rm -f -- "$signature"
+  if [ ! -f "$signature" ]; then
+    print_toolchain_context "module fixture omitted its required IR signature"
+    return 1
   fi
+  rm -f -- "$signature"
   # The file is not open in a broker yet. Change it before starting the owner, then save its
   # current elaboration with the old module signature removed so leftover batch outputs cannot
   # hide a missing companion artifact.
@@ -396,25 +396,19 @@ run_module_artifact_compat() {
     print_toolchain_context "module close-save failed"
     return 1
   fi
-  if ! python3 - "$module_save_stdout" "$has_ir_signature" "$module_saved_trace" <<'PY'
+  if ! python3 - "$module_save_stdout" "$module_saved_trace" <<'PY'
 import json
 import pathlib
 import sys
 
 saved = json.loads(pathlib.Path(sys.argv[1]).read_text())["result"]["saved"]
-for key in ["olean", "oleanServer", "oleanPrivate", "ir", "ilean", "c", "trace"]:
+for key in ["olean", "oleanServer", "oleanPrivate", "ir", "irSig", "ilean", "c", "trace"]:
     if not pathlib.Path(saved[key]).is_file():
         raise SystemExit(f"module save omitted {key}: {saved}")
 metadata = json.loads(pathlib.Path(saved["trace"]).read_text())
-pathlib.Path(sys.argv[3]).write_text(json.dumps(metadata, indent=2) + "\n")
-if sys.argv[2] == "true":
-    signature = pathlib.Path(saved["irSig"])
-    if not signature.is_file():
-        raise SystemExit(f"module save omitted IR signature: {signature}")
-    if "rs" not in metadata["outputs"]:
-        raise SystemExit("module save trace omitted IR signature descriptor")
-elif "irSig" in saved:
-    raise SystemExit("older toolchain unexpectedly reported an IR signature")
+pathlib.Path(sys.argv[2]).write_text(json.dumps(metadata, indent=2) + "\n")
+if "rs" not in metadata["outputs"]:
+    raise SystemExit("module save trace omitted IR signature descriptor")
 PY
   then
     print_toolchain_context "module artifact family was incomplete"

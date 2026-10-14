@@ -131,7 +131,7 @@ Beam retains prior immutable runtime payloads so updates remain atomic. Use `lea
 preview old installed state and follow the [prune guide](docs/SETUP.md#prune-old-installed-state)
 before applying cleanup.
 
-Lean Beam fully validates exact toolchains listed in
+Lean Beam fully validates the latest stable point of each supported release line, listed in
 [`validated-lean-toolchains`](validated-lean-toolchains) and locally qualifies canonical RC/patch
 variants from [`compatible-lean-release-lines`](compatible-lean-release-lines). See
 [docs/SETUP.md](docs/SETUP.md#validated-and-compatible-toolchains) for bundle setup and

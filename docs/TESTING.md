@@ -94,7 +94,7 @@ Additional Beam lanes:
 
 - [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) `<toolchain>`: exact
   validated or release-line-compatible bundle qualification, admission diagnostics, module save/replay
-  (including `.ir.sig` when produced), and stale-import diagnostic wording compatibility
+  (including the required `.ir.sig` companion), and stale-import diagnostic wording compatibility
 - [tests/test-beam-rocq.sh](../tests/test-beam-rocq.sh): Rocq broker and wrapper coverage
 - [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh): external MCP `2025-11-25`
   conformance scenarios over the local Streamable HTTP bridge
@@ -197,8 +197,8 @@ without a feature-availability skip. The wrapper test checks both Lake options a
 must reject the checkpoint, and every prior artifact and the Lake trace must remain unchanged.
 
 Use [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) to validate one
-supported bundle lane at a time. The module-save case removes the batch-produced IR signature when
-present, edits `SaveSmoke.ModuleB`, and saves it through `close-save`. It checks the complete artifact
+supported bundle lane at a time. The module-save case requires and removes the batch-produced IR
+signature, edits `SaveSmoke.ModuleB`, and saves it through `close-save`. It checks the complete artifact
 family and requires `lake --no-cache build -v SaveSmoke/ModuleB.lean` to replay the saved outputs;
 `CheckModuleB.lean` then imports the saved definition and checks its new value.
 `lake --no-cache build checkModuleBNative` compiles and links a consumer that calls the saved
@@ -382,9 +382,10 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
   [tests/test-mcp-modern-conformance.sh](../tests/test-mcp-modern-conformance.sh)
 - `beam-slow`: [tests/test-beam-slow.sh](../tests/test-beam-slow.sh)
 - `beam-install`: [tests/test-beam-install.sh](../tests/test-beam-install.sh)
-- `beam-toolchain-compat`: [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) `<toolchain>`
-- `beam-release-line-compat`: the same compatibility suite for one representative canonical RC
-  admitted only through `compatible-lean-release-lines`
+- `beam-toolchain-compat`: [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh)
+  `<toolchain>` for the latest stable point of each supported release line, on Linux and in full
+  macOS mode. Combined macOS mode qualifies the repository-pinned version.
+  RCs and superseded stable points qualify locally instead of receiving dedicated CI jobs.
 - `beam-rocq`: [tests/test-beam-rocq.sh](../tests/test-beam-rocq.sh)
 - `shell-lint`: [scripts/lint-shell.sh](../scripts/lint-shell.sh)
 

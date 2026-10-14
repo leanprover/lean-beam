@@ -157,11 +157,12 @@ client protocol.
 
 - Lean plugin loading currently depends on `-Dexperimental.module=true`.
 - Lean plugin loading is toolchain-keyed, not toolchain-agnostic.
-- The supported Lean release window is 4.31–4.35; Lean 4.28–4.30 are no longer supported.
-- Exact CI-validated Lean toolchains are listed in
+- The supported Lean release window is 4.33–4.35; Lean 4.28–4.32 are no longer supported.
+- Exact CI-validated toolchains use the latest stable point of each supported release line, as listed in
   [validated-lean-toolchains](../validated-lean-toolchains). Canonical RC and patch variants from
   [compatible-lean-release-lines](../compatible-lean-release-lines) are admitted separately and
   must build and pass a local plugin load/elaboration probe for their exact fingerprint.
+  See the [CI map](TESTING.md#ci-map) for Linux coverage and the configurable macOS layout.
 - The supported fast path is the Lean toolchain pinned by this repository's `lean-toolchain`, because
   the plugin uses internal Lean APIs.
 - MCP sync, probe, `lean_save`, and `lean_close_save` operations can use a target runtime built from

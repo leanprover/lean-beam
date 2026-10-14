@@ -1448,15 +1448,15 @@ private def writeFakeBundleArtifacts (workspace : System.FilePath) : IO Unit := 
     IO.FS.writeFile path "fake artifact\n"
 
 private def sampleFingerprint : Beam.Cli.ToolchainFingerprint := {
-  leanVersion := "Lean (version 4.31.0, test, Release)"
+  leanVersion := "Lean (version 4.33.0, test, Release)"
   leanPrefix := "/toolchains/a"
   leanLibDir := "/toolchains/a/lib/lean"
-  lakeVersion := "Lake version 5.0.0-src (Lean version 4.31.0)"
+  lakeVersion := "Lake version 5.0.0-src (Lean version 4.33.0)"
 }
 
 private def sampleFingerprintB : Beam.Cli.ToolchainFingerprint := {
   sampleFingerprint with
-  leanVersion := "Lean (version 4.31.0, rebuilt, Release)"
+  leanVersion := "Lean (version 4.33.0, rebuilt, Release)"
 }
 
 private def requireCanonicalToolchain
@@ -1471,29 +1471,29 @@ private def requireCanonicalToolchain
   require s!"{label}: canonical rendering should round-trip" (parsed.name == toolchain)
 
 private def checkLeanToolchainPolicyParsing : IO Unit := do
-  requireCanonicalToolchain "stable toolchain" "leanprover/lean4:v4.31.0" "4.31" 0 none
-  requireCanonicalToolchain "RC toolchain" "leanprover/lean4:v4.31.0-rc2" "4.31" 0 (some 2)
-  requireCanonicalToolchain "patch toolchain" "leanprover/lean4:v4.31.2" "4.31" 2 none
+  requireCanonicalToolchain "stable toolchain" "leanprover/lean4:v4.33.0" "4.33" 0 none
+  requireCanonicalToolchain "RC toolchain" "leanprover/lean4:v4.33.0-rc2" "4.33" 0 (some 2)
+  requireCanonicalToolchain "patch toolchain" "leanprover/lean4:v4.33.2" "4.33" 2 none
   for invalid in [
-      "leanprover/lean4:v4.31",
-      "leanprover/lean4:v4.31.0-rc0",
-      "leanprover/lean4:v4.31.0-rc01",
-      "leanprover/lean4:v04.31.0",
-      "leanprover/lean4:v4.31.0-beta1",
+      "leanprover/lean4:v4.33",
+      "leanprover/lean4:v4.33.0-rc0",
+      "leanprover/lean4:v4.33.0-rc01",
+      "leanprover/lean4:v04.33.0",
+      "leanprover/lean4:v4.33.0-beta1",
       "leanprover/lean4-nightly:nightly-2026-08-01",
       "lean4-stage0"] do
     require s!"expected noncanonical toolchain rejection for {invalid}"
       (Beam.Cli.parseCanonicalLeanToolchain? invalid |>.isNone)
 
-  let some line := Beam.Cli.parseLeanReleaseLine? "leanprover/lean4:v4.31"
+  let some line := Beam.Cli.parseLeanReleaseLine? "leanprover/lean4:v4.33"
     | throw <| IO.userError "expected canonical release-line parse"
   require "release-line rendering should round-trip"
-    (line.registryEntry == "leanprover/lean4:v4.31")
+    (line.registryEntry == "leanprover/lean4:v4.33")
   require "release line should reject patch versions"
-    (Beam.Cli.parseLeanReleaseLine? "leanprover/lean4:v4.31.0" |>.isNone)
+    (Beam.Cli.parseLeanReleaseLine? "leanprover/lean4:v4.33.0" |>.isNone)
   require "canonical Lean version prefix should use the exact RC"
-    (Beam.Cli.expectedCanonicalLeanVersionPrefix? "leanprover/lean4:v4.31.0-rc2" ==
-      some "Lean (version 4.31.0-rc2,")
+    (Beam.Cli.expectedCanonicalLeanVersionPrefix? "leanprover/lean4:v4.33.0-rc2" ==
+      some "Lean (version 4.33.0-rc2,")
   require "custom toolchains should not claim a canonical Lean version"
     (Beam.Cli.expectedCanonicalLeanVersionPrefix? "lean4-stage0" |>.isNone)
 
@@ -1502,22 +1502,26 @@ private def checkLeanToolchainAdmission : IO Unit := do
   try
     IO.FS.createDirAll root
     IO.FS.writeFile (Beam.Cli.validatedLeanToolchainsPath root)
-      "leanprover/lean4:v4.31.0\n"
+      "leanprover/lean4:v4.33.1\n"
     IO.FS.writeFile (Beam.Cli.compatibleLeanReleaseLinesPath root)
-      "leanprover/lean4:v4.31\n"
+      "leanprover/lean4:v4.33\n"
     IO.FS.writeFile (Beam.Cli.customLeanToolchainsPath root)
       "lean4-stage0\n"
 
-    let validated ← Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.31.0"
+    let validated ← Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.33.1"
     require "exact toolchain should be validated" (validated.acceptance == .validated)
 
-    let rc ← Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.31.0-rc2"
-    require "canonical RC should be admitted by release line"
-      (rc.acceptance == .releaseLine { major := 4, minor := 31 })
+    let previousPoint ← Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.33.0"
+    require "superseded stable point should be admitted by release line"
+      (previousPoint.acceptance == .releaseLine { major := 4, minor := 33 })
 
-    let patch ← Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.31.2"
+    let rc ← Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.33.0-rc2"
+    require "canonical RC should be admitted by release line"
+      (rc.acceptance == .releaseLine { major := 4, minor := 33 })
+
+    let patch ← Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.33.2"
     require "canonical patch should be admitted by release line"
-      (patch.acceptance == .releaseLine { major := 4, minor := 31 })
+      (patch.acceptance == .releaseLine { major := 4, minor := 33 })
 
     let custom ← Beam.Cli.leanToolchainSupport root "lean4-stage0"
     require "explicit linked toolchain should remain custom" (custom.acceptance == .custom)
@@ -1532,43 +1536,49 @@ private def checkLeanToolchainAdmission : IO Unit := do
         "leanprover/lean4:v4.30.0",
         "leanprover/lean4:v4.30.1",
         "leanprover/lean4:v4.30.0-rc2",
+        "leanprover/lean4:v4.31.0",
+        "leanprover/lean4:v4.31.1",
+        "leanprover/lean4:v4.31.0-rc1",
         "leanprover/lean4:v4.32.0",
-        "leanprover/lean4:v4.31.0-rc01",
+        "leanprover/lean4:v4.32.1",
+        "leanprover/lean4:v4.32.2",
+        "leanprover/lean4:v4.32.0-rc1",
+        "leanprover/lean4:v4.33.0-rc01",
         "leanprover/lean4-nightly:nightly-2026-08-01"] do
       let support ← Beam.Cli.leanToolchainSupport root unsupported
       require s!"expected unsupported admission for {unsupported}"
         (support.acceptance == .unsupported)
 
     IO.FS.writeFile (Beam.Cli.validatedLeanToolchainsPath root)
-      "leanprover/lean4:v4.31.0-rc01\n"
+      "leanprover/lean4:v4.33.0-rc01\n"
     expectIoErrorContains
       "invalid validated registry"
       "invalid validated Lean toolchain"
-      (Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.31.0")
+      (Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.33.0")
 
     IO.FS.writeFile (Beam.Cli.validatedLeanToolchainsPath root)
-      "leanprover/lean4:v4.31.0\nleanprover/lean4:v4.31.0\n"
+      "leanprover/lean4:v4.33.0\nleanprover/lean4:v4.33.0\n"
     expectIoErrorContains
       "duplicate validated registry"
       "duplicate validated Lean toolchain"
-      (Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.31.0")
+      (Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.33.0")
 
     IO.FS.writeFile (Beam.Cli.validatedLeanToolchainsPath root)
-      "leanprover/lean4:v4.31.0\n"
+      "leanprover/lean4:v4.33.0\n"
 
     IO.FS.writeFile (Beam.Cli.compatibleLeanReleaseLinesPath root)
-      "leanprover/lean4:v4.31.0\n"
+      "leanprover/lean4:v4.33.0\n"
     expectIoErrorContains
       "invalid release-line registry"
       "invalid compatible Lean release line"
-      (Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.31.0-rc2")
+      (Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.33.0-rc2")
 
     IO.FS.writeFile (Beam.Cli.compatibleLeanReleaseLinesPath root)
-      "leanprover/lean4:v4.31\nleanprover/lean4:v4.31\n"
+      "leanprover/lean4:v4.33\nleanprover/lean4:v4.33\n"
     expectIoErrorContains
       "duplicate release-line registry"
       "duplicate compatible Lean release line"
-      (Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.31.0-rc2")
+      (Beam.Cli.leanToolchainSupport root "leanprover/lean4:v4.33.0-rc2")
   finally
     try
       if ← root.pathExists then
@@ -1586,15 +1596,15 @@ private def writeBundleMetadataFile
     ((Beam.Cli.bundleMetadataJson toolchain sourceHash fingerprint workspace "2026-06-05T00:00:00Z").pretty ++ "\n")
 
 private def checkRuntimeBundleHelpers : IO Unit := do
-  let id := Beam.Cli.bundleIdFor "leanprover/lean4:v4.31.0" sampleFingerprint "source-a" "linux-x86_64"
+  let id := Beam.Cli.bundleIdFor "leanprover/lean4:v4.33.0" sampleFingerprint "source-a" "linux-x86_64"
   require "bundle id should be deterministic"
-    (id == Beam.Cli.bundleIdFor "leanprover/lean4:v4.31.0" sampleFingerprint "source-a" "linux-x86_64")
+    (id == Beam.Cli.bundleIdFor "leanprover/lean4:v4.33.0" sampleFingerprint "source-a" "linux-x86_64")
   require "bundle id should include platform"
-    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.31.0" sampleFingerprint "source-a" "darwin-arm64")
+    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.33.0" sampleFingerprint "source-a" "darwin-arm64")
   require "bundle id should include source hash"
-    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.31.0" sampleFingerprint "source-b" "linux-x86_64")
+    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.33.0" sampleFingerprint "source-b" "linux-x86_64")
   require "bundle id should include the resolved toolchain fingerprint"
-    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.31.0" sampleFingerprintB "source-a" "linux-x86_64")
+    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.33.0" sampleFingerprintB "source-a" "linux-x86_64")
   require "bundle fingerprint hash should be deterministic"
     (Beam.Cli.toolchainFingerprintHash sampleFingerprint ==
       Beam.Cli.toolchainFingerprintHash sampleFingerprint)
@@ -1612,7 +1622,7 @@ private def checkRuntimeBundleHelpers : IO Unit := do
     (Beam.Cli.beamStateDir (System.FilePath.mk "/tmp/project") == System.FilePath.mk "/tmp/project" / ".beam")
 
   let metadata := Beam.Cli.bundleMetadataJson
-    "leanprover/lean4:v4.31.0"
+    "leanprover/lean4:v4.33.0"
     "source-a"
     sampleFingerprint
     workspace
@@ -1624,7 +1634,7 @@ private def checkRuntimeBundleHelpers : IO Unit := do
   let metadataWorkspace ← IO.ofExcept <| metadata.getObjValAs? String "workspace"
   require "bundle metadata schema version should remain explicit"
     (schemaVersion == Beam.Cli.bundleMetadataSchemaVersion)
-  require "bundle metadata should include toolchain" (toolchain == "leanprover/lean4:v4.31.0")
+  require "bundle metadata should include toolchain" (toolchain == "leanprover/lean4:v4.33.0")
   require "bundle metadata should include toolchain fingerprint"
     (toolchainFingerprint == sampleFingerprint)
   require "bundle metadata should include source hash" (sourceHash == "source-a")
@@ -1634,7 +1644,7 @@ private def checkRuntimeBundleMetadataAcceptance : IO Unit := do
   let root := System.FilePath.mk s!"/tmp/beam-runtime-bundle-ready-test-{← IO.monoNanosNow}"
   let bundleDir := root / "bundle"
   let workspace := Beam.Cli.bundleWorkspaceFor bundleDir
-  let toolchain := "leanprover/lean4:v4.31.0"
+  let toolchain := "leanprover/lean4:v4.33.0"
   let sourceHash := "source-a"
   try
     writeFakeBundleArtifacts workspace

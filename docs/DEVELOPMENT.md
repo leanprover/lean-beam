@@ -684,21 +684,23 @@ support lands, prefer deleting the workaround over preserving compatibility bran
 Exact validated Lean toolchains live in
 [validated-lean-toolchains](../validated-lean-toolchains), while canonical RC and patch admission
 lives in [compatible-lean-release-lines](../compatible-lean-release-lines). Use those registries,
-not this maintainer note, as the source of truth. The shims below exist because the current release
-window spans Lean/Lake API changes; when that window changes, re-check these spots and prefer
-deleting obsolete compatibility code over preserving stale branches.
+not this maintainer note, as the source of truth. Keep one exact toolchain per release line: its
+latest stable point release. RCs and superseded stable points use local qualification. The CI
+matrix guard checks stable-only entries, one per line, and inclusion of the pinned default.
+
+The remaining shim supports the pinned nightly development target. Re-check it when that target
+changes and delete obsolete compatibility code rather than preserving stale branches.
 
 - `Beam/Broker/LakeSave.lean`: `mkModuleOutputDescrsCompat` selects the supported Lake output
-  descriptors: `irSig?` starts in v4.33 and optional `c?` in
-  nightly-2026-10-13. `buildSaveTraceJobCompat` uses the full `ModulePreSetup.trace` from v4.33
-  onward and reconstructs the source, options, and module identity inputs on v4.31 and v4.32.
-  Raising the minimum supported release to v4.33 would remove that reconstruction and the output
-  descriptor branch without `irSig?`.
+  descriptor for generated C: released toolchains require `c`, while nightly-2026-10-13 uses
+  optional `c?`. Beam supplies `some c` on the nightly because saves write generated C.
 
-Lean v4.31 is the minimum supported release. Worker diagnostics use
+Lean v4.33 is the minimum supported release. Save traces use `ModulePreSetup.trace` directly,
+and module IR signature paths come from `Module.irSigFile`. Module-save requests require all four
+companion paths: `.olean.server`, `.olean.private`, `.ir`, and `.ir.sig`. Worker diagnostics use
 `EditableDocumentCore.collectCurrentDiagnostics`, request `FileSource` instances return
 `DocumentUri`, and saves use `Lean.Compiler.LCNF.emitC` and the postponed-compilation extension
-directly. No pre-v4.31 API selection remains. The transport still uses `Std.Internal.UV.TCP`
+directly. No pre-v4.33 API selection remains. The transport still uses `Std.Internal.UV.TCP`
 directly so interruption and timeout can cancel the exact pending receive.
 
 ## Process

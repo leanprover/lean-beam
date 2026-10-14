@@ -89,7 +89,7 @@ mk_setup_sensitive_proj() {
   remove_owned_tmp_tree "$dest"
   mkdir -p "$dest/BatchOnly" "$dest/StructuredSetup"
   cat > "$dest/lean-toolchain" <<'EOF'
-leanprover/lean4:v4.31.0
+leanprover/lean4:v4.33.1
 EOF
   cat > "$dest/lakefile.lean" <<'EOF'
 import Lake
@@ -535,7 +535,7 @@ beam_start_owner "$tmp8"
 (
   cd "$tmp8"
   module_save_json="$(beam --root "$tmp8" close-save SaveSmoke/ModuleB.lean)"
-  for artifact_key in olean oleanServer oleanPrivate ir; do
+  for artifact_key in olean oleanServer oleanPrivate ir irSig; do
     artifact="$(BEAM_JSON_PAYLOAD="$module_save_json" BEAM_ARTIFACT_KEY="$artifact_key" python3 - <<'PY'
 import json, os
 saved = json.loads(os.environ["BEAM_JSON_PAYLOAD"])["result"]["saved"]
@@ -640,6 +640,17 @@ LEAN_BEAM_BROKER_TRACE="$save_race_broker_trace" \
 edit_b_slow "$tmp3"
 (
   cd "$tmp3"
+  prior_artifacts="$tmp3/prior-artifacts"
+  mkdir -p "$prior_artifacts"
+  race_artifacts=(
+    .lake/build/lib/lean/SaveSmoke/B.olean
+    .lake/build/lib/lean/SaveSmoke/B.ilean
+    .lake/build/lib/lean/SaveSmoke/B.trace
+    .lake/build/ir/SaveSmoke/B.c
+  )
+  for artifact in ${race_artifacts[@]+"${race_artifacts[@]}"}; do
+    cp "$artifact" "$prior_artifacts/$(basename "$artifact")"
+  done
   : > "$race_save_out"
   : > "$race_save_err"
   LEAN_BEAM_SAVE_RACE_SENTINEL="$race_sentinel" \
@@ -653,16 +664,31 @@ edit_b_slow "$tmp3"
     exit 1
   fi
   edit_b_final "$tmp3"
-  if ! wait "$save_pid"; then
-    dump_save_sentinel_context "save_olean race save command failed" \
+  if wait "$save_pid"; then
+    dump_save_sentinel_context "save_olean race accepted changed source" \
       "$tmp3" "$race_sentinel" "$save_pid" "$race_save_out" "$race_save_err"
     exit 1
   fi
+  python3 - "$race_save_out" <<'PY'
+import json, pathlib, sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if result.get("ok") is not False or result.get("error", {}).get("code") != "contentModified":
+    raise SystemExit(f"expected changed-source save rejection, got {result!r}")
+PY
+  for artifact in ${race_artifacts[@]+"${race_artifacts[@]}"}; do
+    if ! cmp -s "$artifact" "$prior_artifacts/$(basename "$artifact")"; then
+      echo "changed-source save replaced prior artifact: $artifact" >&2
+      exit 1
+    fi
+  done
+  beam --root "$tmp3" stats > /dev/null
   lake_build -v SaveSmoke/A.lean >"$log3" 2>&1
+  printf 'import SaveSmoke.B\nexample : bVal = 3 := rfl\n' |
+    "$lake_cmd" env lean --stdin > /dev/null
   beam --root "$tmp3" stop > /dev/null 2>&1 || true
 )
 if ! grep -Eq "Built SaveSmoke\\.B|Building SaveSmoke\\.B" "$log3"; then
-  echo "expected save_olean race to leave SaveSmoke.B stale for downstream builds" >&2
+  echo "expected changed-source save rejection to leave SaveSmoke.B stale for downstream builds" >&2
   cat "$log3" >&2
   exit 1
 fi

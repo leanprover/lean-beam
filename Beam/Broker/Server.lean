@@ -1993,15 +1993,15 @@ private def saveOleanCore
     expectedTextHash := started.textHash
     oleanFile := spec.oleanPath.toString
     moduleArtifacts? :=
-      match spec.oleanServerPath?, spec.oleanPrivatePath?, spec.irPath? with
-      | some oleanServerFile, some oleanPrivateFile, some irFile =>
+      match spec.oleanServerPath?, spec.oleanPrivatePath?, spec.irPath?, spec.irSigPath? with
+      | some oleanServerFile, some oleanPrivateFile, some irFile, some irSigFile =>
           some {
             oleanServerFile := oleanServerFile.toString
             oleanPrivateFile := oleanPrivateFile.toString
             irFile := irFile.toString
-            irSigFile? := spec.irSigPath?.map (·.toString)
+            irSigFile := irSigFile.toString
           }
-      | _, _, _ => none
+      | _, _, _, _ => none
     ileanFile := spec.ileanPath.toString
     cFile := spec.cPath.toString
     bcFile? := spec.bcPath?.map (fun bcPath => System.FilePath.toString bcPath)

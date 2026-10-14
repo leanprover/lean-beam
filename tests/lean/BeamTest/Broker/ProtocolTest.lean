@@ -554,8 +554,8 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
     let ilean := root / "Saved.ilean"
     let c := root / "Saved.c"
     let ir := root / "Saved.ir"
-    let irSig? := leanSaveIRSignaturePath? (some ir)
-    for path in #[olean, ilean, c, ir] ++ irSig?.toArray do
+    let irSig := root / "Saved.ir.sig"
+    for path in #[olean, ilean, c, ir, irSig] do
       IO.FS.writeFile path s!"artifact {path.fileName.getD ""}\n"
     let depTrace := Lake.BuildTrace.ofHash (Lake.Hash.ofNat 73) "save inputs"
     let trace := root / "Saved.trace"
@@ -566,7 +566,7 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
       ileanPath := ilean
       cPath := c
       irPath? := some ir
-      irSigPath? := irSig?
+      irSigPath? := some irSig
       tracePath := trace
       tracePlan := .inProcess depTrace
     }
@@ -575,7 +575,7 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
       ileanPath := ilean.toString
       cPath := c.toString
       irPath? := some ir.toString
-      irSigPath? := irSig?.map (·.toString)
+      irSigPath? := some irSig.toString
       tracePath := trace.toString
       traceMetadata := toJson (Lake.BuildMetadata.ofBuild depTrace Json.null {})
     }
@@ -598,10 +598,9 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
         let actual ← IO.ofExcept <| outputs.getObjVal? key
         let expected := toJson (Lake.artifactWithExt (← Lake.computeHash path) ext)
         require s!"save trace includes current {ext} output" (actual.compress == expected.compress)
-      if let some irSig := irSig? then
-        let actual ← IO.ofExcept <| outputs.getObjVal? "rs"
-        let expected := toJson (Lake.artifactWithExt (← Lake.computeHash irSig) "ir.sig")
-        require "save trace includes current IR signature" (actual.compress == expected.compress)
+      let actual ← IO.ofExcept <| outputs.getObjVal? "rs"
+      let expected := toJson (Lake.artifactWithExt (← Lake.computeHash irSig) "ir.sig")
+      require "save trace includes current IR signature" (actual.compress == expected.compress)
       IO.FS.removeFile trace
     IO.FS.removeFile c
     match ← writeLeanSaveTrace spec with

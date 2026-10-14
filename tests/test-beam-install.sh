@@ -466,7 +466,9 @@ for unsupported_toolchain in \
   leanprover/lean4:v4.26.0 \
   leanprover/lean4:v4.28.0 leanprover/lean4:v4.28.1 leanprover/lean4:v4.28.0-rc1 \
   leanprover/lean4:v4.29.0 leanprover/lean4:v4.29.1 leanprover/lean4:v4.29.0-rc1 \
-  leanprover/lean4:v4.30.0 leanprover/lean4:v4.30.1 leanprover/lean4:v4.30.0-rc2; do
+  leanprover/lean4:v4.30.0 leanprover/lean4:v4.30.1 leanprover/lean4:v4.30.0-rc2 \
+  leanprover/lean4:v4.31.0 leanprover/lean4:v4.31.1 leanprover/lean4:v4.31.0-rc1 \
+  leanprover/lean4:v4.32.0 leanprover/lean4:v4.32.1 leanprover/lean4:v4.32.2 leanprover/lean4:v4.32.0-rc1; do
   if (
     cd "$source_checkout"
     bash scripts/install-beam.sh --toolchain "$unsupported_toolchain" \
@@ -486,7 +488,7 @@ assert_version_count "$BEAM_INSTALL_ROOT/versions" 0
 assert_not_exists "$BEAM_INSTALL_ROOT/state"
 
 invalid_validated_err="$(mktemp "$tmp_root/install-invalid-validated-XXXXXX")"
-printf '%s\n' 'leanprover/lean4:v4.32.0-rc01' > "$source_checkout/validated-lean-toolchains"
+printf '%s\n' 'leanprover/lean4:v4.33.0-rc01' > "$source_checkout/validated-lean-toolchains"
 if (
   cd "$source_checkout"
   bash scripts/install-beam.sh --toolchain "$toolchain" < /dev/null > /dev/null 2>"$invalid_validated_err"
@@ -498,7 +500,7 @@ if (
   exit 1
 fi
 cp validated-lean-toolchains "$source_checkout/validated-lean-toolchains"
-assert_contains "$invalid_validated_err" 'invalid validated Lean toolchain: leanprover/lean4:v4.32.0-rc01'
+assert_contains "$invalid_validated_err" 'invalid validated Lean toolchain: leanprover/lean4:v4.33.0-rc01'
 remove_tmp_file "$invalid_validated_err"
 
 compatible_plan_home="$tmp_root/compatible-plan-home"
@@ -508,14 +510,14 @@ mkdir -p "$compatible_plan_home"
 if (
   cd "$source_checkout"
   HOME="$compatible_plan_home" BEAM_INSTALL_ROOT="$compatible_plan_install_root" \
-    bash scripts/install-beam.sh --toolchain leanprover/lean4:v4.31.0-rc1 \
+    bash scripts/install-beam.sh --toolchain leanprover/lean4:v4.33.0-rc1 \
       < /dev/null > /dev/null 2>"$compatible_plan_err"
 ); then
   echo "expected compatible release-line install plan to stop without write confirmation" >&2
   remove_tmp_file "$compatible_plan_err"
   exit 1
 fi
-assert_contains "$compatible_plan_err" 'leanprover/lean4:v4.31.0-rc1 (release-line compatible)'
+assert_contains "$compatible_plan_err" 'leanprover/lean4:v4.33.0-rc1 (release-line compatible)'
 assert_contains "$compatible_plan_err" 'without confirmation'
 assert_not_contains "$compatible_plan_err" 'unsupported Lean toolchain requested for install'
 remove_tmp_file "$compatible_plan_err"
@@ -1447,8 +1449,8 @@ if ! printf '%s\n' "$validated_out" | grep -qx "$toolchain"; then
 fi
 
 compatible_lines_out="$("$installed_lean_beam" compatible-release-lines)"
-if ! printf '%s\n' "$compatible_lines_out" | grep -qx 'leanprover/lean4:v4.31'; then
-  echo "expected compatible-release-lines to include Lean 4.31" >&2
+if ! printf '%s\n' "$compatible_lines_out" | grep -qx 'leanprover/lean4:v4.33'; then
+  echo "expected compatible-release-lines to include Lean 4.33" >&2
   printf '%s\n' "$compatible_lines_out" >&2
   exit 1
 fi
@@ -1533,7 +1535,7 @@ fi
 
 unsupported_project_root="$tmp_root/external-project-unsupported"
 rsync -a --exclude='.beam/' tests/save_olean_project/ "$unsupported_project_root"/
-printf 'leanprover/lean4:v4.30.0-rc2\n' > "$unsupported_project_root/lean-toolchain"
+printf 'leanprover/lean4:v4.32.0-rc1\n' > "$unsupported_project_root/lean-toolchain"
 
 unsupported_doctor_out="$("$installed_lean_beam" --root "$unsupported_project_root" doctor)"
 if ! printf '%s\n' "$unsupported_doctor_out" | grep -q 'project toolchain admission: unsupported'; then
@@ -1569,7 +1571,7 @@ if wait "$unsupported_owner_pid"; then
   remove_tmp_file "$unsupported_err"
   exit 1
 fi
-if ! grep -q 'unsupported Lean toolchain: leanprover/lean4:v4.30.0-rc2' "$unsupported_err"; then
+if ! grep -q 'unsupported Lean toolchain: leanprover/lean4:v4.32.0-rc1' "$unsupported_err"; then
   echo "expected unsupported toolchain failure to name the rejected toolchain" >&2
   cat "$unsupported_err" >&2
   remove_tmp_file "$unsupported_err"

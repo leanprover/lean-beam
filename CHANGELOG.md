@@ -39,6 +39,12 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Changed
 
+- Raise the minimum supported Lean release to 4.33. Lean 4.31–4.32 and their RC and patch variants
+  are no longer admitted by the standard toolchain registries. CI and `--all-validated` cover only
+  the latest stable point per supported line: 4.33.1, 4.34.1, and 4.35.0. Other canonical RC and patch
+  variants qualify locally. Module saves require the IR signature companion, and save traces use
+  Lake's native module pre-setup trace directly
+  ([#274](https://github.com/leanprover/lean-beam/pull/274), @ejgallego).
 - Raise the minimum supported Lean release to 4.31. Lean 4.28–4.30 and their RC and patch variants
   are no longer admitted by the standard toolchain registries; projects on those releases must
   upgrade Lean or retain an older Beam checkout

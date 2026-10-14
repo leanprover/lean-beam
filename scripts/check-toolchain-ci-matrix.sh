@@ -16,13 +16,13 @@ import sys
 validated_registry_path = Path("validated-lean-toolchains")
 compatible_registry_path = Path("compatible-lean-release-lines")
 workflow_path = Path(".github/workflows/ci.yml")
+pinned_toolchain_path = Path("lean-toolchain")
 
 canonical_toolchain_re = re.compile(
     r"^leanprover/lean4:v"
     r"(?P<major>0|[1-9][0-9]*)\."
     r"(?P<minor>0|[1-9][0-9]*)\."
-    r"(?P<patch>0|[1-9][0-9]*)"
-    r"(?:-rc(?P<rc>[1-9][0-9]*))?$"
+    r"(?P<patch>0|[1-9][0-9]*)$"
 )
 release_line_re = re.compile(
     r"^leanprover/lean4:v"
@@ -112,27 +112,10 @@ def load_ci_matrix_toolchains(path: Path) -> tuple[list[str], list[tuple[int, st
     return toolchains, duplicates
 
 
-def load_release_line_ci_toolchain(path: Path) -> str:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    start, end = find_job_bounds(lines, "beam-release-line-compat")
-    prefix = "run: bash tests/test-beam-toolchain-compat.sh "
-    toolchains = [
-        unquote_yaml_scalar(line.strip()[len(prefix):])
-        for line in lines[start:end]
-        if line.strip().startswith(prefix)
-    ]
-    if len(toolchains) != 1:
-        raise RuntimeError(
-            "beam-release-line-compat must run test-beam-toolchain-compat.sh for exactly one toolchain"
-        )
-    return toolchains[0]
-
-
 try:
     validated_entries, validated_duplicates = load_registry_entries(validated_registry_path)
     compatible_entries, compatible_duplicates = load_registry_entries(compatible_registry_path)
     matrix, matrix_duplicates = load_ci_matrix_toolchains(workflow_path)
-    release_line_ci_toolchain = load_release_line_ci_toolchain(workflow_path)
 except RuntimeError as ex:
     print(f"toolchain CI matrix guard failed: {ex}", file=sys.stderr)
     sys.exit(1)
@@ -146,10 +129,20 @@ if not validated:
 if not compatible:
     failures.append(f"{compatible_registry_path}: no compatible Lean release lines listed")
 
+validated_by_release_line: dict[str, list[str]] = {}
 for line_no, toolchain in validated_entries:
-    if canonical_toolchain_re.fullmatch(toolchain) is None:
+    match = canonical_toolchain_re.fullmatch(toolchain)
+    if match is None:
         failures.append(
-            f"{validated_registry_path}:{line_no}: invalid validated Lean toolchain: {toolchain}"
+            f"{validated_registry_path}:{line_no}: expected a canonical stable Lean toolchain: {toolchain}"
+        )
+        continue
+    release_line = f"leanprover/lean4:v{match.group('major')}.{match.group('minor')}"
+    validated_by_release_line.setdefault(release_line, []).append(toolchain)
+    if release_line not in compatible:
+        failures.append(
+            f"{validated_registry_path}:{line_no}: validated toolchain is outside "
+            f"compatible-lean-release-lines: {toolchain}"
         )
 for line_no, toolchain in validated_duplicates:
     failures.append(
@@ -165,6 +158,18 @@ for line_no, release_line in compatible_duplicates:
     failures.append(
         f"{compatible_registry_path}:{line_no}: duplicate compatible Lean release line: {release_line}"
     )
+
+for release_line in compatible:
+    points = validated_by_release_line.get(release_line, [])
+    if len(points) != 1:
+        failures.append(
+            f"{validated_registry_path}: expected exactly one stable point for {release_line}, "
+            f"found {len(points)}"
+        )
+
+pinned_toolchain = pinned_toolchain_path.read_text(encoding="utf-8").strip()
+if pinned_toolchain not in validated:
+    failures.append(f"{pinned_toolchain_path}: pinned toolchain is not validated: {pinned_toolchain}")
 
 for line_no, toolchain in matrix_duplicates:
     failures.append(f"{workflow_path}:{line_no}: duplicate CI matrix toolchain: {toolchain}")
@@ -183,30 +188,6 @@ if extra:
     failures.append(
         "beam-toolchain-compat matrix contains toolchains not in validated-lean-toolchains:\n  "
         + "\n  ".join(extra)
-    )
-
-release_line_match = canonical_toolchain_re.fullmatch(release_line_ci_toolchain)
-if release_line_match is None or release_line_match.group("rc") is None:
-    failures.append(
-        "beam-release-line-compat must use one canonical Lean release-candidate toolchain: "
-        + release_line_ci_toolchain
-    )
-else:
-    release_line = (
-        "leanprover/lean4:v"
-        + release_line_match.group("major")
-        + "."
-        + release_line_match.group("minor")
-    )
-    if release_line not in set(compatible):
-        failures.append(
-            "beam-release-line-compat toolchain is outside compatible-lean-release-lines: "
-            + release_line_ci_toolchain
-        )
-if release_line_ci_toolchain in validated_set:
-    failures.append(
-        "beam-release-line-compat toolchain must not be exact-validated: "
-        + release_line_ci_toolchain
     )
 
 if failures:

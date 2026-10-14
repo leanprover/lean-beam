@@ -1,12 +1,4 @@
-# Validated Lean toolchains that beam is willing to serve.
+# CI-validated Lean toolchains: the latest stable point of each compatible release line.
 leanprover/lean4:v4.35.0
-leanprover/lean4:v4.35.0-rc4
 leanprover/lean4:v4.34.1
-leanprover/lean4:v4.34.0
-leanprover/lean4:v4.34.0-rc1
 leanprover/lean4:v4.33.1
-leanprover/lean4:v4.33.0
-leanprover/lean4:v4.32.2
-leanprover/lean4:v4.32.1
-leanprover/lean4:v4.32.0
-leanprover/lean4:v4.31.0

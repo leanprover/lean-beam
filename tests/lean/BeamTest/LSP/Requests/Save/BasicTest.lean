@@ -5,7 +5,6 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.LSP.Save
-import Beam.Broker.LakeSave
 import BeamTest.LSP.Requests.Interference
 import BeamTest.LSP.Requests.Support
 
@@ -158,6 +157,16 @@ def checkSaveArtifactsWrite : ScenarioM Unit := do
   closeDoc doc
 
 def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
+  let incompletePaths := Json.mkObj [
+    ("oleanServerFile", toJson "ModuleArtifacts.olean.server"),
+    ("oleanPrivateFile", toJson "ModuleArtifacts.olean.private"),
+    ("irFile", toJson "ModuleArtifacts.ir")
+  ]
+  match (fromJson? incompletePaths : Except String Beam.LSP.Save.ModuleArtifactPaths) with
+  | .ok _ => throw <| IO.userError "module artifact paths accepted a missing IR signature"
+  | .error err =>
+      unless err.contains "irSigFile" do
+        throw <| IO.userError s!"missing IR signature path failed without naming irSigFile: {err}"
   let doc ← openDoc moduleArtifactsFixture
   let text ← IO.FS.readFile moduleArtifactsFixture
   let outDir ← mkTmpDir "beam-save-module-family"
@@ -170,8 +179,7 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
       oleanServerFile := (outDir / "ModuleArtifacts.olean.server").toString
       oleanPrivateFile := (outDir / "ModuleArtifacts.olean.private").toString
       irFile := (outDir / "ModuleArtifacts.ir").toString
-      irSigFile? := (Beam.Broker.leanSaveIRSignaturePath?
-        (some (outDir / "ModuleArtifacts.ir"))).map (·.toString)
+      irSigFile := (outDir / "ModuleArtifacts.ir.sig").toString
     }
     ileanFile := (outDir / "ModuleArtifacts.ilean").toString
     cFile := (outDir / "ModuleArtifacts.c").toString
@@ -183,28 +191,27 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
   expectFileExists "saveArtifacts module server olean" (outDir / "ModuleArtifacts.olean.server")
   expectFileExists "saveArtifacts module private olean" (outDir / "ModuleArtifacts.olean.private")
   expectFileExists "saveArtifacts module IR" (outDir / "ModuleArtifacts.ir")
-  if let some irSigFile := Beam.Broker.leanSaveIRSignaturePath?
-      (some (outDir / "ModuleArtifacts.ir")) then
-    expectFileExists "saveArtifacts module IR signature" irSigFile
-    let paths := #[outDir / "ModuleArtifacts.olean", outDir / "ModuleArtifacts.olean.server",
-      outDir / "ModuleArtifacts.olean.private", outDir / "ModuleArtifacts.ir", irSigFile,
-      outDir / "ModuleArtifacts.ilean", outDir / "ModuleArtifacts.c"]
-    let prior ← paths.mapM (fun path => liftM (IO.FS.readBinFile path))
-    let incompleteReq ← sendSaveArtifacts doc {
-      expectedVersionOverride? := some 1
-      expectedTextHashOverride? := some (hash text)
-      oleanFile := (outDir / "ModuleArtifacts.olean").toString
-      moduleArtifacts? := some {
-        oleanServerFile := (outDir / "ModuleArtifacts.olean.server").toString
-        oleanPrivateFile := (outDir / "ModuleArtifacts.olean.private").toString
-        irFile := (outDir / "ModuleArtifacts.ir").toString
-      }
-      ileanFile := (outDir / "ModuleArtifacts.ilean").toString
-      cFile := (outDir / "ModuleArtifacts.c").toString
+  expectFileExists "saveArtifacts module IR signature" (outDir / "ModuleArtifacts.ir.sig")
+  let paths := #[outDir / "ModuleArtifacts.olean", outDir / "ModuleArtifacts.olean.server",
+    outDir / "ModuleArtifacts.olean.private", outDir / "ModuleArtifacts.ir",
+    outDir / "ModuleArtifacts.ir.sig", outDir / "ModuleArtifacts.ilean", outDir / "ModuleArtifacts.c"]
+  let prior ← paths.mapM (fun path => liftM (IO.FS.readBinFile path))
+  let invalidPathReq ← sendSaveArtifacts doc {
+    expectedVersionOverride? := some 1
+    expectedTextHashOverride? := some (hash text)
+    oleanFile := (outDir / "ModuleArtifacts.olean").toString
+    moduleArtifacts? := some {
+      oleanServerFile := (outDir / "ModuleArtifacts.olean.server").toString
+      oleanPrivateFile := (outDir / "ModuleArtifacts.olean.private").toString
+      irFile := (outDir / "ModuleArtifacts.ir").toString
+      irSigFile := outDir.toString
     }
-    expectErrorContains incompleteReq (Json.mkObj [("code", toJson "internalError")])
-    unless (← paths.mapM (fun path => liftM (IO.FS.readBinFile path))) == prior do
-      throw <| IO.userError "incomplete module save changed prior artifacts"
+    ileanFile := (outDir / "ModuleArtifacts.ilean").toString
+    cFile := (outDir / "ModuleArtifacts.c").toString
+  }
+  expectErrorContains invalidPathReq (Json.mkObj [("code", toJson "internalError")])
+  unless (← paths.mapM (fun path => liftM (IO.FS.readBinFile path))) == prior do
+    throw <| IO.userError "invalid module artifact path changed prior artifacts"
   expectFileExists "saveArtifacts module ilean" (outDir / "ModuleArtifacts.ilean")
   expectFileExists "saveArtifacts module C" (outDir / "ModuleArtifacts.c")
   let entries ← outDir.readDir

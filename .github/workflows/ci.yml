@@ -250,16 +250,8 @@ jobs:
         os: ${{ fromJSON(vars.BEAM_FULL_MACOS_CI == 'true' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
         toolchain:
           - leanprover/lean4:v4.35.0
-          - leanprover/lean4:v4.35.0-rc4
           - leanprover/lean4:v4.34.1
-          - leanprover/lean4:v4.34.0
-          - leanprover/lean4:v4.34.0-rc1
           - leanprover/lean4:v4.33.1
-          - leanprover/lean4:v4.33.0
-          - leanprover/lean4:v4.32.2
-          - leanprover/lean4:v4.32.1
-          - leanprover/lean4:v4.32.0
-          - leanprover/lean4:v4.31.0
     steps:
       - uses: actions/checkout@v6
 
@@ -267,17 +259,6 @@ jobs:
 
       - name: Validate toolchain compatibility
         run: bash tests/test-beam-toolchain-compat.sh '${{ matrix.toolchain }}'
-
-  beam-release-line-compat:
-    name: beam-release-line-compat (leanprover/lean4:v4.31.0-rc1)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: ./.github/actions/lean-ci-setup
-
-      - name: Validate release-line compatibility
-        run: bash tests/test-beam-toolchain-compat.sh leanprover/lean4:v4.31.0-rc1
 
   beam-rocq:
     name: beam-rocq (${{ matrix.os }})
