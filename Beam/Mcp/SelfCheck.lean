@@ -8,8 +8,7 @@ import Lean
 import Beam.Mcp.Protocol
 import Beam.Mcp.Stdio
 import Beam.Path
-import Beam.StderrCapture
-import Beam.System
+import Beam.Mcp.SelfCheck.Pipe
 
 open Lean
 
@@ -79,64 +78,139 @@ private def Deadline.remaining (deadline : Deadline) : IO Nat := do
 private def Deadline.timeout (deadline : Deadline) : IO.Error :=
   IO.userError (timeoutMessage deadline.phase deadline.timeoutMs)
 
-private partial def waitBefore (task : Task α) (deadline : Deadline) : IO (Option α) := do
-  let remaining ← deadline.remaining
-  if remaining == 0 then
-    return none
-  if ← IO.hasFinished task then
-    return some (← IO.wait task)
-  IO.sleep (min remaining 10).toUInt32
-  waitBefore task deadline
+private def Deadline.check (deadline : Deadline) : IO Unit := do
+  if (← deadline.remaining) == 0 then
+    throw deadline.timeout
+
+private def Deadline.pause (deadline : Deadline) : IO Unit := do
+  deadline.check
+  IO.sleep (min (← deadline.remaining) 10).toUInt32
 
 private abbrev childStdio : IO.Process.StdioConfig := { stdio with stdin := .null }
 
-/-- One task owns reaping; protocol reads and cleanup never race a second wait against it. -/
+private structure ChildState where
+  exitCode? : Option UInt32 := none
+  pending : ByteArray := .empty
+  stderrTail : ByteArray := .empty
+  stderrOpen : Bool := true
+  pipesReady : Bool := false
+
+/-- A single controller owns all pipe I/O and reaping. No blocking tasks survive cleanup. -/
 private structure OwnedChild where
   child : IO.Process.Child childStdio
-  stderr : Beam.StderrCapture
-  exitTask : Task (Except IO.Error UInt32)
+  state : IO.Ref ChildState
 
 private def OwnedChild.start (child : IO.Process.Child childStdio) : IO OwnedChild := do
-  let stderr ← Beam.StderrCapture.start child.stderr 8192
-  let exitTask ← IO.asTask child.wait Task.Priority.dedicated
-  pure { child, stderr, exitTask }
+  pure { child, state := ← IO.mkRef {} }
 
-private def OwnedChild.finishStderr (owner : OwnedChild) (deadline : Deadline) : IO Unit := do
-  match ← owner.stderr.finishAfterWriterExit (← deadline.remaining) with
-  | .drained => pure ()
-  | .sourceFailed err => throw err
-  | .pipeStillOpen =>
-      throw <| IO.userError (timeoutMessage "stderr drain" deadline.timeoutMs)
+private def OwnedChild.configure (owner : OwnedChild) (stdin : IO.FS.Handle) : IO Unit := do
+  Pipe.nonblocking stdin
+  Pipe.nonblocking owner.child.stdout
+  Pipe.nonblocking owner.child.stderr
+  owner.state.modify fun state => { state with pipesReady := true }
+
+/-- Cache the first result: supported Lean runtimes need not allow a second wait after reaping. -/
+private def OwnedChild.pollExit (owner : OwnedChild) : IO (Option UInt32) := do
+  if let some code := (← owner.state.get).exitCode? then
+    return some code
+  let code? ← owner.child.tryWait
+  owner.state.modify fun state => { state with exitCode? := code? }
+  pure code?
+
+/-- Diagnostics are best effort, bounded, and never part of protocol success. -/
+private def OwnedChild.captureStderr (owner : OwnedChild) : IO Bool := do
+  let state ← owner.state.get
+  unless state.pipesReady && state.stderrOpen do return false
+  try
+    let some chunk ← Pipe.read owner.child.stderr | return false
+    let tail := state.stderrTail ++ chunk
+    owner.state.modify fun state => { state with
+      stderrOpen := !chunk.isEmpty
+      stderrTail := tail.extract (tail.size - 8192) tail.size }
+    return !chunk.isEmpty
+  catch _ =>
+    owner.state.modify fun state => { state with stderrOpen := false }
+    return false
+
+private def OwnedChild.stderrText (owner : OwnedChild) : IO String := do
+  let bytes := (← owner.state.get).stderrTail
+  -- A bounded byte tail can start inside a UTF-8 character. Skip its continuation bytes.
+  let mut start := 0
+  while start < bytes.size && bytes[start]! >= 128 && bytes[start]! < 192 do
+    start := start + 1
+  pure <| (String.fromUTF8? (bytes.extract start bytes.size)).getD "<stderr tail is not valid UTF-8>"
+
+private partial def OwnedChild.waitForExit (owner : OwnedChild) (deadline : Deadline) : IO UInt32 := do
+  deadline.check
+  let mut progress ← owner.captureStderr
+  if (← owner.state.get).pipesReady then
+    -- The server may still be writing notifications after the final response. Discard them
+    -- during teardown so its stdout buffer cannot prevent it from processing stdin EOF.
+    try
+      if let some chunk ← Pipe.read owner.child.stdout then
+        progress := progress || !chunk.isEmpty
+    catch _ => pure ()
+  if let some code ← owner.pollExit then
+    -- Collect already available diagnostics, but never wait for EOF from descendants.
+    -- Cap both work and time even if a descendant writes continuously.
+    for _ in [:128] do
+      if (← deadline.remaining) == 0 then break
+      unless ← owner.captureStderr do break
+    return code
+  unless progress do deadline.pause
+  owner.waitForExit deadline
 
 private def OwnedChild.finish (owner : OwnedChild) (timeoutMs : Nat) : IO Unit := do
-  let deadline ← Deadline.start "EOF teardown" timeoutMs
-  let some result ← waitBefore owner.exitTask deadline
-    | throw deadline.timeout
-  let exitCode ← IO.ofExcept result
-  owner.finishStderr deadline
-  if exitCode != 0 then
-    throw <| IO.userError s!"lean-beam-mcp self-check child exited with code {exitCode}"
+  let code ← owner.waitForExit (← Deadline.start "EOF teardown" timeoutMs)
+  if code != 0 then
+    throw <| IO.userError s!"lean-beam-mcp self-check child exited with code {code}"
 
-private def OwnedChild.terminate (owner : OwnedChild) (timeoutMs : Nat) : IO Unit := do
-  let deadline ← Deadline.start "cleanup" (min timeoutMs 1000)
-  unless ← IO.hasFinished owner.exitTask do
+private def OwnedChild.terminate (owner : OwnedChild) : IO Unit := do
+  let deadline ← Deadline.start "cleanup" 1000
+  if (← owner.pollExit).isNone then
     try
       owner.child.kill
     catch err =>
-      unless ← IO.hasFinished owner.exitTask do
-        throw err
-  let some result ← waitBefore owner.exitTask deadline
-    | throw deadline.timeout
-  discard <| IO.ofExcept result
-  owner.finishStderr deadline
+      if (← owner.pollExit).isNone then throw err
+  discard <| owner.waitForExit deadline
 
-private def readLine
-    (owner : OwnedChild)
-    (deadline : Deadline) : IO String := do
-  let task ← IO.asTask owner.child.stdout.getLine Task.Priority.dedicated
-  match ← waitBefore task deadline with
-  | some line => pure <| Beam.Mcp.Stdio.stripLineEnding (← IO.ofExcept line)
-  | none => throw deadline.timeout
+private def decodeLine (bytes : ByteArray) : IO String := do
+  let some line := String.fromUTF8? bytes
+    | throw <| IO.userError "lean-beam-mcp self-check child wrote invalid UTF-8"
+  pure <| Beam.Mcp.Stdio.stripLineEnding line
+
+private partial def readLine (owner : OwnedChild) (deadline : Deadline) : IO String := do
+  deadline.check
+  let progress ← owner.captureStderr
+  let pending := (← owner.state.get).pending
+  let endPos? := pending.findIdx? (· == 10)
+  -- Limit a frame, not the entire buffer: one read may include several lines.
+  if endPos?.getD pending.size > 1024 * 1024 then
+    throw <| IO.userError "lean-beam-mcp self-check response exceeds 1 MiB"
+  if let some endPos := endPos? then
+    let line := pending.extract 0 endPos
+    owner.state.modify fun state =>
+      { state with pending := pending.extract (endPos + 1) pending.size }
+    return ← decodeLine line
+  match ← Pipe.read owner.child.stdout with
+  | none => unless progress do deadline.pause
+  | some chunk =>
+    if chunk.isEmpty then
+      owner.state.modify fun state => { state with pending := .empty }
+      return ← decodeLine pending
+    owner.state.modify fun state => { state with pending := pending ++ chunk }
+  readLine owner deadline
+
+private def send (owner : OwnedChild) (stdin : IO.FS.Handle) (json : Json)
+    (deadline : Deadline) : IO Unit := do
+  let bytes := (json.compress ++ "\n").toUTF8
+  let mut offset := 0
+  while offset < bytes.size do
+    deadline.check
+    discard <| owner.captureStderr
+    let written ← Pipe.write stdin bytes offset.toUSize
+    offset := offset + written.toNat
+    if written == 0 then deadline.pause
 
 private def throwJsonFieldError (label field : String) (json : Json) (err : String) : IO α :=
   throw <| IO.userError s!"{label}: missing or invalid '{field}': {err}; response: {json.compress}"
@@ -194,8 +268,8 @@ private def modernMeta : Json :=
     ])
   ]
 
-private def sendDiscover (stdin : IO.FS.Handle) : IO Unit := do
-  Beam.Mcp.Stdio.writeJsonLineToHandle stdin <| Json.mkObj [
+private def discoverRequest : Json :=
+  Json.mkObj [
     ("jsonrpc", toJson "2.0"),
     ("id", toJson (1 : Nat)),
     ("method", toJson "server/discover"),
@@ -204,11 +278,8 @@ private def sendDiscover (stdin : IO.FS.Handle) : IO Unit := do
     ])
   ]
 
-private def sendSync
-    (stdin : IO.FS.Handle)
-    (root : System.FilePath)
-    (pathText : String) : IO Unit := do
-  Beam.Mcp.Stdio.writeJsonLineToHandle stdin <| Json.mkObj [
+private def syncRequest (root : System.FilePath) (pathText : String) : Json :=
+  Json.mkObj [
     ("jsonrpc", toJson "2.0"),
     ("id", toJson (2 : Nat)),
     ("method", toJson "tools/call"),
@@ -226,7 +297,7 @@ private def checkProtocol
     (owner : OwnedChild) (stdin : IO.FS.Handle) (root : System.FilePath)
     (pathText : String) (timeout : Nat) : IO Unit := do
   let discoveryDeadline ← Deadline.start "server/discover response" timeout
-  sendDiscover stdin
+  send owner stdin discoverRequest discoveryDeadline
   let discovery ← expectResult "server/discover" =<<
     readResponse owner (toJson (1 : Nat)) discoveryDeadline
   let resultType ← requireObjValAs (α := String) "server/discover result" "resultType" discovery
@@ -238,7 +309,7 @@ private def checkProtocol
     throw <| IO.userError
       s!"server/discover did not advertise MCP protocol {protocolVersion}: {discovery.compress}"
   let syncDeadline ← Deadline.start "lean_sync response" timeout
-  sendSync stdin root pathText
+  send owner stdin (syncRequest root pathText) syncDeadline
   let sync ← expectResult "lean_sync" =<<
     readResponse owner (toJson (2 : Nat)) syncDeadline
   let syncResultType ← requireObjValAs (α := String) "lean_sync result" "resultType" sync
@@ -263,8 +334,8 @@ def run (opts : Options) (pathText : String) : IO Unit := do
   }).takeStdin
   let owner ← OwnedChild.start child
   try
-    -- The extracted input handle is released after the protocol, sending EOF without making
-    -- the reaper task retain stdin. stderr logging is permitted by the stdio transport.
+    owner.configure stdin
+    -- Last use of the extracted input closes it before teardown, sending EOF to the server.
     checkProtocol owner stdin root pathText timeout
     owner.finish timeout
     IO.println "Lean Beam MCP self-check passed"
@@ -275,10 +346,10 @@ def run (opts : Options) (pathText : String) : IO Unit := do
     IO.println "  lean_sync: ok"
   catch e =>
     let cleanupError? ← try
-      owner.terminate timeout
+      owner.terminate
       pure none
     catch cleanupError => pure (some cleanupError)
-    let tail := (← owner.stderr.snapshot).trimAscii.toString
+    let tail := (← owner.stderrText).trimAscii.toString
     let message := e.toString ++ (if tail.isEmpty then "" else s!"\nstderr tail:\n{tail}")
     let message := match cleanupError? with
       | none => message

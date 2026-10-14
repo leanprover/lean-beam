@@ -82,6 +82,7 @@ run_quiet_test cli-daemon .lake/build/bin/beam-cli-daemon-test
 run_quiet_test feedback .lake/build/bin/beam-feedback-test
 run_quiet_test mcp-projection .lake/build/bin/beam-mcp-projection-test
 run_quiet_test mcp-protocol .lake/build/bin/beam-mcp-protocol-test
+run_quiet_test mcp-self-check python3 tests/test-mcp-self-check.py
 run_quiet_test daemon-smoke .lake/build/bin/beam-daemon-smoke-test
 run_quiet_test sync-concurrency .lake/build/bin/beam-sync-concurrency-test
 run_quiet_test daemon-save-stream .lake/build/bin/beam-daemon-save-stream-test

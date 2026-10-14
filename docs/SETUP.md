@@ -557,9 +557,14 @@ lean-beam-mcp --self-check MyPkg/Sub/Module.lean
 
 The self-check starts a child MCP server, calls `lean_sync` with an explicit descriptor for the
 current project, and shuts the child server down. On first use for a project/toolchain, this
-may also build the matching local Beam runtime bundle. If a very slow machine needs a longer wait,
-set `LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS` to a positive timeout in milliseconds. Maintainer details
-for MCP live in the [MCP maintainer notes](MCP.md).
+may also build the matching local Beam runtime bundle. Each discovery, sync, and shutdown phase
+has its own deadline; notifications do not extend it. Success requires valid responses and a zero
+server exit status. Server stderr is diagnostic only: failures include its last 8 KiB, and descendants
+holding its pipes open do not delay completion. On failure, the self-check terminates and reaps its
+direct child; it does not terminate independent descendants.
+
+If a very slow machine needs a longer wait, set `LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS` to a positive
+timeout in milliseconds. Maintainer details for MCP live in the [MCP maintainer notes](MCP.md).
 
 ## Installer Locations And Overrides
 

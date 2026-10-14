@@ -310,6 +310,15 @@ build the local fixture under CI contention. Keep `--timeout 30` for local repro
 are specifically checking the CI budget. The focused daemon lifecycle fixture explicitly prebuilds
 its toolchain into one owned shared cache before timing daemon startup, so cold bundle compilation
 is not misdiagnosed as a daemon-readiness timeout.
+
+The fast suite runs `python3 tests/test-mcp-self-check.py` against
+`.lake/build/bin/beam-mcp-protocol-test`. Its external four-second watchdog covers the entire CLI,
+including Lean runtime shutdown. Fixtures cover inherited stdout and stderr, partial and oversized
+frames, notification floods, bounded stderr diagnostics, write backpressure, broken pipes, nonzero
+exit, and direct child reaping. Build the fixture with `lake build beam-mcp-protocol-test` before
+running it alone.
+The fixture supervisor cleans up its owned POSIX process group; it runs on the Linux/macOS CI matrix.
+
 The focused CLI daemon test also checks that a failed stderr evidence sink does not stop pipe
 draining, that sink failure observation is synchronized, and that a pipe held open past leader exit
 produces a bounded `pipeStillOpen` outcome rather than an unbounded task join.

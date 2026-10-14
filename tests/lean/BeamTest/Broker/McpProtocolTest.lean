@@ -1711,7 +1711,21 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     catch _ =>
       pure ()
 
+-- Fixtures are driven by tests/test-mcp-self-check.py, which supervises the entire process.
+private def holdSelfCheckPipe (stream : String) : IO Unit := do
+  let child ← IO.Process.spawn {
+    cmd := (← IO.appPath).toString
+    args := #["--hold-self-check-pipe"]
+    stdin := .null
+    stdout := if stream == "stderr" then .null else .inherit
+    stderr := if stream == "stdout" then .null else .inherit
+  }
+  if let some path ← IO.getEnv "BEAM_SELF_CHECK_HOLDER_PID" then
+    IO.FS.writeFile path (toString child.pid)
+
 private def selfCheckChild (mode : String) : IO Unit := do
+  if let some path ← IO.getEnv "BEAM_SELF_CHECK_CHILD_PID" then
+    IO.FS.writeFile path (toString (← IO.Process.getPID))
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
   let stderr ← IO.getStderr
@@ -1724,6 +1738,25 @@ private def selfCheckChild (mode : String) : IO Unit := do
       ("params", Json.mkObj [("level", toJson "notice"), ("data", toJson "working")])
     ]
   discard <| stdin.getLine
+  if mode == "inherited-stdout" then
+    holdSelfCheckPipe "stdout"
+    return
+  if mode == "partial-line" then
+    stdout.putStr "{\"jsonrpc\":"
+    stdout.flush
+    IO.sleep 60000
+    return
+  if mode == "invalid-utf8" then
+    stdout.write (ByteArray.mk #[255, 10])
+    stdout.flush
+    return
+  if mode == "oversize-frame" then
+    stdout.putStr (String.ofList (List.replicate (1024 * 1024 + 1) 'x'))
+    stdout.flush
+    return
+  if mode == "notification-flood" then
+    repeat
+      notify
   if mode == "discovery-notifications" then
     for _ in [:12] do
       notify
@@ -1764,56 +1797,69 @@ private def selfCheckChild (mode : String) : IO Unit := do
     ])
   ]
   discard <| stdin.readToEnd
+  if mode == "inherited-stderr" || mode == "inherited-both" || mode == "failure-inherited-stderr" then
+    holdSelfCheckPipe (if mode == "inherited-both" then "both" else "stderr")
+  if mode == "shutdown-stdout-flood" then
+    for _ in [:20000] do notify
   if mode == "shutdown-stall" then
     IO.sleep 2000
-  if mode == "shutdown-failure" then
+  if mode == "shutdown-failure" || mode == "failure-inherited-stderr" then
     throw <| IO.userError "self-check shutdown failure fixture"
 
-private def selfCheckResult (mode : String) (timeout : Nat := 2000) :
-    IO (IO.Process.Output × Nat) := do
-  let start ← IO.monoMsNow
-  let result ← IO.Process.output {
+private def checkPipeBackpressure : IO Unit := do
+  let (stdin, child) ← (← IO.Process.spawn {
     cmd := (← IO.appPath).toString
-    args := #["--self-check-parent", mode]
-    env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some (toString timeout))]
-  }
-  pure (result, (← IO.monoMsNow) - start)
+    args := #["--hold-self-check-pipe"]
+    stdin := .piped
+    stdout := .null
+    stderr := .null
+  }).takeStdin
+  if let some path ← IO.getEnv "BEAM_SELF_CHECK_CHILD_PID" then
+    IO.FS.writeFile path (toString child.pid)
+  try
+    Beam.Mcp.SelfCheck.Pipe.nonblocking stdin
+    let bytes := ByteArray.mk (Array.replicate (4 * 1024 * 1024) 120)
+    let deadline := (← IO.monoMsNow) + 100
+    let mut offset := 0
+    let mut blocked := false
+    while (← IO.monoMsNow) < deadline do
+      let count ← Beam.Mcp.SelfCheck.Pipe.write stdin bytes offset.toUSize
+      offset := offset + count.toNat
+      if count == 0 then
+        blocked := true
+        IO.sleep 1
+    require "nonblocking write reports backpressure without waiting for a reader"
+      (blocked && offset > 0 && offset < bytes.size)
+  finally
+    child.kill
+    discard <| child.wait
 
-private def checkSelfCheckLifecycle : IO Unit := do
-  for mode in ["logged-success", "stderr-flood"] do
-    let (result, _) ← selfCheckResult mode
-    require s!"self-check permits stderr after successful protocol and zero exit ({mode})"
-      (result.exitCode == 0 && result.stdout.contains "Lean Beam MCP self-check passed")
-    require s!"self-check keeps successful diagnostics out of its own stderr ({mode})"
-      result.stderr.isEmpty
-  let (failure, _) ← selfCheckResult "stderr-failure"
-  require "self-check retains the stderr tail on protocol failure"
-    (failure.exitCode != 0 && failure.stderr.contains "RETAINED-STDERR-TAIL")
-  require "self-check bounds captured failure diagnostics"
-    (failure.stderr.length < 20000 && !failure.stderr.contains "DISCARDED-STDERR-PREFIX")
-  for (mode, phase) in [
-      ("discovery-notifications", "server/discover response"),
-      ("sync-notifications", "lean_sync response")] do
-    let (result, elapsed) ← selfCheckResult mode 200
-    require s!"self-check keeps a phase deadline across notifications ({mode})"
-      (result.exitCode != 0 && result.stderr.contains s!"timed out after 200 ms waiting for lean-beam-mcp self-check {phase}")
-    require s!"notifications do not extend the self-check deadline ({mode})" (elapsed < 1000)
-  let (shutdown, elapsed) ← selfCheckResult "shutdown-stall" 200
-  require "self-check times out and reaps a child that stalls after stdin EOF"
-    (shutdown.exitCode != 0 && shutdown.stderr.contains "EOF teardown" && elapsed < 1000)
-  let (nonzero, _) ← selfCheckResult "shutdown-failure"
-  require "self-check rejects a nonzero shutdown and includes child diagnostics"
-    (nonzero.exitCode != 0 && nonzero.stderr.contains "child exited with code" &&
-      nonzero.stderr.contains "self-check shutdown failure fixture")
+private def checkClosedPipe : IO Unit := do
+  let (stdin, child) ← (← IO.Process.spawn {
+    cmd := (← IO.appPath).toString
+    args := #["--self-check-exit"]
+    stdin := .piped
+    stdout := .null
+    stderr := .null
+  }).takeStdin
+  discard <| child.wait
+  Beam.Mcp.SelfCheck.Pipe.nonblocking stdin
+  let failed ← try
+    discard <| Beam.Mcp.SelfCheck.Pipe.write stdin "request".toUTF8 0
+    pure false
+  catch _ => pure true
+  require "a closed reader produces an I/O error rather than terminating the controller" failed
 
 def main (args : List String) : IO Unit := do
   match args with
   | ["--beam-cli", mode] => return ← selfCheckChild mode
+  | ["--self-check-exit"] => return
+  | ["--self-check-parent", "closed-pipe"] => return ← checkClosedPipe
+  | ["--self-check-parent", "pipe-backpressure"] => return ← checkPipeBackpressure
   | ["--self-check-parent", mode] =>
       return ← Beam.Mcp.SelfCheck.run { beamCli? := some mode } "lakefile.lean"
-  | ["--self-check-tests"] => return ← checkSelfCheckLifecycle
+  | ["--hold-self-check-pipe"] => return ← IO.sleep 60000
   | _ => pure ()
-  checkSelfCheckLifecycle
   checkJsonHelpers
   checkVersionIdentityJson
   checkIncoming
