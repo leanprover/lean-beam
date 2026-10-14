@@ -1711,13 +1711,23 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     catch _ =>
       pure ()
 
-private def stderrFloodChild : IO Unit := do
+private def selfCheckChild (mode : String) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
+  let stderr ← IO.getStderr
   let respond := fun json => do
     stdout.putStrLn (Json.compress json)
     stdout.flush
+  let notify := do
+    respond <| Json.mkObj [
+      ("jsonrpc", toJson "2.0"), ("method", toJson "notifications/message"),
+      ("params", Json.mkObj [("level", toJson "notice"), ("data", toJson "working")])
+    ]
   discard <| stdin.getLine
+  if mode == "discovery-notifications" then
+    for _ in [:12] do
+      notify
+      IO.sleep 100
   respond <| Json.mkObj [
     ("jsonrpc", toJson "2.0"), ("id", toJson (1 : Nat)),
     ("result", Json.mkObj [
@@ -1726,13 +1736,26 @@ private def stderrFloodChild : IO Unit := do
     ])
   ]
   discard <| stdin.getLine
-  let stderr ← IO.getStderr
-  -- Exceed Linux and Windows pipe capacity before sending the sync response. A self-check
-  -- that waits for process exit before draining stderr cannot make progress here.
-  let chunk := String.ofList (List.replicate 4096 'x')
-  for _ in [:64] do
-    stderr.putStr chunk
-  stderr.flush
+  if mode == "sync-notifications" then
+    for _ in [:12] do
+      notify
+      IO.sleep 100
+  if mode == "logged-success" then
+    stderr.putStrLn "a permitted MCP diagnostic"
+    stderr.flush
+  if mode == "stderr-flood" || mode == "stderr-failure" then
+    -- Fill the pipe repeatedly before the response; failure diagnostics must retain only a tail.
+    stderr.putStr "DISCARDED-STDERR-PREFIX"
+    let chunk := String.ofList (List.replicate 8192 'x')
+    for _ in [:512] do
+      stderr.putStr chunk
+    stderr.putStrLn "RETAINED-STDERR-TAIL"
+    stderr.flush
+  if mode == "stderr-failure" then
+    stdout.putStrLn "invalid JSON"
+    stdout.flush
+    discard <| stdin.readToEnd
+    return
   respond <| Json.mkObj [
     ("jsonrpc", toJson "2.0"), ("id", toJson (2 : Nat)),
     ("result", Json.mkObj [
@@ -1741,25 +1764,56 @@ private def stderrFloodChild : IO Unit := do
     ])
   ]
   discard <| stdin.readToEnd
+  if mode == "shutdown-stall" then
+    IO.sleep 2000
+  if mode == "shutdown-failure" then
+    throw <| IO.userError "self-check shutdown failure fixture"
 
-private def checkSelfCheckStderrDrain : IO Unit := do
+private def selfCheckResult (mode : String) (timeout : Nat := 2000) :
+    IO (IO.Process.Output × Nat) := do
+  let start ← IO.monoMsNow
   let result ← IO.Process.output {
     cmd := (← IO.appPath).toString
-    args := #["--self-check-parent"]
-    env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some "2000")]
+    args := #["--self-check-parent", mode]
+    env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some (toString timeout))]
   }
-  require "self-check rejects child stderr after completing the protocol"
-    (result.exitCode != 0 && result.stderr.contains "self-check child wrote stderr")
-  require "self-check drains stderr while awaiting protocol responses"
-    (!result.stderr.contains "timed out")
+  pure (result, (← IO.monoMsNow) - start)
+
+private def checkSelfCheckLifecycle : IO Unit := do
+  for mode in ["logged-success", "stderr-flood"] do
+    let (result, _) ← selfCheckResult mode
+    require s!"self-check permits stderr after successful protocol and zero exit ({mode})"
+      (result.exitCode == 0 && result.stdout.contains "Lean Beam MCP self-check passed")
+    require s!"self-check keeps successful diagnostics out of its own stderr ({mode})"
+      result.stderr.isEmpty
+  let (failure, _) ← selfCheckResult "stderr-failure"
+  require "self-check retains the stderr tail on protocol failure"
+    (failure.exitCode != 0 && failure.stderr.contains "RETAINED-STDERR-TAIL")
+  require "self-check bounds captured failure diagnostics"
+    (failure.stderr.length < 20000 && !failure.stderr.contains "DISCARDED-STDERR-PREFIX")
+  for (mode, phase) in [
+      ("discovery-notifications", "server/discover response"),
+      ("sync-notifications", "lean_sync response")] do
+    let (result, elapsed) ← selfCheckResult mode 200
+    require s!"self-check keeps a phase deadline across notifications ({mode})"
+      (result.exitCode != 0 && result.stderr.contains s!"timed out after 200 ms waiting for lean-beam-mcp self-check {phase}")
+    require s!"notifications do not extend the self-check deadline ({mode})" (elapsed < 1000)
+  let (shutdown, elapsed) ← selfCheckResult "shutdown-stall" 200
+  require "self-check times out and reaps a child that stalls after stdin EOF"
+    (shutdown.exitCode != 0 && shutdown.stderr.contains "EOF teardown" && elapsed < 1000)
+  let (nonzero, _) ← selfCheckResult "shutdown-failure"
+  require "self-check rejects a nonzero shutdown and includes child diagnostics"
+    (nonzero.exitCode != 0 && nonzero.stderr.contains "child exited with code" &&
+      nonzero.stderr.contains "self-check shutdown failure fixture")
 
 def main (args : List String) : IO Unit := do
   match args with
-  | ["--beam-cli", "stderr-flood"] => return ← stderrFloodChild
-  | ["--self-check-parent"] =>
-      return ← Beam.Mcp.SelfCheck.run { beamCli? := some "stderr-flood" } "lakefile.lean"
+  | ["--beam-cli", mode] => return ← selfCheckChild mode
+  | ["--self-check-parent", mode] =>
+      return ← Beam.Mcp.SelfCheck.run { beamCli? := some mode } "lakefile.lean"
+  | ["--self-check-tests"] => return ← checkSelfCheckLifecycle
   | _ => pure ()
-  checkSelfCheckStderrDrain
+  checkSelfCheckLifecycle
   checkJsonHelpers
   checkVersionIdentityJson
   checkIncoming

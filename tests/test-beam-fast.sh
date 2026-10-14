@@ -271,9 +271,12 @@ fi
 mcp_http_timeout="${BEAM_MCP_HTTP_TIMEOUT:-60}"
 python3 tests/test-mcp-http-bridge.py --timeout "$mcp_http_timeout" > /dev/null
 mcp_self_check_timeout="${BEAM_MCP_SELF_CHECK_TIMEOUT_MS:-120000}"
-(cd tests/save_olean_project && \
-  LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS="$mcp_self_check_timeout" \
-    ../../scripts/lean-beam-mcp --self-check PositionEmptyLine.lean > /dev/null)
+for self_check_trace in 0 1; do
+  (cd tests/save_olean_project && \
+    LEAN_BEAM_MCP_TRACE="$self_check_trace" \
+    LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS="$mcp_self_check_timeout" \
+      ../../scripts/lean-beam-mcp --self-check PositionEmptyLine.lean > /dev/null)
+done
 
 self_check_timeout_dir="$(mktemp -d /tmp/lean-beam-mcp-self-check-timeout-XXXXXX)"
 self_check_timeout_err="$(mktemp /tmp/lean-beam-mcp-self-check-timeout-err-XXXXXX)"
