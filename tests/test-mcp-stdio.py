@@ -198,6 +198,8 @@ class McpClient:
         drain_stdout=True,
         extra_env=None,
         resolve_with_beam_cli=False,
+        server_command=None,
+        shutdown_timeout=5,
     ):
         self.repo_root = repo_root
         self.project_root = project_root
@@ -219,25 +221,29 @@ class McpClient:
         self.started_at = time.monotonic()
         self.last_notification_at = None
         self.stderr_lines = collections.deque(maxlen=80)
-        exe = repo_root / ".lake" / "build" / "bin" / "lean-beam-mcp"
-        require(exe.exists(), f"missing lean-beam-mcp executable at {exe}")
-        cmd = [str(exe)]
-        if resolve_with_beam_cli:
-            beam_cli = repo_root / ".lake" / "build" / "bin" / "beam-cli"
-            require(beam_cli.exists(), f"missing beam-cli executable at {beam_cli}")
-            cmd.extend(["--beam-cli", str(beam_cli)])
+        self.shutdown_timeout = shutdown_timeout
+        if server_command is not None:
+            cmd = [str(part) for part in server_command]
         else:
-            plugin = repo_root / ".lake" / "build" / "lib" / shared_lib_name()
-            lean_cmd = shutil.which("lean") or "lean"
-            require(plugin.exists(), f"missing Beam LSP plugin shared library at {plugin}")
-            cmd.extend(
-                [
-                    "--lean-cmd",
-                    lean_cmd,
-                    "--lean-plugin",
-                    str(plugin),
-                ]
-            )
+            exe = repo_root / ".lake" / "build" / "bin" / "lean-beam-mcp"
+            require(exe.exists(), f"missing lean-beam-mcp executable at {exe}")
+            cmd = [str(exe)]
+            if resolve_with_beam_cli:
+                beam_cli = repo_root / ".lake" / "build" / "bin" / "beam-cli"
+                require(beam_cli.exists(), f"missing beam-cli executable at {beam_cli}")
+                cmd.extend(["--beam-cli", str(beam_cli)])
+            else:
+                plugin = repo_root / ".lake" / "build" / "lib" / shared_lib_name()
+                lean_cmd = shutil.which("lean") or "lean"
+                require(plugin.exists(), f"missing Beam LSP plugin shared library at {plugin}")
+                cmd.extend(
+                    [
+                        "--lean-cmd",
+                        lean_cmd,
+                        "--lean-plugin",
+                        str(plugin),
+                    ]
+                )
         env = os.environ.copy()
         if extra_env is not None:
             env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -323,10 +329,10 @@ class McpClient:
             except Exception:
                 self.proc.kill()
         try:
-            self.proc.wait(timeout=5)
+            self.proc.wait(timeout=self.shutdown_timeout)
         except subprocess.TimeoutExpired:
             self.proc.kill()
-            self.proc.wait(timeout=5)
+            self.proc.wait(timeout=self.shutdown_timeout)
         if self.stdout_thread is not None:
             self.stdout_thread.join(timeout=1)
         self.stderr_thread.join(timeout=1)
