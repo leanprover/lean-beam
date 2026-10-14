@@ -5,11 +5,10 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean.Compiler
-import Lean.Elab.Term
 import Lean.Shell
 import Lean.Server.FileWorker.RequestHandling
 import Lean.Server.Requests
-import Beam.LSP.Lib.DiagnosticsCompat
+import Beam.LSP.Lib.Diagnostics
 import Beam.LSP.Lib.Request
 
 open Lean
@@ -22,7 +21,7 @@ open Beam.LSP.Lib
 Internal save/readiness LSP extensions used by the Beam broker.
 
 This family owns the worker-side artifact serialization and readiness checks; it shares only
-request cancellation/version helpers and diagnostics compatibility.
+request cancellation/version helpers and worker diagnostics.
 -/
 namespace Beam.LSP.Save
 
@@ -65,10 +64,8 @@ structure SaveArtifactsParams where
   bcFile? : Option String := none
   deriving FromJson, ToJson
 
--- Keep this indirection while v4.28 stays supported; re-check these request types when the
--- compatibility target is dropped.
 instance : Lean.Lsp.FileSource SaveArtifactsParams where
-  fileSource p := Lean.Lsp.fileSource p.textDocument
+  fileSource p := p.textDocument.uri
 
 /-- Internal request payload for save-readiness checks from the current worker snapshot. -/
 structure SaveReadinessParams where
@@ -77,10 +74,8 @@ structure SaveReadinessParams where
   expectedTextHash : UInt64
   deriving FromJson, ToJson
 
--- Keep this indirection while v4.28 stays supported; re-check these request types when the
--- compatibility target is dropped.
 instance : Lean.Lsp.FileSource SaveReadinessParams where
-  fileSource p := Lean.Lsp.fileSource p.textDocument
+  fileSource p := p.textDocument.uri
 
 /-- Internal success payload for artifact serialization. -/
 structure SaveArtifactsResult where
@@ -162,19 +157,6 @@ instance : FromJson SaveReadinessResult where
       blockingDiagnostics
       blockingCommandMessages
     }
-
-private def oldIREmitCName : Name :=
-  .str (.str (.str .anonymous "Lean") "IR") "emitC"
-
--- Lean v4.30 moved C emission from `Lean.IR.emitC` to `Lean.Compiler.LCNF.emitC`.
--- Select the available API at elaboration time so one source tree still builds on v4.28-v4.35.
-elab "emitCForSavedModule(" env:term ", " modName:term ")" : term => do
-  if (← getEnv).contains oldIREmitCName then
-    Lean.Elab.Term.elabTerm (← `(term| IO.ofExcept <| Lean.IR.emitC $env $modName)) none
-  else
-    Lean.Elab.Term.elabTerm (← `(term| (Lean.Compiler.LCNF.emitC $modName).toIO'
-        { fileName := "", fileMap := default }
-        { env := $env })) none
 
 def mkFilePath (path : String) : System.FilePath :=
   System.FilePath.mk path
@@ -493,19 +475,14 @@ private def saveBlockingCommandMessages
   }
 
 -- The option can be scoped to a declaration and reset by EOF while compilation remains pending.
--- Older supported Lean versions have no postponed-compilation extension.
-elab "hasPostponedCompilation(" env:term ")" : term => do
-  if (← getEnv).contains `Lean.Compiler.LCNF.postponedCompileDeclsExt then
-    Lean.Elab.Term.elabTerm (← `(term|
-      !(Lean.Compiler.LCNF.postponedCompileDeclsExt.getState $env).isEmpty)) none
-  else
-    Lean.Elab.Term.elabTerm (← `(term| (let _ := $env; false))) none
+private def hasPostponedCompilation (env : Environment) : Bool :=
+  !(Lean.Compiler.LCNF.postponedCompileDeclsExt.getState env).isEmpty
 
 def saveReadinessDeferredCompilationReason : String := "deferredCompilation"
 
 private def deferredCompilationMessage? (state : Elab.Command.State) : Option String :=
   if state.scopes.head!.opts.getBool `compiler.postponeCompile false ||
-      hasPostponedCompilation(state.env) then
+      hasPostponedCompilation state.env then
     some "Beam cannot save deferred compilation from compiler.postponeCompile; use lake build instead."
   else
     none
@@ -517,7 +494,7 @@ def collectSaveReadiness
         Option Elab.Command.State ×
         Array Lean.Widget.InteractiveDiagnostic ×
         Array String) := do
-  let diagnostics := Beam.LSP.Lib.userVisibleDiagnostics (← collectCurrentDiagnosticsCompat(doc))
+  let diagnostics := Beam.LSP.Lib.userVisibleDiagnostics (← collectCurrentDiagnostics doc)
   let diagnosticErrors := diagnostics.filter (fun diag => diag.severity? == some .error)
   let diagnosticWarnings := diagnostics.filter (fun diag => diag.severity? == some .warning)
   -- Mirror Lean batch/Lake's current save-blocking message gate for the snapshot tree.
@@ -607,7 +584,9 @@ def saveCurrentArtifacts
       (moduleTargets?.any fun targets => targets.irSigFile?.isSome) moduleArtifacts
     let ileanArtifact ← stagedArtifactAt stagedArtifacts moduleFiles.size "ilean"
     writeIlean doc.meta doc.initSnap.stx mainModule trees ileanArtifact.staged
-    let cOutput ← emitCForSavedModule(env, mainModule)
+    let cOutput ← (Lean.Compiler.LCNF.emitC mainModule).toIO'
+      { fileName := "", fileMap := default }
+      { env }
     let cArtifact ← stagedArtifactAt stagedArtifacts (moduleFiles.size + 1) "C"
     IO.FS.writeFile cArtifact.staged cOutput
     if p.bcFile?.isSome then

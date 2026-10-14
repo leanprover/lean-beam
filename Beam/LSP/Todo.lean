@@ -9,7 +9,7 @@ import Lean.Server.FileWorker.RequestHandling
 import Lean.Server.Requests
 import Lean.Elab.Term
 import Lean.Util.Sorry
-import Beam.LSP.Lib.DiagnosticsCompat
+import Beam.LSP.Lib.Diagnostics
 import Beam.LSP.Lib.Goal
 import Beam.LSP.Lib.Request
 
@@ -23,7 +23,7 @@ open Beam.LSP.Lib
 Agent-oriented todo inspection over a Lean document range.
 
 This family owns `$/lean/todo`, including todo item wire types and optional runAt text
-suggestions. It shares goal rendering with `RunAt`/`Goals` and diagnostics compatibility with
+suggestions. It shares goal rendering with `RunAt`/`Goals` and worker diagnostics with
 `Save`.
 -/
 namespace Beam.LSP.Todo
@@ -99,7 +99,7 @@ structure TodoParams where
   deriving FromJson, ToJson
 
 instance : Lean.Lsp.FileSource TodoParams where
-  fileSource p := Lean.Lsp.fileSource p.textDocument
+  fileSource p := p.textDocument.uri
 
 /-- One normalized agent-facing todo item. -/
 structure TodoItem where
@@ -600,7 +600,7 @@ private def todoResult
   let suggestBasic := shouldSuggestBasic p.suggest?
   let mut items ← collectDocumentItems doc snaps requestedSyntaxRange p.range p.kinds? suggestBasic
   if wantsKind p.kinds? .diagnostic then
-    let diagnostics ← collectCurrentDiagnosticsCompat(doc)
+    let diagnostics ← collectCurrentDiagnostics doc
     items := items ++ collectDiagnosticItems p.range diagnostics
   if wantsKind p.kinds? .codeAction then
     items := items ++ collectCodeActionItems p.range codeActions
@@ -621,7 +621,7 @@ def handleTodo (p : TodoParams) : RequestM (RequestTask TodoResult) := do
     checkRequestCancelled
     let codeActionTask ←
       if wantsKind p.kinds? .codeAction then
-        let diagnostics ← collectCurrentDiagnosticsCompat(doc)
+        let diagnostics ← collectCurrentDiagnostics doc
         let plainDiagnostics :=
           diagnostics.filterMap fun diagnostic =>
             if rangeMatchesQuery diagnostic.fullRange p.range then

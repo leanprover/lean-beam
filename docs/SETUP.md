@@ -65,6 +65,9 @@ installed wrappers directly.
 
 ## Validated And Compatible Toolchains
 
+The supported Lean release window is 4.31–4.35. Projects on Lean 4.28–4.30 must upgrade their Lean
+toolchain or keep a Beam checkout that still supports their release line.
+
 Lean Beam distinguishes exact validated toolchains from compatible release lines. Exact toolchains
 listed in [`validated-lean-toolchains`](../validated-lean-toolchains) receive the full CI matrix.
 The wrapper reports that validated allowlist with:

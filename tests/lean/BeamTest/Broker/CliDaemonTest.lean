@@ -1448,15 +1448,15 @@ private def writeFakeBundleArtifacts (workspace : System.FilePath) : IO Unit := 
     IO.FS.writeFile path "fake artifact\n"
 
 private def sampleFingerprint : Beam.Cli.ToolchainFingerprint := {
-  leanVersion := "Lean (version 4.30.0, test, Release)"
+  leanVersion := "Lean (version 4.31.0, test, Release)"
   leanPrefix := "/toolchains/a"
   leanLibDir := "/toolchains/a/lib/lean"
-  lakeVersion := "Lake version 5.0.0-src (Lean version 4.30.0)"
+  lakeVersion := "Lake version 5.0.0-src (Lean version 4.31.0)"
 }
 
 private def sampleFingerprintB : Beam.Cli.ToolchainFingerprint := {
   sampleFingerprint with
-  leanVersion := "Lean (version 4.30.0, rebuilt, Release)"
+  leanVersion := "Lean (version 4.31.0, rebuilt, Release)"
 }
 
 private def requireCanonicalToolchain
@@ -1523,6 +1523,15 @@ private def checkLeanToolchainAdmission : IO Unit := do
     require "explicit linked toolchain should remain custom" (custom.acceptance == .custom)
 
     for unsupported in [
+        "leanprover/lean4:v4.28.0",
+        "leanprover/lean4:v4.28.1",
+        "leanprover/lean4:v4.28.0-rc1",
+        "leanprover/lean4:v4.29.0",
+        "leanprover/lean4:v4.29.1",
+        "leanprover/lean4:v4.29.0-rc1",
+        "leanprover/lean4:v4.30.0",
+        "leanprover/lean4:v4.30.1",
+        "leanprover/lean4:v4.30.0-rc2",
         "leanprover/lean4:v4.32.0",
         "leanprover/lean4:v4.31.0-rc01",
         "leanprover/lean4-nightly:nightly-2026-08-01"] do
@@ -1577,15 +1586,15 @@ private def writeBundleMetadataFile
     ((Beam.Cli.bundleMetadataJson toolchain sourceHash fingerprint workspace "2026-06-05T00:00:00Z").pretty ++ "\n")
 
 private def checkRuntimeBundleHelpers : IO Unit := do
-  let id := Beam.Cli.bundleIdFor "leanprover/lean4:v4.30.0" sampleFingerprint "source-a" "linux-x86_64"
+  let id := Beam.Cli.bundleIdFor "leanprover/lean4:v4.31.0" sampleFingerprint "source-a" "linux-x86_64"
   require "bundle id should be deterministic"
-    (id == Beam.Cli.bundleIdFor "leanprover/lean4:v4.30.0" sampleFingerprint "source-a" "linux-x86_64")
+    (id == Beam.Cli.bundleIdFor "leanprover/lean4:v4.31.0" sampleFingerprint "source-a" "linux-x86_64")
   require "bundle id should include platform"
-    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.30.0" sampleFingerprint "source-a" "darwin-arm64")
+    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.31.0" sampleFingerprint "source-a" "darwin-arm64")
   require "bundle id should include source hash"
-    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.30.0" sampleFingerprint "source-b" "linux-x86_64")
+    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.31.0" sampleFingerprint "source-b" "linux-x86_64")
   require "bundle id should include the resolved toolchain fingerprint"
-    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.30.0" sampleFingerprintB "source-a" "linux-x86_64")
+    (id != Beam.Cli.bundleIdFor "leanprover/lean4:v4.31.0" sampleFingerprintB "source-a" "linux-x86_64")
   require "bundle fingerprint hash should be deterministic"
     (Beam.Cli.toolchainFingerprintHash sampleFingerprint ==
       Beam.Cli.toolchainFingerprintHash sampleFingerprint)
@@ -1603,7 +1612,7 @@ private def checkRuntimeBundleHelpers : IO Unit := do
     (Beam.Cli.beamStateDir (System.FilePath.mk "/tmp/project") == System.FilePath.mk "/tmp/project" / ".beam")
 
   let metadata := Beam.Cli.bundleMetadataJson
-    "leanprover/lean4:v4.30.0"
+    "leanprover/lean4:v4.31.0"
     "source-a"
     sampleFingerprint
     workspace
@@ -1615,7 +1624,7 @@ private def checkRuntimeBundleHelpers : IO Unit := do
   let metadataWorkspace ← IO.ofExcept <| metadata.getObjValAs? String "workspace"
   require "bundle metadata schema version should remain explicit"
     (schemaVersion == Beam.Cli.bundleMetadataSchemaVersion)
-  require "bundle metadata should include toolchain" (toolchain == "leanprover/lean4:v4.30.0")
+  require "bundle metadata should include toolchain" (toolchain == "leanprover/lean4:v4.31.0")
   require "bundle metadata should include toolchain fingerprint"
     (toolchainFingerprint == sampleFingerprint)
   require "bundle metadata should include source hash" (sourceHash == "source-a")
@@ -1625,7 +1634,7 @@ private def checkRuntimeBundleMetadataAcceptance : IO Unit := do
   let root := System.FilePath.mk s!"/tmp/beam-runtime-bundle-ready-test-{← IO.monoNanosNow}"
   let bundleDir := root / "bundle"
   let workspace := Beam.Cli.bundleWorkspaceFor bundleDir
-  let toolchain := "leanprover/lean4:v4.30.0"
+  let toolchain := "leanprover/lean4:v4.31.0"
   let sourceHash := "source-a"
   try
     writeFakeBundleArtifacts workspace

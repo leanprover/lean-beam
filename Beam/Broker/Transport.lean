@@ -5,8 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
--- `Std.Internal.Async.TCP` moved to `Std.Async.TCP` in Lean v4.31. Use the lower-level UV
--- socket API because it is available across the supported toolchain range.
+-- Use the UV socket API directly to cancel the exact pending receive on interruption or timeout.
 import Std.Internal.UV.TCP
 import Std.Net.Addr
 

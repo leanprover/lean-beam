@@ -39,6 +39,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Changed
 
+- Raise the minimum supported Lean release to 4.31. Lean 4.28–4.30 and their RC and patch variants
+  are no longer admitted by the standard toolchain registries; projects on those releases must
+  upgrade Lean or retain an older Beam checkout
+  ([#273](https://github.com/leanprover/lean-beam/pull/273), @ejgallego).
 - Clarify zero-based `run-at` coordinates and how tactic positions select before/after proof states,
   with guidance for probing tactic replacements
   ([#253](https://github.com/leanprover/lean-beam/pull/253), @ejgallego).

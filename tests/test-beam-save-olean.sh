@@ -89,7 +89,7 @@ mk_setup_sensitive_proj() {
   remove_owned_tmp_tree "$dest"
   mkdir -p "$dest/BatchOnly" "$dest/StructuredSetup"
   cat > "$dest/lean-toolchain" <<'EOF'
-leanprover/lean4:v4.30.0
+leanprover/lean4:v4.31.0
 EOF
   cat > "$dest/lakefile.lean" <<'EOF'
 import Lake

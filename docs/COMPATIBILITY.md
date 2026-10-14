@@ -12,6 +12,8 @@ A Lean release line is the canonical `major.minor` family recorded in
 
 - The core product goal is still the small Lean request shaped like `runAt(pos, "lean text")`,
   with typed request and response data.
+- The supported Lean release window is 4.31–4.35. Lean 4.28–4.30, including their RC and patch
+  variants, are no longer admitted by the validated-toolchain or compatible-release-line registries.
 - Exact CI-validated Lean toolchains listed in `validated-lean-toolchains`, plus canonical RC and
   patch toolchains admitted by release lines in `compatible-lean-release-lines`. Release-line
   variants must build and pass the local plugin qualification probe for their exact fingerprint.
@@ -22,8 +24,8 @@ A Lean release line is the canonical `major.minor` family recorded in
   nightly toolchains still require explicit custom-toolchain admission and are not added to the
   validated release registry.
 - Lean/Lake v4.33 and newer module saves publish the `.ir.sig` companion and its Lake output
-  descriptor. Save traces use Lake's full module pre-setup trace on v4.33 and newer; older supported
-  versions reconstruct the matching inputs, omitting identity inputs that v4.28 did not trace.
+  descriptor. Save traces use Lake's full module pre-setup trace on v4.33 and newer; v4.31 and
+  v4.32 reconstruct the matching source, options, and module identity inputs.
 - Runtime bundle metadata schema 2 and install manifest schema 3. Install manifest schema 2 is
   cleanup-only compatibility during the 0.2 release line: identity and `lean-beam prune` may read it,
   but the installer does not reuse it. Remove the schema-2 decoder when 0.3 development opens.

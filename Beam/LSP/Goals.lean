@@ -34,7 +34,7 @@ structure Params where
   deriving FromJson, ToJson
 
 instance : Lean.Lsp.FileSource Params where
-  fileSource p := Lean.Lsp.fileSource p.textDocument
+  fileSource p := p.textDocument.uri
 
 def handle (p : Params) (useAfter : Bool) : RequestM (RequestTask ProofState) := do
   requireDocumentVersion p.textDocument

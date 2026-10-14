@@ -26,9 +26,6 @@ namespace Beam.Broker
 
 open Lake
 
-private def moduleOutputIsModuleName : Name :=
-  .str (.str (.str .anonymous "Lake") "ModuleOutputDescrs") "isModule"
-
 private def moduleOutputOptionalCName : Name :=
   .str (.str (.str .anonymous "Lake") "ModuleOutputDescrs") "c?"
 
@@ -47,7 +44,6 @@ elab "moduleIRSignaturePath?(" irPath:term ")" : term => do
 def leanSaveIRSignaturePath? (irPath? : Option FilePath) : Option FilePath :=
   moduleIRSignaturePath?(irPath?)
 
--- Lake v4.30 added `ModuleOutputDescrs.isModule`; older supported Lake versions do not have it.
 -- Lake in nightly-2026-10-13 made `c` optional to support postponed code generation. Beam saves
 -- generated C, so that record shape must carry `some c` rather than leave the output absent.
 -- Select the record shape at elaboration time so save traces work across the supported range.
@@ -64,21 +60,9 @@ elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServe
       c? := some $c
       bc? := $bc
     } : ModuleOutputDescrs))
-  else if (← getEnv).contains moduleOutputIsModuleName then
+  else
     `(term| ({
       isModule := $isModule
-      olean := $olean
-      oleanServer? := $oleanServer
-      oleanPrivate? := $oleanPrivate
-      ilean := $ilean
-      ir? := $ir
-      c := $c
-      bc? := $bc
-    } : ModuleOutputDescrs))
-  else
-    `(term| (
-    let _ := $isModule
-    {
       olean := $olean
       oleanServer? := $oleanServer
       oleanPrivate? := $oleanPrivate
@@ -120,15 +104,6 @@ private def traceOptions (opts : LeanOptions) (caption := "opts") : BuildTrace :
     let opt := s!"-D{n}={v.asCliFlagValue}"
     t.mix <| .ofHash (pureHash opt) opt
 
--- Lean/Lake v4.28 compatibility shim: newer Lake versions let `addPureTrace` hash any `Hashable`
--- value directly, but v4.28 lacks that generic `ComputeHash` instance. When we drop v4.28 support,
--- replace this helper with the upstream-style `addPureTrace mod.name` / `addPureTrace mod.pkg.id?`.
-private def hashOfHashable [Hashable α] (a : α) : Hash :=
-  Hash.mix Hash.nil <| Hash.mk <| hash a
-
-private def addHashablePureTrace [ToString α] [Hashable α] (a : α) (caption := "pure") : JobM PUnit :=
-  addTrace <| .ofHash (hashOfHashable a) s!"{caption}: {toString a}"
-
 private def unsupportedZeroBuildSaveReason? (mod : Lake.Module) : Option String :=
   if !mod.leanArgs.isEmpty then
     some "Lake module uses batch-only moreLeanArgs"
@@ -159,12 +134,9 @@ private def buildLegacyDepTraceJob
       addLeanTrace
       addTrace <| sourceTrace mod.leanFile snapshot
       addTrace <| traceOptions setup.options "options"
-      -- Lake v4.29 added these identity inputs. Adding them on v4.28 changes the dependency
-      -- hash and makes Lake rebuild even when the saved artifacts are complete.
-      if !Lean.versionString.startsWith "4.28." then
-        addPureTrace setup.isModule "isModule"
-        addHashablePureTrace mod.name "Module.name"
-        addHashablePureTrace mod.pkg.id? "Package.id?"
+      addPureTrace setup.isModule "isModule"
+      addPureTrace mod.name "Module.name"
+      addPureTrace mod.pkg.id? "Package.id?"
       addPureTrace mod.leanArgs "Module.leanArgs"
       setTraceCaption s!"{mod.name.toString}:leanArts"
       return {

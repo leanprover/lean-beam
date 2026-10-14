@@ -308,7 +308,7 @@ assert_install_rejects_marker() {
 }
 
 rsync -a \
-  --exclude='.git/' \
+  --exclude='.git' \
   --exclude='.lake/' \
   --exclude='.beam/' \
   --exclude='.codex-worktrees/' \
@@ -467,21 +467,24 @@ assert_install_rejects_marker \
   'refusing to use non-file Beam install root marker'
 
 unsupported_install_err="$(mktemp "$tmp_root/install-unsupported-toolchain-XXXXXX")"
-if (
-  cd "$source_checkout"
-  bash scripts/install-beam.sh --toolchain leanprover/lean4:v4.26.0 < /dev/null > /dev/null 2>"$unsupported_install_err"
-); then
-  echo "expected install to fail when an unsupported toolchain is requested explicitly" >&2
-  cat "$unsupported_install_err" >&2
-  remove_tmp_file "$unsupported_install_err"
-  exit 1
-fi
-if ! grep -q 'unsupported Lean toolchain requested for install: leanprover/lean4:v4.26.0' "$unsupported_install_err"; then
-  echo "expected unsupported installer toolchain failure to name the rejected toolchain" >&2
-  cat "$unsupported_install_err" >&2
-  remove_tmp_file "$unsupported_install_err"
-  exit 1
-fi
+for unsupported_toolchain in \
+  leanprover/lean4:v4.26.0 \
+  leanprover/lean4:v4.28.0 leanprover/lean4:v4.28.1 leanprover/lean4:v4.28.0-rc1 \
+  leanprover/lean4:v4.29.0 leanprover/lean4:v4.29.1 leanprover/lean4:v4.29.0-rc1 \
+  leanprover/lean4:v4.30.0 leanprover/lean4:v4.30.1 leanprover/lean4:v4.30.0-rc2; do
+  if (
+    cd "$source_checkout"
+    bash scripts/install-beam.sh --toolchain "$unsupported_toolchain" \
+      < /dev/null > /dev/null 2>"$unsupported_install_err"
+  ); then
+    echo "expected install to reject unsupported toolchain: $unsupported_toolchain" >&2
+    cat "$unsupported_install_err" >&2
+    remove_tmp_file "$unsupported_install_err"
+    exit 1
+  fi
+  assert_contains "$unsupported_install_err" \
+    "unsupported Lean toolchain requested for install: $unsupported_toolchain"
+done
 remove_tmp_file "$unsupported_install_err"
 assert_not_exists "$BEAM_INSTALL_ROOT/current"
 assert_version_count "$BEAM_INSTALL_ROOT/versions" 0
@@ -1649,7 +1652,7 @@ fi
 
 unsupported_project_root="$tmp_root/external-project-unsupported"
 rsync -a --exclude='.beam/' tests/save_olean_project/ "$unsupported_project_root"/
-printf 'leanprover/lean4:v4.26.0\n' > "$unsupported_project_root/lean-toolchain"
+printf 'leanprover/lean4:v4.30.0-rc2\n' > "$unsupported_project_root/lean-toolchain"
 
 unsupported_doctor_out="$("$installed_lean_beam" --root "$unsupported_project_root" doctor)"
 if ! printf '%s\n' "$unsupported_doctor_out" | grep -q 'project toolchain admission: unsupported'; then
@@ -1685,7 +1688,7 @@ if wait "$unsupported_owner_pid"; then
   remove_tmp_file "$unsupported_err"
   exit 1
 fi
-if ! grep -q 'unsupported Lean toolchain: leanprover/lean4:v4.26.0' "$unsupported_err"; then
+if ! grep -q 'unsupported Lean toolchain: leanprover/lean4:v4.30.0-rc2' "$unsupported_err"; then
   echo "expected unsupported toolchain failure to name the rejected toolchain" >&2
   cat "$unsupported_err" >&2
   remove_tmp_file "$unsupported_err"

@@ -16,6 +16,11 @@ cleanup() {
 trap cleanup EXIT
 
 if ! bash scripts/validate-defensive.sh -- bash -c '
+  if [ ! -d .git ]; then
+    echo "expected defensive validation to retain its independent Git directory" >&2
+    exit 1
+  fi
+
   case "$HOME" in
     /tmp/beam-validate-*/home)
       ;;
@@ -78,5 +83,33 @@ fi
 
 if [ ! -d "$outside_root" ]; then
   echo "expected defensive validation wrapper to leave outside temp root intact" >&2
+  exit 1
+fi
+
+# Linked worktrees have a .git file, which must not replace the validation clone's .git directory.
+fixture_repo="$outside_root/repo"
+fixture_worktree="$outside_root/worktree"
+mkdir -p "$fixture_repo/scripts"
+cp scripts/validate-defensive.sh "$fixture_repo/scripts/"
+git -C "$fixture_repo" init -q
+git -C "$fixture_repo" add scripts/validate-defensive.sh
+git -C "$fixture_repo" -c user.name='Beam Defensive Test' \
+  -c user.email=beam-defensive-test@example.invalid \
+  commit --no-gpg-sign -q -m 'defensive validation fixture'
+git -C "$fixture_repo" worktree add -q -b linked "$fixture_worktree"
+fixture_head="$(git -C "$fixture_worktree" rev-parse HEAD)"
+(
+  cd "$fixture_worktree"
+  bash scripts/validate-defensive.sh -- bash -c '
+    if [ ! -d .git ]; then
+      echo "expected linked-worktree validation to retain an independent Git directory" >&2
+      exit 1
+    fi
+    git -c user.name="Beam Defensive Test" -c user.email=beam-defensive-test@example.invalid \
+      commit --allow-empty --no-gpg-sign -q -m "validation clone commit"
+  '
+)
+if [ "$(git -C "$fixture_worktree" rev-parse HEAD)" != "$fixture_head" ]; then
+  echo "defensive validation changed the source worktree HEAD" >&2
   exit 1
 fi

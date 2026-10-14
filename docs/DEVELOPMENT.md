@@ -685,26 +685,18 @@ not this maintainer note, as the source of truth. The shims below exist because 
 window spans Lean/Lake API changes; when that window changes, re-check these spots and prefer
 deleting obsolete compatibility code over preserving stale branches.
 
-- `Beam/LSP/RunAt.lean`, `Beam/LSP/Goals.lean`, `Beam/LSP/Todo.lean`, and
-  `Beam/LSP/Save.lean`:
-  `FileSource` instances route through `Lean.Lsp.fileSource p.textDocument` to bridge the older
-  `FileIdent` return type and the newer `DocumentUri` API.
-- `Beam/Broker/LakeSave.lean`: `hashOfHashable` / `addHashablePureTrace` exist because Lake
-  v4.28 lacks the newer generic `ComputeHash [Hashable α]` instance that makes plain
-  `addPureTrace mod.name` and `addPureTrace mod.pkg.id?` work upstream in newer Lean versions.
-- `Beam/LSP/Save.lean`: `emitCForSavedModule` selects between the older `Lean.IR.emitC` API and
-  the newer `Lean.Compiler.LCNF.emitC` API.
-- `Beam/LSP/Lib/DiagnosticsCompat.lean`: `collectCurrentDiagnosticsCompat` selects between the
-  older `EditableDocument.diagnosticsRef` API and the newer
-  `EditableDocumentCore.collectCurrentDiagnostics` API.
-- `Beam/Broker/Transport.lean`: the transport uses `Std.Internal.UV.TCP` directly because the async
-  TCP wrapper moved from `Std.Internal.Async.TCP` to `Std.Async.TCP`.
 - `Beam/Broker/LakeSave.lean`: `mkModuleOutputDescrsCompat` selects the supported Lake output
-  descriptors: `isModule` starts in v4.30, `irSig?` in v4.33, and optional `c?` in
+  descriptors: `irSig?` starts in v4.33 and optional `c?` in
   nightly-2026-10-13. `buildSaveTraceJobCompat` uses the full `ModulePreSetup.trace` from v4.33
-  onward and reconstructs the legacy trace on older releases, omitting module identity on v4.28.
-- `Beam/LSP/Save.lean`: `hasPostponedCompilation` checks the pending compiler declarations on
-  Lean versions with that extension. The final option alone misses declaration-scoped postponement.
+  onward and reconstructs the source, options, and module identity inputs on v4.31 and v4.32.
+  Raising the minimum supported release to v4.33 would remove that reconstruction and the output
+  descriptor branch without `irSig?`.
+
+Lean v4.31 is the minimum supported release. Worker diagnostics use
+`EditableDocumentCore.collectCurrentDiagnostics`, request `FileSource` instances return
+`DocumentUri`, and saves use `Lean.Compiler.LCNF.emitC` and the postponed-compilation extension
+directly. No pre-v4.31 API selection remains. The transport still uses `Std.Internal.UV.TCP`
+directly so interruption and timeout can cancel the exact pending receive.
 
 ## Process
 
