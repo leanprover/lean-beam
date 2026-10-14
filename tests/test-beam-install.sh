@@ -1119,6 +1119,9 @@ assert_contains_literal "$VIBE_HOME/config.toml" "command = \"$installed_mcp\""
 assert_contains_literal "$VIBE_HOME/config.toml" 'args = []'
 assert_contains_literal "$VIBE_HOME/config.toml" 'tool_timeout_sec = 600'
 
+run_step "inspect installed client configuration" \
+  python3 tests/test-client-doctor-installed.py "$installed_lean_beam" "$tmp_root"
+
 custom_codex_home="$tmp_root/codex-sandbox"
 custom_codex_mcp_stub_log="$tmp_root/mcp-stubs-custom-codex.log"
 run_step "register Codex MCP with custom home" \

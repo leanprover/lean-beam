@@ -135,6 +135,20 @@ SH
   printf '|HOME=%s' "${HOME:-}"
   printf '\n'
 } >> "$BEAM_TEST_MCP_STUB_LOG"
+if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "add" ]; then
+  python3 - "$HOME/.claude.json" "${7:?}" <<'PY_CLAUDE'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+config = json.loads(path.read_text()) if path.exists() else {}
+config.setdefault("mcpServers", {})["lean-beam"] = {
+    "type": "stdio", "command": sys.argv[2], "args": [],
+}
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(config))
+PY_CLAUDE
+fi
 exit 0
 SH
   chmod +x "$stub_bin/codex" "$stub_bin/claude"

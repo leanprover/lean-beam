@@ -155,6 +155,18 @@ Current Beam coverage includes:
 - MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, self-check, released
   official-client interoperability, and external legacy/modern conformance coverage
 
+Read-only client inspection is covered by
+[tests/test-client-doctor.py](../tests/test-client-doctor.py), run by `tests/test-beam-fast.sh` after
+building `beam-cli`. It exercises all five clients through the public wrapper with fake homes,
+installer home overrides, JSON/TOML/JSONC input, partial config layers, disabled registrations,
+installed-runtime metadata, cached Pi package manifests, OpenCode merging, compact/verbose output,
+and diagnostic exit codes. Filesystem snapshots detect writes,
+executable sentinels detect configured/client/toolchain command launches, and secret sentinels
+detect config or exception-text disclosure. Run it directly after `lake build beam-cli` when
+changing client discovery, parsing, findings, or rendering. The install suite also runs
+[tests/test-client-doctor-installed.py](../tests/test-client-doctor-installed.py) against the published
+CLI after installing all five Lean skills and registering Codex, Claude, and Vibe MCP servers.
+
 Run the Beam surface when the change touches broker protocol or transport, request/progress/diagnostics streams, daemon session or restart logic, wrapper CLI behavior, bundle resolution, install layout, `doctor`, `validated-toolchains`, save replay, save barriers, and MCP.
 
 For save-only work, use [tests/test-beam-save-olean.sh](../tests/test-beam-save-olean.sh) as the

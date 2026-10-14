@@ -38,6 +38,7 @@ def usage : String :=
     "  lean-beam validated-toolchains",
     "  lean-beam compatible-release-lines",
     "  lean-beam [--root PATH] doctor",
+    "  lean-beam [--root PATH] doctor clients [codex|claude|pi|opencode|vibe] [--config PATH] [--json | --verbose]",
     "  lean-beam [--root PATH] open-files",
     "  lean-beam [--root PATH] cancel <request-id>",
     "  lean-beam [--root PATH] stats",
