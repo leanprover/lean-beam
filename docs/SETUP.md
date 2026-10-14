@@ -373,6 +373,10 @@ For Pi, `--config` selects only a settings JSON file; package manifests are outs
 Relative `--config` paths resolve from the command's working directory. The JSON `scope` distinguishes `explicitConfigFile` from
 `userAndWorkspaceFiles`.
 
+Each JSON client report records separate `mcp` and `skill` states: `checked`, `notConfigured`,
+`notApplicable`, `outOfScope`, `unverified`, or `error`. Failed inspection is distinct from absence;
+a later successful check cannot erase an earlier error or unverified source.
+
 Finding statuses are `ok`, `warning`, `error`, `unknown`, and `notConfigured`. Exit status is `0` when
 the requested inspection has no errors or unknowns, `1` for known errors, and `2` for incomplete
 inspection or invalid command arguments; errors take precedence over unknown findings. Exit `0`
@@ -721,8 +725,8 @@ is managed by that toolchain's distributor.
 | Claude Code skill home | `$HOME/.claude` | interactive `change`, or `CLAUDE_HOME` |
 | Claude Code MCP config | `$HOME/.claude.json` | interactive `change`, `BEAM_CLAUDE_MCP_CONFIG`, or `--claude-mcp-config` |
 | Pi Agent skill home | `$HOME/.pi/agent` | interactive `change`, `PI_CODING_AGENT_DIR`, or `--pi-home` |
-| OpenCode config directory | `$HOME/.config/opencode` | interactive `change`, `OPENCODE_CONFIG_DIR`, or `--opencode-config-dir` |
-| OpenCode skill home | `$HOME/.config/opencode/skills` | derived from the OpenCode config directory |
+| OpenCode config directory | `${XDG_CONFIG_HOME:-$HOME/.config}/opencode` | interactive `change`, `OPENCODE_CONFIG_DIR`, or `--opencode-config-dir` |
+| OpenCode skill home | `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills` | derived from the OpenCode config directory |
 | Mistral Vibe home | `$HOME/.vibe` | interactive `change`, `VIBE_HOME`, or `--vibe-home` |
 | Mistral Vibe skill home | `$HOME/.vibe/skills` | derived from the Mistral Vibe home |
 | Mistral Vibe MCP config | `$HOME/.vibe/config.toml` | derived from the Mistral Vibe home |

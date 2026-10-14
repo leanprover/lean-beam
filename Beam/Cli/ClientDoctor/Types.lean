@@ -40,6 +40,53 @@ def Status.name : Status → String
 
 instance : ToJson Status := ⟨fun status => toJson status.name⟩
 
+/-- Configuration selection uses roles, independently of their display labels. -/
+inductive SourceRole where
+  | userConfig | userSettings | projectConfig | projectSettings | localSettings
+  | projectDirectory | pathOverride | directoryOverride | explicitConfig | leanSkill | packageManifest
+  deriving BEq, Repr, Inhabited
+
+def SourceRole.description : SourceRole → String
+  | .userConfig => "user configuration"
+  | .userSettings => "user settings"
+  | .projectConfig => "project configuration"
+  | .projectSettings => "project settings"
+  | .localSettings => "local settings"
+  | .projectDirectory => "project .opencode configuration"
+  | .pathOverride => "OPENCODE_CONFIG override"
+  | .directoryOverride => "OPENCODE_CONFIG_DIR configuration"
+  | .explicitConfig => "explicit config file"
+  | .leanSkill => "Lean skill"
+  | .packageManifest => "Pi package manifest"
+
+/-- Integration state is recorded during inspection, rather than inferred from finding codes. -/
+inductive IntegrationState where
+  | notConfigured | notApplicable | outOfScope | checked | unverified | error
+  deriving BEq, Repr, Inhabited
+
+def IntegrationState.name : IntegrationState → String
+  | .notConfigured => "notConfigured"
+  | .notApplicable => "notApplicable"
+  | .outOfScope => "outOfScope"
+  | .checked => "checked"
+  | .unverified => "unverified"
+  | .error => "error"
+
+instance : ToJson IntegrationState := ⟨fun state => toJson state.name⟩
+
+/-- A successful check cannot erase a failed or incomplete check in another source. -/
+def IntegrationState.observe (state : IntegrationState) (status : Status) : IntegrationState :=
+  match state, status with
+  | .outOfScope, _ | .notApplicable, _ => state
+  | .error, _ | _, .error => .error
+  | .unverified, _ | _, .unknown => .unverified
+  | _, .ok | _, .warning => .checked
+  | _, .notConfigured => state
+
+inductive CheckArea where
+  | general | mcp | skill
+  deriving BEq, Repr
+
 structure Finding where
   code : String
   status : Status
@@ -51,12 +98,21 @@ structure Finding where
 
 structure Source where
   path : String
-  purpose : String
+  role : SourceRole
+  conditional : Bool := false
   state : Status
-  deriving ToJson, Repr
+  deriving Repr
+
+def Source.purpose (source : Source) : String :=
+  source.role.description ++ (if source.conditional then " (trust/approval-dependent)" else "")
+
+instance : ToJson Source := ⟨fun source => Json.mkObj [
+  ("path", toJson source.path), ("purpose", toJson source.purpose), ("state", toJson source.state)]⟩
 
 structure ClientReport where
   client : Client
+  mcp : IntegrationState := .notConfigured
+  skill : IntegrationState := .notConfigured
   sources : Array Source := #[]
   findings : Array Finding := #[]
   /-- Discovery is separate from correctness: a malformed config still discovers a client. -/

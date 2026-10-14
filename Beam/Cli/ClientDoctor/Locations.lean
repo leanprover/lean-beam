@@ -11,7 +11,7 @@ namespace Beam.Cli.ClientDoctor
 structure ConfigSource where
   path : System.FilePath
   format : Format
-  purpose : String := "user configuration"
+  role : SourceRole := .userConfig
   conditional : Bool := false
   settingsOnly : Bool := false
 
@@ -41,9 +41,9 @@ def workspaceDirectories (context : Context) : IO (Array System.FilePath) := do
   return dirs.reverse
 
 private def config (path : System.FilePath) (format : Format)
-    (purpose : String := "user configuration") (conditional : Bool := false)
+    (role : SourceRole := .userConfig) (conditional : Bool := false)
     (settingsOnly : Bool := false) : ConfigSource :=
-  { path, format, purpose, conditional, settingsOnly }
+  { path, format, role, conditional, settingsOnly }
 
 def locations (context : Context) (client : Client)
     (dirs : Array System.FilePath) : Locations := Id.run do
@@ -57,24 +57,24 @@ def locations (context : Context) (client : Client)
       for dir in dirs do
         if dir / ".codex" != home then
           result := { result with configs := result.configs.push (
-            config (dir / ".codex" / "config.toml") .toml "project configuration (trust-dependent)" true) }
+            config (dir / ".codex" / "config.toml") .toml .projectConfig true) }
         result := { result with skills := result.skills.push (
           dir / ".agents" / "skills" / "lean-beam" / "SKILL.md") }
   | .claude =>
       result := { result with configs := #[
         config (context.location "BEAM_CLAUDE_MCP_CONFIG" (context.userHome / ".claude.json")) .json,
-        config (home / "settings.json") .json "user settings" false true] }
+        config (home / "settings.json") .json .userSettings false true] }
       for dir in dirs do
         result := { result with configs := result.configs ++ #[
-          config (dir / ".mcp.json") .json "project MCP configuration (approval-dependent)" true,
-          config (dir / ".claude" / "settings.json") .json "project settings" false true,
-          config (dir / ".claude" / "settings.local.json") .json "local settings" false true] }
+          config (dir / ".mcp.json") .json .projectConfig true,
+          config (dir / ".claude" / "settings.json") .json .projectSettings false true,
+          config (dir / ".claude" / "settings.local.json") .json .localSettings false true] }
         result := { result with skills := result.skills.push (
           dir / ".claude" / "skills" / "lean-beam" / "SKILL.md") }
   | .pi =>
       result := { result with configs := #[
-        config (home / "settings.json") .json "user settings" false true,
-        config (context.workspace / ".pi" / "settings.json") .json "project settings (trust-dependent)" true true] }
+        config (home / "settings.json") .json .userSettings false true,
+        config (context.workspace / ".pi" / "settings.json") .json .projectSettings true true] }
       result := { result with skills := result.skills.push (
         context.workspace / ".pi" / "skills" / "lean-beam" / "SKILL.md") }
       result := { result with skills := result.skills.push (
@@ -89,26 +89,26 @@ def locations (context : Context) (client : Client)
         result := { result with configs := result.configs.push (config (globalHome / suffix) .jsonc) }
       if let some path := context.env? "OPENCODE_CONFIG" then
         result := { result with configs := result.configs.push (
-          config (System.FilePath.mk path) .jsonc "OPENCODE_CONFIG override") }
+          config (System.FilePath.mk path) .jsonc .pathOverride) }
       for dir in dirs do
         for suffix in ["opencode.json", "opencode.jsonc"] do
           result := { result with configs := result.configs.push (
-            config (dir / suffix) .jsonc "project configuration") }
+            config (dir / suffix) .jsonc .projectConfig) }
       for dir in dirs do
         for suffix in ["opencode.json", "opencode.jsonc"] do
           result := { result with configs := result.configs.push (
-            config (dir / ".opencode" / suffix) .jsonc "project .opencode configuration") }
+            config (dir / ".opencode" / suffix) .jsonc .projectDirectory) }
         result := { result with skills := result.skills.push (
           dir / ".opencode" / "skills" / "lean-beam" / "SKILL.md") }
       if home != globalHome then
         for suffix in ["opencode.json", "opencode.jsonc"] do
           result := { result with configs := result.configs.push (
-            config (home / suffix) .jsonc "OPENCODE_CONFIG_DIR configuration") }
+            config (home / suffix) .jsonc .directoryOverride) }
       result := { result with skills := result.skills.push (globalHome / "skills" / "lean-beam" / "SKILL.md") }
   | .vibe =>
       result := { result with configs := #[
         config (home / "config.toml") .toml,
-        config (context.workspace / ".vibe" / "config.toml") .toml "project configuration (trust-dependent)" true] }
+        config (context.workspace / ".vibe" / "config.toml") .toml .projectConfig true] }
       result := { result with skills := result.skills.push (
         context.workspace / ".vibe" / "skills" / "lean-beam" / "SKILL.md") }
   -- The same file can be both a home and workspace candidate. Inspect it only once.

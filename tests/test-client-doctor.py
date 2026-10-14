@@ -111,6 +111,69 @@ class ClientDoctorTest(unittest.TestCase):
         self.has_code(report, "mcp.notApplicable", "notConfigured")
         self.has_code(report, "skill.notConfigured", "notConfigured")
 
+    def test_empty_pi_summary_does_not_claim_an_integration(self):
+        report = self.run_doctor("pi")
+        self.assertEqual(report["clients"][0]["mcp"], "notApplicable")
+        self.assertEqual(report["clients"][0]["skill"], "notConfigured")
+        text = self.run_doctor("pi", as_json=False).stdout
+        self.assertIn("pi: not configured", text)
+        self.assertNotIn("CLI skill integration", text)
+
+    def test_failed_config_inspection_is_not_absence(self):
+        config = self.home / ".codex/config.toml"
+        self.write(config, "[broken\n")
+        report = self.run_doctor("codex", expected=1)
+        self.assertEqual(report["clients"][0]["mcp"], "error")
+        self.assertNotIn("mcp.notConfigured", {f["code"] for f in self.findings(report)})
+        text = self.run_doctor("codex", expected=1, as_json=False).stdout
+        self.assertIn("MCP config needs attention", text)
+        self.assertNotIn("MCP not configured", text)
+        config.unlink()
+        config.symlink_to(self.root / "missing.toml")
+        report = self.run_doctor("codex", expected=2)
+        self.assertEqual(report["clients"][0]["mcp"], "unverified")
+        self.assertNotIn("mcp.notConfigured", {f["code"] for f in self.findings(report)})
+
+    def test_failed_skill_inspection_is_not_absence(self):
+        skill = self.home / ".pi/agent/skills/lean-beam/SKILL.md"
+        self.write(skill, "")
+        report = self.run_doctor("pi", expected=1)
+        self.assertEqual(report["clients"][0]["skill"], "error")
+        text = self.run_doctor("pi", expected=1, as_json=False).stdout
+        self.assertIn("Lean skill needs attention", text)
+        self.assertNotIn("Lean skill not found", text)
+        skill.unlink()
+        skill.symlink_to(self.root / "missing-skill")
+        report = self.run_doctor("pi", expected=2)
+        self.assertEqual(report["clients"][0]["skill"], "unverified")
+
+    def test_opencode_disabled_only_entry_is_known_disabled(self):
+        self.json_file(self.workspace / "opencode.json", {"mcp": {"lean-beam": {"enabled": False}}})
+        report = self.run_doctor("opencode", expected=1)
+        self.has_code(report, "mcp.disabled", "error")
+        self.assertNotIn("config.partial", {f["code"] for f in self.findings(report)})
+
+    def test_inline_opencode_override_prevents_claiming_absence(self):
+        self.env["OPENCODE_CONFIG_CONTENT"] = "{}"
+        report = self.run_doctor("opencode", expected=2)
+        self.assertEqual(report["clients"][0]["mcp"], "unverified")
+        self.assertNotIn("mcp.notConfigured", {f["code"] for f in self.findings(report)})
+
+    def test_successful_checks_do_not_erase_unverified_selection(self):
+        self.codex_config()
+        config = self.home / ".codex/config.toml"
+        self.write(config, 'profile = "alternate"\n' + config.read_text())
+        report = self.run_doctor("codex", expected=2)
+        self.has_code(report, "launch.file", "ok")
+        self.assertEqual(report["clients"][0]["mcp"], "unverified")
+        self.write(self.home / ".agents/skills/lean-beam/SKILL.md", "Lean skill\n")
+        broken = self.home / ".codex/skills/lean-beam/SKILL.md"
+        broken.parent.mkdir(parents=True)
+        broken.symlink_to(self.root / "missing-skill")
+        report = self.run_doctor("codex", expected=2)
+        self.has_code(report, "skill.readable", "ok")
+        self.assertEqual(report["clients"][0]["skill"], "unverified")
+
     def test_installer_shapes_for_all_five_clients(self):
         self.codex_config()
         self.json_file(self.home / ".claude.json", {
