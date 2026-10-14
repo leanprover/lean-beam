@@ -83,6 +83,18 @@ def main():
         run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "90", "--",
              REPO / ".lake/build/bin" / f"beam-mcp-protocol-test{EXE}", "--self-check-tests"],
             env=build_env)
+        # A failed/interrupted prior staging operation must be repairable without rewriting
+        # intact libraries. Exercise an existing destination, including DLL replacement.
+        suffix = "dll" if os.name == "nt" else "dylib" if os.uname().sysname == "Darwin" else "so"
+        runtime_dir = REPO / ".lake" / "build" / ("bin" if os.name == "nt" else "lib/lean")
+        stub = runtime_dir / f"libInit_shared.{suffix}"
+        intact = {p: p.stat().st_mtime_ns for p in runtime_dir.glob(f"lib*shared*.{suffix}") if p != stub}
+        stub.write_bytes(b"incomplete shared library")
+        run([lean_prefix / "bin" / f"lake{EXE}", "--no-cache", "build", "beamSharedRuntime"], env=build_env)
+        sdk_dir = lean_prefix / ("bin" if os.name == "nt" else "lib/lean")
+        assert stub.read_bytes() == (sdk_dir / stub.name).read_bytes()
+        assert all(p.stat().st_mtime_ns == timestamp for p, timestamp in intact.items())
+        assert not list(runtime_dir.glob("*.beam-stage-*.tmp"))
         standalone = REPO / ".lake" / "build" / "bin" / f"beam-cli{EXE}"
         standalone_hash = hashlib.sha256(standalone.read_bytes()).hexdigest()
         config_trace = REPO / ".lake" / "config" / "0" / "lakefile.olean.trace"

@@ -12,7 +12,7 @@ namespace Beam.Runtime
 /-- Lean/Lake's shared-library dependency closure, including the split-library stubs. -/
 def sharedLibNames : List String :=
   ["Init_shared", "leanshared_1", "leanshared_2", "leanshared", "Lake_shared"].map
-    fun name => s!"lib{name}.{Lake.sharedLibExt}"
+    fun name => Lake.nameToSharedLib name true
 
 /-- Windows loads DLLs beside the executable; Unix uses the executable's relative runtime libdir. -/
 def buildSharedLibDir (buildDir : System.FilePath) : System.FilePath :=

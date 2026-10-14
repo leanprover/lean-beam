@@ -55,6 +55,7 @@ includes those libraries in the immutable runtime, and each target-toolchain bun
 own matching set. Commands locate the libraries relative to their executable; the source checkout
 and its build toolchain are not needed to load the installed commands. Native Lean distributions
 use the containing toolchain's libraries instead; see [TOOLCHAIN_BUNDLING.md](TOOLCHAIN_BUNDLING.md).
+Executable size measurements exclude the shared-library set.
 
 The agent flags install the bundled Lean skill into the corresponding agent home. Rocq goal
 probes and the Rocq skill are installed separately from the frozen [rocq-beam](https://github.com/ejgallego/rocq-beam) project.

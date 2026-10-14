@@ -64,6 +64,23 @@ Preferred maintainer entrypoints:
   process when the probe loop is finished
 - contributor process questions: [CONTRIBUTING.md](../CONTRIBUTING.md)
 
+### Executable Linking And Runtime Libraries
+
+The three product executables use Lake's `moreLinkLibs` and `Dynlib` interfaces. The build derives
+Lake's shared-library path and dependency graph from `LakeInstall.ofLean`; it also supplies the
+core Lean libraries omitted by older supported Lake metadata. On Windows, `supportInterpreter`
+selects Lake's shared Lean linker flags, so the CLI enables it there too.
+
+The build stages matching libraries beside its outputs and publishes each complete file by
+rename. Prebuilt split-library stubs bypass Lake's artifact cache: equal stubs in Lean 4.29 can
+otherwise cause duplicate writes to the same read-only cache artifact. Unchanged libraries keep
+their existing files. The bootstrap shell installer and typed Lean install layout each describe
+the runtime payload because the installer must work before the CLI is built; installation and
+bundle tests check that the layouts agree.
+
+Size measurements must distinguish the executable files from the library set. Native SDK installs
+reuse Lean's existing libraries; standalone installs and target-toolchain bundles carry their own.
+
 ## Human And AI Roles
 
 - README is for humans who want to understand and use the project

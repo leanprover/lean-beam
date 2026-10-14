@@ -68,6 +68,7 @@ shared libraries. Unix executables use a relative `lib/lean` search path; Window
 matching DLLs from `bin`. The install script does not copy another Lean runtime or retain a
 search path into the build machine's toolchain. Keep the complete Lean shared-library set,
 including the split-library stubs, with the installation when relocating or packaging it.
+
 `lean-beam version` and `lean-beam --root PROJECT doctor` read this installed record. The payload
 identity also participates in session configuration: replacing it requires stopping the old
 foreground owner before attaching to a new session.
