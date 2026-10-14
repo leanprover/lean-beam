@@ -105,6 +105,35 @@ versions fail before Beam fingerprints or builds their runtime. Custom registrat
 an exact release, dated nightly, or linked local installation; registering a moving channel is
 rejected. Stop the existing Beam session before changing the effective toolchain.
 
+For Elan-managed toolchain selection, Beam follows the same rules as `lake build` launched from
+that root with the same environment. The standalone wrapper adds these runtime requirements:
+
+| Behavior | Elan-launched `lake build` | Standalone Beam |
+| --- | --- | --- |
+| Selection directory | The command's current directory | The canonical workspace root, inferred or supplied with `--root` |
+| Selection interface | Elan's launcher selects and starts Lake directly | Beam queries the Elan 4.0 JSON interface |
+| Admission | Elan can launch any valid available or downloadable toolchain | The concrete toolchain must be validated, release-line-compatible, or explicitly custom |
+| Matching components | Lake uses its selected Lean installation | Beam also locates or builds and qualifies a matching plugin and helper bundle |
+| Selection lifetime | One Lake invocation | One running CLI session or cached MCP workspace |
+
+A directory override below the workspace root affects `lake build` launched from that directory,
+but does not change Beam's root-level selection. To select a compiler explicitly for both tools,
+use the same environment override from the project root:
+
+```bash
+ELAN_TOOLCHAIN=leanprover/lean4:v4.35.0 lake build
+ELAN_TOOLCHAIN=leanprover/lean4:v4.35.0 lean-beam serve
+```
+
+Elan also accepts `lake +4.35.0 build`; the standalone Beam wrapper uses `ELAN_TOOLCHAIN` for this
+choice. New Lake invocations reselect their toolchain. Beam keeps a running runtime's compiler
+and plugin together: stop and restart `lean-beam serve` after configuration changes. For MCP, drop
+the workspace to re-read project or directory settings; restart the MCP server to change its
+inherited `ELAN_TOOLCHAIN`. See [MCP runtime setup](MCP.md#runtime-setup).
+
+These distinctions concern the standalone wrapper. The bundled distribution is tracked separately
+in [#262](https://github.com/leanprover/lean-beam/pull/262).
+
 The repository's [`lean-toolchain`](../lean-toolchain) is the default toolchain prebuilt by the
 installer. If your target projects use another validated toolchain or a compatible canonical
 RC/patch variant, prebuild those bundles by exact name:

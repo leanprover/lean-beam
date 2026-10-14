@@ -304,7 +304,8 @@ Use `lean-beam`, not raw JSON and not raw LSP.
   to its registry generation and never start a daemon implicitly
 - owns stopping and descriptor handling
 - captures Elan's effective workspace toolchain with `elan dump-state --no-net`, honoring
-  `ELAN_TOOLCHAIN` and directory overrides; requires Elan 4.0 or newer
+  `ELAN_TOOLCHAIN` and directory overrides at the canonical workspace root; overrides below that
+  root do not affect selection; requires Elan 4.0 or newer
 - resolves moving channels once through `elan dump-state` with the captured selector, using the
   installed fallback only after a live lookup failure; admission applies to the concrete release,
   and `--custom-toolchain` cannot register a moving channel
