@@ -15,7 +15,9 @@ namespace Beam.Broker
 handler without importing the handler module into the broker. -/
 structure DiagnosticsBarrierResult where
   version : Nat
-  elaborationComplete : Bool
+  /-- Whether a snapshot reports a fatal stop preventing further file processing.
+      Ordinary elaboration errors do not set this flag. -/
+  hasFatalSnapshot : Bool
   directImports : Array String := #[]
   saveReadiness : Beam.LSP.Save.SaveReadinessResult
   deriving Lean.FromJson, Lean.ToJson

@@ -23,7 +23,9 @@ def method : String := "$/beam/waitForDiagnostics"
 
 structure Result where
   version : Nat
-  elaborationComplete : Bool
+  /-- Whether a snapshot reports a fatal stop preventing further file processing.
+      Ordinary elaboration errors do not set this flag. -/
+  hasFatalSnapshot : Bool
   directImports : Array String := #[]
   saveReadiness : Save.SaveReadinessResult
   deriving FromJson, ToJson
@@ -47,7 +49,7 @@ def resultOfDocument
     (doc : Lean.Server.FileWorker.EditableDocument)
     (saveReadiness : Save.SaveReadinessResult) : Result := {
   version := doc.meta.version
-  elaborationComplete := !(Lean.Language.toSnapshotTree doc.initSnap).getAll.any (·.isFatal)
+  hasFatalSnapshot := (Lean.Language.toSnapshotTree doc.initSnap).getAll.any (·.isFatal)
   directImports := importsOfHeader ⟨doc.initSnap.stx⟩
   saveReadiness
 }
