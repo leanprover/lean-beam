@@ -29,10 +29,30 @@ version from `lean-beam update`, the internal broker `update_file` operation, or
 `lean-beam sync`, the internal broker `sync_file` operation, and MCP `lean_sync` also return the
 current version when the caller needs the diagnostics/readiness barrier.
 
-Beam checks Lean's accepted document using a document hash after Lean normalizes CRLF line endings
-to LF. A separate raw source hash tracks saved bytes for document versioning and freshness checks;
-line-ending-only edits still advance the version. Lake trace hashes use `Lake.Hash.ofText`, which
-also normalizes CRLF to LF. Sync and save preserve the source file's saved bytes.
+Each captured source snapshot carries three internal hash representations for two text identities:
+the saved source text and the document text accepted by Lean after CRLF line endings become LF.
+
+| Representation | Input and consumer |
+| --- | --- |
+| `rawSourceHash` | Hash of the unnormalized saved source; controls document versions, disk freshness and checkpoint invalidation. |
+| `documentHash` | Hash of Lean's normalized document; checks that diagnostics and saved artifacts belong to the accepted document version and text. |
+| `lakeTraceHash` | `Lake.Hash.ofText` of the saved source; supplies the normalized source hash Lake expects in build traces. |
+
+The document and Lake hashes share normalized input, but Lake applies its own hash mixing. They
+are different representations rather than independent content identities. Beam keeps the result
+of Lake's supported `Hash.ofText` operation instead of duplicating its hashing recipe or making
+the LSP worker depend on Lake's hash representation.
+
+`DocumentState.FileSnapshot.ofText` computes all three values from one captured source text. Both
+the file snapshot and tracked document state require an explicit document hash; it cannot default
+to the raw source hash, since those values differ when CRLF normalization changes the text. An
+accepted snapshot carries these values together through sync and save, including when concurrent
+file reads finish out of order.
+
+For an LF-to-CRLF edit, the raw source hash changes, the document version advances, and the previous
+checkpoint is invalidated. The normalized document and Lake source trace identities stay the same.
+Sync and save preserve the source file's saved bytes, and a valid saved artifact family can still
+be replayed by Lake without recompilation.
 
 When the broker rejects a position- or range-bound request because the supplied version is stale,
 the failure uses `contentModified` and includes `error.data.reason = "documentVersionMismatch"`.

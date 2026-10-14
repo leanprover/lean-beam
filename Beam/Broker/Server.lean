@@ -798,14 +798,7 @@ private def readFileSyncSnapshot
     path
     uri
     text
-    file := {
-      rawSourceHash := hash text
-      documentHash := hash (if backend == .lean then text.crlfToLf else text)
-      lakeTraceHash := Lake.Hash.ofText text
-      textMTime
-      readSeq
-      moduleName?
-    }
+    file := DocumentState.FileSnapshot.ofText backend text textMTime readSeq moduleName?
   }
 
 private def workspaceForSnapshot
