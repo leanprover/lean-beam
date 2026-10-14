@@ -56,11 +56,29 @@ def captureContext (opts : CliOptions) : IO Context := do
     if let some value ← IO.getEnv name then variables := variables.push (name, value)
   return { workspace, userHome := System.FilePath.mk userHome, variables }
 
+/-- Keep unexpected parser/filesystem failures local to one client and redact exception text. -/
+def inspectSafely (client : Client) (explicitConfig : Bool)
+    (action : IO ClientReport) : IO ClientReport := do
+  try action
+  catch _ =>
+    return {
+      client
+      discovered := true
+      mcp := if client == .pi then .notApplicable else .unverified
+      skill := if explicitConfig then .outOfScope else .unverified
+      findings := #[{
+        code := "inspection.failed"
+        status := .unknown
+        message := "Inspection of this client could not complete; configuration contents and exception text are omitted."
+        remediation? := some "Review this client's configuration and retry."
+      }] }
+
 def inspect (context : Context) (options : Options) : IO Report := do
   let dirs ← workspaceDirectories context
   let mut clients := #[]
   for client in options.client?.map (#[·]) |>.getD Client.all do
-    let report ← inspectClient context client dirs options.config?
+    let report ← inspectSafely client options.config?.isSome
+      (inspectClient context client dirs options.config?)
     if options.client?.isSome || report.discovered then clients := clients.push report
   return {
     workspace := context.workspace.toString
