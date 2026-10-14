@@ -1819,15 +1819,15 @@ private def checkPipeBackpressure : IO Unit := do
   try
     Beam.Mcp.SelfCheck.Pipe.nonblocking stdin
     let bytes := ByteArray.mk (Array.replicate (4 * 1024 * 1024) 120)
-    let deadline := (← IO.monoMsNow) + 100
     let mut offset := 0
     let mut blocked := false
-    while (← IO.monoMsNow) < deadline do
+    -- Fill the finite pipe until the first would-block result. A short wall-clock loop can
+    -- expire before its first write on a busy runner; the external watchdog catches blocking.
+    while offset < bytes.size && !blocked do
       let count ← Beam.Mcp.SelfCheck.Pipe.write stdin bytes offset.toUSize
       offset := offset + count.toNat
       if count == 0 then
         blocked := true
-        IO.sleep 1
     require "nonblocking write reports backpressure without waiting for a reader"
       (blocked && offset > 0 && offset < bytes.size)
   finally
