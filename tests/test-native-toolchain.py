@@ -23,9 +23,9 @@ watchdog = importlib.util.module_from_spec(watchdog_spec)
 watchdog_spec.loader.exec_module(watchdog)
 
 
-def run(args, *, cwd=REPO, env=None, ok=True):
+def run(args, *, cwd=REPO, env=None, ok=True, timeout=600):
     result = subprocess.run([str(a) for a in args], cwd=cwd, env=env,
-                            text=True, encoding="utf-8", capture_output=True, timeout=600)
+                            text=True, encoding="utf-8", capture_output=True, timeout=timeout)
     if ok and result.returncode:
         raise AssertionError(f"{args}: {result.returncode}\n{result.stdout}\n{result.stderr}")
     return result
@@ -210,7 +210,21 @@ def main():
             trap = shim / forbidden_command
             trap.write_text(f'#!/bin/sh\necho "unexpected {forbidden_command} invocation" >&2\nexit 99\n')
             trap.chmod(0o755)
-    env["PATH"] = str(shim) + os.pathsep + str(relocated / "bin") + os.pathsep + env["PATH"]
+    if os.name == "nt":
+        # The installed runtime must work without the build SDK, Git Bash, or elan on PATH.
+        env["PATH"] = os.pathsep.join([str(relocated / "bin"),
+                                      str(Path(os.environ["SystemRoot"]) / "System32")])
+    else:
+        env["PATH"] = str(shim) + os.pathsep + str(relocated / "bin") + os.pathsep + env["PATH"]
+    nested = project / "nested directory"
+    nested.mkdir()
+    inferred = json.loads(run([beam, "status"], cwd=nested, env=env, timeout=20).stdout)
+    assert inferred["ok"] and inferred["result"]["state"] == "absent", inferred
+    assert Path(inferred["result"]["workspace"]).samefile(project), inferred
+    # A filesystem root has no parent on POSIX or Windows. Project discovery must stop there.
+    filesystem_root = Path(project.anchor)
+    missing = run([beam, "status"], cwd=filesystem_root, env=env, ok=False, timeout=20)
+    assert missing.returncode != 0 and "could not infer project root" in missing.stderr, missing
     doctor = run([beam, "--root", project, "doctor"], env=env).stdout
     assert "bundle source: toolchain" in doctor and metadata["payloadHash"] in doctor, doctor
     native_help = run([beam, "--help"], env=env).stdout
@@ -385,7 +399,9 @@ def main():
                 unsafe.communicate(timeout=10)
 
     assert real_elan, "selector tests require elan (the no-selector workflow above must not invoke it)"
-    if os.name != "nt":
+    if os.name == "nt":
+        env["PATH"] = str(Path(real_elan).parent) + os.pathsep + env["PATH"]
+    else:
         elan.unlink()
     env["ELAN_HOME"] = str(scratch / "elan-home")
     run([real_elan, "toolchain", "link", "native-match", relocated], env=env)

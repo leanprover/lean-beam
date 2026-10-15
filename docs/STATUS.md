@@ -89,6 +89,8 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 ### Coverage
 - repo-local regression coverage around isolation, stale state, cancellation, and handle invalidation
 - broker, wrapper, install, MCP, and CI coverage described in [docs/TESTING.md](TESTING.md)
+- Windows x86_64 coverage for the [native toolchain build and bundled runtime](TOOLCHAIN_BUNDLING.md);
+  the checkout installer and shell wrappers target Linux and macOS
 
 ## Operational Notes
 
