@@ -9,6 +9,7 @@ import Lean.Server.Requests
 import Beam.LSP.Lib.Goal
 import Beam.LSP.Lib.Request
 import Beam.LSP.RunAt.Handles
+import Beam.LSP.RunAt.Profile
 
 open Lean
 open Lean.Elab
@@ -61,6 +62,7 @@ structure Params where
   position : Lean.Lsp.Position
   text : String
   storeHandle? : Option Bool := none
+  profile? : Option Bool := none
   deriving FromJson, ToJson
 
 instance : Lean.Lsp.FileSource Params where
@@ -73,6 +75,7 @@ structure RunWithParams where
   text : String
   storeHandle? : Option Bool := none
   linear? : Option Bool := none
+  profile? : Option Bool := none
   deriving FromJson, ToJson
 
 instance : Lean.Lsp.FileSource RunWithParams where
@@ -110,6 +113,7 @@ Current frozen response semantics:
 - proof goals are structured into target, hypotheses, and optional case name
 - solved proof states use `proofState.goals = #[]`
 - `traces` stays as a plain array; empty traces are represented as `#[]`
+- opt-in `profile` reports bounded timing metadata and replaces rendered `traces` with `#[]`
 - positions outside the document produce transport `invalidParams`
 - in-document positions with no usable command/proof snapshot may also produce transport `invalidParams`
 - in-document whitespace/comment positions may still resolve to a nearby execution basis
@@ -125,6 +129,7 @@ structure Result where
   traces : Array String := #[]
   handle? : Option Handle := none
   proofState? : Option ProofState := none
+  profile? : Option Profile.Result := none
   deriving FromJson, ToJson
 
 def mkMessage (severity : MessageSeverity) (text : String) : Message :=
@@ -269,15 +274,29 @@ private def oneCommandOnlyResult (err : String) : Result :=
   errorResult
     s!"{runAtSupportsOneCommandOnlyCode}: command-mode runAt accepts exactly one Lean command, not a top-level command sequence. Use a stored handle continuation for explicit speculative sequencing, or write the sequence to the file and sync it. Original parse error: {err}"
 
+-- Parse the same sequence accepted after `by`, retaining the submitted source positions.
+-- A whole proof can contain several tactics and nested, indented goal blocks.
+private def parseTacticText (env : Environment) (text : String) : Except String Syntax :=
+  let p := Parser.andthenFn Parser.whitespace Parser.Tactic.tacticSeq.fn
+  let ictx := Parser.mkInputContext text "<runAt>"
+  let s := p.run ictx { env, options := {} } (Parser.getTokenTable env) (Parser.mkParserState text)
+  if !s.allErrors.isEmpty then
+    .error (s.toErrorMsg ictx)
+  else if ictx.atEnd s.pos then
+    .ok s.stxStack.back
+  else
+    .error ((s.mkError "end of input").toErrorMsg ictx)
+
 -- With `Elab.async`, `elabCommandTopLevel` may return before nested work has produced its
 -- diagnostics. Top-level theorem commands use this path for proof-body elaboration, so these
 -- snapshot messages are part of the command-mode `runAt` result even though unrelated full-file
 -- diagnostics remain out of scope.
 private def collectSnapshotTaskArtifacts
-    (tasks : Array (Language.SnapshotTask Language.SnapshotTree)) :
-    BaseIO (List Lean.Message × List TraceElem) := do
+    (tasks : Array (Language.SnapshotTask Language.SnapshotTree))
+    (profile : Bool := false) :
+    BaseIO (List Lean.Message × List TraceElem × Array TraceState) := do
   if tasks.isEmpty then
-    return ([], [])
+    return ([], [], #[])
   let tree := Language.SnapshotTree.mk { diagnostics := .empty } tasks
   let waitTask ← tree.waitAll
   -- Force every child snapshot before reading the tree; otherwise theorem proof failures can be
@@ -286,11 +305,12 @@ private def collectSnapshotTaskArtifacts
   let snapshots := tree.getAll
   let messages := snapshots.foldl (init := []) fun acc snapshot =>
     acc ++ snapshot.diagnostics.msgLog.toList
-  let traces := snapshots.foldl (init := []) fun acc snapshot =>
+  let traces := if profile then [] else snapshots.foldl (init := []) fun acc snapshot =>
     acc ++ snapshot.traces.traces.toList
-  return (messages, traces)
+  let profileStates := if profile then snapshots.map (·.traces) else #[]
+  return (messages, traces, profileStates)
 
-def runCommandText (snap : Snapshots.Snapshot) (text : String) :
+def runCommandText (snap : Snapshots.Snapshot) (text : String) (profile : Bool := false) :
     RequestM (Result × Option StoredHandleState) := do
   checkRequestCancelled
   withInnerCancelToken fun innerCancelTk => do
@@ -300,12 +320,19 @@ def runCommandText (snap : Snapshots.Snapshot) (text : String) :
       | .ok stx => pure stx
       | .extraInput err => return (oneCommandOnlyResult err, none)
       | .error err => return (errorResult err, none)
+    let startNs ← if profile then IO.monoNanosNow else pure 0
     let (output, response) ← IO.FS.withIsolatedStreams do
       EIO.toBaseIO do
         runCommandElabMWithCancel snap rc.doc.meta (some innerCancelTk) do
           -- The incoming snapshot can carry already-accounted-for async work from the saved file.
           -- A speculative command result should include only tasks spawned by this command.
           modify fun state => { state with snapshotTasks := #[] }
+          if profile then
+            let tid ← IO.getTID
+            modify fun state => { state with
+              traceState := { tid }
+              scopes := state.scopes.map fun scope => { scope with opts := Profile.options scope.opts }
+            }
           let initialMsgCount := (← get).messages.toList.length
           let initialTraceCount := (← getTraces).size
           let error? ← try
@@ -317,25 +344,34 @@ def runCommandText (snap : Snapshots.Snapshot) (text : String) :
             pure (some (← ex.toMessageData.toString))
           let state ← get
           let messages := state.messages.toList.drop initialMsgCount
-          let traces := (← getTraces).toList.drop initialTraceCount
-          let (snapshotMessages, snapshotTraces) ←
-            collectSnapshotTaskArtifacts state.snapshotTasks
+          let traces ← if profile then pure [] else pure <| (← getTraces).toList.drop initialTraceCount
+          let (snapshotMessages, snapshotTraces, profileStates) ←
+            collectSnapshotTaskArtifacts state.snapshotTasks profile
+          let profile? ← if profile then do
+              let stopNs ← IO.monoNanosNow
+              pure <| some <| Profile.collect startNs stopNs (#[state.traceState] ++ profileStates) text
+            else pure none
+          let state := if profile then { state with
+              scopes := Profile.restoreScopes snap.cmdState.scopes state.scopes
+              traceState := snap.cmdState.traceState
+            } else state
           return (
             error?,
             messages ++ snapshotMessages,
             traces ++ snapshotTraces,
             -- Completed snapshot tasks have been folded into the result. Do not leak them into a
             -- stored command handle, where a later `runWith` would report them again.
-            { state with snapshotTasks := #[] })
-    let (error?, newMessages, newTraces, newState) ←
+            { state with snapshotTasks := #[] }, profile?)
+    let (error?, newMessages, newTraces, newState, profile?) ←
       match response with
       | .ok response => pure response
       | .error ex =>
           checkRequestCancelled
           throw <| RequestError.internalError (← ex.toMessageData.toString)
-    let artifacts ← mkExecutionArtifacts output newMessages newTraces
+    -- Profiling returns structured metadata instead of formatting the profiler's trace tree.
+    let artifacts ← mkExecutionArtifacts output newMessages (if profile then [] else newTraces)
     checkRequestCancelled
-    let result := mkExecutionResult error? artifacts
+    let result := { mkExecutionResult error? artifacts with profile? }
     let nextHandle? :=
       if result.success then
         some <| StoredHandleState.command { snap with cmdState := newState }
@@ -379,12 +415,15 @@ private structure TacticExecutionOutcome where
   error? : Option String
   messages : List Lean.Message
   traces : List TraceElem
+  /-- Preserve failed execution evidence before restoring the proof state. -/
+  profileState? : Option Core.State := none
 
 private def collectNewTacticArtifacts
     (initialMsgCount : Nat)
-    (initialTraceCount : Nat) : Elab.Tactic.TacticM (List Lean.Message × List TraceElem) := do
+    (initialTraceCount : Nat)
+    (profile : Bool := false) : Elab.Tactic.TacticM (List Lean.Message × List TraceElem) := do
   let messages := (← Core.getMessageLog).toList.drop initialMsgCount
-  let traces := (← getTraces).toList.drop initialTraceCount
+  let traces ← if profile then pure [] else pure <| (← getTraces).toList.drop initialTraceCount
   pure (messages, traces)
 
 private def classifyTacticException
@@ -405,15 +444,25 @@ private def classifyTacticException
   | _ =>
       pure (some (← ex.toMessageData.toString))
 
-def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (text : String) :
+def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (text : String)
+    (profile : Bool := false) :
     RequestM (Result × Option StoredHandleState) := do
   checkRequestCancelled
   withInnerCancelToken fun innerCancelTk => do
     let snapshot := snapshot.withCancelToken (some innerCancelTk)
     let stx ←
-      match Parser.runParserCategory snapshot.coreState.env `tactic text "<runAt>" with
+      match parseTacticText snapshot.coreState.env text with
       | .ok stx => pure stx
       | .error err => return (errorResult err (some initialProofState), none)
+    let originalSnapshot := snapshot
+    let snapshot ← if profile then do
+        let tid ← IO.getTID
+        pure { snapshot with
+          coreContext := { snapshot.coreContext with options := Profile.options snapshot.coreContext.options }
+          coreState := { snapshot.coreState with traceState := { tid }, snapshotTasks := #[] }
+        }
+      else pure snapshot
+    let startNs ← if profile then IO.monoNanosNow else pure 0
     let (output, (outcome, proofSnapshot')) ←
       try
         IO.FS.withIsolatedStreams do
@@ -423,30 +472,46 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
             let initialTraceCount := (← getTraces).size
             try
               Elab.Tactic.evalTactic stx
-              let (messages, traces) ← collectNewTacticArtifacts initialMsgCount initialTraceCount
+              let (messages, traces) ← collectNewTacticArtifacts initialMsgCount initialTraceCount profile
               return { disposition := .keepAdvanced, error? := none, messages, traces }
             catch ex =>
-              let (messages, traces) ← collectNewTacticArtifacts initialMsgCount initialTraceCount
+              let (messages, traces) ← collectNewTacticArtifacts initialMsgCount initialTraceCount profile
               let error? ← classifyTacticException ex messages
+              let profileState? ← if profile then some <$> getThe Core.State else pure none
               saved.restore (restoreInfo := true)
-              return { disposition := .restoreInitial, error?, messages, traces }
+              return { disposition := .restoreInitial, error?, messages, traces, profileState? }
           run
       catch ex =>
         checkRequestCancelled
         throw ex
-    let artifacts ← mkExecutionArtifacts output outcome.messages outcome.traces
+    let (profileMessages, profile?, proofSnapshot') ← if profile then do
+        let state := outcome.profileState?.getD proofSnapshot'.coreState
+        let (messages, _, states) ← collectSnapshotTaskArtifacts state.snapshotTasks true
+        let stopNs ← IO.monoNanosNow
+        let result := Profile.collect startNs stopNs (#[state.traceState] ++ states) text
+        let restored := { proofSnapshot' with
+          coreContext := originalSnapshot.coreContext
+          coreState := { proofSnapshot'.coreState with
+            traceState := originalSnapshot.coreState.traceState
+            snapshotTasks := originalSnapshot.coreState.snapshotTasks
+          }
+        }
+        pure (messages, some result, restored)
+      else pure ([], none, proofSnapshot')
+    let artifacts ← mkExecutionArtifacts output (outcome.messages ++ profileMessages)
+      (if profile then [] else outcome.traces)
     checkRequestCancelled
     let proofState ← outcome.disposition.proofState initialProofState proofSnapshot'
-    let result := mkExecutionResult outcome.error? artifacts (proofState? := some proofState)
+    let result := { mkExecutionResult outcome.error? artifacts (proofState? := some proofState) with profile? }
     let nextHandle? := outcome.disposition.nextHandleState? result proofSnapshot'
     return (result, nextHandle?)
 
-def runTacticAtBasis (basis : GoalsAtResult) (text : String) :
+def runTacticAtBasis (basis : GoalsAtResult) (text : String) (profile : Bool := false) :
     RequestM (Result × Option StoredHandleState) := do
   let ctxInfo := mkBasisCtxInfo basis
   let initialProofState ← basisProofState basis
   let proofSnapshot ← ProofSnapshot.create ctxInfo (basisGoals basis)
-  runTacticText proofSnapshot initialProofState text
+  runTacticText proofSnapshot initialProofState text profile
 
 def handleRunAt (p : Params) : RequestM (RequestTask Result) := do
   requireDocumentVersion p.textDocument
@@ -457,12 +522,12 @@ def handleRunAt (p : Params) : RequestM (RequestTask Result) := do
   RequestM.bindRequestTaskCostly proofTask <| fun
     | some basis => do
         checkRequestCancelled
-        let (result, state?) ← runTacticAtBasis basis p.text
+        let (result, state?) ← runTacticAtBasis basis p.text (p.profile?.getD false)
         return RequestTask.pure (← maybeAttachHandle result (p.storeHandle?.getD false) state?)
     | none =>
         withRunAtSnapAtPos p.position fun snap => do
           checkRequestCancelled
-          let (result, state?) ← runCommandText snap p.text
+          let (result, state?) ← runCommandText snap p.text (p.profile?.getD false)
           maybeAttachHandle result (p.storeHandle?.getD false) state?
 
 def handleRunWith (p : RunWithParams) : RequestM (RequestTask Result) := do
@@ -474,10 +539,10 @@ def handleRunWith (p : RunWithParams) : RequestM (RequestTask Result) := do
       let (result, state?) ←
         match stored.state with
         | .command snapshot =>
-            runCommandText snapshot p.text
+            runCommandText snapshot p.text (p.profile?.getD false)
         | .proof snapshot =>
             let initialProofState ← proofStateOfSnapshot snapshot
-            runTacticText snapshot initialProofState p.text
+            runTacticText snapshot initialProofState p.text (p.profile?.getD false)
       maybeAttachHandle result (p.storeHandle?.getD false) state?
 
 def handleReleaseHandle (p : ReleaseHandleParams) : RequestM (RequestTask Json) := do

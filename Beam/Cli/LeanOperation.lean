@@ -17,16 +17,18 @@ def leanRunAtRequest
     (version : Nat)
     (line character : Nat)
     (text : String)
-    (storeHandle : Bool := false) : Request :=
-  ({ path, version, line, character, text } : Beam.Lean.RunAtInput).toBrokerRequest
+    (storeHandle : Bool := false)
+    (profile : Bool := false) : Request :=
+  ({ path, version, line, character, text, profile? := if profile then some true else none } : Beam.Lean.RunAtInput).toBrokerRequest
     (storeHandle := storeHandle)
 
 def leanRunWithRequest
     (path : String)
     (handle : Handle)
     (text : String)
-    (linear : Bool := false) : Request :=
-  ({ path, handle, text } : Beam.Lean.RunWithInput).toBrokerRequest
+    (linear : Bool := false)
+    (profile : Bool := false) : Request :=
+  ({ path, handle, text, profile? := if profile then some true else none } : Beam.Lean.RunWithInput).toBrokerRequest
     (linear := linear)
 
 def leanReleaseRequest (path : String) (handle : Handle) : Request :=

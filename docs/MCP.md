@@ -259,6 +259,17 @@ first edit and save the Lean file with the client's normal file-editing tool. Th
 before another snapshot-bound operation, or call `lean_sync` when a diagnostics/readiness barrier is
 needed. Both commands read the current on-disk file; neither applies or recovers speculative text.
 
+### Opt-in timing profiles
+
+`lean_run_at`, `lean_run_at_handle`, `lean_run_with`, and `lean_run_with_linear` accept an optional
+boolean `profile`. When it is `true`, the returned run result includes `profile`; it is omitted when
+the argument is absent or false. A parse failure also has no profile. Profiled requests return
+`traces: []`; ordinary messages and proof success or failure are unchanged. The profile contract,
+limits, timing interpretation, and source-range rules are in [Opt-in proof profiling](STATUS.md#opt-in-proof-profiling).
+For whole-proof timing, send a complete tactic block at the first tactic's before-state or a full
+theorem command at a command position. Existing declarations and full files are not automatically
+replayed for profiling.
+
 `lean_code_action_resolve` takes a `code_action` payload previously returned by `lean_todo`. Clients
 apply any returned LSP `WorkspaceEdit` themselves, then call `lean_update` or `lean_sync` again so
 Beam observes the edited file and reports the new version. Use `lean_sync` instead of `lean_update`

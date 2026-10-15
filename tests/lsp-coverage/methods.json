@@ -6,6 +6,7 @@
       "registrySymbol": "Beam.LSP.RunAt.method",
       "definition": "Beam/LSP/RunAt.lean#method",
       "requiredCoverage": [
+        "profiling",
         "isolation",
         "tactic-position",
         "single-command-limit",
@@ -25,6 +26,7 @@
       "registrySymbol": "Beam.LSP.RunAt.runWithMethod",
       "definition": "Beam/LSP/RunAt.lean#runWithMethod",
       "requiredCoverage": [
+        "profiling",
         "handle-continuation",
         "handle-invalidation",
         "linear-handle",

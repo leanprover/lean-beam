@@ -154,10 +154,14 @@ private def rangeEndCharacterField : String × Json :=
   ("end_character", Beam.JsonSchema.natural "Zero-based UTF-16 LSP end character.")
 
 private def runAtTextField : String × Json :=
-  ("text", Beam.JsonSchema.string "One Lean command or tactic block to run at the selected position. Top-level command sequences are not accepted by one runAt call.")
+  ("text", Beam.JsonSchema.string "One Lean command or tactic block to run at the selected position. To profile an existing declaration, submit its complete source at its start position in the synced version. To profile a proof body, submit its full tactic sequence without by at the first tactic's position. Top-level command sequences are not accepted by one runAt call.")
 
 private def continuationTextField : String × Json :=
   ("text", Beam.JsonSchema.string "One Lean continuation command or tactic block to run from the stored handle.")
+
+private def profileField : String × Json :=
+  ("profile", Beam.JsonSchema.bool
+    "When true, return profile.elapsedMs and bounded profile.spans, including timed tactic scopes with a 1ms profiler threshold. These overlapping wall timings include profiling overhead; do not sum span durations. Profiling applies only to this execution.")
 
 private def handleField : String × Json :=
   ("handle", Beam.JsonSchema.object "Opaque broker-wrapped Lean handle from a previous tool result.")
@@ -221,7 +225,7 @@ private def documentFields : List (String × Json) :=
 open Beam.JsonSchema in
 def Operation.inputSchema : Operation → Json
   | .runAt | .runAtHandle =>
-      inputObject (positionFields ++ [runAtTextField]) #["path", "version", "line", "character", "text"]
+      inputObject (positionFields ++ [runAtTextField, profileField]) #["path", "version", "line", "character", "text"]
   | .hover | .signatureHelp | .definition =>
       inputObject positionFields #["path", "version", "line", "character"]
   | .references =>
@@ -238,7 +242,7 @@ def Operation.inputSchema : Operation → Json
   | .codeActionResolve =>
       inputObject (documentFields ++ [codeActionField]) #["path", "version", "code_action"]
   | .runWith | .runWithLinear =>
-      inputObject [pathField, handleField, continuationTextField] #["path", "handle", "text"]
+      inputObject [pathField, handleField, continuationTextField, profileField] #["path", "handle", "text"]
   | .release =>
       inputObject [pathField, releaseHandleField] #["path", "handle"]
   | .update =>
@@ -261,7 +265,38 @@ structure RunAtInput where
   line : Nat
   character : Nat
   text : String
-  deriving FromJson, ToJson
+  profile? : Option Bool := none
+
+private def profileField? (j : Json) : Except String (Option Bool) := do
+  match j.getObjVal? "profile" with
+  | .ok value =>
+      match fromJson? value with
+      | .ok profile => pure (some profile)
+      | .error err => throw s!"invalid 'profile': {err}"
+  | .error _ => pure none
+
+instance : ToJson RunAtInput where
+  toJson input :=
+    Json.mkObj <| [
+      ("path", toJson input.path),
+      ("version", toJson input.version),
+      ("line", toJson input.line),
+      ("character", toJson input.character),
+      ("text", toJson input.text)
+    ] ++
+    match input.profile? with
+    | some profile => [("profile", toJson profile)]
+    | none => []
+
+instance : FromJson RunAtInput where
+  fromJson? j := do
+    let path ← j.getObjValAs? String "path"
+    let version ← j.getObjValAs? Nat "version"
+    let line ← j.getObjValAs? Nat "line"
+    let character ← j.getObjValAs? Nat "character"
+    let text ← j.getObjValAs? String "text"
+    let profile? ← profileField? j
+    pure { path, version, line, character, text, profile? }
 
 /-- Input for position-based Lean inspection operations. -/
 structure PositionInput where
@@ -417,7 +452,26 @@ structure RunWithInput where
   path : String
   handle : Beam.Broker.Handle
   text : String
-  deriving FromJson, ToJson
+  profile? : Option Bool := none
+
+instance : ToJson RunWithInput where
+  toJson input :=
+    Json.mkObj <| [
+      ("path", toJson input.path),
+      ("handle", toJson input.handle),
+      ("text", toJson input.text)
+    ] ++
+    match input.profile? with
+    | some profile => [("profile", toJson profile)]
+    | none => []
+
+instance : FromJson RunWithInput where
+  fromJson? j := do
+    let path ← j.getObjValAs? String "path"
+    let handle ← j.getObjValAs? Beam.Broker.Handle "handle"
+    let text ← j.getObjValAs? String "text"
+    let profile? ← profileField? j
+    pure { path, handle, text, profile? }
 
 /-- Input for explicit handle release. -/
 structure ReleaseInput where
@@ -483,6 +537,7 @@ def RunAtInput.toBrokerRequest
     character := input.character
     text := input.text
     storeHandle? := if storeHandle then some true else none
+    profile? := input.profile?
   }
 }
 
@@ -589,6 +644,7 @@ def RunWithInput.toBrokerRequest
     text := input.text
     storeHandle? := some true
     linear? := some linear
+    profile? := input.profile?
     handle := input.handle
   }
 }

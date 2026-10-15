@@ -539,6 +539,65 @@ private def checkBrokerRequestAdapters : IO Unit := do
       require "save tool rejection identifies diagnostics_in_result"
         (err.contains "diagnostics_in_result")
 
+private def checkProfileRequestAdapters : IO Unit := do
+  let root := "/repo"
+  let workspaceId := "local:/repo"
+  let inWorkspace (json : Json) : Json :=
+    json.setObjVal! "workspace" (toJson ({ root } : Beam.Workspace.Descriptor))
+
+  let runAtInput : Beam.Mcp.RunAtInput := {
+    path := "Demo.lean"
+    version := 12
+    line := 4
+    character := 2
+    text := "exact h"
+  }
+  let runAtReq ← expectOk "unprofiled runAt tool request" <|
+    Beam.Mcp.leanOperationToBrokerRequest .runAt workspaceId (inWorkspace <| toJson runAtInput)
+  let runAt ← expectRequestPayload "unprofiled runAt tool request" runAtReq fun
+    | .runAt request => some request
+    | _ => none
+  require "runAt does not profile by default" runAt.profile?.isNone
+  requireFieldAbsent "runAt input json" "profile" (toJson runAtInput)
+
+  let profiledRunAtInput : Beam.Mcp.RunAtInput := { runAtInput with profile? := some true }
+  let profiledRunAtReq ← expectOk "profiled runAt tool request" <|
+    Beam.Mcp.leanOperationToBrokerRequest .runAt workspaceId
+      (inWorkspace <| toJson profiledRunAtInput)
+  let profiledRunAt ← expectRequestPayload "profiled runAt tool request" profiledRunAtReq fun
+    | .runAt request => some request
+    | _ => none
+  require "profiled runAt forwards profile" (profiledRunAt.profile? == some true)
+  requireJsonBool "profiled runAt input json" "profile" true (toJson profiledRunAtInput)
+  match Beam.Mcp.leanOperationToBrokerRequest .runAt workspaceId (inWorkspace <| Json.mkObj [
+      ("path", toJson "Demo.lean"), ("version", toJson 12), ("line", toJson 4),
+      ("character", toJson 2), ("text", toJson "exact h"), ("profile", toJson "true")]) with
+  | .ok _ => throw <| IO.userError "runAt accepted a non-boolean profile"
+  | .error _ => pure ()
+
+  let runWithInput : Beam.Mcp.RunWithInput := {
+    path := "Demo.lean"
+    handle := sampleBrokerHandle
+    text := "simp"
+  }
+  let runWithReq ← expectOk "unprofiled runWith tool request" <|
+    Beam.Mcp.leanOperationToBrokerRequest .runWith workspaceId
+      (inWorkspace <| toJson runWithInput)
+  let runWith ← expectRequestPayload "unprofiled runWith tool request" runWithReq fun
+    | .runWith request => some request
+    | _ => none
+  require "runWith does not profile by default" runWith.profile?.isNone
+  requireFieldAbsent "runWith input json" "profile" (toJson runWithInput)
+
+  let profiledRunWithInput : Beam.Mcp.RunWithInput := { runWithInput with profile? := some true }
+  let profiledRunWithReq ← expectOk "profiled runWith tool request" <|
+    Beam.Mcp.leanOperationToBrokerRequest .runWith workspaceId
+      (inWorkspace <| toJson profiledRunWithInput)
+  let profiledRunWith ← expectRequestPayload "profiled runWith tool request" profiledRunWithReq fun
+    | .runWith request => some request
+    | _ => none
+  require "profiled runWith forwards profile" (profiledRunWith.profile? == some true)
+
 private def checkRunAtNormalization : IO Unit := do
   let semanticFailure := Json.mkObj [("success", toJson false)]
   let normalizedFailure ← expectToolOk "normalize semantic failure" <|
@@ -548,6 +607,21 @@ private def checkRunAtNormalization : IO Unit := do
   requireJsonNull "semantic failure result" "next_handle" normalizedFailure
   requireJsonNull "semantic failure result" "proof_state" normalizedFailure
   requireFieldAbsent "semantic failure result" "ok" normalizedFailure
+
+  let unprofiledSuccess := Json.mkObj [
+    ("success", toJson true),
+    ("messages", toJson (#[] : Array Beam.LSP.RunAt.Message)),
+    ("traces", toJson (#[] : Array String))
+  ]
+  let normalizedUnprofiled ← expectToolOk "normalize unprofiled result" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) (Beam.Broker.Response.success unprofiledSuccess)
+  requireFieldAbsent "unprofiled result" "profile" normalizedUnprofiled
+
+  let profile : Beam.LSP.RunAt.Profile.Result := { elapsedMs := 3.5 }
+  let profiledSuccess := unprofiledSuccess.setObjVal! "profile" (toJson profile)
+  let normalizedProfiled ← expectToolOk "normalize profiled result" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) (Beam.Broker.Response.success profiledSuccess)
+  discard <| requireObjVal "profiled result" "profile" normalizedProfiled
   requireFieldAbsent "semantic failure result" "handle" normalizedFailure
   requireFieldAbsent "semantic failure result" "proofState" normalizedFailure
 
@@ -747,6 +821,7 @@ def main : IO Unit := do
   checkToolNames
   checkToolDescriptors
   checkBrokerRequestAdapters
+  checkProfileRequestAdapters
   checkRunAtNormalization
   checkSyncAndSaveNormalization
   checkTransportErrorNormalization

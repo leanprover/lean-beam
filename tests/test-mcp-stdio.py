@@ -1020,6 +1020,25 @@ def run_iteration(client, suffix):
     )
     require_success("lean_run_at multiline probe", probe)
     require(probe.get("next_handle") is None, f"plain lean_run_at leaked a follow-up handle: {probe}")
+    require("profile" not in probe, f"plain lean_run_at unexpectedly returned profiling: {probe}")
+
+    profiled = client.call_tool(
+        "lean_run_at",
+        {
+            "path": "PositionEmptyLine.lean",
+            "version": version,
+            "line": 1,
+            "character": 0,
+            "text": f"theorem mcpProfile{suffix} : True ∧ True := by\n  constructor\n  · trivial\n  · trivial",
+            "profile": True,
+        },
+    )
+    require_success("profiled whole theorem", profiled)
+    timing = profiled.get("profile")
+    require(isinstance(timing, dict), f"MCP dropped the declaration profile: {profiled}")
+    require(timing.get("elapsedMs", 0) > 0, f"profile omitted elapsed time: {timing}")
+    require(isinstance(timing.get("spans"), list), f"profile omitted timed scopes: {timing}")
+    require(profiled.get("traces") == [], f"profile rendered trace strings: {profiled}")
 
     broken = client.call_tool(
         "lean_run_at",
@@ -1042,9 +1061,11 @@ def run_iteration(client, suffix):
             "line": 1,
             "character": 0,
             "text": f"def mcpBase{suffix} : Nat := 1",
+            "profile": True,
         },
     )
     require_success("handle mint probe", minted)
+    require(isinstance(minted.get("profile"), dict), f"profiled handle lost timing: {minted}")
     base_handle = minted.get("next_handle")
     require(isinstance(base_handle, dict), f"handle mint did not return next_handle: {minted}")
 
@@ -1054,9 +1075,11 @@ def run_iteration(client, suffix):
             "path": "PositionEmptyLine.lean",
             "handle": base_handle,
             "text": f"def mcpNext{suffix} : Nat := mcpBase{suffix} + 1",
+            "profile": True,
         },
     )
     require_success("handle continuation probe", continued)
+    require(isinstance(continued.get("profile"), dict), f"profiled continuation lost timing: {continued}")
     next_handle = continued.get("next_handle")
     require(isinstance(next_handle, dict), f"handle continuation did not return next_handle: {continued}")
 
@@ -1069,6 +1092,7 @@ def run_iteration(client, suffix):
         },
     )
     require_success("linear handle continuation probe", linear)
+    require("profile" not in linear, f"profiling leaked into a later continuation: {linear}")
     linear_handle = linear.get("next_handle")
     require(isinstance(linear_handle, dict), f"linear continuation did not return next_handle: {linear}")
 

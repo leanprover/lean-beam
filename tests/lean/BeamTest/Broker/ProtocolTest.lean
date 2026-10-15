@@ -822,6 +822,42 @@ private def checkStaleDirectDepHints : IO Unit := do
     noopSyncHints.isEmpty
 
 private def checkRequestBoundary : IO Unit := do
+  let profiledRunAt : Request := { payload := .runAt {
+    path := "Demo.lean"
+    version := 7
+    line := 1
+    character := 2
+    text := "exact trivial"
+    profile? := some true
+  } }
+  requireJsonBool "profiled run_at request" "profile" true (toJson profiledRunAt)
+  let decodedProfiledRunAt ← expectOk "decode profiled run_at request" <|
+    fromJson? (α := Request) (toJson profiledRunAt)
+  match decodedProfiledRunAt.payload with
+  | .runAt request => require "profiled run_at survives decode" (request.profile? == some true)
+  | _ => throw <| IO.userError "profiled run_at decoded as another operation"
+  let profiledRunWith : Request := { payload := .runWith {
+    path := "Demo.lean"
+    text := "exact trivial"
+    profile? := some false
+    handle := sampleHandle
+  } }
+  requireJsonBool "profiled run_with request" "profile" false (toJson profiledRunWith)
+  let decodedProfiledRunWith ← expectOk "decode profiled run_with request" <|
+    fromJson? (α := Request) (toJson profiledRunWith)
+  match decodedProfiledRunWith.payload with
+  | .runWith request => require "profiled run_with survives decode" (request.profile? == some false)
+  | _ => throw <| IO.userError "profiled run_with decoded as another operation"
+  expectDecodeFailure Request "run_at request rejects non-boolean profile" <| Json.mkObj [
+    ("op", toJson "run_at"),
+    ("backend", toJson "lean"),
+    ("path", toJson "Demo.lean"),
+    ("version", toJson 7),
+    ("line", toJson 1),
+    ("character", toJson 2),
+    ("text", toJson "exact trivial"),
+    ("profile", toJson "true")
+  ]
   expectDecodeFailure Request "run_at request missing version" <| Json.mkObj [
     ("op", toJson "run_at"),
     ("backend", toJson "lean"),

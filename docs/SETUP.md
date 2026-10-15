@@ -335,6 +335,38 @@ printf '%s\n' 'example : True := by' '  trivial' |
   lean-beam run-at "Foo.lean" "$version" 10 2 --stdin
 ```
 
+Add `--profile` immediately before the text selector to return a bounded timing profile for that
+speculative execution:
+
+```bash
+lean-beam run-at "Foo.lean" "$version" 10 2 --profile --stdin
+```
+
+The same selector works with `run-at-handle`, `run-with`, and `run-with-linear`. Profiled responses
+have `profile` timing metadata and `traces: []`; ordinary messages and proof success/failure remain
+available. Put a literal `--profile` after the `--` text separator. Read the [profile
+contract](STATUS.md#opt-in-proof-profiling) for collection limits and timing interpretation.
+
+To measure a declaration you just wrote, save and sync the file, then submit that declaration's
+complete source at its starting position with the returned version. Beam uses the preceding
+snapshot, so the declaration can keep its existing name. This re-elaborates just the submitted
+declaration, including its proof, against the loaded environment; it does not run a full build.
+For example, if this theorem starts on line 11 (zero-based line 10):
+
+```bash
+cat <<'EOF' | lean-beam run-at "Foo.lean" "$version" 10 0 --profile --stdin
+theorem measured : True := by
+  exact trivial
+EOF
+```
+
+Use `profile.elapsedMs` for the speculative elaboration's elapsed wall time. The `profile.spans`
+array includes Lean's timed tactic scopes (`category: "Elab.step"`, with tactic syntax kinds in
+`tag`), using a 1ms profiler threshold. Parent and child durations overlap. Alternatively, submit the
+complete tactic sequence, without `by`, at the first tactic's position to measure only the proof
+body. Include its indentation and nested goal blocks. Declaration selection by name is not part
+of this API: the caller supplies the source and position from the same synced file version.
+
 Read those commands like this:
 
 - `lean-beam update` opens or updates the broker's LSP mirror and returns the current document

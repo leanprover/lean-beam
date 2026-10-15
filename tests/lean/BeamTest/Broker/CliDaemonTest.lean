@@ -724,6 +724,9 @@ private def checkLeanOperationRequests : IO Unit := do
   requireRequestJson "runAt handle request should share the Lean operation adapter"
     (Beam.Cli.leanRunAtRequest path 12 4 2 "exact h" (storeHandle := true))
     (runAtInput.toBrokerRequest (storeHandle := true))
+  requireRequestJson "profiled runAt request should share the Lean operation adapter"
+    (Beam.Cli.leanRunAtRequest path 12 4 2 "exact h" (profile := true))
+    ({ runAtInput with profile? := some true }).toBrokerRequest
   expectIoErrorContains "runAt missing text should fail at the CLI boundary"
     "usage: lean-beam" (Beam.Cli.parseTextArg "run-at Demo.lean 12 4 2" [])
 
@@ -780,6 +783,9 @@ private def checkLeanOperationRequests : IO Unit := do
   requireRequestJson "runWith linear request should share the Lean operation adapter"
     (Beam.Cli.leanRunWithRequest path sampleBrokerHandle "simp" (linear := true))
     (runWithInput.toBrokerRequest (linear := true))
+  requireRequestJson "profiled runWith request should share the Lean operation adapter"
+    (Beam.Cli.leanRunWithRequest path sampleBrokerHandle "simp" (profile := true))
+    ({ runWithInput with profile? := some true }).toBrokerRequest
   expectIoErrorContains "runWith missing text should fail at the CLI boundary"
     "usage: lean-beam" (Beam.Cli.parseTextArg "run-with Demo.lean HANDLE" [])
 
@@ -836,6 +842,22 @@ private def checkDiagnosticScopeArgs : IO Unit := do
       catch err =>
         pure <| err.toString.contains "+all-diagnostics"
     require s!"{label} diagnostic scope should reject obsolete +full" obsoleteRejected
+
+private def checkProfileArgs : IO Unit := do
+  let (enabled, profiledTextArgs) ← Beam.Cli.parseProfileArg ["--profile", "--stdin"]
+  require "profile selector should enable profiling" enabled
+  require "profile selector should leave the text input selector" (profiledTextArgs == ["--stdin"])
+
+  let (escapedEnabled, escapedTextArgs) ← Beam.Cli.parseProfileArg ["--", "--profile"]
+  require "escaped profile text should not enable profiling" !escapedEnabled
+  let escapedText ← Beam.Cli.parseTextArg "run-at Demo.lean 12 4 2" escapedTextArgs
+  require "escaped --profile should remain literal Lean text" (escapedText.text == "--profile")
+
+  expectIoErrorContains "repeated profile selector should fail"
+    "duplicate --profile" (Beam.Cli.parseProfileArg ["--profile", "--profile", "exact trivial"])
+  let (_, malformedTextArgs) ← Beam.Cli.parseProfileArg ["--profile", "--stdin", "extra"]
+  expectIoErrorContains "profiled malformed text selector should fail at the text boundary"
+    "usage: lean-beam" (Beam.Cli.parseTextArg "run-at Demo.lean 12 4 2" malformedTextArgs)
 
 private def checkDaemonFailureContext : IO Unit := do
   let root := System.FilePath.mk s!"/tmp/beam-daemon-failure-context-{← IO.monoNanosNow}"
@@ -1730,6 +1752,7 @@ def main : IO Unit := do
   checkProjectRootAmbiguity
   checkLeanOperationRequests
   checkDiagnosticScopeArgs
+  checkProfileArgs
   checkDaemonFailureContext
   checkDaemonFailureUnreadableStartupLog
   checkTypedDaemonFailureClassification

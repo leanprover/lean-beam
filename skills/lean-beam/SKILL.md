@@ -241,6 +241,35 @@ batch-equivalence check rather than one-file probing.
 `lean-beam run-at` is a speculative execution request against one explicit broker document version.
 Read it as "try this Lean text here", not as "edit the file here".
 
+Add `--profile` immediately before the text input selector when timing one speculative execution:
+
+```bash
+lean-beam run-at "Foo.lean" "$version" 10 2 --profile -- "exact trivial"
+```
+
+For a whole proof, select the first tactic's before-state and pass the complete tactic sequence,
+without a leading `by`:
+
+```bash
+cat <<'EOF' | lean-beam run-at "Foo.lean" "$version" 10 2 --profile --stdin
+constructor
+· exact trivial
+· exact trivial
+EOF
+```
+
+Profiled responses return bounded `profile` metadata and `traces: []`; messages and the normal
+proof result are unchanged. To pass `--profile` as literal Lean text, put it after the `--` text
+separator. Read [the profile contract](../../docs/STATUS.md#opt-in-proof-profiling) before using
+timings for comparisons.
+
+To measure an existing declaration, sync the saved file and submit its complete source at the
+declaration's start position with that version and `--profile`. The preceding snapshot permits
+the original name and avoids a project rebuild. Use `profile.elapsedMs` for elapsed elaboration
+time and `profile.spans` for timed scopes, including `Elab.step` tactic kinds. These are fresh
+speculative timings with a 1ms profiler threshold; overlapping spans must not be summed.
+There is no declaration-name selector: use the source and position from the synced version.
+
 What `lean-beam run-at` does not do:
 
 - it does not edit the source file or create a new on-disk baseline for the next request

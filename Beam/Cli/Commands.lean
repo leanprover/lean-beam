@@ -96,11 +96,13 @@ private def runLeanRunAt
   let version ← parseNatArg "version" versionText
   let line ← parseNatArg "line" lineText
   let character ← parseNatArg "character" characterText
+  let (profile, textArgs) ← parseProfileArg textArgs
   let parsedText ← parseTextArg s!"{action} <path> <version> <line> <character>" textArgs
   let root ← projectRoot opts .lean
   withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client => do
     let req ← withEnvClientRequestId <|
-      leanRunAtRequest path version line character parsedText.text (storeHandle := storeHandle)
+      leanRunAtRequest path version line character parsedText.text
+        (storeHandle := storeHandle) (profile := profile)
     maybeEmitTextDebug req.clientRequestId? action parsedText.source parsedText.text
     callBrokerWithProgress root client req (leanRunAtWaitSpec action path line character)
 
@@ -114,16 +116,18 @@ private def runLeanRunWith
     | [] => []
     | "--handle-file" :: _ :: rest => rest
     | _ :: rest => rest
-  if handleArgReadsStdin args && textArgReadsStdin textArgs then
+  let (_, profileFreeTextArgs) ← parseProfileArg textArgs
+  if handleArgReadsStdin args && textArgReadsStdin profileFreeTextArgs then
     throw <| IO.userError <| String.intercalate "\n" [
       textArgUsage s!"{action} <path> <handle-json|-|--handle-file <path>>",
       "cannot read both handle json and continuation text from stdin; pass the handle inline, use --handle-file, or use --text-file for the text"
     ]
   let (handle, textArgs) ← parseHandleInput s!"{action} <path>" args
+  let (profile, textArgs) ← parseProfileArg textArgs
   let parsedText ← parseTextArg s!"{action} <path> <handle-json|-|--handle-file <path>>" textArgs
   let root ← projectRoot opts .lean
   let req ← withEnvClientRequestId <|
-    leanRunWithRequest path handle parsedText.text (linear := linear)
+    leanRunWithRequest path handle parsedText.text (linear := linear) (profile := profile)
   maybeEmitTextDebug req.clientRequestId? action parsedText.source parsedText.text
   withProjectDaemon root .lean (explicitControlDir? := opts.explicitControlDir?) fun client =>
     callBrokerWithProgress root client req (leanRunWithWaitSpec path (linear := linear))

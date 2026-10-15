@@ -1,6 +1,30 @@
 {
   "cases": [
     {
+      "id": "runAt.profiling",
+      "method": "$/lean/runAt",
+      "coverage": ["profiling", "isolation", "theorem-proof-failure", "mixed-concurrency"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/ProfileTest.lean#checkProofs"
+    },
+    {
+      "id": "runAt.profiling-async-theorem",
+      "method": "$/lean/runAt",
+      "coverage": ["profiling", "theorem-proof-failure"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/ProfileTest.lean#checkCommands"
+    },
+    {
+      "id": "runAt.profiling-cancel-stale",
+      "method": "$/lean/runAt",
+      "coverage": ["profiling", "cancellation", "stale-edit"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/ProfileTest.lean#checkCancellationAndStaleness"
+    },
+    {
+      "id": "runWith.profiling-isolation",
+      "method": "$/lean/runWith",
+      "coverage": ["profiling", "handle-continuation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/ProfileTest.lean#checkProofs"
+    },
+    {
       "id": "runAt.tactic-position",
       "method": "$/lean/runAt",
       "coverage": ["tactic-position", "isolation"],

@@ -65,6 +65,14 @@ def parseTextArg (cmdHead : String) (args : List String) : IO ParsedTextArg := d
         | throw <| IO.userError (textArgUsage cmdHead)
       pure { text, source := "argv" }
 
+/-- Consume the optional profiling selector before a text input selector. -/
+def parseProfileArg (args : List String) : IO (Bool × List String) := do
+  match args with
+  | "--profile" :: "--profile" :: _ =>
+      throw <| IO.userError "duplicate --profile"
+  | "--profile" :: rest => pure (true, rest)
+  | _ => pure (false, args)
+
 def parseJsonText (label text : String) : IO Json := do
   match Json.parse text with
   | .ok json => pure json

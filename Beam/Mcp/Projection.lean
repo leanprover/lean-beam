@@ -303,6 +303,7 @@ structure RunAtBrokerResult where
   success : Bool := true
   messages : Array Beam.LSP.RunAt.Message := #[]
   traces : Array String := #[]
+  profile? : Option Beam.LSP.RunAt.Profile.Result := none
   handle? : Option Beam.Broker.Handle := none
   proofState? : Option Beam.LSP.Lib.ProofState := none
 
@@ -311,12 +312,14 @@ instance : FromJson RunAtBrokerResult where
     let success? ← optionalField? (α := Bool) j "success"
     let messages? ← optionalField? (α := Array Beam.LSP.RunAt.Message) j "messages"
     let traces? ← optionalField? (α := Array String) j "traces"
+    let profile? ← optionalField? (α := Beam.LSP.RunAt.Profile.Result) j "profile"
     let handle? ← optionalField? (α := Beam.Broker.Handle) j "handle"
     let proofState? ← optionalField? (α := Beam.LSP.Lib.ProofState) j "proofState"
     pure {
       success := success?.getD true
       messages := messages?.getD #[]
       traces := traces?.getD #[]
+      profile?
       handle?
       proofState?
     }
@@ -344,13 +347,16 @@ The MCP surface uses `next_handle` and `proof_state` rather than the Lean/LSP pa
 back unchanged.
 -/
 def runAtResultJson (result : RunAtBrokerResult) : Json :=
-  Json.mkObj [
+  Json.mkObj <| [
     ("success", toJson result.success),
     ("messages", toJson result.messages),
     ("traces", toJson result.traces),
     ("proof_state", optionJson result.proofState?),
     ("next_handle", optionJson result.handle?)
-  ]
+  ] ++
+  match result.profile? with
+  | some profile => [("profile", toJson profile)]
+  | none => []
 
 def normalizeRunAtResult (result : Json) : Except ToolError Json := do
   match fromJson? (α := RunAtBrokerResult) result with

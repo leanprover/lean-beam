@@ -16,7 +16,8 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 
 - standalone Lean plugin for `$/lean/runAt`
 - internal proof-first, command-fallback basis selection
-- typed response payload with messages, traces, optional proof state, and optional follow-up handle
+- typed response payload with messages, traces, optional proof state, optional follow-up handle, and
+  opt-in bounded timing profiles
 - optional follow-up execution through `$/lean/runWith` and `$/lean/releaseHandle`
 - agent-oriented `$/lean/todo` range inspection for actionable items such as sorries, holes,
   diagnostics, code actions, and incomplete proofs, exposed through the broker, `lean-beam todo`,
@@ -102,6 +103,36 @@ The base request remains intentionally small:
 
 Request-level failures stay at the transport layer. Semantic Lean outcomes stay in the normal typed
 response payload.
+
+### Opt-in proof profiling
+
+`runAt` and `runWith` accept an optional `profile: true` selector. A completed execution profile
+adds `profile` to the normal response with wall-clock `elapsedMs`, a fixed `thresholdMs: 1`, and a
+flat span forest. Each span has an earlier `parent` index when known, its Lean thread identity,
+category, tag, start offset, duration, and an optional range relative to the submitted text when
+the trace source bytes and bounds match that text. `elapsedMs` excludes request parsing, document readiness,
+and response formatting; it includes registered Lean snapshot tasks owned by the speculative
+execution. Unregistered background work is outside the profile. It is wall time, not CPU time, and
+profiling itself perturbs the measured execution.
+
+Profile projection is limited to 1,024 spans, 8,192 visited metadata nodes, and depth 128, with
+bounded category and tag text. `truncated: true` reports a projection limit, including clipped
+category or tag text. These limits bound
+Beam's response work and payload; Lean's upstream profiler allocation remains unbounded. Profiles
+do not use heartbeat timings, preserve normal cancellation limits, and replace rendered `traces`
+with `[]` for that request. Messages and proof success or failure remain in the normal result.
+Parse failures have no profile. Lean records only emitted profiler scopes: the 1ms threshold normally
+omits small scopes, explicitly enabled trace classes can include shorter scopes, and user-suppressed
+scopes are absent. This is bounded timing metadata rather than
+an exhaustive CPU profile. Parent spans contain child work and spans can overlap; never sum their
+durations to obtain `elapsedMs`.
+
+For useful whole-proof timing, submit a complete tactic block at the first tactic's before-state, or
+submit a full theorem command at a command position. To measure an existing declaration, submit
+its source at its start position in the synced version: the preceding snapshot lets it keep its
+original name. Selection by declaration name and automatic whole-file profiling are unsupported.
+This measures fresh speculative elaboration against a loaded environment, not the earlier edit's
+timing or cold import/build cost. See the [single-declaration workflow](SETUP.md#use-beam-from-a-lean-project).
 
 Follow-up handles exist, but they should be treated as pre-stable support APIs rather than as a frozen
 long-term contract. They are opaque, workspace- and document-bound, invalidated by same-document

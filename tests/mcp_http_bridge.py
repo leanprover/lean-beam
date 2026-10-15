@@ -429,7 +429,10 @@ def main():
         url = f"http://{host}:{port}{args.endpoint}"
         if args.ready_file:
             ready_path = Path(args.ready_file)
-            ready_path.write_text(json.dumps({"url": url}) + "\n", encoding="utf-8")
+            # Publish complete JSON before the conformance runner can observe readiness.
+            pending_path = ready_path.with_name(ready_path.name + ".tmp")
+            pending_path.write_text(json.dumps({"url": url}) + "\n", encoding="utf-8")
+            pending_path.replace(ready_path)
         else:
             print(url, flush=True)
         server.serve_forever()

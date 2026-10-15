@@ -2225,10 +2225,11 @@ private def handleRunAtOp
         [ ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier }))
         , ("position", toJson ({ line := request.line, character := request.character : Lsp.Position }))
         , ("text", toJson request.text)
-        ] ++
-        match request.storeHandle? with
+        ] ++ (match request.storeHandle? with
         | some b => [("storeHandle", toJson b)]
-        | none => [])
+        | none => []) ++ (match request.profile? with
+        | some b => [("profile", toJson b)]
+        | none => []))
       trackedDocumentVersion
       (expectedVersion? := some request.version)
       (clientRequestId? := req.clientRequestId?)
@@ -2529,6 +2530,9 @@ private def handleRunWithOp
             | none => []) ++
             (match request.linear? with
             | some b => [("linear", toJson b)]
+            | none => []) ++
+            (match request.profile? with
+            | some b => [("profile", toJson b)]
             | none => []))
           trackedDocumentVersion
           (clientRequestId? := req.clientRequestId?)
