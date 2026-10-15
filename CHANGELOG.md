@@ -45,6 +45,8 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   variants qualify locally. Module saves require the IR signature companion, and save traces use
   Lake's native module pre-setup trace directly
   ([#274](https://github.com/leanprover/lean-beam/pull/274), @ejgallego).
+- MCP self-check accepts server stderr logging when discovery, sync, and shutdown succeed, while
+  retaining captured diagnostics for a nonzero server exit.
 - Raise the minimum supported Lean release to 4.31. Lean 4.28–4.30 and their RC and patch variants
   are no longer admitted by the standard toolchain registries; projects on those releases must
   upgrade Lean or retain an older Beam checkout

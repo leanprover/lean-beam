@@ -1711,7 +1711,7 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     catch _ =>
       pure ()
 
-private def stderrFloodChild : IO Unit := do
+private def stderrFloodChild (fail : Bool := false) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
   let respond := fun json => do
@@ -1741,6 +1741,8 @@ private def stderrFloodChild : IO Unit := do
     ])
   ]
   discard <| stdin.readToEnd
+  if fail then
+    throw <| IO.userError "self-check shutdown failure fixture"
 
 private def checkSelfCheckStderrDrain : IO Unit := do
   let result ← IO.Process.output {
@@ -1748,18 +1750,36 @@ private def checkSelfCheckStderrDrain : IO Unit := do
     args := #["--self-check-parent"]
     env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some "2000")]
   }
-  require "self-check rejects child stderr after completing the protocol"
-    (result.exitCode != 0 && result.stderr.contains "self-check child wrote stderr")
+  require "self-check accepts diagnostic stderr after completing the protocol"
+    (result.exitCode == 0 && result.stdout.contains "Lean Beam MCP self-check passed")
+  require "successful self-check does not replay child diagnostics" result.stderr.isEmpty
   require "self-check drains stderr while awaiting protocol responses"
     (!result.stderr.contains "timed out")
+
+private def checkSelfCheckNonzeroExitWithStderr : IO Unit := do
+  let result ← IO.Process.output {
+    cmd := (← IO.appPath).toString
+    args := #["--self-check-parent", "stderr-failure"]
+    env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some "2000")]
+  }
+  require "self-check still rejects nonzero exit after valid protocol responses"
+    (result.exitCode != 0 && result.stderr.contains "self-check child exited with code")
+  require "failed self-check retains child diagnostics"
+    (result.stderr.contains "self-check shutdown failure fixture")
+  require "failed self-check does not report success"
+    (!result.stdout.contains "Lean Beam MCP self-check passed")
 
 def main (args : List String) : IO Unit := do
   match args with
   | ["--beam-cli", "stderr-flood"] => return ← stderrFloodChild
+  | ["--beam-cli", "stderr-failure"] => return ← stderrFloodChild true
   | ["--self-check-parent"] =>
       return ← Beam.Mcp.SelfCheck.run { beamCli? := some "stderr-flood" } "lakefile.lean"
+  | ["--self-check-parent", "stderr-failure"] =>
+      return ← Beam.Mcp.SelfCheck.run { beamCli? := some "stderr-failure" } "lakefile.lean"
   | _ => pure ()
   checkSelfCheckStderrDrain
+  checkSelfCheckNonzeroExitWithStderr
   checkJsonHelpers
   checkVersionIdentityJson
   checkIncoming

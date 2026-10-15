@@ -248,8 +248,6 @@ def run (opts : Options) (pathText : String) : IO Unit := do
     let stderr ← readStderr stderrTask timeout
     if exitCode != 0 then
       throw <| IO.userError s!"lean-beam-mcp self-check child exited with code {exitCode}\n{stderr}"
-    unless stderr.trimAscii.toString.isEmpty do
-      throw <| IO.userError s!"lean-beam-mcp self-check child wrote stderr:\n{stderr}"
     IO.println "Lean Beam MCP self-check passed"
     IO.println s!"  root: {root}"
     IO.println s!"  file: {resolvedPath}"
