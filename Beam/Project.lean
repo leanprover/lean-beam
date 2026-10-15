@@ -15,8 +15,4 @@ def hasLeanProject (root : System.FilePath) : IO Bool := do
     (← (root / "lakefile.toml").pathExists) ||
     (← (root / "lakefile.lean").pathExists)
 
-def hasRocqProject (root : System.FilePath) : IO Bool := do
-  return (← (root / "_RocqProject").pathExists) ||
-    (← (root / "_CoqProject").pathExists)
-
 end Beam.Project

@@ -146,7 +146,3 @@ lean_exe "beam-mcp-projection-test" where
 lean_exe "beam-mcp-protocol-test" where
   srcDir := "tests/lean"
   root := `BeamTest.Broker.McpProtocolTest
-
-lean_exe "beam-daemon-rocq-smoke-test" where
-  srcDir := "tests/lean"
-  root := `BeamTest.Broker.RocqSmokeTest

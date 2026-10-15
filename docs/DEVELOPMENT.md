@@ -33,8 +33,6 @@ If the question is "how do I work on the repo safely and efficiently?", start he
   execution at saved document positions.
 - `Beam`: shared broker, CLI, and MCP layer over Lean LSP plus Beam-specific extensions.
 - `skills`: installed workflow guidance for supported agent clients built around `lean-beam`.
-- Rocq support: a narrow auxiliary goal-probe surface through the same `lean-beam` wrapper, useful
-  when porting from Rocq to Lean.
 - `tests`: scenario-DSL coverage for LSP-level behavior, concurrent stress coverage, broker and
   wrapper regression suites, and install/runtime validation.
 
@@ -98,7 +96,7 @@ Preferred maintainer entrypoints:
   async/pending boundaries, and stringify only at transport, CLI, or diagnostic display edges
 - do not add useless backward compatibility support; this pre-stable project has no legacy users, so
   remove obsolete aliases, inferred envelope shapes, and compatibility branches unless they support
-  an explicitly listed Lean/Rocq/tooling version or another target named in
+  an explicitly listed Lean/tooling version or another target named in
   [Compatibility Policy](COMPATIBILITY.md)
 
 ## Compatibility Policy
@@ -329,7 +327,7 @@ internally it coordinates several responsibilities around the LSP process:
   control-directory locks
 - the broker owns request identity: workspace selection, backend session lifetime, request
   dispatch, cancellation, active-request bookkeeping, transport errors, and the LSP document mirror
-- the LSP server and plugin own Lean/Rocq semantic facts: elaboration, diagnostics, progress,
+- the LSP server and plugin own Lean semantic facts: elaboration, diagnostics, progress,
   goals, runAt execution, direct imports, save readiness, and save artifact generation
 - Lake owns build graph and trace semantics; broker code may preflight and translate Lake outcomes,
   but daemon paths must not enter Lake APIs that can terminate the process
@@ -486,8 +484,7 @@ any recorded process. Opaque legacy, unsupported, or malformed state requires `r
 A paused holder keeps its pipe open and remains valid without expiry. If the project root
 disappears, cleanup uses the already resolved control path without recreating the project.
 
-Human commands may infer a project root only when the Lean and Rocq candidates agree or exactly one
-exists; otherwise they report every candidate and require `--root`. Automated callers should pass
+Human commands infer the nearest Lean/Lake project root. Automated callers should pass
 an explicit root, invoke typed wrapper commands, check exit status, and parse final stdout JSON only
 when present. Pre-dispatch selector, setup, and transport failures may report only human stderr.
 Lifecycle shutdown
@@ -556,8 +553,8 @@ locks intentionally keep the lower-level unbounded helper because another proces
 be compiling a helper bundle. The shell installer's `.install-lock` remains an atomic directory
 compatibility boundary: it is never stale-reaped, and a crashed installer requires explicit
 operator recovery. Reusable CLI argument parsing lives in
-[Beam/Cli/Args.lean](../Beam/Cli/Args.lean). Project-root inference,
-Lean toolchain lookup, and Rocq command discovery live in [Beam/Cli/Project.lean](../Beam/Cli/Project.lean).
+[Beam/Cli/Args.lean](../Beam/Cli/Args.lean). Project-root inference
+and Lean toolchain lookup live in [Beam/Cli/Project.lean](../Beam/Cli/Project.lean).
 Shared filesystem path helpers live in [Beam/Path.lean](../Beam/Path.lean). Use them instead of
 copying string-prefix checks or raw `IO.FS.realPath` wrappers:
 
@@ -653,7 +650,6 @@ artifacts.
 - Beam wrapper / install / bundle-resolution changes: `bash tests/test-beam-slow.sh`
 - Beam install / runtime layout changes: `bash tests/test-beam-install.sh`
 - supported Lean toolchain changes: `bash tests/test-beam-toolchain-compat.sh <toolchain>`
-- Rocq broker / wrapper changes: `bash tests/test-beam-rocq.sh`
 - maintainer harness / validation wrapper changes: `bash tests/test-maintainer.sh`
 - risky local install or wrapper validation: `bash scripts/validate-defensive.sh`
 - shell changes: `bash scripts/lint-shell.sh`

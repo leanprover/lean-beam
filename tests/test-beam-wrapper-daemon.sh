@@ -213,7 +213,7 @@ if "$beam_script" --root "$tmp1" serve typo > "$invalid_backend_out" 2> "$invali
   cat "$invalid_backend_out" >&2
   exit 1
 fi
-if ! grep -Fq "expected backend 'lean' or 'rocq'" "$invalid_backend_err"; then
+if ! grep -Fq "expected backend 'lean'" "$invalid_backend_err"; then
   echo "expected unknown-backend diagnostics to list the valid backend names" >&2
   cat "$invalid_backend_err" >&2
   exit 1
@@ -810,8 +810,10 @@ entry = {
     "workspace": {
         "workspaceId": "beam-cli-project",
         "root": os.environ["DELIVERY_ROOT"],
-        "rocqCmd": "coq-lsp",
         "bundleId": "delivery-fixture",
+        "leanCmd": "lean",
+        "plugin": "/fixture/libbeam.so",
+        "toolchain": "leanprover/lean4:v4.35.0",
     },
     "configHash": "delivery-failure-config",
     "daemonBin": "/fixture/beam-daemon",

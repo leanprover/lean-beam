@@ -74,20 +74,6 @@ private def mkSessionStatus
   detail?
 }
 
-private def updateVersionForRocqGoals
-    (root : System.FilePath)
-    (client : ProjectDaemonClient)
-    (path : String) : IO Nat := do
-  let resp ← requestBroker root client {
-    payload := .updateFile { backend := .rocq, path }
-  }
-  match decodeUpdateFileResult resp with
-  | .ok result => pure result.version
-  | .error (.broker failure) => throw <| IO.userError failure.error.message
-  | .error (.invalidPayload detail) =>
-      throw <| IO.userError <|
-        s!"update_file returned an invalid result while obtaining document version: {detail}"
-
 private def runLeanRunAt
     (opts : CliOptions)
     (action path versionText lineText characterText : String)
@@ -429,40 +415,6 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
         callBrokerWithProgress root client
           (leanCloseSaveRequest path diagnosticScope)
           (leanSaveWaitSpec path (closeAfter := true) (action? := some action))
-  | "rocq-goals-after" :: path :: line :: character :: text =>
-      let root ← projectRoot opts .rocq
-      withProjectDaemon root .rocq (explicitControlDir? := opts.explicitControlDir?) fun client => do
-        let version ← updateVersionForRocqGoals root client path
-        callBroker root client {
-          payload := .goals {
-            backend := .rocq
-            path
-            version
-            line := ← parseNatArg "line" line
-            character := ← parseNatArg "character" character
-            mode? := some .after
-            compact? := some false
-            ppFormat? := some .str
-            text? := joinTextArgs text
-          }
-        }
-  | "rocq-goals-prev" :: path :: line :: character :: text =>
-      let root ← projectRoot opts .rocq
-      withProjectDaemon root .rocq (explicitControlDir? := opts.explicitControlDir?) fun client => do
-        let version ← updateVersionForRocqGoals root client path
-        callBroker root client {
-          payload := .goals {
-            backend := .rocq
-            path
-            version
-            line := ← parseNatArg "line" line
-            character := ← parseNatArg "character" character
-            mode? := some .before
-            compact? := some false
-            ppFormat? := some .str
-            text? := joinTextArgs text
-          }
-        }
   | "doctor" :: [] =>
       doctor home opts .lean
   | "doctor" :: backend :: [] =>

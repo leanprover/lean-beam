@@ -162,14 +162,12 @@ structure ListEntry where
   workspaceId : WorkspaceId
   root : System.FilePath
   leanActive : Bool
-  rocqActive : Bool
 
 instance : ToJson ListEntry where
   toJson entry := Json.mkObj [
     ("workspace_id", toJson entry.workspaceId),
     ("root", toJson entry.root.toString),
-    ("lean_active", toJson entry.leanActive),
-    ("rocq_active", toJson entry.rocqActive)
+    ("lean_active", toJson entry.leanActive)
   ]
 
 instance : FromJson ListEntry where
@@ -177,8 +175,7 @@ instance : FromJson ListEntry where
     let workspaceId ← decodeWorkspaceIdField json
     let root ← json.getObjValAs? String "root"
     let leanActive ← json.getObjValAs? Bool "lean_active"
-    let rocqActive ← json.getObjValAs? Bool "rocq_active"
-    pure { workspaceId, root := System.FilePath.mk root, leanActive, rocqActive }
+    pure { workspaceId, root := System.FilePath.mk root, leanActive }
 
 structure ListResult where
   workspaces : Array ListEntry := #[]

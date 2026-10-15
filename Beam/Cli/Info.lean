@@ -133,13 +133,6 @@ private def printLeanDoctorInfo (home root : System.FilePath) : IO Unit := do
   IO.println s!"bundle daemon: {bundleInfo.daemon}"
   IO.println s!"plugin: {bundleInfo.plugin}"
 
-private def printRocqDoctorInfo (home root : System.FilePath) : IO Unit := do
-  let daemon ← defaultDaemonPath home
-  let daemonReady := ← daemon.pathExists
-  IO.println s!"coq-lsp: {(← maybeRocqCmd root).getD ""}"
-  IO.println s!"daemon ready: {boolText daemonReady}"
-  IO.println s!"daemon binary: {daemon}"
-
 def daemonFailureIncidentDoctorLines
     (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none) : IO (List String) := do
@@ -163,7 +156,6 @@ def doctor (home : System.FilePath) (opts : CliOptions) (backend : Backend) : IO
   IO.println s!"project root: {root}"
   match backend with
   | .lean => printLeanDoctorInfo home root
-  | .rocq => printRocqDoctorInfo home root
   let registry ← Beam.Daemon.registryPathFor root opts.explicitControlDir?
   IO.println s!"registry: {registry}"
   match ← observeProjectRegistry root opts.explicitControlDir? with
@@ -228,8 +220,7 @@ def printInstallManifestWithSourceCommit
 def printMcpConfig (home : System.FilePath) (opts : CliOptions) : IO Unit := do
   let root ← projectRoot opts .lean
   let desired ← desiredConfig home root .lean
-  let .lean leanConfig _ := desired.backends
-    | throw <| IO.userError s!"could not resolve Lean backend for MCP project root {root}"
+  let .lean leanConfig := desired.backends
   printJsonLine <| Json.mkObj [
     ("root", toJson root.toString),
     ("lean_cmd", toJson leanConfig.command),

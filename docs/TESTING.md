@@ -9,7 +9,7 @@ local validation that CI cannot represent; see [CONTRIBUTING.md](../CONTRIBUTING
 The repository treats testing as three distinct surfaces:
 
 - `LSP`: every method registered by the Lean plugin in [Beam/LSP/Plugin.lean](../Beam/LSP/Plugin.lean)
-- `Beam`: broker, daemon/client protocol, CLI wrapper, install/runtime packaging, MCP, toolchain support, and Rocq support
+- `Beam`: broker, daemon/client protocol, CLI wrapper, install/runtime packaging, MCP, toolchain support
 - `Maintainer`: local workflow helpers and defensive validation wrappers that are not part of the product surface
 
 This split is organizational. It is also the supported top-level test layout.
@@ -95,7 +95,6 @@ Additional Beam lanes:
 - [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) `<toolchain>`: exact
   validated or release-line-compatible bundle qualification, admission diagnostics, module save/replay
   (including the required `.ir.sig` companion), and stale-import diagnostic wording compatibility
-- [tests/test-beam-rocq.sh](../tests/test-beam-rocq.sh): Rocq broker and wrapper coverage
 - [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh): external MCP `2025-11-25`
   conformance scenarios over the local Streamable HTTP bridge
 - [tests/test-mcp-modern-sdk.sh](../tests/test-mcp-modern-sdk.sh): released official TypeScript
@@ -151,9 +150,8 @@ Current Beam coverage includes:
   invalid-runtime identity cases in [tests/test-beam-prune.sh](../tests/test-beam-prune.sh)
 - MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, self-check, released
   official-client interoperability, and external legacy/modern conformance coverage
-- Rocq wrapper and broker smoke coverage in [tests/test-beam-wrapper-rocq.sh](../tests/test-beam-wrapper-rocq.sh) and [tests/lean/BeamTest/Broker/RocqSmokeTest.lean](../tests/lean/BeamTest/Broker/RocqSmokeTest.lean)
 
-Run the Beam surface when the change touches broker protocol or transport, request/progress/diagnostics streams, daemon session or restart logic, wrapper CLI behavior, bundle resolution, install layout, `doctor`, `validated-toolchains`, save replay, save barriers, MCP, or Rocq integration.
+Run the Beam surface when the change touches broker protocol or transport, request/progress/diagnostics streams, daemon session or restart logic, wrapper CLI behavior, bundle resolution, install layout, `doctor`, `validated-toolchains`, save replay, save barriers, and MCP.
 
 For save-only work, use [tests/test-beam-save-olean.sh](../tests/test-beam-save-olean.sh) as the
 local development loop. The slow and aggregate Beam suites remain useful CI or pre-release signals,
@@ -386,7 +384,6 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
   `<toolchain>` for the latest stable point of each supported release line, on Linux and in full
   macOS mode. Combined macOS mode qualifies the repository-pinned version.
   RCs and superseded stable points qualify locally instead of receiving dedicated CI jobs.
-- `beam-rocq`: [tests/test-beam-rocq.sh](../tests/test-beam-rocq.sh)
 - `shell-lint`: [scripts/lint-shell.sh](../scripts/lint-shell.sh)
 
 ## Extended Fork CI

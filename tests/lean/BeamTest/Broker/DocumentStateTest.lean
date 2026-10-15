@@ -25,8 +25,6 @@ private def checkTrackedModuleName : IO Unit := do
   let root := System.FilePath.mk "/workspace"
   require "lean module path"
     (DocumentState.trackedModuleName? root (root / "Foo" / "Bar.lean") .lean == some "Foo.Bar")
-  require "non-lean backend has no module"
-    (DocumentState.trackedModuleName? root (root / "Foo" / "Bar.lean") .rocq == none)
   require "non-lean file has no module"
     (DocumentState.trackedModuleName? root (root / "Foo" / "Bar.v") .lean == none)
   require "outside root has no module"

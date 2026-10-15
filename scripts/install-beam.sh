@@ -41,7 +41,6 @@ install_claude_skills=0
 install_pi_skills=0
 install_opencode_skills=0
 install_vibe_skills=0
-install_rocq_skill=0
 register_codex_mcp=0
 register_claude_mcp=0
 register_opencode_mcp=0
@@ -187,7 +186,6 @@ Optional flags:
   --opencode    install bundled Lean skill into $opencode_skills_home
   --vibe        install bundled Lean skill into $vibe_skills_home
   --all-skills  install bundled Lean skill for every supported agent target
-  --rocq-skill  also install the optional Rocq skill for the selected agent target(s)
   --codex-mcp   register lean-beam-mcp with Codex
   --codex-home  Codex home for --codex and --codex-mcp
   --claude-mcp  register lean-beam-mcp with Claude Code user config
@@ -221,20 +219,11 @@ EOF
 }
 
 skill_install_names() {
-  if [ "$install_rocq_skill" -eq 1 ]; then
-    printf 'lean-beam, rocq-beam\n'
-  else
-    printf 'lean-beam\n'
-  fi
+  printf 'lean-beam\n'
 }
 
 skill_install_path_summary() {
-  local skills_home="$1"
-  if [ "$install_rocq_skill" -eq 1 ]; then
-    printf '%s/{lean-beam,rocq-beam}\n' "$skills_home"
-  else
-    printf '%s/lean-beam\n' "$skills_home"
-  fi
+  printf '%s/lean-beam\n' "$1"
 }
 
 confirm_edit() {
@@ -633,9 +622,6 @@ parse_args() {
         install_opencode_skills=1
         install_vibe_skills=1
         ;;
-      --rocq-skill)
-        install_rocq_skill=1
-        ;;
       --codex-mcp)
         mcp_registration_explicit=1
         register_codex_mcp=1
@@ -953,17 +939,6 @@ prompt_skill_selection() {
         ;;
     esac
   done
-}
-
-validate_skill_selection() {
-  if [ "$install_rocq_skill" -eq 1 ] \
-    && [ "$install_codex_skills" -eq 0 ] \
-    && [ "$install_claude_skills" -eq 0 ] \
-    && [ "$install_pi_skills" -eq 0 ] \
-    && [ "$install_opencode_skills" -eq 0 ] \
-    && [ "$install_vibe_skills" -eq 0 ]; then
-    die "--rocq-skill requires --codex, --claude, --pi, --opencode, --vibe, --all-skills, or an interactive skill target"
-  fi
 }
 
 maybe_prompt_interactive_choices() {
@@ -1356,9 +1331,6 @@ install_skills() {
   require_absolute_path "$skills_home" "skills home"
   ensure_dir_for_install "$skills_home" "skills home"
   install_one_skill "$repo_root/skills/lean-beam" "$skills_home/lean-beam" "lean-beam"
-  if [ "$install_rocq_skill" -eq 1 ]; then
-    install_one_skill "$repo_root/skills/rocq-beam" "$skills_home/rocq-beam" "rocq-beam"
-  fi
 }
 
 install_skill_target() {
@@ -1372,9 +1344,6 @@ verify_skill_home_targets() {
   local skills_home="$1"
   require_absolute_path "$skills_home" "skills home"
   ensure_skill_target_replaceable "$skills_home/lean-beam" "lean-beam"
-  if [ "$install_rocq_skill" -eq 1 ]; then
-    ensure_skill_target_replaceable "$skills_home/rocq-beam" "rocq-beam"
-  fi
 }
 
 verify_requested_skill_targets() {
@@ -1401,7 +1370,6 @@ prepare_install_environment() {
   require_repo_toolchain "$prepared_repo_toolchain"
   maybe_prompt_interactive_choices "$prepared_repo_toolchain"
   resolve_prepared_toolchain_selection "$prepared_repo_toolchain"
-  validate_skill_selection
   print_install_plan
   approve_requested_writes
   ensure_install_root_ready
@@ -1599,7 +1567,6 @@ print_install_references() {
   print_field "MCP help" "$bin_home/lean-beam-mcp --help"
   print_field "setup guide" "$repo_root/docs/SETUP.md"
   print_field "workflow guide" "$repo_root/skills/lean-beam/SKILL.md"
-  print_field "Rocq guide" "$repo_root/docs/ROCQ.md"
 }
 
 print_agent_setup_summary() {

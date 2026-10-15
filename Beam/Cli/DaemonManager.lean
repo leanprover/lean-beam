@@ -706,17 +706,7 @@ def desiredConfig (home root : System.FilePath) (required : Backend) : IO Desire
         toolchain
         bundleId
       }
-      let rocq? ←
-        if ← hasRocqProject root then
-          let command? ← maybeRocqCmd root
-          pure <| command?.map fun command => ({ command } : RocqBackendConfig)
-        else
-          pure none
-      pure { root, backends := .lean lean rocq?, daemonBin := bundle.daemon }
-  | .rocq =>
-      let rocq : RocqBackendConfig := { command := ← rocqCmd root }
-      let daemonBin ← ensureDefaultDaemon home
-      pure { root, backends := .rocq rocq, daemonBin }
+      pure { root, backends := .lean lean, daemonBin := bundle.daemon }
 
 structure ProjectDaemonClient where
   endpoint : Transport.Endpoint
@@ -748,7 +738,6 @@ def ProjectDaemonClient.ofSessionDescriptor
 
 private def workspaceSupportsBackend (workspace : WorkspaceBinding) : Backend → Bool
   | .lean => workspace.leanCmd?.isSome && workspace.plugin?.isSome
-  | .rocq => workspace.rocqCmd?.isSome
 
 private def validateWorkspaceBackend
     (root : System.FilePath)
@@ -1018,7 +1007,6 @@ def ProjectDaemonOwner.registered (owner : ProjectDaemonOwner) : IO Bool := do
   | .absent | .invalid _ => pure false
 
 private def missingOwnerCommand : Option Backend → WrapperSessionCommand
-  | some .rocq => .serve .rocq
   | some .lean | none => .serve .lean
 
 private def missingOwnerMessage

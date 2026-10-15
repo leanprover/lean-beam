@@ -137,6 +137,8 @@ variants from [`compatible-lean-release-lines`](compatible-lean-release-lines). 
 [docs/SETUP.md](docs/SETUP.md#validated-and-compatible-toolchains) for bundle setup and
 [docs/CUSTOM_TOOLCHAINS.md](docs/CUSTOM_TOOLCHAINS.md) for explicitly accepted local Lean builds.
 
+Rocq goal probes and the Rocq agent skill are maintained in the separate `rocq-beam` project.
+
 ## Documentation Map
 
 For users:
@@ -145,7 +147,6 @@ For users:
 - [docs/CUSTOM_TOOLCHAINS.md](docs/CUSTOM_TOOLCHAINS.md): explicit local Lean toolchain support.
 - [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md): pre-stable compatibility policy and supported
   targets.
-- [docs/ROCQ.md](docs/ROCQ.md): optional Rocq goal probes for Rocq-to-Lean porting.
 - [docs/FEEDBACK.md](docs/FEEDBACK.md): feedback report cards for useful bug reports.
 - [docs/STATUS.md](docs/STATUS.md): current scope, limitations, and direction.
 - [CHANGELOG.md](CHANGELOG.md): release-facing changes.
@@ -153,7 +154,6 @@ For users:
 For agent workflows:
 
 - [skills/lean-beam/SKILL.md](skills/lean-beam/SKILL.md): Lean workflow contract.
-- [skills/rocq-beam/SKILL.md](skills/rocq-beam/SKILL.md): auxiliary Rocq workflow surface.
 
 For contributors and maintainers:
 

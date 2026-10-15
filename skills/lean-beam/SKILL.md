@@ -12,9 +12,7 @@ clean `lake build`; do not force an expensive clean local rebuild after every ch
 calling work batch-validated, require a successful clean CI build, or run one clean local build when
 no such CI result is available or server-sensitive elaboration is suspected.
 
-This is the Lean-only skill. It should stay focused on Lean and should not require Rocq setup or Rocq concepts.
-Do not factor shared Lean/Rocq skill instructions into a common helper; duplicate short guidance if
-both skills need it.
+This skill is Lean-only and self-contained.
 
 ## Setup
 

@@ -92,13 +92,11 @@ def sessionJson (session? : Option SessionView) : IO Json := do
 
 def payload
     (root : System.FilePath)
-    (leanSession? : Option SessionView)
-    (rocqSession? : Option SessionView) : IO Json := do
+    (leanSession? : Option SessionView) : IO Json := do
   pure <| Json.mkObj [
     ("root", toJson root.toString),
     ("sessions", Json.mkObj [
-      ("lean", ← sessionJson leanSession?),
-      ("rocq", ← sessionJson rocqSession?)
+      ("lean", ← sessionJson leanSession?)
     ])
   ]
 

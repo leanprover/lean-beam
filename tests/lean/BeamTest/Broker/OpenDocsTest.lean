@@ -28,18 +28,13 @@ private def mkDoc (text : String) (version : Nat := 1) : DocState :=
 
 private def checkInactivePayload : IO Unit := do
   let root := System.FilePath.mk "/workspace"
-  let payload ← OpenDocs.payload root none none
+  let payload ← OpenDocs.payload root none
   requireJsonString "open docs payload" "root" root.toString payload
   let sessions ← requireObjVal "open docs payload" "sessions" payload
   let leanSession ← requireObjVal "open docs sessions" "lean" sessions
-  let rocqSession ← requireObjVal "open docs sessions" "rocq" sessions
   requireJsonBool "inactive lean session" "active" false leanSession
-  requireJsonBool "inactive rocq session" "active" false rocqSession
   require "inactive lean session has empty files"
     ((← requireArray "inactive lean files" (← requireObjVal "inactive lean session" "files" leanSession)).isEmpty)
-  require "inactive rocq session has empty files"
-    ((← requireArray "inactive rocq files" (← requireObjVal "inactive rocq session" "files" rocqSession)).isEmpty)
-
 private def checkDocProjection : IO Unit := do
   let root := System.FilePath.mk s!"/tmp/beam-open-docs-test-{← IO.monoNanosNow}"
   try

@@ -75,17 +75,13 @@ If a behavior is subtle, encode it in tests before optimizing it.
   async/pending boundaries, and stringify only at transport, CLI, or diagnostic display edges
 - do not add useless backward compatibility support; this pre-stable project has no legacy users, so
   remove obsolete aliases, inferred envelope shapes, and compatibility branches unless they support
-  an explicitly listed Lean/Rocq/tooling/protocol version or another target named in
+  an explicitly listed Lean/tooling/protocol version or another target named in
   [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)
 
 ## Skill Boundaries
 
-Keep the Lean and Rocq skills fully separate.
-
-- `lean-beam` must stay Lean-only and must not require Rocq setup or Rocq concepts
-- `rocq-beam` must stay Rocq-only and must not require Lean-specific workflow guidance
-- do not introduce a shared skill helper, common skill file, or mixed Lean/Rocq skill layer
-- if a short instruction is needed in both skills, duplicate it instead of coupling the two skills
+The `lean-beam` skill is Lean-only. Rocq integration and its skill belong to the separate
+`rocq-beam` project; do not introduce a shared skill layer between the projects.
 
 ## Public Writing
 
@@ -105,7 +101,6 @@ The repo includes:
 
 - `lake exe beam-daemon`
 - `lake exe beam-daemon-smoke-test`
-- `lake exe beam-daemon-rocq-smoke-test`
 - [scripts/lean-beam](scripts/lean-beam)
 - [scripts/codex-harness.sh](scripts/codex-harness.sh)
 - [scripts/codex-session-start.sh](scripts/codex-session-start.sh)
@@ -129,12 +124,10 @@ When working locally:
   owns the longer stdio stress run
 - for Beam wrapper / install / bundle-resolution changes, also run `bash tests/test-beam-slow.sh`
 - for supported Lean toolchain changes, add `bash tests/test-beam-toolchain-compat.sh <toolchain>`
-- for Rocq broker / wrapper changes, use `bash tests/test-beam-rocq.sh`
 - for risky local install / wrapper validation, prefer `bash scripts/validate-defensive.sh` so slow
   suites run in a cloned `/tmp` sandbox with fake homes and guarded path operations
 - use `bash tests/test-beam.sh` when you want the aggregate default Beam suite
 - prefer the wrapper over raw LSP when the task fits
-- use Rocq only through `coq-lsp`
 - if a file is open in the broker, do not edit it out of band
 - if Lean reports stale or rebuild trouble unexpectedly, stop and surface it loudly
 
@@ -164,4 +157,3 @@ Helpful repo docs:
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 - [docs/TESTING.md](docs/TESTING.md)
 - [skills/lean-beam/SKILL.md](skills/lean-beam/SKILL.md)
-- [skills/rocq-beam/SKILL.md](skills/rocq-beam/SKILL.md)

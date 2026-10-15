@@ -47,18 +47,8 @@ immutable runtime payload and its provenance manifest. After reinstalling, resta
 sessions so they launch the new runtime instead of continuing to use an already-running server
 process.
 
-The agent flags install the bundled Lean skill into the corresponding agent home. Rocq support is a
-separate optional skill; add `--rocq-skill` to a selected agent target when you also want the Rocq
-skill:
-
-```bash
-./scripts/install-beam.sh --codex --rocq-skill
-./scripts/install-beam.sh --all-skills --rocq-skill
-```
-
-`--rocq-skill` is only a modifier. It must be paired with `--codex`, `--claude`, `--pi`,
-`--opencode`, `--vibe`, `--all-skills`, or an interactive skill target. Rocq-specific setup is
-documented in [ROCQ.md](ROCQ.md).
+The agent flags install the bundled Lean skill into the corresponding agent home. Rocq goal
+probes and the Rocq skill are installed separately from the `rocq-beam` project.
 
 The installer requires `elan` on `PATH`. Make sure `~/.local/bin` is on `PATH` before using the
 installed wrappers directly.
@@ -245,9 +235,8 @@ do not need a separate holder; the stdio MCP process owns its runtime session.
 
 `lean-beam status` reports the public session state as `absent`, `running`, `stopping`, or
 `recoveryRequired`, together with the resolved workspace and session directory. Human-facing
-commands may infer a root only when the result is unique. If Lean and Rocq markers identify
-different candidate roots, Beam lists the ambiguity and requires `--root`. Automated callers should
-pass an explicit root; `stop` and `recover` always require one.
+commands infer a Lean/Lake project root from the current directory and its ancestors. Automated
+callers should pass an explicit root; `stop` and `recover` always require one.
 
 Successful `serve`, `status`, `stop`, and `recover` commands emit the same top-level
 `{"ok": true, "result": ...}` shape. `serve` reports the public running session rather than its
@@ -401,9 +390,7 @@ contract and the distinction between the inner loop and final batch validation l
 [SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md#development-checkpoints-and-batch-validation).
 
 Detailed Lean workflow guidance lives in
-[../skills/lean-beam/SKILL.md](../skills/lean-beam/SKILL.md). The narrower Rocq surface is
-summarized in [ROCQ.md](ROCQ.md), with agent workflow details in
-[../skills/rocq-beam/SKILL.md](../skills/rocq-beam/SKILL.md).
+[../skills/lean-beam/SKILL.md](../skills/lean-beam/SKILL.md).
 
 ## MCP Setup
 

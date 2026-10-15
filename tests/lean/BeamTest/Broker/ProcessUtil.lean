@@ -175,25 +175,6 @@ def spawnLeanBroker
     (identity? : Option Beam.Broker.DaemonIdentity := none) : IO (IO.Process.Child nullBrokerStdio) := do
   spawnLeanBrokerWithPlugin endpoint root (← BeamTest.TestHarness.pluginPath) leanCmd identity?
 
-def spawnRocqBroker
-    (endpoint : Beam.Broker.Endpoint)
-    (root : System.FilePath)
-    (rocqCmd : String := "coq-lsp") : IO (IO.Process.Child nullBrokerStdio) := do
-  let port :=
-    match endpoint with
-    | .tcp port => port
-  IO.Process.spawn {
-    toStdioConfig := nullBrokerStdio
-    cmd := (← daemonExe).toString
-    args := #[
-      "--port", toString port.toNat,
-      "--root", root.toString,
-      "--workspace-id", testWorkspaceId,
-      "--rocq-cmd", rocqCmd
-    ]
-    setsid := true
-  }
-
 partial def waitForBrokerReady
     (endpoint : Beam.Broker.Endpoint)
     (tries : Nat := 50) : IO Unit := do

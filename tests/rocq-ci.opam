@@ -1,9 +1,0 @@
-opam-version: "2.0"
-synopsis: "CI-only Rocq dependencies for lean-beam broker tests"
-maintainer: "Emilio J. Gallego Arias"
-license: "Apache-2.0"
-depends: [
-  "rocq-core" {= "9.1.1"}
-  "rocq-stdlib"
-  "coq-lsp" {= "0.2.5+9.1"}
-]

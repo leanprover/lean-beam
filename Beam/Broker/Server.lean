@@ -79,9 +79,7 @@ structure WorkspaceState where
   config : BrokerConfig
   nextFileSnapshotSeq : Nat := 1
   lean : BackendState := {}
-  rocq : BackendState := {}
   leanMetrics : BackendMetrics := {}
-  rocqMetrics : BackendMetrics := {}
 
 structure State where
   bootstrapConfig : BrokerConfig
@@ -159,7 +157,6 @@ def sessionUri (path : System.FilePath) : String :=
 
 private def backendName : Backend → String
   | .lean => "Lean"
-  | .rocq => "Rocq"
 
 private def BackendStderrCapture.snapshot (capture : BackendStderrCapture) : IO String := do
   Beam.StderrCapture.snapshot capture
@@ -309,7 +306,6 @@ private def setFreshWorkspace
 private def getBackendState (workspace : WorkspaceState) (backend : Backend) : BackendState :=
   match backend with
   | .lean => workspace.lean
-  | .rocq => workspace.rocq
 
 private def setBackendState
     (workspace : WorkspaceState)
@@ -317,7 +313,6 @@ private def setBackendState
     (backendState : BackendState) : WorkspaceState :=
   match backend with
   | .lean => { workspace with lean := backendState }
-  | .rocq => { workspace with rocq := backendState }
 
 private def detachBackendSession
     (backend : BackendState) : BackendState × Option Session :=
@@ -329,7 +324,6 @@ private def detachBackendSession
 private def getBackendMetrics (workspace : WorkspaceState) (backend : Backend) : BackendMetrics :=
   match backend with
   | .lean => workspace.leanMetrics
-  | .rocq => workspace.rocqMetrics
 
 private def setBackendMetrics
     (workspace : WorkspaceState)
@@ -337,7 +331,6 @@ private def setBackendMetrics
     (metrics : BackendMetrics) : WorkspaceState :=
   match backend with
   | .lean => { workspace with leanMetrics := metrics }
-  | .rocq => { workspace with rocqMetrics := metrics }
 
 private def recordSessionSpawn (workspaceId : WorkspaceId) (backend : Backend) (restart : Bool) : M Unit := do
   modify fun state =>
@@ -399,12 +392,10 @@ private def workspaceStatsJson (workspaceId : WorkspaceId) (workspace : Workspac
     ("id", toJson workspaceId),
     ("root", toJson workspace.config.root.toString),
     ("sessions", Json.mkObj [
-      ("lean", sessionSnapshotJson workspace.lean.session?),
-      ("rocq", sessionSnapshotJson workspace.rocq.session?)
+      ("lean", sessionSnapshotJson workspace.lean.session?)
     ]),
     ("byBackend", Json.mkObj [
-      ("lean", backendMetricsJson workspace.leanMetrics),
-      ("rocq", backendMetricsJson workspace.rocqMetrics)
+      ("lean", backendMetricsJson workspace.leanMetrics)
     ])
   ]
 
@@ -845,7 +836,7 @@ private def syncFileSnapshotDetailed
       let param := toJson ({
         textDocument := {
           uri := snapshot.uri
-          languageId := match session.backend with | .lean => "lean" | .rocq => "rocq"
+          languageId := "lean"
           version := decision.version
           text := snapshot.text
         } : DidOpenTextDocumentParams
@@ -930,7 +921,6 @@ private def openDocsSessionView (session : Session) : OpenDocs.SessionView := {
 private def openDocsWorkspacePayload (workspace : WorkspaceState) : IO Json :=
   OpenDocs.payload workspace.config.root
     (workspace.lean.session?.map openDocsSessionView)
-    (workspace.rocq.session?.map openDocsSessionView)
 
 private def openDocsPayload (workspaceId? : Option WorkspaceId := none) : M Json := do
   let state ← get
@@ -1157,15 +1147,10 @@ def ServerRuntime.create
     closeDone := ← IO.Promise.new
   }
 
-private def collectSessions
-    (left? right? : Option Session) : Array Session :=
-  #[left?, right?].filterMap id
-
 private def detachWorkspaceSessions
     (workspace : WorkspaceState) : WorkspaceState × Array Session :=
   let (lean, leanSession?) := detachBackendSession workspace.lean
-  let (rocq, rocqSession?) := detachBackendSession workspace.rocq
-  ({ workspace with lean, rocq }, collectSessions leanSession? rocqSession?)
+  ({ workspace with lean }, leanSession?.toArray)
 
 private def detachRuntimeSessions (server : ServerRuntime) : IO (Array Session) := do
   server.withState do
@@ -1370,7 +1355,6 @@ private def workspaceListPayload (state : State) : Json :=
       workspaceId
       root := workspace.config.root
       leanActive := workspace.lean.session?.isSome
-      rocqActive := workspace.rocq.session?.isSome
     } : Beam.Workspace.ListEntry)
   } : Beam.Workspace.ListResult)
 
@@ -1411,7 +1395,7 @@ private def cancelRegisteredRequest
       let state ← get
       pure <| state.workspaces.toList.flatMap fun (workspaceId, workspace) =>
         if active.workspaceId?.all (fun selected => selected == workspaceId) then
-          [workspace.lean.session?, workspace.rocq.session?]
+          [workspace.lean.session?]
         else
           []
     for session? in sessions do
@@ -2437,26 +2421,10 @@ private def handleGoalsOp
   let started ← liftFailureIO <| server.withRequestBackendState req do
     let position : Lsp.Position := { line := request.line, character := request.character }
     startSyncedWorkspaceRequest req.workspaceId req.backend snapshot method
-      (fun uri docState =>
-        match req.backend with
-        | .lean =>
-            Json.mkObj [
-              ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier })),
-              ("position", toJson position)
-            ]
-        | .rocq =>
-            let fields :=
-              [
-                ("textDocument", toJson ({ uri := uri, version? := some docState.version : VersionedTextDocumentIdentifier })),
-                ("position", toJson position),
-                ("mode", toJson (Backend.Rocq.goalModeValue request.mode?)),
-                ("compact", toJson (request.compact?.getD false)),
-                ("pp_format", toJson (goalPpFormatValue request.ppFormat?))
-              ] ++
-              match request.text? with
-              | some text => [("command", toJson text)]
-              | none => []
-            Json.mkObj fields)
+      (fun uri _docState => Json.mkObj [
+        ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier })),
+        ("position", toJson position)
+      ])
       (trackedLeanDocumentVersion req.backend)
       (expectedVersion? := some request.version)
       (clientRequestId? := req.clientRequestId?)
@@ -2583,7 +2551,7 @@ private def initWorkspaceConfigFromRequest
           catch e =>
             return .error (responseFailureFor .invalidParams e.toString)
         pure <| some ({ command := lean.command, plugin } : LeanBackendConfig)
-  if lean?.isNone && request.rocqCmd?.isNone then
+  if lean?.isNone then
     let bootstrapConfig ← server.withState do
       let state ← get
       pure state.bootstrapConfig
@@ -2592,7 +2560,6 @@ private def initWorkspaceConfigFromRequest
   pure <| .ok {
     root
     lean?
-    rocq? := request.rocqCmd?.map fun command => { command }
   }
 
 private def handleRequestIO
@@ -2977,7 +2944,6 @@ private structure CliOptions where
   sessionOwnerStdin : Bool := false
   leanCmd? : Option String := none
   leanPlugin? : Option String := none
-  rocqCmd? : Option String := none
 
 private def parseNatArg (name value : String) : Except String Nat := do
   let some n := value.toNat?
@@ -3010,8 +2976,6 @@ private partial def parseCliOptions (opts : CliOptions) : List String → Except
       parseCliOptions { opts with leanCmd? := some leanCmd } rest
   | "--lean-plugin" :: leanPlugin :: rest =>
       parseCliOptions { opts with leanPlugin? := some leanPlugin } rest
-  | "--rocq-cmd" :: rocqCmd :: rest =>
-      parseCliOptions { opts with rocqCmd? := some rocqCmd } rest
   | arg :: _ =>
       throw s!"unexpected Beam daemon argument '{arg}'"
 
@@ -3147,7 +3111,6 @@ def main (args : List String) : IO Unit := do
   let leanPlugin? ← opts.leanPlugin?.mapM fun path =>
     Beam.resolveExistingPath <| System.FilePath.mk path
   let config ← IO.ofExcept <| BrokerConfig.ofOptions root opts.leanCmd? leanPlugin?
-    (rocqCommand? := opts.rocqCmd?)
   withDaemonResources opts config workspaceId mode root fun resources => do
     match mode with
     | .wrapper identity _ => emitWrapperReady resources.transport identity

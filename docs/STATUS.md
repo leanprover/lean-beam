@@ -33,9 +33,7 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 
 ### Local Beam Layer
 
-- foreground-owned local Beam daemon with typed `lean-beam` operations for Lean and Rocq workflows
-- optional Rocq Beam goal probes through `coq-lsp`, documented separately in
-  [docs/ROCQ.md](ROCQ.md)
+- foreground-owned local Beam daemon with typed `lean-beam` operations for Lean workflows
 - experimental Lean wrapper commands for follow-up handle continuation and release
 - installed `lean-beam-search` helper for shorter shell branching/playout workflows
 - explicit `ok` / `error` response envelopes on typed wrapper operations
@@ -84,8 +82,7 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 - MCP `lean_sync` and `lean_refresh` `diagnostics_in_result` option for clients that need selected
   current diagnostics replayed in the final structured result instead of collecting only
   interleaved log notifications
-- bundled Lean skills for supported agent clients, plus optional Rocq skills when installed with
-  `--rocq-skill`
+- bundled Lean skills for supported agent clients
 
 ### Coverage
 - repo-local regression coverage around isolation, stale state, cancellation, and handle invalidation
@@ -212,8 +209,8 @@ client protocol.
   configuration, and preserve unsafe session state. A competing owner computes its proposed
   configuration but cannot replace a mismatched live owner.
 - `lean-beam status` projects internal descriptor observations onto four public states: `absent`,
-  `running`, `stopping`, and `recoveryRequired`. Backend-neutral root inference accepts a unique
-  Lean/Rocq candidate and rejects different candidates as ambiguous. Automated callers should pass
+  `running`, `stopping`, and `recoveryRequired`. Root inference selects the nearest
+  Lean/Lake project. Automated callers should pass
   an explicit canonical `--root`; `stop` and `recover` require one. Successful lifecycle commands
   use one top-level `ok`/`result` envelope; `serve` projects its private backend warm-up onto the
   public running-session result instead of exposing broker workspace or epoch fields. `stop`
@@ -262,7 +259,7 @@ client protocol.
   retained as startup failure while the shared bounded capture continues draining the daemon pipe.
   Capture cleanup is bounded and reports a still-open pipe instead of waiting indefinitely on a
   synchronous pipe read; abnormal daemon exits include the retained stderr tail in their diagnostic.
-- Once the Beam daemon is running, a Lean or Rocq backend handshake failure is returned with the
+- Once the Beam daemon is running, a Lean backend handshake failure is returned with the
   bounded tail of that backend's stderr. This backend diagnostic is separate from the selected
   session directory's daemon startup log, which covers startup of the Beam daemon process itself.
 - Typed broker transport, invalid-response, and request-timeout failures include registry/log
@@ -353,12 +350,11 @@ client protocol.
   stale-dependency metadata from Lean's watchdog/file-worker
   path, so Beam can derive these hints from Lean instead of duplicating that state in the broker.
 
-### Distribution And Rocq
+### Distribution
 
 - Agent-skill distribution currently relies on a local checkout and local install script; it is not
   yet published through a registry or marketplace flow.
-- Rocq support is currently limited to goal inspection through `coq-lsp`; it is not yet a full
-  stateful execution layer.
+- Rocq goal inspection and its agent skill are maintained in the separate `rocq-beam` project.
 
 ## Direction
 

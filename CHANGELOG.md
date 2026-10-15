@@ -6,6 +6,11 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 0.2.0 beta development is open. Add user-facing changes here as they land.
 
+### Removed
+
+- Move Rocq goal probes, agent skill, and `coq-lsp` setup to the independent `rocq-beam` project.
+  Lean Beam no longer accepts Rocq broker requests, `serve rocq`, or `--rocq-skill`.
+
 ### Added
 
 - Validated Lean `v4.35.0` final support and made it the repository's default Lean toolchain

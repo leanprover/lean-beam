@@ -206,7 +206,6 @@ inductive WrapperSessionCommand where
 
 private def WrapperSessionCommand.text : WrapperSessionCommand → String
   | .serve .lean => "serve"
-  | .serve .rocq => "serve rocq"
   | .status => "status"
   | .stop => "stop"
   | .recoverGeneration generation =>

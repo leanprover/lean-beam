@@ -154,19 +154,16 @@ instance : FromJson Op where
 
 inductive Backend where
   | lean
-  | rocq
   deriving Inhabited, BEq, Repr, Ord
 
 instance : ToJson Backend where
   toJson
     | .lean => "lean"
-    | .rocq => "rocq"
 
 instance : FromJson Backend where
   fromJson?
     | .str "lean" => .ok .lean
-    | .str "rocq" => .ok .rocq
-    | j => .error s!"expected backend 'lean' or 'rocq', got {j.compress}"
+    | j => .error s!"expected backend 'lean', got {j.compress}"
 
 inductive GoalMode where
   | before
@@ -308,7 +305,6 @@ structure InitWorkspaceRequest where
   workspaceMode? : Option Beam.Workspace.InitMode := none
   root : String
   lean? : Option InitLeanBackendConfig := none
-  rocqCmd? : Option String := none
 
 /-- The fields owned by exactly one broker operation. -/
 inductive RequestPayload where
@@ -456,7 +452,7 @@ private def Op.requestFields (op : Op) : Array String :=
       #["path", "text", "storeHandle", "linear", "handle"]
   | .release => #["path", "handle"]
   | .initWorkspace =>
-      #["workspaceMode", "root", "leanCmd", "leanPlugin", "rocqCmd"]
+      #["workspaceMode", "root", "leanCmd", "leanPlugin"]
   | .dropWorkspace => #[]
   | .listWorkspaces | .shutdown => #[]
 
@@ -543,8 +539,7 @@ private def RequestPayload.jsonFields : RequestPayload → List (String × Json)
           ("leanCmd", toJson lean.command),
           ("leanPlugin", toJson lean.plugin)
         ]
-      | none => []) ++
-      optionalJsonField "rocqCmd" request.rocqCmd?
+      | none => [])
   | .stats | .listWorkspaces | .dropWorkspace | .shutdown => []
 
 def RequestPayload.backend? : RequestPayload → Option Backend
@@ -758,7 +753,6 @@ instance : FromJson Request where
             workspaceMode? := ← optionalField? (α := Beam.Workspace.InitMode) j "workspaceMode"
             root := ← requiredField j "root"
             lean?
-            rocqCmd? := ← optionalField? (α := String) j "rocqCmd"
           }
       | .listWorkspaces => pure .listWorkspaces
       | .dropWorkspace => pure .dropWorkspace

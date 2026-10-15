@@ -845,22 +845,12 @@ private def checkRequestBoundary : IO Unit := do
     ("character", toJson 2)
   ]
 
-  expectMethodError
-    "rocq run_at method"
-    "rocq backend does not support run_at yet"
-    (runAtMethod .rocq)
-
   expectDecodeFailure Request "code_action_resolve request missing codeAction" <| Json.mkObj [
     ("op", toJson "code_action_resolve"),
     ("backend", toJson "lean"),
     ("path", toJson "Demo.lean"),
     ("version", toJson 7)
   ]
-
-  expectMethodError
-    "rocq code_action_resolve method"
-    "rocq backend does not support code action resolution"
-    (codeActionResolveMethod .rocq)
 
 private def checkWorkspaceRoutingFields : IO Unit := do
   let processWideOps := #[Op.listWorkspaces, .shutdown]
@@ -892,13 +882,11 @@ private def checkWorkspaceRoutingFields : IO Unit := do
     payload := .initWorkspace {
       root := "/workspace"
       lean? := some { command := "lean", plugin := "/beam/libbeam.so" }
-      rocqCmd? := some "rocq"
     }
   }
   let initWithLeanJson := toJson initWithLean
   requireJsonString "typed workspace init" "leanCmd" "lean" initWithLeanJson
   requireJsonString "typed workspace init" "leanPlugin" "/beam/libbeam.so" initWithLeanJson
-  requireJsonString "typed workspace init" "rocqCmd" "rocq" initWithLeanJson
   let decodedInitWithLean ← expectOk "typed workspace init round trip" <|
     fromJson? (α := Request) initWithLeanJson
   require "typed workspace init should preserve its flat wire shape"
@@ -1097,7 +1085,6 @@ private def checkWorkspaceLifecycleProtocol : IO Unit := do
     workspaceId := "fixture"
     root
     leanActive := true
-    rocqActive := false
   }] } : Beam.Workspace.ListResult)
   let decodedList ← expectOk "decode typed workspace list" <|
     fromJson? (α := Beam.Workspace.ListResult) listJson
@@ -1106,7 +1093,7 @@ private def checkWorkspaceLifecycleProtocol : IO Unit := do
   require "typed workspace list preserves workspace id" (decodedEntry.workspaceId == "fixture")
   require "typed workspace list preserves root" (decodedEntry.root == root)
   require "typed workspace list preserves backend activity"
-    (decodedEntry.leanActive && !decodedEntry.rocqActive)
+    decodedEntry.leanActive
 
   let dropJson := toJson ({
     workspaceId := "fixture"
@@ -1651,19 +1638,25 @@ private def checkSessionCloseAdmission : IO Unit := do
     ((← ActiveRequestRegistry.count runtime.activeRequests) == 0)
 
 private def checkBrokerConfigBoundary : IO Unit := do
+  expectDecodeFailure Backend "Rocq backend belongs to rocq-beam" (Json.str "rocq")
+  expectDecodeFailure Request "Rocq workspace option belongs to rocq-beam" <| Json.mkObj [
+    ("op", toJson "init_workspace"),
+    ("workspaceId", toJson "test"),
+    ("root", toJson "/workspace"),
+    ("rocqCmd", toJson "coq-lsp")
+  ]
   let root := System.FilePath.mk "/workspace"
   let plugin := System.FilePath.mk "/beam/libbeam.so"
   let config ←
-    match BrokerConfig.ofOptions root (some "lean") (some plugin) (some "rocq") with
+    match BrokerConfig.ofOptions root (some "lean") (some plugin) with
     | .ok config => pure config
     | .error err => throw <| IO.userError s!"complete broker config failed: {err}"
-  match config.lean?, config.rocq? with
-  | some leanConfig, some rocqConfig =>
+  match config.lean? with
+  | some leanConfig =>
       require "broker config should preserve the Lean command" (leanConfig.command == "lean")
       require "broker config should preserve the Lean plugin" (leanConfig.plugin == plugin)
       require "broker CLI boundary should not invent a Lake helper" leanConfig.lakeHelper?.isNone
-      require "broker config should preserve the Rocq command" (rocqConfig.command == "rocq")
-  | _, _ => throw <| IO.userError "complete broker config lost a configured backend"
+  | none => throw <| IO.userError "complete broker config lost the Lean backend"
 
   let partialConfigs : Array (String × Option String × Option System.FilePath) := #[
     ("command only", some "lean", none),

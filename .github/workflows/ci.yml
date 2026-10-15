@@ -88,27 +88,6 @@ jobs:
         if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' }}
         run: bash tests/test-beam-install.sh
 
-      - name: Set up OCaml / opam
-        if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' }}
-        id: opam_setup
-        uses: ocaml/setup-ocaml@v3
-        with:
-          ocaml-compiler: 4.14.2
-          dune-cache: true
-          opam-repositories: |
-            default: git+https://github.com/ocaml/opam-repository.git
-            coq-released: https://coq.inria.fr/opam/released
-          opam-local-packages: tests/rocq-ci.opam
-
-      - name: Install Rocq CI Dependencies
-        if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' && steps.opam_setup.outcome == 'success' }}
-        id: rocq_deps
-        run: opam install -y ./tests/rocq-ci.opam --deps-only
-
-      - name: Beam Rocq Test
-        if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' && steps.rocq_deps.outcome == 'success' }}
-        run: bash tests/test-beam-rocq.sh
-
   shell-lint:
     name: shell-lint (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -259,31 +238,3 @@ jobs:
 
       - name: Validate toolchain compatibility
         run: bash tests/test-beam-toolchain-compat.sh '${{ matrix.toolchain }}'
-
-  beam-rocq:
-    name: beam-rocq (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON(vars.BEAM_FULL_MACOS_CI == 'true' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: ./.github/actions/lean-ci-setup
-
-      - name: Set up OCaml / opam
-        uses: ocaml/setup-ocaml@v3
-        with:
-          ocaml-compiler: 4.14.2
-          dune-cache: true
-          opam-repositories: |
-            default: git+https://github.com/ocaml/opam-repository.git
-            coq-released: https://coq.inria.fr/opam/released
-          opam-local-packages: tests/rocq-ci.opam
-
-      - name: Install Rocq CI Dependencies
-        run: opam install -y ./tests/rocq-ci.opam --deps-only
-
-      - name: Beam Rocq Test
-        run: bash tests/test-beam-rocq.sh

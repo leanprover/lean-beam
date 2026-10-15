@@ -51,7 +51,6 @@ structure WorkspaceBinding where
   root : String
   leanCmd? : Option String := none
   plugin? : Option String := none
-  rocqCmd? : Option String := none
   toolchain? : Option String := none
   bundleId : String
   deriving FromJson, ToJson

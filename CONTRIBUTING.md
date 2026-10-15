@@ -147,7 +147,6 @@ Use the smallest relevant suite first:
 - `bash tests/test-beam-slow.sh`: Beam wrapper, save replay, and bundle-resolution changes
 - `bash tests/test-beam-install.sh`: installer, runtime layout, and `doctor` / `validated-toolchains`
 - `bash tests/test-beam-toolchain-compat.sh <toolchain>`: supported-toolchain bundle validation
-- `bash tests/test-beam-rocq.sh`: Rocq broker and wrapper changes
 - `bash tests/test-beam.sh`: aggregate default Beam surface
 - `bash tests/test-maintainer.sh`: maintainer harness and defensive-validation helpers
 - `bash scripts/lint-shell.sh`: shell wrappers, installer, and shell tests
