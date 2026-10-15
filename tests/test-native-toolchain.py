@@ -77,7 +77,8 @@ def main():
         # configuration and CLI first, then prove the native builder uses its requested mode
         # without replacing that CLI or changing the ordinary configuration.
         run([lean_prefix / "bin" / f"lake{EXE}", "--reconfigure", "-KbeamToolchain=false",
-             "--no-cache", "build", "beam-cli", "beam-mcp-protocol-test"], env=build_env)
+             "--no-cache", "build", "beam-cli", "beam-mcp-protocol-test",
+             "BeamTest.PathBoundaryTest"], env=build_env)
         # Exercise the same typed self-check fixtures with the native SDK's header/DLL environment.
         run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "90", "--",
              REPO / ".lake/build/bin" / f"beam-mcp-protocol-test{EXE}", "--self-check-tests"],
