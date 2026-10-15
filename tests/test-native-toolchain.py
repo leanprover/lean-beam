@@ -173,6 +173,19 @@ def main():
                BEAM_INSTALL_BUNDLE_DIR=str(scratch / "forbidden-install-cache"),
                BEAM_BUNDLE_DIR=str(scratch / "forbidden-runtime-cache"),
                BEAM_PUBLIC_COMMAND="ambient-wrong-name")
+    # A project without a selector must locate sibling Lean/Lake without invoking elan.
+    # Apply this environment to every installed entrypoint, including version/help commands.
+    if os.name == "nt":
+        env["PATH"] = os.pathsep.join([str(relocated / "bin"),
+                                      str(Path(os.environ["SystemRoot"]) / "System32")])
+    else:
+        shim = scratch / "shim"
+        shim.mkdir()
+        for forbidden_command in ["elan", "git", "curl", "date"]:
+            trap = shim / forbidden_command
+            trap.write_text(f'#!/bin/sh\necho "unexpected {forbidden_command} invocation" >&2\nexit 99\n')
+            trap.chmod(0o755)
+        env["PATH"] = str(shim) + os.pathsep + str(relocated / "bin") + os.pathsep + env["PATH"]
     version = run([beam, "version"], cwd=scratch, env=env).stdout
     assert version.startswith("lean-beam "), version
     assert metadata["payloadHash"] in version and metadata["leanVersion"] in version, version
@@ -198,33 +211,21 @@ def main():
     if args.crlf:
         text = text.replace("\n", "\r\n")
     source.write_text(text, encoding="utf-8", newline="")
-    # This project has no selector, and elan must not be used to locate sibling Lean/Lake.
-    shim = scratch / "shim"
-    shim.mkdir()
-    if os.name != "nt":
-        elan = shim / "elan"
-        elan.write_text('#!/bin/sh\necho "unexpected elan invocation" >&2\nexit 99\n')
-        elan.chmod(0o755)
-    if os.name != "nt":
-        for forbidden_command in ["git", "curl", "date"]:
-            trap = shim / forbidden_command
-            trap.write_text(f'#!/bin/sh\necho "unexpected {forbidden_command} invocation" >&2\nexit 99\n')
-            trap.chmod(0o755)
-    if os.name == "nt":
-        # The installed runtime must work without the build SDK, Git Bash, or elan on PATH.
-        env["PATH"] = os.pathsep.join([str(relocated / "bin"),
-                                      str(Path(os.environ["SystemRoot"]) / "System32")])
-    else:
-        env["PATH"] = str(shim) + os.pathsep + str(relocated / "bin") + os.pathsep + env["PATH"]
     nested = project / "nested directory"
     nested.mkdir()
     inferred = json.loads(run([beam, "status"], cwd=nested, env=env, timeout=20).stdout)
     assert inferred["ok"] and inferred["result"]["state"] == "absent", inferred
     assert Path(inferred["result"]["workspace"]).samefile(project), inferred
-    # A filesystem root has no parent on POSIX or Windows. Project discovery must stop there.
+    # A filesystem root has no parent on POSIX or Windows. Discovery must terminate there,
+    # whether the host has a project marker at that root or reports no project.
     filesystem_root = Path(project.anchor)
-    missing = run([beam, "status"], cwd=filesystem_root, env=env, ok=False, timeout=20)
-    assert missing.returncode != 0 and "could not infer project root" in missing.stderr, missing
+    at_root = run([beam, "status"], cwd=filesystem_root, env=env, ok=False, timeout=20)
+    if at_root.returncode:
+        assert "could not infer project root" in at_root.stderr, at_root
+    else:
+        root_status = json.loads(at_root.stdout)
+        assert root_status["ok"], root_status
+        assert Path(root_status["result"]["workspace"]).samefile(filesystem_root), root_status
     doctor = run([beam, "--root", project, "doctor"], env=env).stdout
     assert "bundle source: toolchain" in doctor and metadata["payloadHash"] in doctor, doctor
     native_help = run([beam, "--help"], env=env).stdout
@@ -402,7 +403,7 @@ def main():
     if os.name == "nt":
         env["PATH"] = str(Path(real_elan).parent) + os.pathsep + env["PATH"]
     else:
-        elan.unlink()
+        (shim / "elan").unlink()
     env["ELAN_HOME"] = str(scratch / "elan-home")
     run([real_elan, "toolchain", "link", "native-match", relocated], env=env)
     (project / "lean-toolchain").write_text("native-match\n")

@@ -423,7 +423,13 @@ gh workflow run ci.yml --repo OWNER/REPO --ref BRANCH
 The current GitHub Actions workflow maps to the testing surfaces like this:
 
 - `macos-platform`: the combined macOS job described above
-- `native-toolchain`: [tests/test-native-toolchain.py](../tests/test-native-toolchain.py)
+- `native-toolchain`: [tests/test-native-toolchain.py](../tests/test-native-toolchain.py), including
+  installation and relocation into paths with spaces, CRLF sources, inferred project roots and
+  termination at filesystem roots, save/replay, native consumer builds, and MCP self-checks.
+  Windows x86_64 builds use MSYS2 clang64, then run the installed CLI and MCP server with only
+  the toolchain's `bin` directory and Windows `System32` on `PATH`. Elan is added only for project
+  selector checks. The Windows run also checks private session-directory DACLs. This coverage
+  applies to the bundled toolchain runtime; see [platform scope](COMPATIBILITY.md#current-targets).
 - `lsp`: [tests/test-lsp.sh](../tests/test-lsp.sh)
 - `beam-fast`: [tests/test-beam-fast.sh](../tests/test-beam-fast.sh)
 - `mcp-conformance`: [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh)

@@ -122,15 +122,8 @@ Run the native build/install/relocation/runtime regression with:
 python3 tests/test-native-toolchain.py /path/to/selected/lean/stage
 ```
 
-The `native-toolchain` CI job exercises Linux x86_64/aarch64 and Windows x86_64 with the
-repository's supported compiler. The combined `macos-platform` job also runs this test on macOS.
-Setting `BEAM_FULL_MACOS_CI=true` enables separate macOS x86_64/aarch64 native jobs instead;
-see [the CI layout](TESTING.md#ci-map).
-
-A Windows run builds with MSYS2 clang64, then exercises the installed runtime with only its own
-`bin` directory and Windows `System32` on `PATH` before adding elan for selector checks. The test
-covers root discovery from a nested project directory and failure at a filesystem root, CRLF
-sources, save/replay and native consumer builds, MCP self-checks, and private session-directory DACLs.
+CI runs this regression on Linux, macOS, and Windows x86_64 with the repository's pinned compiler.
+See the [CI map](TESTING.md#ci-map) for platform matrices and Windows qualification details.
 A release integration must also run this test against the actual compiler being shipped. Wasm, MCP
 registration and skill installation are outside this build/install interface.
 
