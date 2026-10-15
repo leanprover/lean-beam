@@ -102,8 +102,7 @@ structure VersionMarkResult where
   moduleHistory : ModuleHistories
   applied : Bool := false
 
-def trackedModuleName? (root path : System.FilePath) (backend : Backend) : Option String := do
-  guard (backend == .lean)
+def trackedModuleName? (root path : System.FilePath) : Option String :=
   Beam.leanModuleNameForPath? root path
 
 def requireDocState (docs : Docs) (uri : String) : IO DocState := do

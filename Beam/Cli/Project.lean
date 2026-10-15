@@ -39,12 +39,10 @@ def requireLeanProjectRoot (root : System.FilePath) : IO System.FilePath := do
   | .ok root => pure root
   | .error err => throw <| IO.userError err.message
 
-partial def findRootUpwards (start : System.FilePath) (backend : Backend) : IO (Option System.FilePath) := do
+partial def findRootUpwards (start : System.FilePath) : IO (Option System.FilePath) := do
   let dir ← Beam.resolveExistingPath start
   let rec loop (dir : System.FilePath) : IO (Option System.FilePath) := do
-    let found ←
-      match backend with
-      | .lean => hasLeanProject dir
+    let found ← hasLeanProject dir
     if found then
       pure (some dir)
     else if dir == System.FilePath.mk "/" then
@@ -53,16 +51,16 @@ partial def findRootUpwards (start : System.FilePath) (backend : Backend) : IO (
       loop (dir.parent.getD dir)
   loop dir
 
-def projectRoot (opts : CliOptions) (_backend : Backend) : IO System.FilePath := do
+def projectRoot (opts : CliOptions) : IO System.FilePath := do
   match opts.explicitRoot? with
   | some root => requireLeanProjectRoot root
   | none =>
-      match ← findRootUpwards (System.FilePath.mk ".") .lean with
+      match ← findRootUpwards (System.FilePath.mk ".") with
       | some root => requireLeanProjectRoot root
       | none => throw <| IO.userError "could not infer lean project root; use --root PATH"
 
 def inferProjectRootAny (start : System.FilePath) : IO System.FilePath := do
-  match ← findRootUpwards start .lean with
+  match ← findRootUpwards start with
   | some root => pure root
   | none => throw <| IO.userError "could not infer project root; use --root PATH"
 

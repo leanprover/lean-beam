@@ -134,7 +134,6 @@ def checkCancellationAndLifetime : IO Unit := do
     callbackInvoked.set false
     let mismatchedHandle : Beam.Broker.Handle := {
       workspaceId := "another-workspace"
-      backend := .lean
       epoch := 1
       session := "session"
       raw := Json.null

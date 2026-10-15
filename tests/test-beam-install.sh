@@ -1519,17 +1519,17 @@ printf 'leanprover/lean4:v4.32.0-rc1\n' > "$unsupported_project_root/lean-toolch
 
 unsupported_doctor_out="$("$installed_lean_beam" --root "$unsupported_project_root" doctor)"
 if ! printf '%s\n' "$unsupported_doctor_out" | grep -q 'project toolchain admission: unsupported'; then
-  echo "expected doctor lean to report unsupported toolchains explicitly" >&2
+  echo "expected doctor to report unsupported toolchains explicitly" >&2
   printf '%s\n' "$unsupported_doctor_out" >&2
   exit 1
 fi
 if ! printf '%s\n' "$unsupported_doctor_out" | grep -q 'project toolchain accepted: false'; then
-  echo "expected doctor lean to reject unsupported toolchains explicitly" >&2
+  echo "expected doctor to reject unsupported toolchains explicitly" >&2
   printf '%s\n' "$unsupported_doctor_out" >&2
   exit 1
 fi
 if ! printf '%s\n' "$unsupported_doctor_out" | grep -q 'bundle toolchain fingerprint: (not resolved for rejected toolchain)'; then
-  echo "expected doctor lean not to fingerprint unsupported toolchains" >&2
+  echo "expected doctor not to fingerprint unsupported toolchains" >&2
   printf '%s\n' "$unsupported_doctor_out" >&2
   exit 1
 fi

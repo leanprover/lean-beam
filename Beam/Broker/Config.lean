@@ -18,8 +18,8 @@ structure LeanBackendConfig where
 /--
 Runtime configuration for one broker workspace.
 
-The optional backends permit an intentionally backend-less standalone bootstrap workspace. Once a
-backend is present, its required process configuration is complete by construction.
+The optional Lean configuration permits an intentionally backend-less standalone bootstrap
+workspace. Once configured, its required process configuration is complete by construction.
 -/
 structure BrokerConfig where
   root : System.FilePath

@@ -206,9 +206,9 @@ beam_wrapper_start_owner "$standalone_root"
   assert_json_completed_file_progress "refresh" "$refresh_out" fileProgress
 
   sleep 1
-  doctor_out="$("$beam_script" doctor lean)"
+  doctor_out="$("$beam_script" doctor)"
   if ! printf '%s\n' "$doctor_out" | grep -q 'daemon status: live'; then
-    echo "expected doctor lean to report a live Beam daemon after sync and a short idle wait" >&2
+    echo "expected doctor to report a live Beam daemon after sync and a short idle wait" >&2
     printf '%s\n' "$doctor_out" >&2
     exit 1
   fi

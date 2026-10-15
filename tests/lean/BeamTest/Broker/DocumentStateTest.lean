@@ -24,11 +24,11 @@ private def mkDoc (version : Nat := 1) (moduleName? : Option String := none) : D
 private def checkTrackedModuleName : IO Unit := do
   let root := System.FilePath.mk "/workspace"
   require "lean module path"
-    (DocumentState.trackedModuleName? root (root / "Foo" / "Bar.lean") .lean == some "Foo.Bar")
+    (DocumentState.trackedModuleName? root (root / "Foo" / "Bar.lean") == some "Foo.Bar")
   require "non-lean file has no module"
-    (DocumentState.trackedModuleName? root (root / "Foo" / "Bar.v") .lean == none)
+    (DocumentState.trackedModuleName? root (root / "Foo" / "Bar.v") == none)
   require "outside root has no module"
-    (DocumentState.trackedModuleName? root (System.FilePath.mk "/other/Foo.lean") .lean == none)
+    (DocumentState.trackedModuleName? root (System.FilePath.mk "/other/Foo.lean") == none)
 
 private def checkRecordFileProgress : IO Unit := do
   let uri := "file:///workspace/Foo.lean"

@@ -38,7 +38,6 @@ private def expectRequestPayload
 
 private def sampleBrokerHandle : Beam.Broker.Handle := {
   workspaceId := "local:/repo"
-  backend := .lean
   epoch := 3
   session := "session"
   raw := toJson ({ value := "raw-handle" } : Beam.LSP.RunAt.Handle)
@@ -257,7 +256,6 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | .runAt request => some request
     | _ => none
   require "runAt op" (runAtReq.op == .runAt)
-  require "runAt backend" (runAt.backend == .lean)
   require "runAt path" (runAt.path == "Demo.lean")
   require "runAt version" (runAt.version == 12)
   require "runAt line" (runAt.line == 4)
@@ -302,7 +300,6 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | .signatureHelp request => some request
     | _ => none
   require "signature-help op" (signatureHelpReq.op == .signatureHelp)
-  require "signature-help backend" (signatureHelp.backend == .lean)
   require "signature-help version" (signatureHelp.version == 13)
 
   let definitionReq ← expectOk "definition tool request" <|
@@ -312,7 +309,6 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | .definition request => some request
     | _ => none
   require "definition op" (definitionReq.op == .definition)
-  require "definition backend" (definition.backend == .lean)
   require "definition version" (definition.version == 13)
 
   let referencesInput : Beam.Mcp.ReferencesInput := {
@@ -415,7 +411,6 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | .todo request => some request
     | _ => none
   require "todo op" (todoReq.op == .todo)
-  require "todo backend" (todo.backend == .lean)
   require "todo version" (todo.version == 14)
   require "todo start line" (todo.line == 1)
   require "todo start character" (todo.character == 0)
@@ -446,7 +441,6 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | .codeActionResolve request => some request
     | _ => none
   require "code-action-resolve op" (codeActionResolveReq.op == .codeActionResolve)
-  require "code-action-resolve backend" (codeActionResolve.backend == .lean)
   require "code-action-resolve version" (codeActionResolve.version == 15)
   require "code-action-resolve title" (codeActionResolve.codeAction.title == codeAction.title)
   let codeActionResolveJson := toJson codeActionResolveInput

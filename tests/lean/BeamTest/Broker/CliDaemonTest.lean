@@ -72,7 +72,7 @@ private def ensureTestControlDir (root : System.FilePath) : IO System.FilePath :
   Beam.ensurePrivateDir "test Beam session directory" control
   pure control
 
-private def checkBackendConfigLowering : IO Unit := do
+private def checkLeanConfigLowering : IO Unit := do
   let root := System.FilePath.mk "/tmp/beam-backend-config-project"
   let daemonBin := System.FilePath.mk "/bundle/bin/beam-daemon"
   let lean : Beam.Cli.LeanBackendConfig := {
@@ -81,12 +81,11 @@ private def checkBackendConfigLowering : IO Unit := do
     toolchain := "leanprover/lean4:v4.33.0"
     bundleId := "lean-bundle"
   }
-  let leanOnlyBackends := Beam.Cli.BackendSet.lean lean
   require "Lean-only daemon arguments should contain exactly one complete Lean backend"
-    (leanOnlyBackends.daemonArgs ==
+    (lean.daemonArgs ==
       #["--lean-cmd", lean.command, "--lean-plugin", lean.plugin.toString])
   let leanOnly :=
-    leanOnlyBackends.toWorkspaceBinding
+    lean.toWorkspaceBinding
       Beam.Cli.projectDaemonWorkspaceId root
   require "Lean-only lowering should retain the complete Lean command"
     (leanOnly.leanCmd? == some lean.command)
@@ -97,10 +96,10 @@ private def checkBackendConfigLowering : IO Unit := do
   require "Lean-only lowering should retain its bundle identity"
     (leanOnly.bundleId == lean.bundleId)
   let leanOnlyDesired : Beam.Cli.DesiredConfig := {
-    root, backends := leanOnlyBackends, daemonBin
+    root, lean, daemonBin
   }
   let differentPlugin : Beam.Cli.DesiredConfig := {
-    leanOnlyDesired with backends := .lean { lean with plugin := "/other/plugin.so" }
+    leanOnlyDesired with lean := { lean with plugin := "/other/plugin.so" }
   }
   require "configuration hashes should distinguish backend plugins"
     (leanOnlyDesired.configHash != differentPlugin.configHash)
@@ -468,7 +467,6 @@ private def requireRequestJson
 
 private def sampleBrokerHandle : Beam.Broker.Handle := {
   workspaceId := Beam.Cli.projectDaemonWorkspaceId
-  backend := .lean
   epoch := 3
   session := "session"
   raw := Json.mkObj [("value", toJson "raw-handle")]
@@ -609,7 +607,7 @@ private def checkCliRootParsing : IO Unit := do
   expectIoErrorContains
     "missing explicit CLI root should use the workspace error boundary"
     "workspace root does not resolve"
-    (Beam.Cli.parseCliOptions {} ["--root", missingRoot.toString, "serve", "lean"])
+    (Beam.Cli.parseCliOptions {} ["--root", missingRoot.toString, "serve"])
   expectIoErrorContains
     "relative session directory should be rejected"
     "--session-dir requires an absolute path"
@@ -1689,7 +1687,7 @@ private def checkRuntimeBundleMetadataAcceptance : IO Unit := do
       pure ()
 
 def main : IO Unit := do
-  checkBackendConfigLowering
+  checkLeanConfigLowering
   checkProjectDaemonRequestSealing
   checkClientResponsePresentation
   checkCliRecoveryHints

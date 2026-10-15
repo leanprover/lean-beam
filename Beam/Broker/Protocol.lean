@@ -152,19 +152,6 @@ instance : FromJson Op where
     | .str "shutdown" => .ok .shutdown
     | j => .error s!"expected Beam daemon op, got {j.compress}"
 
-inductive Backend where
-  | lean
-  deriving Inhabited, BEq, Repr, Ord
-
-instance : ToJson Backend where
-  toJson
-    | .lean => "lean"
-
-instance : FromJson Backend where
-  fromJson?
-    | .str "lean" => .ok .lean
-    | j => .error s!"expected backend 'lean', got {j.compress}"
-
 inductive GoalMode where
   | before
   | after
@@ -185,11 +172,26 @@ instance : FromJson GoalMode where
 
 structure Handle where
   workspaceId : WorkspaceId
-  backend : Backend
   epoch : Nat
   session : String
   raw : Json
-  deriving Inhabited, FromJson, ToJson
+  deriving Inhabited, ToJson
+
+instance : FromJson Handle where
+  fromJson? json := do
+    let .obj fields := json
+      | throw "broker handle must be an object"
+    let allowed := #["workspaceId", "epoch", "session", "raw"]
+    let unexpected := fields.foldl (init := #[]) fun acc field _ =>
+      if allowed.contains field then acc else acc.push field
+    unless unexpected.isEmpty do
+      throw s!"broker handle accepts no undeclared fields: {String.intercalate ", " unexpected.toList}"
+    pure {
+      workspaceId := ← json.getObjValAs? WorkspaceId "workspaceId"
+      epoch := ← json.getObjValAs? Nat "epoch"
+      session := ← json.getObjValAs? String "session"
+      raw := ← json.getObjVal? "raw"
+    }
 
 /-- Select which user-facing Lean diagnostic severities a request may display. -/
 inductive DiagnosticScope where
@@ -216,10 +218,7 @@ Broker requests keep routing and correlation in one small envelope. Operation-sp
 below deliberately keeps the wire shape flat.
 -/
 
-structure RequestBackend where
-  backend : Backend := .lean
-
-structure RequestFile extends RequestBackend where
+structure RequestFile where
   path : String
 
 structure RequestVersionedFile extends RequestFile where
@@ -244,7 +243,7 @@ structure RunAtRequest extends RequestPosition where
 structure ReferencesRequest extends RequestPosition where
   includeDeclaration? : Option Bool := none
 
-structure WorkspaceSymbolsRequest extends RequestBackend where
+structure WorkspaceSymbolsRequest where
   query : String
 
 structure CodeActionResolveRequest extends RequestVersionedFile where
@@ -284,7 +283,7 @@ structure InitWorkspaceRequest where
 
 /-- The fields owned by exactly one broker operation. -/
 inductive RequestPayload where
-  | ensure (request : RequestBackend)
+  | ensure
   | openDocs
   | cancel (cancelRequestId : String)
   | updateFile (request : RequestFile)
@@ -317,7 +316,7 @@ structure Request where
   daemonCapability? : Option String := none
 
 def RequestPayload.op : RequestPayload → Op
-  | .ensure _ => .ensure
+  | .ensure => .ensure
   | .openDocs => .openDocs
   | .cancel _ => .cancel
   | .updateFile _ => .updateFile
@@ -346,9 +345,8 @@ def RequestPayload.op : RequestPayload → Op
 def Request.op (request : Request) : Op :=
   request.payload.op
 
-def Request.ensure
-    (backend : Backend := .lean) : Request :=
-  { payload := .ensure { backend } }
+def Request.ensure : Request :=
+  { payload := .ensure }
 
 def Request.openDocs : Request :=
   { payload := .openDocs }
@@ -392,6 +390,14 @@ def Op.tracksActiveRequest : Op → Bool
   | .codeActionResolve | .saveOlean | .goals | .todo | .runWith | .release | .initWorkspace
   | .listWorkspaces | .dropWorkspace | .stats => true
 
+/-- Whether an operation uses the workspace's Lean session. -/
+def Op.usesSession : Op → Bool
+  | .ensure | .updateFile | .syncFile | .refreshFile | .close | .runAt | .hover
+  | .signatureHelp | .definition | .references | .documentSymbols | .workspaceSymbols
+  | .codeActionResolve | .saveOlean | .goals | .todo | .runWith | .release => true
+  | .openDocs | .cancel | .initWorkspace | .listWorkspaces | .dropWorkspace | .stats
+  | .shutdown => false
+
 private def Op.requestFields (op : Op) : Array String :=
   #["clientRequestId", "daemonCapability"] ++
   (match op.workspaceScope with
@@ -428,14 +434,6 @@ private def Op.requestFields (op : Op) : Array String :=
   | .dropWorkspace => #[]
   | .listWorkspaces | .shutdown => #[]
 
-private def Op.acceptsBackendField : Op → Bool
-  | .ensure | .updateFile | .syncFile | .refreshFile | .close | .runAt | .hover
-  | .signatureHelp | .definition | .references | .documentSymbols | .workspaceSymbols
-  | .codeActionResolve | .saveOlean | .goals | .todo => true
-  | .runWith | .release
-  | .openDocs | .cancel | .initWorkspace | .listWorkspaces | .dropWorkspace | .stats
-  | .shutdown => false
-
 private def optionalJsonField [ToJson α] (name : String) : Option α → List (String × Json)
   | some value => [(name, toJson value)]
   | none => []
@@ -454,7 +452,7 @@ private def RequestPosition.jsonFields (request : RequestPosition) : List (Strin
   ]
 
 private def RequestPayload.jsonFields : RequestPayload → List (String × Json)
-  | .ensure _ => []
+  | .ensure => []
   | .openDocs => []
   | .cancel cancelRequestId => [("cancelRequestId", toJson cancelRequestId)]
   | .updateFile request => request.jsonFields
@@ -511,25 +509,6 @@ private def RequestPayload.jsonFields : RequestPayload → List (String × Json)
       | none => [])
   | .stats | .listWorkspaces | .dropWorkspace | .shutdown => []
 
-def RequestPayload.backend? : RequestPayload → Option Backend
-  | .ensure request => some request.backend
-  | .updateFile request => some request.backend
-  | .syncFile request | .refreshFile request => some request.backend
-  | .close request => some request.backend
-  | .runAt request => some request.backend
-  | .hover request | .signatureHelp request | .definition request => some request.backend
-  | .references request => some request.backend
-  | .documentSymbols request => some request.backend
-  | .workspaceSymbols request => some request.backend
-  | .codeActionResolve request => some request.backend
-  | .saveOlean request => some request.backend
-  | .goals request => some request.backend
-  | .todo request => some request.backend
-  | .runWith request => some request.handle.backend
-  | .release request => some request.handle.backend
-  | .openDocs | .cancel _ | .initWorkspace _ | .listWorkspaces | .dropWorkspace
-  | .stats | .shutdown => none
-
 def Request.handle? (request : Request) : Option Handle :=
   match request.payload with
   | .runWith value => some value.handle
@@ -539,10 +518,6 @@ def Request.handle? (request : Request) : Option Handle :=
 instance : ToJson Request where
   toJson req := Json.mkObj <|
     [("op", toJson req.op)] ++
-    (if req.op.acceptsBackendField then
-      optionalJsonField "backend" req.payload.backend?
-    else
-      []) ++
     optionalJsonField "workspaceId" req.workspaceId? ++
     optionalJsonField "clientRequestId" req.clientRequestId? ++
     optionalJsonField "daemonCapability" req.daemonCapability? ++
@@ -550,8 +525,7 @@ instance : ToJson Request where
 
 private def requireRequestJsonFields (op : Op) : Json → Except String Unit
   | .obj fields =>
-      let backendFields := if op.acceptsBackendField then #["backend"] else #[]
-      let allowed := #["op"] ++ backendFields ++ op.requestFields
+      let allowed := #["op"] ++ op.requestFields
       let unexpected := fields.foldl (init := #[]) fun unexpected field _ =>
         if allowed.contains field then unexpected else unexpected.push field
       unless unexpected.isEmpty do
@@ -586,26 +560,22 @@ private def requiredField [FromJson α] (j : Json) (field : String) : Except Str
   | .error err => throw s!"invalid '{field}': {err}"
 
 private def decodeRequestFile
-    (j : Json)
-    (backend : Backend) : Except String RequestFile := do
+    (j : Json) : Except String RequestFile := do
   pure {
-    backend
     path := ← requiredField j "path"
   }
 
 private def decodeRequestVersionedFile
-    (j : Json)
-    (backend : Backend) : Except String RequestVersionedFile := do
-  let target ← decodeRequestFile j backend
+    (j : Json) : Except String RequestVersionedFile := do
+  let target ← decodeRequestFile j
   pure {
     toRequestFile := target
     version := ← requiredField j "version"
   }
 
 private def decodeRequestPosition
-    (j : Json)
-    (backend : Backend) : Except String RequestPosition := do
-  let target ← decodeRequestVersionedFile j backend
+    (j : Json) : Except String RequestPosition := do
+  let target ← decodeRequestVersionedFile j
   pure {
     toRequestVersionedFile := target
     line := ← requiredField j "line"
@@ -616,16 +586,14 @@ instance : FromJson Request where
   fromJson? j := do
     let op ← j.getObjValAs? Op "op"
     requireRequestJsonFields op j
-    let backend? ← optionalField? (α := Backend) j "backend"
-    let backend := backend?.getD .lean
     let payload ←
       match op with
-      | .ensure => pure <| .ensure { backend }
+      | .ensure => pure .ensure
       | .openDocs => pure .openDocs
       | .cancel => pure <| .cancel (← requiredField j "cancelRequestId")
-      | .updateFile => .updateFile <$> decodeRequestFile j backend
+      | .updateFile => .updateFile <$> decodeRequestFile j
       | .syncFile | .refreshFile => do
-          let target ← decodeRequestFile j backend
+          let target ← decodeRequestFile j
           let request : SyncFileRequest := {
             toRequestFile := target
             diagnosticScope? := ← optionalField? (α := DiagnosticScope) j "diagnosticScope"
@@ -633,57 +601,56 @@ instance : FromJson Request where
           }
           pure <| if op == .syncFile then .syncFile request else .refreshFile request
       | .close => do
-          let target ← decodeRequestFile j backend
+          let target ← decodeRequestFile j
           pure <| .close {
             toRequestFile := target
             diagnosticScope? := ← optionalField? (α := DiagnosticScope) j "diagnosticScope"
             saveArtifacts? := ← optionalField? (α := Bool) j "saveArtifacts"
           }
       | .runAt => do
-          let target ← decodeRequestPosition j backend
+          let target ← decodeRequestPosition j
           pure <| .runAt {
             toRequestPosition := target
             text := ← requiredField j "text"
             storeHandle? := ← optionalField? (α := Bool) j "storeHandle"
           }
       | .hover | .signatureHelp | .definition => do
-          let target ← decodeRequestPosition j backend
+          let target ← decodeRequestPosition j
           pure <|
             if op == .hover then .hover target
             else if op == .signatureHelp then .signatureHelp target
             else .definition target
       | .references => do
-          let target ← decodeRequestPosition j backend
+          let target ← decodeRequestPosition j
           pure <| .references {
             toRequestPosition := target
             includeDeclaration? := ← optionalField? (α := Bool) j "includeDeclaration"
           }
-      | .documentSymbols => .documentSymbols <$> decodeRequestVersionedFile j backend
+      | .documentSymbols => .documentSymbols <$> decodeRequestVersionedFile j
       | .workspaceSymbols =>
           pure <| .workspaceSymbols {
-            backend
             query := ← requiredField j "query"
           }
       | .codeActionResolve => do
-          let target ← decodeRequestVersionedFile j backend
+          let target ← decodeRequestVersionedFile j
           pure <| .codeActionResolve {
             toRequestVersionedFile := target
             codeAction := ← requiredField j "codeAction"
           }
       | .saveOlean => do
-          let target ← decodeRequestFile j backend
+          let target ← decodeRequestFile j
           pure <| .saveOlean {
             toRequestFile := target
             diagnosticScope? := ← optionalField? (α := DiagnosticScope) j "diagnosticScope"
           }
       | .goals => do
-          let target ← decodeRequestPosition j backend
+          let target ← decodeRequestPosition j
           pure <| .goals {
             toRequestPosition := target
             mode? := ← optionalField? (α := GoalMode) j "mode"
           }
       | .todo => do
-          let target ← decodeRequestPosition j backend
+          let target ← decodeRequestPosition j
           pure <| .todo {
             toRequestPosition := target
             endLine := ← requiredField j "endLine"

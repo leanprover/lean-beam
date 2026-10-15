@@ -198,14 +198,14 @@ def shellQuote (text : String) : String :=
   "'" ++ text.replace "'" "'\\''" ++ "'"
 
 inductive WrapperSessionCommand where
-  | serve (backend : Backend)
+  | serve
   | status
   | stop
   | recoverGeneration (generation : String)
   | recoverForce
 
 private def WrapperSessionCommand.text : WrapperSessionCommand → String
-  | .serve .lean => "serve"
+  | .serve => "serve"
   | .status => "status"
   | .stop => "stop"
   | .recoverGeneration generation =>

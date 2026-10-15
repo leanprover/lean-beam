@@ -101,7 +101,6 @@ private def fakeTrackedSession (root transcript : System.FilePath) : IO Beam.Bro
   let session : Beam.Broker.Session := {
     workspaceId := fixtureWorkspaceId
     workspaceGeneration := 1
-    backend := .lean
     root
     epoch := 1
     sessionToken := "fake-tracked-session"
@@ -137,7 +136,6 @@ private def fakeSessionWithSyncedDoc
   let session : Beam.Broker.Session := {
     workspaceId := fixtureWorkspaceId
     workspaceGeneration := 1
-    backend := .lean
     root
     epoch := 1
     sessionToken := "fake-run-at-session"

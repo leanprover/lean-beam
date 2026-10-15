@@ -476,12 +476,11 @@ beam_wrapper_unregister_pid() {
 
 beam_wrapper_start_owner() {
   local root="$1"
-  local backend="${2:-lean}"
   local out="$root/.beam/test-owner.out"
   local err="$root/.beam/test-owner.err"
   local registry="$root/.beam/beam-daemon.json"
 
-  "$beam_script" --root "$root" serve "$backend" >"$out" 2>"$err" &
+  "$beam_script" --root "$root" serve >"$out" 2>"$err" &
   beam_wrapper_last_owner_pid="$!"
   beam_wrapper_register_pid "$beam_wrapper_last_owner_pid"
   if ! wait_for_file "$registry" "Beam session owner registry" 60 ||

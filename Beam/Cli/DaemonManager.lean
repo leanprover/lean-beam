@@ -536,7 +536,7 @@ private def startDaemon
     "--config-hash", identity.configHash,
     "--session-owner-stdin",
     "--port", "0"
-  ] ++ desired.backends.daemonArgs
+  ] ++ desired.lean.daemonArgs
   let some logDir := logPath.parent
     | throw <| IO.userError s!"Beam daemon startup log has no parent directory: {logPath}"
   let some logLeaf := logPath.fileName
@@ -657,7 +657,7 @@ private def registryEntryFor
     pid
     ownerPid := ownerPid.toNat
     port
-    workspace := desired.backends.toWorkspaceBinding projectDaemonWorkspaceId desired.root
+    workspace := desired.lean.toWorkspaceBinding projectDaemonWorkspaceId desired.root
     configHash := identity.configHash
     daemonBin := desired.daemonBin.toString
     startedAt := ← Beam.utcTimestamp
@@ -692,21 +692,19 @@ private def startDaemonEntry
       terminateStartedDaemon started
       throw <| IO.userError (← daemonStartupFailure logPath detail)
 
-def desiredConfig (home root : System.FilePath) (required : Backend) : IO DesiredConfig := do
-  match required with
-  | .lean =>
-      unless ← hasLeanProject root do
-        throw <| IO.userError s!"could not resolve Lean Beam daemon config for {root}"
-      let toolchain ← leanToolchain root
-      let (bundle, bundleId) ← ensureToolchainBundle root home toolchain
-      ensureLeanBundleExists bundle
-      let lean : LeanBackendConfig := {
-        command := ← leanBin root
-        plugin := bundle.plugin
-        toolchain
-        bundleId
-      }
-      pure { root, backends := .lean lean, daemonBin := bundle.daemon }
+def desiredConfig (home root : System.FilePath) : IO DesiredConfig := do
+  unless ← hasLeanProject root do
+    throw <| IO.userError s!"could not resolve Lean Beam daemon config for {root}"
+  let toolchain ← leanToolchain root
+  let (bundle, bundleId) ← ensureToolchainBundle root home toolchain
+  ensureLeanBundleExists bundle
+  let lean : LeanBackendConfig := {
+    command := ← leanBin root
+    plugin := bundle.plugin
+    toolchain
+    bundleId
+  }
+  pure { root, lean, daemonBin := bundle.daemon }
 
 structure ProjectDaemonClient where
   endpoint : Transport.Endpoint
@@ -736,19 +734,6 @@ def ProjectDaemonClient.ofSessionDescriptor
     controlDir
   }
 
-private def workspaceSupportsBackend (workspace : WorkspaceBinding) : Backend → Bool
-  | .lean => workspace.leanCmd?.isSome && workspace.plugin?.isSome
-
-private def validateWorkspaceBackend
-    (root : System.FilePath)
-    (entry : SessionDescriptor)
-    (backend? : Option Backend) : Except String Unit := do
-  if let some backend := backend? then
-    unless workspaceSupportsBackend entry.workspace backend do
-      throw <|
-        s!"the owned Beam session for {root} does not provide the {toJson backend |>.compress} backend; " ++
-        "interrupt its foreground owner and start a session configured for that backend"
-
 def RegistryUnsafeReason.message : RegistryUnsafeReason → String
   | .endpointProbeFailed failure =>
       match failure with
@@ -769,12 +754,11 @@ private def configMismatchMessage
     (root : System.FilePath)
     (sessionDir : System.FilePath)
     (entry : SessionDescriptor)
-    (expectedHash : String)
-    (backend : Backend) : String :=
+    (expectedHash : String) : String :=
   s!"the live Beam session for {root} uses configuration {entry.configHash}, " ++
     s!"but this command requires {expectedHash}; the current owner was preserved. " ++
     "Interrupt its foreground owner, then start a new one with the desired configuration:\n" ++
-    wrapperSessionCommand root sessionDir (.serve backend)
+    wrapperSessionCommand root sessionDir .serve
 
 private def drainingOwnerMessage (root : System.FilePath) (entry : SessionDescriptor) : String :=
   s!"Beam session {entry.daemonId} for {root} is draining; " ++
@@ -1006,20 +990,15 @@ def ProjectDaemonOwner.registered (owner : ProjectDaemonOwner) : IO Bool := do
       pure (sameRegistryGeneration current owner.entry && current.lifecycle == .live)
   | .absent | .invalid _ => pure false
 
-private def missingOwnerCommand : Option Backend → WrapperSessionCommand
-  | some .lean | none => .serve .lean
-
 private def missingOwnerMessage
-    (root sessionDir : System.FilePath)
-    (backend? : Option Backend) : String :=
-  let command := wrapperSessionCommand root sessionDir (missingOwnerCommand backend?)
+    (root sessionDir : System.FilePath) : String :=
+  let command := wrapperSessionCommand root sessionDir .serve
   s!"no live Beam session owner is registered for {root}; " ++
     s!"start this foreground owner and keep it running while using wrapper commands:\n{command}"
 
 private def startOwnedProjectDaemon
     (control : ProjectControl)
-    (desired : DesiredConfig)
-    (backend : Backend) : IO OwnedProjectDaemon := do
+    (desired : DesiredConfig) : IO OwnedProjectDaemon := do
   match ← observeProjectRegistryAt desired.root control.registry with
   | .absent => pure ()
   | .live entry =>
@@ -1027,7 +1006,7 @@ private def startOwnedProjectDaemon
         throw <| IO.userError (activeOwnerMessage desired.root)
       else
         throw <| IO.userError
-          (configMismatchMessage desired.root control.dir entry desired.configHash backend)
+          (configMismatchMessage desired.root control.dir entry desired.configHash)
   | .draining entry => throw <| IO.userError (drainingOwnerMessage desired.root entry)
   | .selectorMismatch entry =>
       throw <| IO.userError <| sessionSelectorMismatchMessage desired.root control.dir entry
@@ -1207,18 +1186,17 @@ private def finishOwnedProjectDaemon
 
 def withProjectDaemonOwner
     (home root : System.FilePath)
-    (backend : Backend)
     (explicitControlDir? : Option System.FilePath := none)
     (act : ProjectDaemonOwner → IO α) : IO α := do
   let controlDir ← controlDirFor root explicitControlDir?
   -- Establish or validate the control boundary before bundle resolution can create project-local
   -- `.beam` state for a previously unseen toolchain.
   preparePrivateControlDir controlDir
-  let desired ← desiredConfig home root backend
+  let desired ← desiredConfig home root
   -- Allocate all fallible owner bookkeeping before the child and registry generation exist.
   let exitCodeRef ← IO.mkRef (none : Option UInt32)
   let owned ← withProjectControl root (explicitControlDir? := some controlDir) fun control =>
-    startOwnedProjectDaemon control desired backend
+    startOwnedProjectDaemon control desired
   try
     act {
       client := owned.client
@@ -1232,15 +1210,13 @@ def withProjectDaemonOwner
 
 private def lookupProjectDaemon
     (root : System.FilePath)
-    (backend? : Option Backend := none)
     (explicitControlDir? : Option System.FilePath := none) : IO ProjectDaemonClient := do
   let control ← projectControl root explicitControlDir?
   match ← selectProjectControl root control with
   | .selected entry =>
-      IO.ofExcept <| validateWorkspaceBackend root entry backend?
       pure <| .ofSessionDescriptor entry control.dir
   | .absent =>
-      throw <| IO.userError (missingOwnerMessage root control.dir backend?)
+      throw <| IO.userError (missingOwnerMessage root control.dir)
   | .draining entry => throw <| IO.userError (drainingOwnerMessage root entry)
   | .selectorMismatch entry =>
       throw <| IO.userError <| sessionSelectorMismatchMessage root control.dir entry
@@ -1249,14 +1225,7 @@ private def lookupProjectDaemon
 
 def withProjectDaemon
     (root : System.FilePath)
-    (backend : Backend)
     (act : ProjectDaemonClient → IO α)
     (explicitControlDir? : Option System.FilePath := none) : IO α := do
-  act (← lookupProjectDaemon root (some backend) explicitControlDir?)
-
-def withExistingProjectDaemon
-    (root : System.FilePath)
-    (act : ProjectDaemonClient → IO α)
-    (explicitControlDir? : Option System.FilePath := none) : IO α := do
-  act (← lookupProjectDaemon root (explicitControlDir? := explicitControlDir?))
+  act (← lookupProjectDaemon root explicitControlDir?)
 end Beam.Cli

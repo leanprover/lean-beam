@@ -352,7 +352,7 @@ rm -f "$mcp_removed_root_err"
 
 cli_non_workspace_root="$(mktemp -d /tmp/beam-cli-non-workspace-root-XXXXXX)"
 cli_non_workspace_err="$(mktemp /tmp/beam-cli-non-workspace-root-err-XXXXXX)"
-if .lake/build/bin/beam-cli --root "$cli_non_workspace_root" doctor lean \
+if .lake/build/bin/beam-cli --root "$cli_non_workspace_root" doctor \
     > /dev/null 2>"$cli_non_workspace_err"; then
   echo "expected beam-cli Lean root validation to reject a non-workspace root" >&2
   rm -rf -- "$cli_non_workspace_root"

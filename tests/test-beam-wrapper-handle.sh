@@ -30,8 +30,8 @@ EOF
     printf '%s\n' "$mint_handle_stdin" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle_stdin" read_json_text_field result.handle.backend)" != "lean" ]; then
-    echo "expected wrapper handle mint via --stdin to return a lean handle" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle_stdin" read_json_text_field result.handle.session)" = "" ]; then
+    echo "expected wrapper handle mint via --stdin to return a handle with a session token" >&2
     printf '%s\n' "$mint_handle_stdin" >&2
     exit 1
   fi
@@ -44,8 +44,8 @@ EOF
     printf '%s\n' "$mint_handle_file" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle_file" read_json_text_field result.handle.backend)" != "lean" ]; then
-    echo "expected wrapper handle mint via --text-file to return a lean handle" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle_file" read_json_text_field result.handle.session)" = "" ]; then
+    echo "expected wrapper handle mint via --text-file to return a handle with a session token" >&2
     printf '%s\n' "$mint_handle_file" >&2
     exit 1
   fi
@@ -58,8 +58,8 @@ EOF
     printf '%s\n' "$mint_handle" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle" read_json_text_field result.handle.backend)" != "lean" ]; then
-    echo "expected wrapper handle mint to return a lean handle" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle" read_json_text_field result.handle.session)" = "" ]; then
+    echo "expected wrapper handle mint to return a handle with a session token" >&2
     printf '%s\n' "$mint_handle" >&2
     exit 1
   fi
@@ -72,7 +72,7 @@ EOF
     cat "$branch_step_stdin_err" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$branch_step_stdin" read_json_text_field result.handle.backend)" != "lean" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$branch_step_stdin" read_json_text_field result.handle.session)" = "" ]; then
     echo "expected wrapper non-linear handle continuation via --stdin to return a successor handle" >&2
     printf '%s\n' "$branch_step_stdin" >&2
     cat "$branch_step_stdin_err" >&2
@@ -90,7 +90,7 @@ EOF
     printf '%s\n' "$branch_step_file" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$branch_step_file" read_json_text_field result.handle.backend)" != "lean" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$branch_step_file" read_json_text_field result.handle.session)" = "" ]; then
     echo "expected wrapper non-linear handle continuation via --handle-file to return a successor handle" >&2
     printf '%s\n' "$branch_step_file" >&2
     exit 1
@@ -114,7 +114,7 @@ EOF
     printf '%s\n' "$branch_step" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$branch_step" read_json_text_field result.handle.backend)" != "lean" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$branch_step" read_json_text_field result.handle.session)" = "" ]; then
     echo "expected wrapper non-linear handle continuation to return a successor handle" >&2
     printf '%s\n' "$branch_step" >&2
     exit 1
@@ -149,7 +149,7 @@ EOF
     printf '%s\n' "$linear_step" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$linear_step" read_json_text_field result.handle.backend)" != "lean" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$linear_step" read_json_text_field result.handle.session)" = "" ]; then
     echo "expected wrapper linear handle continuation via --handle-file and --text-file to return a successor handle" >&2
     printf '%s\n' "$linear_step" >&2
     exit 1
@@ -227,8 +227,8 @@ EOF
     printf '%s\n' "$portable_helper_root" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$portable_helper_root" read_json_text_field result.handle.backend)" != "lean" ]; then
-    echo "expected symlinked helper mint to return a lean handle" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$portable_helper_root" read_json_text_field result.handle.session)" = "" ]; then
+    echo "expected symlinked helper mint to return a handle with a session token" >&2
     printf '%s\n' "$portable_helper_root" >&2
     exit 1
   fi

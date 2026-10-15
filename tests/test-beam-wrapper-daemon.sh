@@ -206,18 +206,19 @@ resolved_tmp2="$(beam_test_realpath "$tmp2")"
 fixture_toolchain="$(awk 'NR==1 {print $1}' tests/save_olean_project/lean-toolchain)"
 "$beam_cli" bundle-install "$fixture_toolchain"
 
-invalid_backend_out="$tmp1/invalid-backend.out"
-invalid_backend_err="$tmp1/invalid-backend.err"
-if "$beam_script" --root "$tmp1" serve typo > "$invalid_backend_out" 2> "$invalid_backend_err"; then
-  echo "expected an unknown owner backend to be rejected" >&2
-  cat "$invalid_backend_out" >&2
-  exit 1
-fi
-if ! grep -Fq "expected backend 'lean'" "$invalid_backend_err"; then
-  echo "expected unknown-backend diagnostics to list the valid backend names" >&2
-  cat "$invalid_backend_err" >&2
-  exit 1
-fi
+removed_selector_out="$tmp1/removed-selector.out"
+removed_selector_err="$tmp1/removed-selector.err"
+for command in serve doctor validated-toolchains; do
+  if "$beam_script" --root "$tmp1" "$command" lean > "$removed_selector_out" 2> "$removed_selector_err"; then
+    echo "expected $command to reject the removed language selector" >&2
+    exit 1
+  fi
+  if ! grep -Fq "usage:" "$removed_selector_err"; then
+    echo "expected removed-selector failure to display current usage" >&2
+    cat "$removed_selector_err" >&2
+    exit 1
+  fi
+done
 
 # An attaching command observes descriptor state but does not acquire the mutation lock or create
 # control-plane files when no owner exists.

@@ -128,7 +128,6 @@ private def requireErrorData (label : String) (err : Error) : IO Json := do
 
 private def sampleHandle : Handle := {
   workspaceId := "handle-workspace"
-  backend := .lean
   epoch := 1
   session := "session"
   raw := Json.mkObj [("value", toJson ("raw" : String))]
@@ -817,6 +816,17 @@ private def checkStaleDirectDepHints : IO Unit := do
     noopSyncHints.isEmpty
 
 private def checkRequestBoundary : IO Unit := do
+  let handleJson := toJson sampleHandle
+  requireFieldAbsent "handle has no language selector" "backend" handleJson
+  let decodedHandle ← expectOk "handle identity round trip" <| fromJson? (α := Handle) handleJson
+  require "handle round trip preserves workspace, epoch, session, and raw identity"
+    (toJson decodedHandle == handleJson)
+  for extra in #["backend", "unknown"] do
+    expectDecodeFailure Handle s!"handle rejects undeclared field {extra}" <|
+      handleJson.setObjVal! extra (toJson "lean")
+  for required in #["workspaceId", "epoch", "session", "raw"] do
+    let .obj fields := handleJson | throw <| IO.userError "expected handle object"
+    expectDecodeFailure Handle s!"handle requires {required}" <| .obj (fields.erase required)
   let goalsJson := toJson (sampleRequest .goals)
   for mode in #[GoalMode.before, .after] do
     let decoded ← expectOk s!"Lean goals mode {mode.key}" <|
@@ -830,7 +840,6 @@ private def checkRequestBoundary : IO Unit := do
       goalsJson.setObjVal! field value
   expectDecodeFailure Request "run_at request missing version" <| Json.mkObj [
     ("op", toJson "run_at"),
-    ("backend", toJson "lean"),
     ("path", toJson "Demo.lean"),
     ("line", toJson 1),
     ("character", toJson 2),
@@ -838,7 +847,6 @@ private def checkRequestBoundary : IO Unit := do
   ]
   expectDecodeFailure Request "run_at request missing text" <| Json.mkObj [
     ("op", toJson "run_at"),
-    ("backend", toJson "lean"),
     ("path", toJson "Demo.lean"),
     ("version", toJson 7),
     ("line", toJson 1),
@@ -847,7 +855,6 @@ private def checkRequestBoundary : IO Unit := do
 
   expectDecodeFailure Request "code_action_resolve request missing codeAction" <| Json.mkObj [
     ("op", toJson "code_action_resolve"),
-    ("backend", toJson "lean"),
     ("path", toJson "Demo.lean"),
     ("version", toJson 7)
   ]
@@ -877,6 +884,12 @@ private def checkWorkspaceRoutingFields : IO Unit := do
     require s!"minimal {op.key} request lost its operation" (decoded.op == op)
     require s!"minimal {op.key} request changed its flat JSON wire shape"
       (toJson decoded == requestJson)
+    requireFieldAbsent s!"{op.key} has no language selector" "backend" requestJson
+    expectDecodeFailure Request s!"{op.key} rejects a removed language selector" <|
+      requestJson.setObjVal! "backend" (toJson "lean")
+    let expectedSession := op.workspaceScope == .required &&
+      !#[Op.cancel, .initWorkspace, .dropWorkspace].contains op
+    require s!"{op.key} has the wrong session policy" (op.usesSession == expectedSession)
 
   let initWithLean : Request := {
     payload := .initWorkspace {
@@ -911,7 +924,7 @@ private def checkWorkspaceRoutingFields : IO Unit := do
   requireFieldAbsent "stats request serialization" "backend" (toJson unscopedReq)
 
   let leanReq := Request.ensure
-  requireJsonString "backend-scoped request serialization" "backend" "lean" (toJson leanReq)
+  requireFieldAbsent "Lean session request serialization" "backend" (toJson leanReq)
 
   let explicitReq : Request := { Request.stats with
     workspaceId? := some "fixture"
@@ -935,9 +948,12 @@ private def checkWorkspaceRoutingFields : IO Unit := do
       ("run_with", handleReq),
       ("release", releaseReq)
     ] do
-    requireFieldAbsent s!"{label} request uses handle backend" "backend" (toJson request)
+    requireFieldAbsent s!"{label} request uses handle workspace" "backend" (toJson request)
     expectDecodeFailure Request s!"{label} request rejects redundant backend" <|
       (toJson request).setObjVal! "backend" (toJson "lean")
+    expectDecodeFailure Request s!"{label} rejects the removed handle backend" <|
+      (toJson request).setObjVal! "handle" <|
+        (toJson sampleHandle).setObjVal! "backend" (toJson "lean")
 
   let explicitHandleReq : Request := {
     payload := .runWith {
@@ -982,12 +998,11 @@ private def checkWorkspaceRoutingFields : IO Unit := do
     | .ok _ => throw <| IO.userError s!"{label} decoded unexpectedly"
     | .error err =>
         require s!"{label} error should identify '{field}'"
-          (err.contains field || (field == "backend" && err.contains "does not select a backend"))
+          (err.contains field)
 
   for obsoleteField in #["fullDiagnostics", "includeDiagnostics"] do
     let json := Json.mkObj [
       ("op", toJson "sync_file"),
-      ("backend", toJson "lean"),
       ("workspaceId", toJson "fixture"),
       ("path", toJson "Demo.lean"),
       (obsoleteField, toJson true)
@@ -1000,7 +1015,6 @@ private def checkWorkspaceRoutingFields : IO Unit := do
 
   match fromJson? (α := Request) <| Json.mkObj [
       ("op", toJson "sync_file"),
-      ("backend", toJson "lean"),
       ("workspaceId", toJson "fixture"),
       ("path", toJson "Demo.lean"),
       ("diagnosticScope", toJson true)
@@ -1173,7 +1187,6 @@ private def stubbornSession
   pure {
     workspaceId
     workspaceGeneration := 1
-    backend := .lean
     root
     epoch := 1
     sessionToken := s!"stubborn-{workspaceId}"
@@ -1215,7 +1228,6 @@ private def exitedSessionWithInheritedStdio
   pure {
     workspaceId
     workspaceGeneration := 1
-    backend := .lean
     root
     epoch := 1
     sessionToken := s!"exited-{workspaceId}"
@@ -1485,7 +1497,6 @@ private def pendingOnlySession
   pure {
     workspaceId
     workspaceGeneration := 1
-    backend := .lean
     root
     epoch := 1
     sessionToken := s!"pending-only-{workspaceId}"
@@ -1638,7 +1649,6 @@ private def checkSessionCloseAdmission : IO Unit := do
     ((← ActiveRequestRegistry.count runtime.activeRequests) == 0)
 
 private def checkBrokerConfigBoundary : IO Unit := do
-  expectDecodeFailure Backend "Rocq backend belongs to rocq-beam" (Json.str "rocq")
   expectDecodeFailure Request "Rocq workspace option belongs to rocq-beam" <| Json.mkObj [
     ("op", toJson "init_workspace"),
     ("workspaceId", toJson "test"),

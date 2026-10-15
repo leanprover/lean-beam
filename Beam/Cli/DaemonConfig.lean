@@ -22,44 +22,36 @@ structure LeanBackendConfig where
   bundleId : String
   deriving Repr
 
-/-- Complete Lean backend configuration for one wrapper-owned workspace. -/
-inductive BackendSet where
-  | lean (config : LeanBackendConfig)
-  deriving Repr
+namespace LeanBackendConfig
 
-namespace BackendSet
+def toWorkspaceBinding (config : LeanBackendConfig) (workspaceId : WorkspaceId)
+    (root : System.FilePath) : Beam.Daemon.WorkspaceBinding := {
+  workspaceId
+  root := root.toString
+  bundleId := config.bundleId
+  leanCmd? := some config.command
+  plugin? := some config.plugin.toString
+  toolchain? := some config.toolchain
+}
 
-def toWorkspaceBinding (backends : BackendSet) (workspaceId : WorkspaceId)
-    (root : System.FilePath) : Beam.Daemon.WorkspaceBinding :=
-  match backends with
-  | .lean config => {
-      workspaceId
-      root := root.toString
-      bundleId := config.bundleId
-      leanCmd? := some config.command
-      plugin? := some config.plugin.toString
-      toolchain? := some config.toolchain
-    }
+def daemonArgs (config : LeanBackendConfig) : Array String :=
+  #["--lean-cmd", config.command, "--lean-plugin", config.plugin.toString]
 
-def daemonArgs : BackendSet → Array String
-  | .lean config => #["--lean-cmd", config.command, "--lean-plugin", config.plugin.toString]
+private def hashFields (config : LeanBackendConfig) (daemonBin : System.FilePath) : List String :=
+  [config.command, config.plugin.toString, daemonBin.toString, config.bundleId]
 
-private def hashFields (backends : BackendSet) (daemonBin : System.FilePath) : List String :=
-  match backends with
-  | .lean config => [config.command, config.plugin.toString, daemonBin.toString, config.bundleId]
-
-end BackendSet
+end LeanBackendConfig
 
 /-- Source configuration for one wrapper-owned daemon generation. -/
 structure DesiredConfig where
   root : System.FilePath
-  backends : BackendSet
+  lean : LeanBackendConfig
   daemonBin : System.FilePath
   deriving Repr
 
-/-- Hash the complete desired configuration using the established wrapper session field order. -/
+/-- Hash the project root and complete runtime configuration. -/
 def DesiredConfig.configHash (config : DesiredConfig) : String :=
-  let fields := config.root.toString :: config.backends.hashFields config.daemonBin
+  let fields := config.root.toString :: config.lean.hashFields config.daemonBin
   let hash := fields.foldl mixField 14695981039346656037
   s!"{hash.toNat}"
 

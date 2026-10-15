@@ -4,8 +4,20 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: Emilio J. Gallego Arias
 -/
 
-import Beam.Broker.Backend.Lean
+import Lean
+import Lean.Data.Lsp.Extra
+import Lean.Data.Lsp.LanguageFeatures
+import Beam.Broker.Config
+import Beam.Broker.LakeEnv
+import Beam.Broker.Protocol
+import Beam.LSP.Goals
+import Beam.LSP.RunAt
 import Beam.LSP.Save
+import Beam.LSP.Todo
+import Beam.Path
+
+open Lean
+open Lean.Lsp
 
 namespace Beam.Broker
 
@@ -20,70 +32,76 @@ structure DiagnosticsBarrierResult where
   saveReadiness : Beam.LSP.Save.SaveReadinessResult
   deriving Lean.FromJson, Lean.ToJson
 
-def backendCommand
-    (config : BrokerConfig)
-    (backend : Backend) : IO (String × Array String × Array (String × Option String)) := do
-  match backend with
-  | .lean => Backend.Lean.command config
+def leanCommand (config : BrokerConfig) : IO (String × Array String × Array (String × Option String)) := do
+  let some leanConfig := config.lean?
+    | throw <| IO.userError "Lean backend is not configured"
+  let plugin ← Beam.resolveExistingPath leanConfig.plugin
+  let lakeEnv ← leanServerLakeEnv config.root (some leanConfig.command) leanConfig.lakeHelper?
+  pure (
+    leanConfig.command,
+    #["--server"] ++ lakeEnv.moreServerArgs ++
+      #[s!"--plugin={plugin}", "-Dexperimental.module=true"],
+    lakeEnv.env)
 
-def initializeParams (backend : Backend) (root : System.FilePath) : Lean.Json :=
-  match backend with
-  | .lean => Backend.Lean.initializeParams root
+def initializeParams (root : System.FilePath) : Json :=
+  let rootUri := System.Uri.pathToUri root
+  toJson ({
+    processId? := some 0
+    rootUri? := some rootUri
+    workspaceFolders? := some #[{ uri := rootUri, name := root.fileName.getD root.toString }]
+    initializationOptions? := some { hasWidgets? := some true, logCfg? := none }
+    capabilities := {
+      textDocument? := some {
+        completion? := some {
+          completionItem? := some { insertReplaceSupport? := true }
+        }
+      }
+    }
+    : InitializeParams
+  })
 
-def runAtMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.runAtMethod
+def runAtMethod : String :=
+  Beam.LSP.RunAt.method
 
-def hoverMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.hoverMethod
+def hoverMethod : String :=
+  "textDocument/hover"
 
-def signatureHelpMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.signatureHelpMethod
+def signatureHelpMethod : String :=
+  "textDocument/signatureHelp"
 
-def definitionMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.definitionMethod
+def definitionMethod : String :=
+  "textDocument/definition"
 
-def referencesMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.referencesMethod
+def referencesMethod : String :=
+  "textDocument/references"
 
-def documentSymbolsMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.documentSymbolsMethod
+def documentSymbolsMethod : String :=
+  "textDocument/documentSymbol"
 
-def workspaceSymbolsMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.workspaceSymbolsMethod
+def workspaceSymbolsMethod : String :=
+  "workspace/symbol"
 
-def codeActionResolveMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.codeActionResolveMethod
+def codeActionResolveMethod : String :=
+  "codeAction/resolve"
 
-def runWithMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.runWithMethod
+def runWithMethod : String :=
+  Beam.LSP.RunAt.runWithMethod
 
-def releaseMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.releaseMethod
+def releaseMethod : String :=
+  Beam.LSP.RunAt.releaseHandleMethod
 
-def saveArtifactsMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.saveArtifactsMethod
+def saveArtifactsMethod : String :=
+  Beam.LSP.Save.saveArtifactsMethod
 
-def diagnosticsBarrierMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.diagnosticsBarrierMethod
+def diagnosticsBarrierMethod : String :=
+  "$/beam/waitForDiagnostics"
 
-def goalsMethod (backend : Backend) (mode? : Option GoalMode := none) : Except String String :=
-  match backend with
-  | .lean => .ok (Backend.Lean.goalsMethod mode?)
+def goalsMethod (mode? : Option GoalMode := none) : String :=
+  match mode?.getD .after with
+  | .before => Beam.LSP.Goals.prevMethod
+  | .after => Beam.LSP.Goals.afterMethod
 
-def todoMethod (backend : Backend) : Except String String :=
-  match backend with
-  | .lean => .ok Backend.Lean.todoMethod
+def todoMethod : String :=
+  Beam.LSP.Todo.method
 
 end Beam.Broker
