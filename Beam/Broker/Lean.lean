@@ -5,7 +5,6 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Broker.Backend.Lean
-import Beam.Broker.Backend.Shared
 import Beam.LSP.Save
 
 namespace Beam.Broker
@@ -86,8 +85,5 @@ def goalsMethod (backend : Backend) (mode? : Option GoalMode := none) : Except S
 def todoMethod (backend : Backend) : Except String String :=
   match backend with
   | .lean => .ok Backend.Lean.todoMethod
-
-def goalPpFormatValue (ppFormat? : Option GoalPpFormat) : String :=
-  Backend.Shared.goalPpFormatValue ppFormat?
 
 end Beam.Broker

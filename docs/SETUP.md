@@ -48,7 +48,7 @@ sessions so they launch the new runtime instead of continuing to use an already-
 process.
 
 The agent flags install the bundled Lean skill into the corresponding agent home. Rocq goal
-probes and the Rocq skill are installed separately from the `rocq-beam` project.
+probes and the Rocq skill are installed separately from the frozen [rocq-beam](https://github.com/ejgallego/rocq-beam) project.
 
 The installer requires `elan` on `PATH`. Make sure `~/.local/bin` is on `PATH` before using the
 installed wrappers directly.

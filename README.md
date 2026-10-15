@@ -137,7 +137,7 @@ variants from [`compatible-lean-release-lines`](compatible-lean-release-lines). 
 [docs/SETUP.md](docs/SETUP.md#validated-and-compatible-toolchains) for bundle setup and
 [docs/CUSTOM_TOOLCHAINS.md](docs/CUSTOM_TOOLCHAINS.md) for explicitly accepted local Lean builds.
 
-Rocq goal probes and the Rocq agent skill are maintained in the separate `rocq-beam` project.
+Rocq goal probes and the Rocq agent skill are available in the separate, frozen [rocq-beam](https://github.com/ejgallego/rocq-beam) project.
 
 ## Documentation Map
 

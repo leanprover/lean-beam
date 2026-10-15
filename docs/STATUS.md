@@ -354,7 +354,7 @@ client protocol.
 
 - Agent-skill distribution currently relies on a local checkout and local install script; it is not
   yet published through a registry or marketplace flow.
-- Rocq goal inspection and its agent skill are maintained in the separate `rocq-beam` project.
+- Rocq goal inspection and its agent skill are available in the separate, frozen [rocq-beam](https://github.com/ejgallego/rocq-beam) project.
 
 ## Direction
 

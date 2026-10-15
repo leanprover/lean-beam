@@ -274,21 +274,6 @@ def ensureToolchainBundle (root home : System.FilePath) (toolchain : String) :
       let cacheRoot ← runtimeBundleCacheRootForWrite root
       ensureToolchainBundleInForFingerprint cacheRoot home toolchain fingerprint
 
-def ensureDefaultDaemon (home : System.FilePath) : IO System.FilePath := do
-  let daemon ← defaultDaemonPath home
-  if ← daemon.pathExists then
-    pure daemon
-  else
-    let out ← IO.Process.output {
-      cmd := "lake"
-      args := #["build", "beam-daemon"]
-      cwd := home.toString
-    }
-    if out.exitCode != 0 then
-      throw <| IO.userError s!"failed to build the default Beam daemon\n{out.stderr}"
-    ensurePathExists "Beam daemon" daemon
-    pure daemon
-
 def predictedToolchainBundleForFingerprint (cacheRoot home : System.FilePath) (toolchain : String)
     (fingerprint : ToolchainFingerprint) : IO (LeanBundlePaths × String) := do
   let (bundleDir, bundleId, _) ← bundleDirForFingerprint cacheRoot home toolchain fingerprint

@@ -81,7 +81,7 @@ If a behavior is subtle, encode it in tests before optimizing it.
 ## Skill Boundaries
 
 The `lean-beam` skill is Lean-only. Rocq integration and its skill belong to the separate
-`rocq-beam` project; do not introduce a shared skill layer between the projects.
+[rocq-beam](https://github.com/ejgallego/rocq-beam) project; do not introduce a shared skill layer between the projects.
 
 ## Public Writing
 

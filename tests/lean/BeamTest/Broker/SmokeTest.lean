@@ -578,24 +578,6 @@ private def runRequestAndGoalsSmoke
   if afterGoals != Json.arr #[] then
     throw <| IO.userError s!"expected no goals after trivial, got {afterGoals.compress}"
 
-  let speculativeGoalsResp ← runClient endpoint {
-    payload := .goals {
-      path := proofPath
-      version := proofVersion
-      line := 1
-      character := 2
-      text? := some "exact trivial"
-      mode? := some .before
-    }
-  }
-  expectErrCode speculativeGoalsResp "invalidParams"
-  let speculativeGoalsMessage ←
-    requireErrorMessage "lean goals speculative text" speculativeGoalsResp
-  expectStringContains
-    "lean goals speculative text"
-    speculativeGoalsMessage
-    "does not accept speculative text"
-
 private def runCancelSmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   let slowRequestId := some "cancel-slow"

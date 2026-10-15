@@ -183,27 +183,6 @@ instance : FromJson GoalMode where
     | .str "after" => .ok .after
     | j => .error s!"expected goal mode 'before' or 'after', got {j.compress}"
 
-inductive GoalPpFormat where
-  | box
-  | pp
-  | str
-  deriving Inhabited, BEq, Repr
-
-def GoalPpFormat.key : GoalPpFormat → String
-  | .box => "Box"
-  | .pp => "Pp"
-  | .str => "Str"
-
-instance : ToJson GoalPpFormat where
-  toJson format := toJson format.key
-
-instance : FromJson GoalPpFormat where
-  fromJson?
-    | .str "Box" => .ok .box
-    | .str "Pp" => .ok .pp
-    | .str "Str" => .ok .str
-    | j => .error s!"expected pp format 'Box', 'Pp', or 'Str', got {j.compress}"
-
 structure Handle where
   workspaceId : WorkspaceId
   backend : Backend
@@ -275,10 +254,7 @@ structure SaveOleanRequest extends RequestFile where
   diagnosticScope? : Option DiagnosticScope := none
 
 structure GoalsRequest extends RequestPosition where
-  text? : Option String := none
   mode? : Option GoalMode := none
-  compact? : Option Bool := none
-  ppFormat? : Option GoalPpFormat := none
 
 structure TodoRequest extends RequestPosition where
   endLine : Nat
@@ -438,11 +414,7 @@ private def Op.requestFields (op : Op) : Array String :=
   | .workspaceSymbols => #["query"]
   | .codeActionResolve => #["path", "version", "codeAction"]
   | .saveOlean => #["path", "diagnosticScope"]
-  | .goals =>
-      #[
-        "path", "version", "line", "character", "text", "mode", "compact",
-        "ppFormat"
-      ]
+  | .goals => #["path", "version", "line", "character", "mode"]
   | .todo =>
       #[
         "path", "version", "line", "character", "endLine", "endCharacter", "kinds",
@@ -513,10 +485,7 @@ private def RequestPayload.jsonFields : RequestPayload → List (String × Json)
       optionalJsonField "diagnosticScope" request.diagnosticScope?
   | .goals request =>
       request.toRequestPosition.jsonFields ++
-      optionalJsonField "text" request.text? ++
-      optionalJsonField "mode" request.mode? ++
-      optionalJsonField "compact" request.compact? ++
-      optionalJsonField "ppFormat" request.ppFormat?
+      optionalJsonField "mode" request.mode?
   | .todo request =>
       request.toRequestPosition.jsonFields ++ [
         ("endLine", toJson request.endLine),
@@ -711,10 +680,7 @@ instance : FromJson Request where
           let target ← decodeRequestPosition j backend
           pure <| .goals {
             toRequestPosition := target
-            text? := ← optionalField? (α := String) j "text"
             mode? := ← optionalField? (α := GoalMode) j "mode"
-            compact? := ← optionalField? (α := Bool) j "compact"
-            ppFormat? := ← optionalField? (α := GoalPpFormat) j "ppFormat"
           }
       | .todo => do
           let target ← decodeRequestPosition j backend

@@ -126,17 +126,6 @@ private def requireErrorData (label : String) (err : Error) : IO Json := do
   | some data => pure data
   | none => throw <| IO.userError s!"{label}: expected error data, got {(toJson err).compress}"
 
-private def expectMethodError
-    (label : String)
-    (expectedMessage : String)
-    (result : Except String String) : IO Unit := do
-  match result with
-  | .ok _ =>
-      throw <| IO.userError s!"{label}: expected method selection failure"
-  | .error message =>
-      unless message == expectedMessage do
-        throw <| IO.userError s!"{label}: expected '{expectedMessage}', got '{message}'"
-
 private def sampleHandle : Handle := {
   workspaceId := "handle-workspace"
   backend := .lean
@@ -828,6 +817,17 @@ private def checkStaleDirectDepHints : IO Unit := do
     noopSyncHints.isEmpty
 
 private def checkRequestBoundary : IO Unit := do
+  let goalsJson := toJson (sampleRequest .goals)
+  for mode in #[GoalMode.before, .after] do
+    let decoded ← expectOk s!"Lean goals mode {mode.key}" <|
+      fromJson? (α := Request) (goalsJson.setObjVal! "mode" (toJson mode))
+    let .goals goals := decoded.payload
+      | throw <| IO.userError "goals request decoded as another operation"
+    require "Lean goal mode should round trip" (goals.mode? == some mode)
+  for (field, value) in #[
+      ("text", toJson "split."), ("compact", toJson true), ("ppFormat", toJson "Box")] do
+    expectDecodeFailure Request s!"removed Rocq goals field '{field}'" <|
+      goalsJson.setObjVal! field value
   expectDecodeFailure Request "run_at request missing version" <| Json.mkObj [
     ("op", toJson "run_at"),
     ("backend", toJson "lean"),

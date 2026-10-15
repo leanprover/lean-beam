@@ -2412,9 +2412,6 @@ private def handleGoalsOp
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none) :
     HandlerM Response := do
   let method ← requestMethod <| goalsMethod request.backend request.mode?
-  if req.backend == .lean && request.text?.isSome then
-    throw <| responseFailureFor .invalidParams
-      "lean goals does not accept speculative text; use lean-beam run-at for execution"
   liftFailureIO <| ensureRequestNotCancelled cancelRef?
   let snapshot ← liftFailureIO <|
     readRequestSyncSnapshot server req (System.FilePath.mk request.path)

@@ -17,13 +17,6 @@ structure LeanBundlePaths where
   plugin : System.FilePath
   deriving Repr
 
-def defaultDaemonPath (home : System.FilePath) : IO System.FilePath := do
-  let installedDaemon := home / "libexec" / "beam-daemon"
-  if ← installedDaemon.pathExists then
-    pure installedDaemon
-  else
-    pure <| home / ".lake" / "build" / "bin" / "beam-daemon"
-
 def ensurePathExists (kind : String) (path : System.FilePath) : IO Unit := do
   unless ← path.pathExists do
     throw <| IO.userError s!"missing {kind} at {path}"
