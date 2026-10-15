@@ -1494,7 +1494,10 @@ fi
 remove_tmp_file "$mcp_smoke_out"
 remove_tmp_file "$mcp_smoke_err"
 
-mcp_self_check_out="$(cd "$project_root" && "$installed_mcp" --self-check PositionEmptyLine.lean)"
+mcp_self_check_watchdog="$PWD/tests/lib/process_watchdog.py"
+mcp_self_check_out="$(cd "$project_root" && \
+  python3 "$mcp_self_check_watchdog" --timeout "${BEAM_MCP_SELF_CHECK_WATCHDOG_SECONDS:-600}" -- \
+    "$installed_mcp" --self-check PositionEmptyLine.lean)"
 if ! printf '%s\n' "$mcp_self_check_out" | grep -q 'Lean Beam MCP self-check passed'; then
   echo "expected installed MCP self-check to report success" >&2
   printf '%s\n' "$mcp_self_check_out" >&2

@@ -24,6 +24,7 @@ python3 tests/test-toolchain-ci-matrix.py
 python3 tests/test-toolchain-compat-owner.py
 python3 tests/test-installed-mcp-smoke.py
 python3 tests/test-extended-ci.py
+python3 tests/test-process-watchdog.py
 
 run_quiet_lake_build() {
   local log
@@ -82,7 +83,9 @@ run_quiet_test broker-open-docs .lake/build/bin/beam-broker-open-docs-test
 run_quiet_test cli-daemon .lake/build/bin/beam-cli-daemon-test
 run_quiet_test feedback .lake/build/bin/beam-feedback-test
 run_quiet_test mcp-projection .lake/build/bin/beam-mcp-projection-test
-run_quiet_test mcp-protocol .lake/build/bin/beam-mcp-protocol-test
+run_quiet_test mcp-protocol python3 tests/lib/process_watchdog.py \
+  --timeout "${BEAM_MCP_PROTOCOL_TEST_WATCHDOG_SECONDS:-240}" -- \
+  .lake/build/bin/beam-mcp-protocol-test
 run_quiet_test daemon-smoke .lake/build/bin/beam-daemon-smoke-test
 run_quiet_test sync-concurrency .lake/build/bin/beam-sync-concurrency-test
 run_quiet_test daemon-save-stream .lake/build/bin/beam-daemon-save-stream-test
@@ -272,9 +275,11 @@ fi
 mcp_http_timeout="${BEAM_MCP_HTTP_TIMEOUT:-60}"
 python3 tests/test-mcp-http-bridge.py --timeout "$mcp_http_timeout" > /dev/null
 mcp_self_check_timeout="${BEAM_MCP_SELF_CHECK_TIMEOUT_MS:-120000}"
+mcp_self_check_watchdog="${BEAM_MCP_SELF_CHECK_WATCHDOG_SECONDS:-600}"
 (cd tests/save_olean_project && \
   LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS="$mcp_self_check_timeout" \
-    ../../scripts/lean-beam-mcp --self-check PositionEmptyLine.lean > /dev/null)
+    python3 ../../tests/lib/process_watchdog.py --timeout "$mcp_self_check_watchdog" -- \
+      ../../scripts/lean-beam-mcp --self-check PositionEmptyLine.lean > /dev/null)
 
 self_check_timeout_dir="$(mktemp -d /tmp/lean-beam-mcp-self-check-timeout-XXXXXX)"
 self_check_timeout_err="$(mktemp /tmp/lean-beam-mcp-self-check-timeout-err-XXXXXX)"
@@ -290,7 +295,8 @@ chmod +x "$self_check_fake_cli"
 if (cd tests/save_olean_project && \
     LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS=10000 \
     LEAN_BEAM_FAKE_CLI_PID="$self_check_fake_cli_pid" \
-    ../../.lake/build/bin/lean-beam-mcp \
+    python3 ../../tests/lib/process_watchdog.py --timeout 60 -- \
+      ../../.lake/build/bin/lean-beam-mcp \
       --beam-cli "$self_check_fake_cli" --self-check PositionEmptyLine.lean \
     > /dev/null 2>"$self_check_timeout_err"); then
   echo "expected MCP self-check to time out while lazily starting lean_sync" >&2
@@ -321,7 +327,8 @@ rm -f "$self_check_timeout_err"
 
 self_check_missing_file_err="$(mktemp /tmp/lean-beam-mcp-self-check-missing-file-XXXXXX)"
 if (cd tests/save_olean_project && \
-    ../../scripts/lean-beam-mcp --self-check DoesNotExist.lean \
+    python3 ../../tests/lib/process_watchdog.py --timeout "$mcp_self_check_watchdog" -- \
+      ../../scripts/lean-beam-mcp --self-check DoesNotExist.lean \
       > /dev/null 2>"$self_check_missing_file_err"); then
   echo "expected MCP self-check to reject a missing Lean file" >&2
   rm -f "$self_check_missing_file_err"
