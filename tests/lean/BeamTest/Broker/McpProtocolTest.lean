@@ -1711,13 +1711,20 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     catch _ =>
       pure ()
 
-private def stderrFloodChild (fail : Bool := false) : IO Unit := do
+private def selfCheckChild (scenario : String) : IO Unit := do
+  if scenario == "early-exit" then
+    throw <| IO.userError "self-check early exit fixture"
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
   let respond := fun json => do
     stdout.putStrLn (Json.compress json)
     stdout.flush
+  let notify := respond <| Json.mkObj [
+    ("jsonrpc", toJson "2.0"), ("method", toJson "notifications/message"),
+    ("params", Json.mkObj [("level", toJson "info"), ("data", toJson "self-check fixture")])
+  ]
   discard <| stdin.getLine
+  notify
   respond <| Json.mkObj [
     ("jsonrpc", toJson "2.0"), ("id", toJson (1 : Nat)),
     ("result", Json.mkObj [
@@ -1726,13 +1733,18 @@ private def stderrFloodChild (fail : Bool := false) : IO Unit := do
     ])
   ]
   discard <| stdin.getLine
-  let stderr ← IO.getStderr
-  -- Exceed Linux and Windows pipe capacity before sending the sync response. A self-check
-  -- that waits for process exit before draining stderr cannot make progress here.
-  let chunk := String.ofList (List.replicate 4096 'x')
-  for _ in [:64] do
-    stderr.putStr chunk
-  stderr.flush
+  if scenario == "notifications" then
+    -- Every individual line arrives promptly, but the whole exchange exceeds the budget.
+    for _ in [:100] do
+      notify
+      IO.sleep 50
+  if scenario == "stderr-flood" || scenario == "stderr-failure" then
+    let stderr ← IO.getStderr
+    -- Exceed pipe capacity before sending the sync response to require concurrent draining.
+    let chunk := String.ofList (List.replicate 4096 'x')
+    for _ in [:64] do
+      stderr.putStr chunk
+    stderr.flush
   respond <| Json.mkObj [
     ("jsonrpc", toJson "2.0"), ("id", toJson (2 : Nat)),
     ("result", Json.mkObj [
@@ -1741,7 +1753,9 @@ private def stderrFloodChild (fail : Bool := false) : IO Unit := do
     ])
   ]
   discard <| stdin.readToEnd
-  if fail then
+  if scenario == "teardown-stall" then
+    IO.sleep 5000
+  if scenario == "stderr-failure" then
     throw <| IO.userError "self-check shutdown failure fixture"
 
 private def checkSelfCheckStderrDrain : IO Unit := do
@@ -1769,17 +1783,45 @@ private def checkSelfCheckNonzeroExitWithStderr : IO Unit := do
   require "failed self-check does not report success"
     (!result.stdout.contains "Lean Beam MCP self-check passed")
 
-def main (args : List String) : IO Unit := do
-  match args with
-  | ["--beam-cli", "stderr-flood"] => return ← stderrFloodChild
-  | ["--beam-cli", "stderr-failure"] => return ← stderrFloodChild true
-  | ["--self-check-parent"] =>
-      return ← Beam.Mcp.SelfCheck.run { beamCli? := some "stderr-flood" } "lakefile.lean"
-  | ["--self-check-parent", "stderr-failure"] =>
-      return ← Beam.Mcp.SelfCheck.run { beamCli? := some "stderr-failure" } "lakefile.lean"
-  | _ => pure ()
+private def checkSelfCheckTimeout (scenario : String) : IO Unit := do
+  let result ← IO.Process.output {
+    cmd := (← IO.appPath).toString
+    args := #["--self-check-parent", scenario]
+    env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some "2000")]
+  }
+  require s!"self-check budget covers {scenario}"
+    (result.exitCode != 0 && result.stderr.contains
+      "timed out after 2000 ms waiting for lean-beam-mcp self-check")
+  require "timed-out self-check does not report success"
+    (!result.stdout.contains "Lean Beam MCP self-check passed")
+
+private def checkSelfCheckEarlyExit : IO Unit := do
+  let result ← IO.Process.output {
+    cmd := (← IO.appPath).toString
+    args := #["--self-check-parent", "early-exit"]
+    env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some "2000")]
+  }
+  require "early child exit retains diagnostics and fails without success"
+    (result.exitCode != 0 && result.stderr.contains "self-check early exit fixture" &&
+      !result.stdout.contains "Lean Beam MCP self-check passed")
+
+private def checkSelfCheck : IO Unit := do
   checkSelfCheckStderrDrain
   checkSelfCheckNonzeroExitWithStderr
+  checkSelfCheckTimeout "notifications"
+  checkSelfCheckTimeout "teardown-stall"
+  checkSelfCheckEarlyExit
+
+def main (args : List String) : IO Unit := do
+  match args with
+  | ["--self-check-tests"] => return ← checkSelfCheck
+  | ["--beam-cli", scenario] => return ← selfCheckChild scenario
+  | ["--self-check-parent"] =>
+      return ← Beam.Mcp.SelfCheck.run { beamCli? := some "stderr-flood" } "lakefile.lean"
+  | ["--self-check-parent", scenario] =>
+      return ← Beam.Mcp.SelfCheck.run { beamCli? := some scenario } "lakefile.lean"
+  | _ => pure ()
+  checkSelfCheck
   checkJsonHelpers
   checkVersionIdentityJson
   checkIncoming

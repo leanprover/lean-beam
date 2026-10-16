@@ -553,10 +553,11 @@ current project, and shuts the child server down. On first use for a project/too
 may also build the matching local Beam runtime bundle. Success requires valid discovery and sync
 responses and a zero server exit status. Server stderr is diagnostic: logging does not fail an
 otherwise successful check, and a nonzero server exit includes captured stderr in the failure.
-The smoke test uses best-effort internal timeouts, not an overall process-exit deadline. Blocking
-pipe I/O and cleanup can outlast the timeout, and notifications can extend response waiting.
-If a very slow machine needs a longer wait, set `LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS` to a positive
-timeout in milliseconds. CI supervises the command with a separate process watchdog. Maintainer details
+The smoke test uses one best-effort timeout for discovery, sync, and shutdown, including stderr
+draining; notifications do not restart it. Process creation and failure cleanup are outside that
+budget, and blocked I/O tasks can delay process exit. If a very slow machine needs a longer wait,
+set `LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS` to a positive timeout in milliseconds (default 120000).
+CI supervises the command with a separate process watchdog. Maintainer details
 for MCP live in the [MCP maintainer notes](MCP.md).
 
 ## Installer Locations And Overrides

@@ -309,7 +309,11 @@ are specifically checking the CI budget. The focused daemon lifecycle fixture ex
 its toolchain into one owned shared cache before timing daemon startup, so cold bundle compilation
 is not misdiagnosed as a daemon-readiness timeout.
 
-MCP self-check is an installation smoke test with best-effort internal waits. The fast suite and
+MCP self-check is an installation smoke test with one best-effort timeout covering discovery,
+sync, and shutdown, including stderr draining. Protocol fixtures check that notifications cannot
+restart this budget, EOF shutdown stalls time out, and early child exits retain stderr diagnostics.
+Process creation and failure cleanup are outside the budget; blocked I/O can still delay process
+exit. The fast suite and
 installed-wrapper suite supervise it using `tests/lib/process_watchdog.py`, with
 `BEAM_MCP_SELF_CHECK_WATCHDOG_SECONDS` defaulting to 600 seconds. The MCP protocol test executable,
 which includes self-check child fixtures, has a separate 240-second external watchdog configurable

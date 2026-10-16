@@ -21,7 +21,7 @@ workspace-bound tool request supplies an explicit local workspace descriptor.
 --self-check starts a child MCP server and calls lean_sync on <lean-file> in the
 current Lean project.
 
-Self-check uses best-effort waits of 120000 ms by default; override with
+Self-check uses one best-effort probe timeout of 120000 ms; override with
 LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS. This setting does not bound total command
 duration; blocking I/O and cleanup may outlast it.
 

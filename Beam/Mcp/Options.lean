@@ -22,7 +22,7 @@ def usage : String :=
     "Runs the experimental Lean Beam MCP server over newline-delimited JSON-RPC on stdio.",
     "Every workspace-bound tool call carries {\"workspace\":{\"root\":\"/absolute/project\"}}.",
     "--self-check starts a child MCP server and calls lean_sync for the current Lean project.",
-    "Self-check uses best-effort waits of 120000 ms by default; override with LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS.",
+    "Self-check uses one best-effort probe timeout of 120000 ms; override with LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS.",
     "This setting does not bound total command duration; blocking I/O and cleanup may outlast it.",
     "--version prints the MCP server version, protocol revision, and available resolved identity paths.",
     "The installed wrapper passes --beam-cli automatically so project-specific Lean bundles resolve on demand.",

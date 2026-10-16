@@ -308,9 +308,9 @@ if (cd tests/save_olean_project && \
   exit 1
 fi
 if ! grep -Fq \
-    'timed out after 10000 ms waiting for lean-beam-mcp self-check lean_sync response' \
+    'timed out after 10000 ms waiting for lean-beam-mcp self-check' \
     "$self_check_timeout_err"; then
-  echo "expected MCP self-check timeout to identify the lean_sync phase" >&2
+  echo "expected MCP self-check to report its probe timeout" >&2
   cat "$self_check_timeout_err" >&2
   if [ -s "$self_check_fake_cli_pid" ]; then
     kill "$(cat "$self_check_fake_cli_pid")" 2> /dev/null || true
