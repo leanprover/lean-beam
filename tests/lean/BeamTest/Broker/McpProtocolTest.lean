@@ -1761,8 +1761,8 @@ private def selfCheckChild (scenario : SelfCheckScenario) : IO Unit := do
   ]
   discard <| stdin.getLine
   if scenario == .notifications then
-    -- Every individual line arrives promptly, but the whole exchange exceeds the budget.
-    for _ in [:100] do
+    -- Notifications must not restart the budget. Keep producing until the checker stops us.
+    repeat
       notify
       IO.sleep 50
   if scenario == .stderrFlood || scenario == .stderrFailure then
@@ -1787,48 +1787,61 @@ private def selfCheckChild (scenario : SelfCheckScenario) : IO Unit := do
   ]
   discard <| stdin.readToEnd
   if scenario == .teardownStall then
-    IO.sleep 5000
+    -- A finite delay can complete while the checker is descheduled. This fixture must stay
+    -- stalled until the checker terminates it; the protocol test has an external watchdog.
+    if let some readyPath ← IO.getEnv "BEAM_SELF_CHECK_FIXTURE_READY" then
+      IO.FS.writeFile readyPath ""
+    repeat
+      IO.sleep 1000
   if scenario == .stderrFailure then
     throw <| IO.userError "self-check shutdown failure fixture"
 
-private def runSelfCheckFixture (scenario : SelfCheckScenario) : IO IO.Process.Output := do
-  IO.Process.output {
+private def withSelfCheckFixture
+    (scenario : SelfCheckScenario)
+    (check : IO.Process.Output → IO Unit) : IO Unit := do
+  let started ← IO.monoMsNow
+  let result ← IO.Process.output {
     cmd := (← IO.appPath).toString
     args := #["--self-check-parent", scenario.cliName]
     env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some "2000")]
   }
+  let elapsed := (← IO.monoMsNow) - started
+  try
+    check result
+  catch err =>
+    throw <| IO.userError s!"{err}\nfixture: {scenario.cliName}\nexit: {result.exitCode}\nelapsed: {elapsed} ms\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
 private def checkSelfCheckStderrDrain : IO Unit := do
-  let result ← runSelfCheckFixture .stderrFlood
-  require "self-check accepts diagnostic stderr after completing the protocol"
-    (result.exitCode == 0 && result.stdout.contains "Lean Beam MCP self-check passed")
-  require "successful self-check does not replay child diagnostics" result.stderr.isEmpty
-  require "self-check drains stderr while awaiting protocol responses"
-    (!result.stderr.contains "timed out")
+  withSelfCheckFixture .stderrFlood fun result => do
+    require "self-check accepts diagnostic stderr after completing the protocol"
+      (result.exitCode == 0 && result.stdout.contains "Lean Beam MCP self-check passed")
+    require "successful self-check does not replay child diagnostics" result.stderr.isEmpty
+    require "self-check drains stderr while awaiting protocol responses"
+      (!result.stderr.contains "timed out")
 
 private def checkSelfCheckNonzeroExitWithStderr : IO Unit := do
-  let result ← runSelfCheckFixture .stderrFailure
-  require "self-check still rejects nonzero exit after valid protocol responses"
-    (result.exitCode != 0 && result.stderr.contains "self-check child exited with code")
-  require "failed self-check retains the final child diagnostic"
-    (result.stderr.contains "self-check shutdown failure fixture")
-  require "failed self-check bounds the diagnostic tail" (result.stderr.utf8ByteSize < 70 * 1024)
-  require "failed self-check does not report success"
-    (!result.stdout.contains "Lean Beam MCP self-check passed")
+  withSelfCheckFixture .stderrFailure fun result => do
+    require "self-check still rejects nonzero exit after valid protocol responses"
+      (result.exitCode != 0 && result.stderr.contains "self-check child exited with code")
+    require "failed self-check retains the final child diagnostic"
+      (result.stderr.contains "self-check shutdown failure fixture")
+    require "failed self-check bounds the diagnostic tail" (result.stderr.utf8ByteSize < 70 * 1024)
+    require "failed self-check does not report success"
+      (!result.stdout.contains "Lean Beam MCP self-check passed")
 
 private def checkSelfCheckTimeout (scenario : SelfCheckScenario) : IO Unit := do
-  let result ← runSelfCheckFixture scenario
-  require s!"self-check budget covers {scenario.cliName}"
-    (result.exitCode != 0 && result.stderr.contains
-      "timed out after 2000 ms waiting for lean-beam-mcp self-check")
-  require "timed-out self-check does not report success"
-    (!result.stdout.contains "Lean Beam MCP self-check passed")
+  withSelfCheckFixture scenario fun result => do
+    require s!"self-check budget covers {scenario.cliName}"
+      (result.exitCode != 0 && result.stderr.contains
+        "timed out after 2000 ms waiting for lean-beam-mcp self-check")
+    require "timed-out self-check does not report success"
+      (!result.stdout.contains "Lean Beam MCP self-check passed")
 
 private def checkSelfCheckEarlyExit : IO Unit := do
-  let result ← runSelfCheckFixture .earlyExit
-  require "early child exit retains diagnostics and fails without success"
-    (result.exitCode != 0 && result.stderr.contains "self-check early exit fixture" &&
-      !result.stdout.contains "Lean Beam MCP self-check passed")
+  withSelfCheckFixture .earlyExit fun result => do
+    require "early child exit retains diagnostics and fails without success"
+      (result.exitCode != 0 && result.stderr.contains "self-check early exit fixture" &&
+        !result.stdout.contains "Lean Beam MCP self-check passed")
 
 private def checkSelfCheckResponseValidation : IO Unit := do
   for (scenario, diagnostic) in [
@@ -1837,13 +1850,13 @@ private def checkSelfCheckResponseValidation : IO Unit := do
     (.invalidJsonrpc, "expected jsonrpc 2.0"),
     (.invalidProgress, "updates")
   ] do
-    let result ← runSelfCheckFixture scenario
-    require s!"self-check rejects malformed {scenario.cliName} response"
-      (result.exitCode != 0 && result.stderr.contains diagnostic &&
-        !result.stdout.contains "Lean Beam MCP self-check passed")
-  let result ← runSelfCheckFixture .inProgress
-  require "self-check accepts valid sync progress without requiring elaboration completion"
-    (result.exitCode == 0 && result.stdout.contains "Lean Beam MCP self-check passed")
+    withSelfCheckFixture scenario fun result => do
+      require s!"self-check rejects malformed {scenario.cliName} response"
+        (result.exitCode != 0 && result.stderr.contains diagnostic &&
+          !result.stdout.contains "Lean Beam MCP self-check passed")
+  withSelfCheckFixture .inProgress fun result => do
+    require "self-check accepts valid sync progress without requiring elaboration completion"
+      (result.exitCode == 0 && result.stdout.contains "Lean Beam MCP self-check passed")
 
 private def checkSelfCheck : IO Unit := do
   checkSelfCheckStderrDrain
