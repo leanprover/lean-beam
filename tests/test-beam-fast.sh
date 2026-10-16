@@ -80,6 +80,7 @@ run_quiet_test broker-pending .lake/build/bin/beam-broker-pending-test
 run_quiet_test broker-document-state .lake/build/bin/beam-broker-document-state-test
 run_quiet_test broker-open-docs .lake/build/bin/beam-broker-open-docs-test
 run_quiet_test cli-daemon .lake/build/bin/beam-cli-daemon-test
+run_quiet_test interrupt-watcher python3 tests/test-interrupt-watcher.py
 run_quiet_test feedback .lake/build/bin/beam-feedback-test
 run_quiet_test mcp-projection .lake/build/bin/beam-mcp-projection-test
 run_quiet_test mcp-protocol .lake/build/bin/beam-mcp-protocol-test

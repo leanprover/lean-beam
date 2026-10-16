@@ -15,6 +15,7 @@ import Beam.Daemon.Debug
 import Beam.Daemon.Paths
 import Beam.Path
 import BeamTest.Broker.JsonAssert
+import BeamTest.Broker.InterruptWatcherTest
 
 open Lean
 open BeamTest.Broker.JsonAssert (requireJsonNull requireJsonString)
@@ -1722,4 +1723,8 @@ def main : IO Unit := do
 
 end BeamTest.Broker.CliDaemonTest
 
-def main := BeamTest.Broker.CliDaemonTest.main
+def main (args : List String) : IO Unit :=
+  match args with
+  | [] => BeamTest.Broker.CliDaemonTest.main
+  | ["--interrupt-watcher", mode] => BeamTest.Broker.InterruptWatcherTest.child mode
+  | _ => throw <| IO.userError "unexpected CLI daemon test arguments"

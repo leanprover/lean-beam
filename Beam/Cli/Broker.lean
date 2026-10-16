@@ -37,14 +37,6 @@ structure InterruptWatcher where
   interrupted : IO Bool
   awaitInterrupt : IO Unit
 
-private def closeInterruptSignal (signal : Std.Internal.UV.Signal) : IO Unit := do
-  -- `Signal.stop` alone leaves an unresolved `next` promise and its waiter leaked. Cancel the
-  -- pending wait first, then stop the underlying signal resource.
-  try
-    Std.Internal.UV.Signal.cancel signal
-  finally
-    Std.Internal.UV.Signal.stop signal
-
 /-- Acquire one non-repeating SIGINT watcher and release its pending wait on every exit path. -/
 def withInterruptWatcher (act : InterruptWatcher → IO α) : IO α := do
   let signal ← Std.Internal.UV.Signal.mk 2 false
@@ -68,7 +60,8 @@ def withInterruptWatcher (act : InterruptWatcher → IO α) : IO α := do
   try
     act watcher
   finally
-    closeInterruptSignal signal
+    -- Every supported runtime drops its pending promise when the signal handler is stopped.
+    Std.Internal.UV.Signal.stop signal
 
 private def progressEnabled : IO Bool := do
   match ← envFlag? "BEAM_PROGRESS" with

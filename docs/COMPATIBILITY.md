@@ -57,6 +57,11 @@ A Lean release line is the canonical `major.minor` family recorded in
 
 ## Change Rule
 
+Raising the minimum Lean version must enable a concrete correctness, API, or maintainability
+improvement. Reduced CI time alone is insufficient. Name the code or behavior that benefits and
+weigh that gain against losing standard admission and qualification for projects pinned to the
+retired releases.
+
 CLI and MCP command/tool surfaces are discoverable from the installed skill file, help text, and MCP
 `tools/list` schemas. During beta, discovery is the compatibility story for those surfaces. The
 local broker JSON stream is an implementation boundary, and maintainer harness scripts are local

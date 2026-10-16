@@ -629,8 +629,11 @@ paths directly. This lets task worktrees reuse unchanged compilation outputs wit
 repository's runtime layout contract. For a genuinely cold Beam rebuild, point `LAKE_CACHE_DIR` at
 a fresh temporary directory; Lake's `--no-cache` option controls remote package caches rather than
 this explicit local package cache. Restricted automation that cannot write to the default cache
-inside the elan toolchain must likewise point `LAKE_CACHE_DIR` at a writable directory; sharing
-that directory between task worktrees preserves the intended reuse. The save/checkpoint regression
+inside the elan toolchain can point `LAKE_CACHE_DIR` at a writable directory shared only by builds
+using the same exact compiler. A fixed override also reaches subprocesses that select other
+toolchains, so do not share it across versions. For mixed-toolchain validation without access to
+the default caches, use `LAKE_CACHE_DIR= bash tests/test-beam-fast.sh` (or the relevant suite) to
+keep artifact caches local to each build workspace. The save/checkpoint regression
 suite uses separate fixture packages and disables their artifact caches so a Lake replay cannot
 masquerade as a Beam-written artifact.
 
@@ -700,6 +703,16 @@ companion paths: `.olean.server`, `.olean.private`, `.ir`, and `.ir.sig`. Worker
 `DocumentUri`, and saves use `Lean.Compiler.LCNF.emitC` and the postponed-compilation extension
 directly. No pre-v4.33 API selection remains. The transport still uses `Std.Internal.UV.TCP`
 directly so interruption and timeout can cancel the exact pending receive.
+
+CLI interrupt watchers stop their signal handler with `Std.Internal.UV.Signal.stop`. The runtime
+already releases the pending promise in 4.33–4.35, although those releases' Lean API comments claim
+otherwise; see the [4.33.1 runtime implementation](https://github.com/leanprover/lean4/blob/v4.33.1/src/runtime/uv/signal.cpp).
+An extra `Signal.cancel` call is not needed to release that wait. The native watcher regression
+(`python3 tests/test-interrupt-watcher.py`, after `lake build beam-cli-daemon-test`) checks pending
+waiters on normal and exceptional exits. On POSIX it also checks actual SIGINT delivery, isolation
+of a later watcher, and restoration of the default SIGINT action after teardown. This cleanup does
+not require raising the minimum Lean version. The
+[support-window roadmap](STATUS.md#lean-support-window) records the remaining tradeoffs.
 
 ## Process
 

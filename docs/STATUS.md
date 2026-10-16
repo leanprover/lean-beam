@@ -388,6 +388,36 @@ Near-term work is mostly about hardening and simplifying:
 - keep cross-surface utility code such as root resolution and workspace-relative path derivation in
   shared Beam modules, not copied across CLI, broker, MCP, and test helpers
 
+### Lean Support Window
+
+Retain the 4.33–4.36 support window while evaluating API improvements. The
+[minimum-version change rule](COMPATIBILITY.md#change-rule) requires a benefit beyond reduced CI
+time. The 4.36.0-rc1 API audit found that a 4.34 or 4.35 minimum would remove no existing production
+compatibility adapter. A 4.36 minimum would remove the small generated-C descriptor adapter in
+`Beam/Broker/LakeSave.lean` (about 26 net lines in that audit). Its selection happens during
+elaboration, so removing it would not eliminate per-request dispatch. At this release candidate,
+that saving does not justify retiring all supported stable releases.
+
+The 4.36 default already receives upstream [timer/signal fixes](https://github.com/leanprover/lean4/pull/15523),
+[type-class cache restoration fixes](https://github.com/leanprover/lean4/pull/15355), and the
+[UTF-8 conversion leak fix](https://github.com/leanprover/lean4/pull/15654) without retiring older
+targets. Next opportunities are:
+
+- use [`lake samply`](https://github.com/leanprover/lean4/pull/12545) for native executable profiles
+  with demangled Lean names; this developer workflow does not require a higher product minimum
+- evaluate [`String.fromUTF8Lossy`](https://github.com/leanprover/lean4/pull/15651) for preserving
+  readable subprocess stderr around invalid UTF-8 bytes; direct adoption needs a 4.36 minimum,
+  and this diagnostic improvement alone does not justify dropping the stable targets
+- preserve the distinct-compiler coverage in `tests/save_olean_project` before reducing support to
+  a single release line; custom, nightly, and rebuilt toolchains still need exact fingerprints and
+  target-specific Lake helpers
+
+Signal watcher teardown is an independent cleanup: `Signal.stop` already releases its pending
+promise on 4.33–4.35, despite their stale API documentation. See the
+[compatibility notes](DEVELOPMENT.md#lean-compatibility-shims) and the watcher lifecycle regression
+in `tests/test-interrupt-watcher.py`. The process I/O APIs do not provide cancellable synchronous
+pipe reads, so bounded stderr draining and process cleanup remain necessary.
+
 ## First Alpha Release Focus
 
 The first public Lean release should stay conservative:
