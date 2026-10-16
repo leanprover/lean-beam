@@ -1466,6 +1466,22 @@ private def checkDeadSessionCleanupReleasesStateMutex : IO Unit := do
       if ← path.pathExists then
         IO.FS.removeFile path
 
+/-- Observe exit without consuming the child's wait status. -/
+private partial def waitForUnreapedExit
+    (child : IO.Process.Child {})
+    (tries : Nat := 200) : IO Unit := do
+  let status ← IO.Process.output {
+    cmd := "ps"
+    args := #["-p", toString child.pid, "-o", "stat="]
+  }
+  if status.exitCode == 0 && status.stdout.trimAscii.toString.startsWith "Z" then
+    pure ()
+  else if tries == 0 then
+    throw <| IO.userError "snapshot-reset writer did not exit before cleanup"
+  else
+    IO.sleep 10
+    waitForUnreapedExit child (tries - 1)
+
 private def checkWorkspaceSnapshotResetIsolation : IO Unit := do
   let nonce ← IO.monoNanosNow
   let workspaceId := "snapshot-reset"
@@ -1526,12 +1542,14 @@ private def checkWorkspaceSnapshotResetIsolation : IO Unit := do
         |>.isSome
     require "a stale snapshot should not start a backend in the replacement workspace"
       !leanSessionActive
+    -- Exercise cleanup after natural exit: tryWait will reap the writer itself.
+    waitForUnreapedExit writer
   finally
     if !(← releaseWriter.pathExists) then
       IO.FS.writeFile releaseWriter "release"
     if (← writer.tryWait).isNone then
       writer.kill
-    discard <| writer.wait
+      discard <| writer.wait
     runtime.close
     if ← oldRoot.pathExists then
       IO.FS.removeDirAll oldRoot
