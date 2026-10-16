@@ -8,6 +8,7 @@ import Lean
 import Beam.Mcp.Protocol
 import Beam.Mcp.Stdio
 import Beam.Path
+import Beam.StderrCapture
 import Beam.System
 
 open Lean
@@ -61,25 +62,69 @@ private def resolveFile (root : System.FilePath) (pathText : String) : IO System
   let path := System.FilePath.mk pathText
   Beam.resolvePathAgainstRoot root path
 
-private def throwJsonFieldError (label field : String) (json : Json) (err : String) : IO α :=
-  throw <| IO.userError s!"{label}: missing or invalid '{field}': {err}; response: {json.compress}"
+private def fieldError (label field : String) (json : Json) (err : String) : String :=
+  s!"{label}: missing or invalid '{field}': {err}; response: {json.compress}"
 
-private def requireObjVal (label field : String) (json : Json) : IO Json := do
-  match json.getObjVal? field with
-  | .ok value => pure value
-  | .error err => throwJsonFieldError label field json err
+private def requireObjVal (label field : String) (json : Json) : Except String Json :=
+  (json.getObjVal? field).mapError (fieldError label field json)
 
-private def requireObjValAs [FromJson α] (label field : String) (json : Json) : IO α := do
-  match json.getObjValAs? α field with
-  | .ok value => pure value
-  | .error err => throwJsonFieldError label field json err
+private def requireObjValAs [FromJson α]
+    (label field : String) (json : Json) : Except String α :=
+  (json.getObjValAs? α field).mapError (fieldError label field json)
 
-private def expectResult (label : String) (json : Json) : IO Json := do
+private def expectResult (label : String) (json : Json) : Except String Json := do
   match json.getObjVal? "error" with
-  | .ok err =>
-      throw <| IO.userError s!"{label} failed: {err.compress}"
-  | .error _ =>
-      requireObjVal label "result" json
+  | .ok err => throw s!"{label} failed: {err.compress}"
+  | .error _ => requireObjVal label "result" json
+
+/-- Validate each envelope before deciding whether to skip a notification. -/
+private def validateResponse
+    (expectedId : Json) (phase : String) (json : Json) : Except String (Option Json) := do
+  let revision ← requireObjValAs (α := String) "self-check response" "jsonrpc" json
+  unless revision == "2.0" do
+    throw s!"self-check {phase}: expected jsonrpc 2.0, got {revision}"
+  let method? ← (optionalField? (α := String) json "method").mapError
+    (fun err => s!"self-check {phase}: {err}")
+  match method? with
+  | some method =>
+      match json.getObjVal? "id" with
+      | .ok _ =>
+          throw s!"lean-beam-mcp self-check child sent unexpected request '{method}' during {phase}: {json.compress}"
+      | .error _ => pure none
+  | none =>
+      let id ← requireObjVal "self-check response" "id" json
+      unless id == expectedId do
+        throw s!"expected self-check {phase} id {expectedId.compress}, got {json.compress}"
+      pure (some json)
+
+private def validateComplete (label : String) (json : Json) : Except String Json := do
+  let result ← expectResult label json
+  let resultType ← requireObjValAs (α := String) s!"{label} result" "resultType" result
+  unless resultType == "complete" do
+    throw s!"{label} returned resultType {resultType}, expected complete"
+  pure result
+
+private def validateDiscovery (json : Json) : Except String Unit := do
+  let result ← validateComplete "server/discover" json
+  let supported ← requireObjValAs (α := Array String)
+    "server/discover result" "supportedVersions" result
+  unless supported.contains protocolVersion do
+    throw s!"server/discover did not advertise MCP protocol {protocolVersion}: {result.compress}"
+
+private def validateSync (json : Json) : Except String Unit := do
+  let result ← validateComplete "lean_sync" json
+  let isError? ← (optionalField? (α := Bool) result "isError").mapError
+    (fun err => s!"lean_sync result: {err}")
+  if isError?.getD false then
+    throw s!"lean_sync returned an MCP tool error: {result.compress}"
+  let structured ← requireObjVal "lean_sync result" "structuredContent" result
+  let progress ← requireObjVal "lean_sync structuredContent" "document_progress" structured
+  discard <| requireObjValAs (α := Nat) "lean_sync document_progress" "updates" progress
+  -- Sync can succeed before elaboration finishes; this smoke test checks shape, not readiness.
+  discard <| requireObjValAs (α := Bool) "lean_sync document_progress" "done" progress
+
+private def fromValidation (result : Except String α) : IO α :=
+  IO.ofExcept <| result.mapError IO.userError
 
 private partial def readResponse
     (stdout : IO.FS.Handle)
@@ -92,19 +137,9 @@ private partial def readResponse
     match Json.parse line with
     | .ok json => pure json
     | .error err => throw <| IO.userError s!"lean-beam-mcp self-check child wrote invalid JSON during {phase}: {err}: {line}"
-  match json.getObjValAs? String "method" with
-  | .ok method =>
-      match json.getObjVal? "id" with
-      | .ok _ =>
-          throw <| IO.userError s!"lean-beam-mcp self-check child sent unexpected request '{method}' during {phase}: {json.compress}"
-      | .error _ =>
-          readResponse stdout expectedId phase
-  | .error _ =>
-      let id ← requireObjVal "self-check response" "id" json
-      if id == expectedId then
-        pure json
-      else
-        throw <| IO.userError s!"expected self-check {phase} id {expectedId.compress}, got {json.compress}"
+  match ← fromValidation (validateResponse expectedId phase json) with
+  | none => readResponse stdout expectedId phase
+  | some response => pure response
 
 private def modernMeta : Json :=
   Json.mkObj [
@@ -149,28 +184,10 @@ private def checkProtocol
     (root : System.FilePath)
     (pathText : String) : IO Unit := do
   sendDiscover stdin
-  let discovery ← expectResult "server/discover" =<<
-    readResponse stdout (toJson (1 : Nat)) "server/discover response"
-  let resultType ← requireObjValAs (α := String) "server/discover result" "resultType" discovery
-  if resultType != "complete" then
-    throw <| IO.userError s!"server/discover returned resultType {resultType}, expected complete"
-  let supported ← requireObjValAs (α := Array String)
-    "server/discover result" "supportedVersions" discovery
-  unless supported.contains protocolVersion do
-    throw <| IO.userError
-      s!"server/discover did not advertise MCP protocol {protocolVersion}: {discovery.compress}"
+  fromValidation <| validateDiscovery
+    (← readResponse stdout (toJson (1 : Nat)) "server/discover response")
   sendSync stdin root pathText
-  let sync ← expectResult "lean_sync" =<<
-    readResponse stdout (toJson (2 : Nat)) "lean_sync response"
-  let syncResultType ← requireObjValAs (α := String) "lean_sync result" "resultType" sync
-  if syncResultType != "complete" then
-    throw <| IO.userError s!"lean_sync returned resultType {syncResultType}, expected complete"
-  match sync.getObjVal? "isError" with
-  | .ok (.bool true) =>
-      throw <| IO.userError s!"lean_sync returned an MCP tool error: {sync.compress}"
-  | _ => pure ()
-  let structured ← requireObjVal "lean_sync result" "structuredContent" sync
-  discard <| requireObjVal "lean_sync structuredContent" "document_progress" structured
+  fromValidation <| validateSync (← readResponse stdout (toJson (2 : Nat)) "lean_sync response")
   -- Keep stdin alive through the final response; the protocol task then releases it.
   stdin.flush
 
@@ -198,15 +215,16 @@ def run (opts : Options) (pathText : String) : IO Unit := do
     cwd := root.toString
   }).takeStdin
   let started ← IO.monoMsNow
+  let remaining : IO Nat := do
+    pure <| timeout - ((← IO.monoMsNow) - started)
+  let timedOut := IO.userError
+    s!"timed out after {timeout} ms waiting for lean-beam-mcp self-check"
   let await {α} (task : Task (Except IO.Error α)) : IO α := do
-    let elapsed := (← IO.monoMsNow) - started
-    let some result ← Beam.waitTaskWithTimeout task (timeout - elapsed)
-      | throw <| IO.userError
-          s!"timed out after {timeout} ms waiting for lean-beam-mcp self-check"
+    let some result ← Beam.waitTaskWithTimeout task (← remaining)
+      | throw timedOut
     IO.ofExcept result
-  -- Drain while the child serves requests: Windows pipes can fill with diagnostic traces
-  -- before a response is sent. Keep the captured result typed until the diagnostic edge.
-  let stderrTask ← IO.asTask child.stderr.readToEnd Task.Priority.dedicated
+  -- Drain while the child serves requests, retaining only a bounded diagnostic tail.
+  let stderr ← Beam.StderrCapture.start child.stderr (64 * 1024)
   -- This task owns stdin and releases it before we wait for the child's EOF shutdown.
   let protocolTask ← IO.asTask (checkProtocol stdin child.stdout root pathText) Task.Priority.dedicated
   try
@@ -215,15 +233,17 @@ def run (opts : Options) (pathText : String) : IO Unit := do
     let exitCode ← await exitTask
     if exitCode != 0 then
       throw <| IO.userError s!"lean-beam-mcp self-check child exited with code {exitCode}"
-    discard <| await stderrTask
+    match ← stderr.finishAfterWriterExit (← remaining) with
+    | .drained => pure ()
+    | .sourceFailed err => throw err
+    | .pipeStillOpen => throw timedOut
   catch e =>
     terminateChild child
-    -- Failure cleanup is best-effort too; CI's external watchdog bounds stuck pipes.
-    match ← IO.wait stderrTask with
-    | .ok stderr =>
-        if !stderr.trimAscii.isEmpty then
-          throw <| IO.userError s!"{e}\n{stderr}"
-    | .error _ => pure ()
+    -- Cleanup has a separate bounded drain wait. Blocking I/O still needs CI's watchdog.
+    discard <| stderr.finishAfterWriterExit
+    let tail ← stderr.snapshot
+    if !tail.trimAscii.isEmpty then
+      throw <| IO.userError s!"{e}\n{tail}"
     throw e
   IO.println "Lean Beam MCP self-check passed"
   IO.println s!"  root: {root}"

@@ -566,8 +566,10 @@ lean-beam-mcp --self-check MyPkg/Sub/Module.lean
 The self-check starts a child MCP server, calls `lean_sync` with an explicit descriptor for the
 current project, and shuts the child server down. On first use for a project/toolchain, this
 may also build the matching local Beam runtime bundle. Success requires valid discovery and sync
-responses and a zero server exit status. Server stderr is diagnostic: logging does not fail an
-otherwise successful check, and a nonzero server exit includes captured stderr in the failure.
+responses and a zero server exit status. It verifies that sync can run, without requiring completed
+elaboration, a file without Lean diagnostics, or readiness to save artifacts. Server stderr is
+diagnostic: logging does not fail an otherwise successful check, and failures include the final
+64 KiB of captured stderr when available.
 The smoke test uses one best-effort timeout for discovery, sync, and shutdown, including stderr
 draining; notifications do not restart it. Process creation and failure cleanup are outside that
 budget, and blocked I/O tasks can delay process exit. If a very slow machine needs a longer wait,

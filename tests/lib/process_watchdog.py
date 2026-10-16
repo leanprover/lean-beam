@@ -53,9 +53,10 @@ def _terminate_tree(proc):
 
 
 def run_with_watchdog(command, *, timeout, cwd=None, env=None):
-    """Capture bounded output, preserve exit status, and raise TimeoutExpired on timeout.
+    """Return bounded output tails, preserve exit status, and raise TimeoutExpired on timeout.
 
     Output goes to files so descendants retaining stdout/stderr cannot block collection.
+    Returned strings are bounded; the temporary files have no disk-usage limit.
     Timeout cleanup targets the owned POSIX process group or Windows process tree. Each
     cleanup wait is bounded separately; the timeout is not an OS process-creation bound.
     """

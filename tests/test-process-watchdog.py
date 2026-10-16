@@ -4,6 +4,7 @@
 
 """Exercise the watchdog through real child processes, including inherited output."""
 
+import csv
 import importlib.util
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -18,6 +20,33 @@ HELPER = Path(__file__).parent / "lib" / "process_watchdog.py"
 spec = importlib.util.spec_from_file_location("process_watchdog", HELPER)
 watchdog = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(watchdog)
+
+
+def process_is_running(pid):
+    # A POSIX zombie has terminated even if its new parent has not reaped it yet.
+    if os.name == "posix":
+        result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
+                                capture_output=True, text=True, timeout=5, check=False)
+        if result.returncode not in (0, 1):
+            raise RuntimeError(f"ps failed: {result.stderr}")
+        return bool(result.stdout.strip()) and not result.stdout.strip().startswith("Z")
+    result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                            capture_output=True, text=True, timeout=5, check=True)
+    return any(len(row) > 1 and row[1] == str(pid)
+               for row in csv.reader(result.stdout.splitlines()))
+
+
+def kill_fixture_process(pid):
+    # Call only with the fresh PID recorded by an owned fixture.
+    if os.name == "posix":
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    else:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=5, check=False)
 
 
 class ProcessWatchdog(unittest.TestCase):
@@ -56,43 +85,45 @@ print('completed with inherited output')
                 self.assertIn("completed with inherited output", result.stdout)
             finally:
                 if pid_file.exists():
-                    # This PID comes only from the owned fixture above.
-                    pid = int(pid_file.read_text())
-                    if os.name == "posix":
-                        try:
-                            os.kill(pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                    else:
-                        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                       timeout=5, check=False)
+                    kill_fixture_process(int(pid_file.read_text()))
 
     def test_timeout_covers_inherited_pipes_and_partial_output(self):
-        code = """
+        # Supervise the watchdog itself; files keep its descendants out of communicate().
+        with tempfile.TemporaryDirectory(prefix="beam-watchdog-test-") as directory:
+            root = Path(directory)
+            pid_file = root / "descendant.pid"
+            code = f"""
 import subprocess, sys, time
-subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+from pathlib import Path
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+Path({str(pid_file)!r}).write_text(str(child.pid))
 print('partial response', end='', flush=True)
 print('diagnostic before stall', file=sys.stderr, flush=True)
 time.sleep(60)
 """
-        # Supervise the watchdog itself; files keep its descendants out of communicate().
-        with tempfile.TemporaryDirectory(prefix="beam-watchdog-test-") as directory:
-            root = Path(directory)
             script = root / "child.py"
             script.write_text(code)
-            with (root / "out").open("w+b") as out, (root / "err").open("w+b") as err:
-                result = subprocess.run([sys.executable, str(HELPER), "--timeout", "2", "--",
-                                         sys.executable, str(script)],
-                                        stdout=out, stderr=err, timeout=15)
-                out.seek(0)
-                err.seek(0)
-                self.assertEqual(result.returncode, 124)
-                self.assertIn(b"partial response", out.read())
-                stderr = err.read()
-                self.assertIn(b"diagnostic before stall", stderr)
-                self.assertIn(b"external watchdog expired after 2 seconds", stderr)
-                self.assertNotIn(b"watchdog cleanup failed", stderr)
+            try:
+                with (root / "out").open("w+b") as out, (root / "err").open("w+b") as err:
+                    result = subprocess.run([sys.executable, str(HELPER), "--timeout", "2", "--",
+                                             sys.executable, str(script)],
+                                            stdout=out, stderr=err, timeout=15)
+                    out.seek(0)
+                    err.seek(0)
+                    self.assertEqual(result.returncode, 124)
+                    self.assertIn(b"partial response", out.read())
+                    stderr = err.read()
+                    self.assertIn(b"diagnostic before stall", stderr)
+                    self.assertIn(b"external watchdog expired after 2 seconds", stderr)
+                    self.assertNotIn(b"watchdog cleanup failed", stderr)
+                pid = int(pid_file.read_text())
+                deadline = time.monotonic() + 2
+                while process_is_running(pid) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(process_is_running(pid), "watchdog left its descendant running")
+            finally:
+                if pid_file.exists():
+                    kill_fixture_process(int(pid_file.read_text()))
 
     def test_invalid_timeout_does_not_launch(self):
         for timeout in (0, -1, float("inf"), float("nan")):
