@@ -45,20 +45,14 @@ private def stageBeamSharedLibrary (src dst : FilePath) : IO Unit := do
 /-- Link the selected Lean/Lake shared libraries and stage their exact runtime dependencies. -/
 target beamSharedRuntime (pkg) : Dynlib := do
   let lean ← getLeanInstall
-  let srcDir := leanSharedLibDir lean.sysroot
   let dstDir := pkg.buildDir / if System.Platform.isWindows then "bin" else "lib/lean"
-  let coreLibs := #["Init_shared", "leanshared_1", "leanshared_2", "leanshared"].map fun name =>
-    ({ name, path := srcDir / nameToSharedLib name true } : Dynlib)
   let lake := (LakeInstall.ofLean lean).sharedDynlib
-  -- Older supported Lake versions omit the core runtime dependency metadata.
-  let missingDeps := coreLibs.filter fun lib => !lake.deps.any (·.name == lib.name)
-  let lake := { lake with deps := lake.deps ++ missingDeps }
-  let copies ← (coreLibs.push lake).mapM fun lib => do
+  let copies ← (lake.deps.push lake).mapM fun lib => do
     let dst := dstDir / nameToSharedLib lib.name true
     let input ← inputBinFile lib.path
     input.mapM fun source => do
-      -- These are already-built toolchain inputs. Older Lake caches cannot store identical
-      -- split-library stubs twice, so stage them directly without caching duplicate artifacts.
+      -- These are already-built SDK inputs; stage them without adding duplicate split-library
+      -- stubs to Lake's artifact cache.
       stageBeamSharedLibrary source dst
   return (Job.collectArray copies).map fun _ => lake
 

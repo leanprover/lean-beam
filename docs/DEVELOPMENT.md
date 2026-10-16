@@ -67,13 +67,12 @@ Preferred maintainer entrypoints:
 ### Executable Linking And Runtime Libraries
 
 The three product executables use Lake's `moreLinkLibs` and `Dynlib` interfaces. The build derives
-Lake's shared-library path and dependency graph from `LakeInstall.ofLean`; it also supplies the
-core Lean libraries omitted by older supported Lake metadata. On Windows, `supportInterpreter`
+Lake's shared-library path and complete dependency graph from `LakeInstall.ofLean`, including
+the core split-library stubs. On Windows, `supportInterpreter`
 selects Lake's shared Lean linker flags, so the CLI enables it there too.
 
 The build stages matching libraries beside its outputs and publishes each complete file by
-rename. Prebuilt split-library stubs bypass Lake's artifact cache: equal stubs in Lean 4.29 can
-otherwise cause duplicate writes to the same read-only cache artifact. Unchanged libraries keep
+rename. Prebuilt libraries are staged directly as SDK inputs, and unchanged libraries keep
 their existing files. The bootstrap shell installer and typed Lean install layout each describe
 the runtime payload because the installer must work before the CLI is built; installation and
 bundle tests check that the layouts agree.
