@@ -6,9 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Broker.Server
 import Beam.Mcp.Server
-import Beam.Mcp.SelfCheck
 import Beam.Mcp.Stdio
-import Beam.Cli.Toolchain
 
 open Lean
 
@@ -649,34 +647,5 @@ partial def runStdio (opts : Options) : IO Unit := do
       throw e
   finally
     coordinator.closeTransport
-
-def main (args : List String) : IO Unit := do
-  let opts ←
-    match Beam.Mcp.parseOptions {} args with
-    | .ok opts => pure opts
-    | .error err => throw <| IO.userError err
-  let opts ← if Beam.Cli.Toolchain.enabled then do
-    let beamCli ← Beam.Cli.Toolchain.executable "lean-beam"
-    let mismatch := IO.userError "bundled lean-beam-mcp uses only its containing toolchain"
-    unless opts.leanCmd?.isNone && opts.leanPlugin?.isNone do
-      throw mismatch
-    if let some selected := opts.beamCli? then
-      unless ← Beam.sameFilePath beamCli (System.FilePath.mk selected) do
-        throw mismatch
-    pure { opts with beamCli? := some beamCli.toString }
-  else
-    pure opts
-  if opts.showVersion then
-    IO.println (← Internal.serverVersionText opts)
-    return
-  match opts.selfCheckPath? with
-  | some path =>
-      SelfCheck.run {
-        leanCmd? := opts.leanCmd?
-        leanPlugin? := opts.leanPlugin?
-        beamCli? := opts.beamCli?
-      } path
-  | none =>
-      runStdio opts
 
 end Beam.Mcp.Server

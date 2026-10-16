@@ -16,6 +16,7 @@ import Beam.Feedback
 import Beam.Feedback.Broker
 import Beam.System
 import Beam.Version
+import Beam.Cli.RuntimeIdentity
 
 open Lean
 
@@ -84,7 +85,7 @@ private def versionIdentityJson (home : System.FilePath) : IO Json := do
   let appPath ← IO.appPath
   let wrapper? ← IO.getEnv "BEAM_WRAPPER_PATH"
   let publicCommand? ← IO.getEnv "BEAM_PUBLIC_COMMAND"
-  let identity ← Beam.Version.mkRuntimeIdentity
+  let identity ← Beam.Cli.RuntimeIdentity.read
     (publicCommand?.getD "beam-cli")
     (some home)
     (wrapper? := wrapper?)

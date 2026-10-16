@@ -13,6 +13,7 @@ import Beam.Cli.RuntimeBundle
 import Beam.Daemon.Debug
 import Beam.Daemon.Paths
 import Beam.Version
+import Beam.Cli.RuntimeIdentity
 
 open Lean
 
@@ -31,7 +32,7 @@ def printVersion (home : System.FilePath) : IO Unit := do
   let appPath ← IO.appPath
   let wrapper? ← IO.getEnv "BEAM_WRAPPER_PATH"
   let publicCommand? ← IO.getEnv "BEAM_PUBLIC_COMMAND"
-  let identity ← Beam.Version.mkRuntimeIdentity
+  let identity ← Beam.Cli.RuntimeIdentity.read
     (publicCommand?.getD "beam-cli")
     (some home)
     (wrapper? := wrapper?)

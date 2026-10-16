@@ -9,9 +9,8 @@ import Beam.Feedback
 import Beam.Feedback.Broker
 import Beam.Daemon.Debug
 import Beam.Lean.Workspace
-import Beam.Mcp.Options
 import Beam.Mcp.Protocol
-import Beam.Mcp.Runtime
+import Beam.Mcp.SetupError
 import Beam.System
 import Beam.Workspace
 import Beam.Version
@@ -95,7 +94,14 @@ private def notifierFor
 private def Notifier.send (notifier : Notifier) (json : Json) : IO Unit :=
   notifier.sink.send json
 
-abbrev Options := Beam.Mcp.Options
+/-- Application effects supplied at the process boundary; no installation discovery lives here. -/
+structure Options where
+  resolveRuntime : System.FilePath → IO (Except RpcError Beam.Broker.BrokerConfig) :=
+    fun _ => pure <| .error <| runtimeSetupError runtimeSetupGuidance
+  identity : IO Beam.Version.Identity := pure {
+    name := Beam.Version.mcpServerName
+    mcpProtocol? := some Beam.Version.mcpProtocolVersion
+  }
 
 def Internal.traceEnabled (envName : String) : IO Bool := do
   match ← IO.getEnv envName with
@@ -447,12 +453,6 @@ private def CallReporter.finish (reporter : CallReporter) : IO Unit := do
   | some status => status.finish
   | none => pure ()
 
-private def runtimeOptions (opts : Options) : Runtime.Options := {
-  leanCmd? := opts.leanCmd?
-  leanPlugin? := opts.leanPlugin?
-  beamCli? := opts.beamCli?
-}
-
 private def createRuntimeWithConfig
     (workspaceId : Beam.Broker.WorkspaceId)
     (config : Beam.Broker.BrokerConfig) :
@@ -467,7 +467,7 @@ private def createRuntimeForRoot
     (workspaceId : Beam.Broker.WorkspaceId)
     (root : System.FilePath) :
     IO (Except RpcError (Beam.Broker.ServerRuntime × System.FilePath)) := do
-  match ← Runtime.mkBrokerConfig (runtimeOptions opts) root with
+  match ← opts.resolveRuntime root with
   | .error err =>
       pure <| .error err
   | .ok config =>
@@ -488,7 +488,7 @@ private def ensureBrokerWorkspace
         pure <| .error <| RpcError.invalidRequest
           s!"workspace '{workspaceId}' is already initialized for {trackedRoot}, not {root}"
   | none =>
-      match ← Runtime.mkBrokerConfig (runtimeOptions opts) root with
+      match ← opts.resolveRuntime root with
       | .error err => pure <| .error err
       | .ok config =>
           match ← runtime.initWorkspaceWithConfig workspaceId config (some .set) with
@@ -614,29 +614,14 @@ private def handleDropWorkspace
       | .error failure =>
           pure <| callToolErrorResult <| ToolError.fromBrokerError failure.error
 
-private def resolvedBeamHome? : IO (Option System.FilePath) := do
-  match ← IO.getEnv "BEAM_HOME" with
-  | some home =>
-      try
-        pure <| some (← IO.FS.realPath <| System.FilePath.mk home)
-      catch _ =>
-        pure <| some (System.FilePath.mk home)
-  | none => pure none
-
 private def serverIdentity
     (opts : Options)
     (activeRoot? : Option System.FilePath := none)
     (runtimeActive? : Option Bool := none) : IO Beam.Version.Identity := do
-  let home? ← resolvedBeamHome?
-  let appPath ← IO.appPath
-  let wrapper? ← IO.getEnv "BEAM_WRAPPER_PATH"
-  Beam.Version.mcpServerIdentity
-    home?
-    opts.beamCli?
-    (some appPath.toString)
-    activeRoot?
+  pure { (← opts.identity) with
+    activeRoot? := activeRoot?.map (·.toString)
     runtimeActive?
-    (wrapper? := wrapper?)
+  }
 
 def Internal.serverVersionText (opts : Options) : IO String := do
   pure (← serverIdentity opts).text

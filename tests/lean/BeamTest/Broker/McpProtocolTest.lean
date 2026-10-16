@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Mcp.Server
+import Beam.Mcp.Runtime
 import Beam.Mcp.SelfCheck
 import Beam.Mcp.Stdio
 import BeamTest.Broker.JsonAssert
@@ -1459,9 +1460,12 @@ private def requireDiagnosticSeverityForPath
       s!"expected {label} {severity} diagnostic for {path}, got {(toJson diagnostics).compress}"
 
 private def mcpOptionsWithPlugin : IO Beam.Mcp.Server.Options := do
+  let plugin ← BeamTest.TestHarness.pluginPath
   pure {
-    leanCmd? := some "lean"
-    leanPlugin? := some (← BeamTest.TestHarness.pluginPath).toString
+    resolveRuntime := Beam.Mcp.Runtime.mkBrokerConfig {
+      leanCmd? := some "lean"
+      leanPlugin? := some plugin.toString
+    }
   }
 
 private def initMcpSession
