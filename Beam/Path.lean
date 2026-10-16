@@ -61,17 +61,21 @@ def sameFilePath (a b : System.FilePath) : IO Bool := do
 /--
 Return `path` relative to `root` when the path is exactly the root or is under the root directory.
 
-This is a pure string-level boundary check. Callers that need platform alias or symlink handling
-should resolve both paths first with `resolveExistingPath` / `resolvePathAgainstRoot`.
+This is a pure string-level boundary check. Inputs should use a common spelling with native
+separators; this function does not normalize separators, case, `.` / `..`, or symbolic links.
+Callers that need filesystem containment should resolve both paths first with `resolveExistingPath`
+/ `resolvePathAgainstRoot`.
 -/
 def pathRelativeToRoot? (root path : System.FilePath) : Option String := do
   let rootStr := root.toString
   let pathStr := path.toString
-  let rootPrefix := rootStr ++ s!"{System.FilePath.pathSeparator}"
-  if pathStr.startsWith rootPrefix then
-    some <| (pathStr.drop rootPrefix.length).toString
-  else if pathStr == rootStr then
+  let separator := String.singleton System.FilePath.pathSeparator
+  -- Filesystem roots already end in a separator (for example `/` or `C:\`).
+  let rootPrefix := if rootStr.endsWith separator then rootStr else rootStr ++ separator
+  if pathStr == rootStr then
     some "."
+  else if pathStr.startsWith rootPrefix then
+    some <| (pathStr.drop rootPrefix.length).toString
   else
     none
 

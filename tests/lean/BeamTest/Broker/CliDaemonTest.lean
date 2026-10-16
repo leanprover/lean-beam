@@ -16,6 +16,7 @@ import Beam.Daemon.Paths
 import Beam.Path
 import BeamTest.Broker.JsonAssert
 import BeamTest.Broker.InterruptWatcherTest
+import BeamTest.PathBoundaryTest
 
 open Lean
 open BeamTest.Broker.JsonAssert (requireJsonNull requireJsonString)
@@ -1258,69 +1259,6 @@ private def checkDaemonFailureIncidentDoesNotRecreateRoot : IO Unit := do
     catch _ =>
       pure ()
 
-private structure RelativePathCase where
-  label : String
-  root : System.FilePath
-  path : System.FilePath
-  expected? : Option String
-  display : String
-
-private def checkPathRelativeToRoot : IO Unit := do
-  let p := System.FilePath.mk
-  let cases : Array RelativePathCase := #[
-    {
-      label := "root path"
-      root := p "/tmp/beam-root"
-      path := p "/tmp/beam-root"
-      expected? := some "."
-      display := "."
-    },
-    {
-      label := "child path"
-      root := p "/tmp/beam-root"
-      path := p "/tmp/beam-root/src/Main.lean"
-      expected? := some "src/Main.lean"
-      display := "src/Main.lean"
-    },
-    {
-      label := "sibling prefix trap"
-      root := p "/tmp/beam-root"
-      path := p "/tmp/beam-root-other/Main.lean"
-      expected? := none
-      display := "/tmp/beam-root-other/Main.lean"
-    },
-    {
-      label := "outside root"
-      root := p "/tmp/beam-root"
-      path := p "/tmp/other-root/Main.lean"
-      expected? := none
-      display := "/tmp/other-root/Main.lean"
-    }
-  ]
-  for c in cases do
-    let actual? := Beam.pathRelativeToRoot? c.root c.path
-    require s!"{c.label}: expected relative path {repr c.expected?}, got {repr actual?}"
-      (actual? == c.expected?)
-    let display := Beam.pathRelativeToRootOrSelf c.root c.path
-    require s!"{c.label}: expected display path {c.display}, got {display}"
-      (display == c.display)
-
-private def checkLeanModuleNamePathHelpers : IO Unit := do
-  let p := System.FilePath.mk
-  let root := p "/tmp/beam-root"
-  require "relative top-level Lean path should become module name"
-    (Beam.leanModuleNameFromRelPath? "Main.lean" == some "Main")
-  require "relative nested Lean path should become dotted module name"
-    (Beam.leanModuleNameFromRelPath? "Foo/Bar/Baz.lean" == some "Foo.Bar.Baz")
-  require "relative non-Lean path should not become module name"
-    (Beam.leanModuleNameFromRelPath? "Foo/Bar.v" == none)
-  require "rooted Lean path under workspace should become module name"
-    (Beam.leanModuleNameForPath? root (root / "Foo" / "Bar.lean") == some "Foo.Bar")
-  require "rooted non-Lean path should not become module name"
-    (Beam.leanModuleNameForPath? root (root / "Foo" / "Bar.v") == none)
-  require "outside rooted Lean path should not become module name"
-    (Beam.leanModuleNameForPath? root (p "/tmp/other-root/Foo.lean") == none)
-
 private def checkPathCanonicalization : IO Unit := do
   let stamp ← IO.monoNanosNow
   let root := System.FilePath.mk s!"/tmp/beam-path-canonical-root-{stamp}"
@@ -1712,8 +1650,6 @@ def main : IO Unit := do
   checkDaemonFailureIncidentRetention
   checkDoctorDaemonFailureIncidentLines
   checkDaemonFailureIncidentDoesNotRecreateRoot
-  checkPathRelativeToRoot
-  checkLeanModuleNamePathHelpers
   checkPathCanonicalization
   checkLockLifecycle
   checkLeanToolchainPolicyParsing

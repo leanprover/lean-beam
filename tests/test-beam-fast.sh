@@ -76,6 +76,32 @@ run_quiet_lake_build \
   beam-mcp-projection-test \
   beam-mcp-protocol-test
 
+# Exercise implicit root discovery at the actual filesystem root, without passing it through argv.
+# A regression must fail within the watchdog budget rather than loop forever at a Windows drive root.
+python3 - <<'PY'
+import json
+from pathlib import Path
+import sys
+
+sys.path.insert(0, "tests/lib")
+from process_watchdog import run_with_watchdog
+
+repo = Path.cwd().resolve()
+root = Path(repo.anchor)
+suffix = ".exe" if sys.platform == "win32" else ""
+cli = (repo / ".lake/build/bin" / ("beam-cli" + suffix)).resolve(strict=True)
+has_project = any((root / marker).exists()
+                  for marker in ("lean-toolchain", "lakefile.toml", "lakefile.lean"))
+result = run_with_watchdog([cli, "status"], timeout=20, cwd=root)
+if has_project:
+    assert result.returncode == 0, result
+    status = json.loads(result.stdout)
+    assert status["ok"] and Path(status["result"]["workspace"]).samefile(root), result
+else:
+    assert result.returncode != 0 and "could not infer project root" in result.stderr, result
+print("Filesystem-root project discovery terminated with the expected result")
+PY
+
 run_quiet_test "partial-setup doctor" python3 tests/test-beam-doctor.py
 run_quiet_test broker-protocol .lake/build/bin/beam-broker-protocol-test
 run_quiet_test broker-pending .lake/build/bin/beam-broker-pending-test
