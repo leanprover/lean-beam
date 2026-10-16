@@ -85,10 +85,8 @@ def main():
             env=build_env)
         standalone = REPO / ".lake" / "build" / "bin" / f"beam-cli{EXE}"
         standalone_hash = hashlib.sha256(standalone.read_bytes()).hexdigest()
-        configs = [REPO / ".lake" / "lakefile.olean.trace",
-                   REPO / ".lake" / "config" / "0" / "lakefile.olean.trace"]
-        config_before = {path: path.read_bytes() for path in configs if path.exists()}
-        assert config_before, "standalone Lake configuration trace was not written"
+        config_trace = REPO / ".lake" / "config" / "0" / "lakefile.olean.trace"
+        config_before = config_trace.read_bytes()
         def control_dir_object_trace():
             path = REPO / ".lake/toolchain-build/native/control_dir.o.trace"
             return json.loads(path.read_text())["depHash"]
@@ -107,7 +105,7 @@ def main():
         if first_native_trace is not None:
             assert final_native_trace == first_native_trace, final_native_trace
         assert hashlib.sha256(standalone.read_bytes()).hexdigest() == standalone_hash
-        assert all(path.read_bytes() == content for path, content in config_before.items())
+        assert config_trace.read_bytes() == config_before, "native build changed the standalone Lake configuration"
         ordinary = run([standalone, "toolchain-build-info"], ok=False)
         assert ordinary.returncode != 0 and "not built with -KbeamToolchain=true" in ordinary.stderr, ordinary
         ordinary_help = run([standalone, "--help"]).stdout
