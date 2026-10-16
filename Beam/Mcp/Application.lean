@@ -8,8 +8,7 @@ import Beam.Mcp.Options
 import Beam.Mcp.Runtime
 import Beam.Mcp.StdioServer
 import Beam.Mcp.SelfCheck
-import Beam.Cli.Toolchain
-import Beam.Cli.RuntimeIdentity
+import Beam.Cli.Installation
 
 namespace Beam.Mcp.Application
 
@@ -22,21 +21,27 @@ private def resolvedBeamHome? : IO (Option System.FilePath) := do
         pure <| some (System.FilePath.mk home)
   | none => pure none
 
-private def readIdentity (opts : Options) : IO Beam.Version.Identity := do
+private def readIdentity (installation : Beam.Cli.Installation) (opts : Options) : IO Beam.Version.Identity := do
   let home? ← resolvedBeamHome?
   let appPath ← IO.appPath
   let wrapper? ← IO.getEnv "BEAM_WRAPPER_PATH"
-  Beam.Cli.RuntimeIdentity.mcpServerIdentity home? opts.beamCli? (some appPath.toString)
-    (wrapper? := wrapper?)
+  installation.readIdentity {
+    name := Beam.Version.mcpServerName
+    mcpProtocol? := some Beam.Version.mcpProtocolVersion
+    beamHome? := home?.map (·.toString)
+    beamCli? := opts.beamCli?
+    serverBinary? := some appPath.toString
+    wrapper?
+  }
 
 /-- Prepare only the effects required by the transport-independent request handler. -/
-def serverOptions (opts : Options) : Server.Options := {
+def serverOptions (installation : Beam.Cli.Installation) (opts : Options) : Server.Options := {
   resolveRuntime := Runtime.mkBrokerConfig {
     leanCmd? := opts.leanCmd?
     leanPlugin? := opts.leanPlugin?
     beamCli? := opts.beamCli?
   }
-  identity := readIdentity opts
+  identity := readIdentity installation opts
 }
 
 def main (args : List String) : IO Unit := do
@@ -44,19 +49,10 @@ def main (args : List String) : IO Unit := do
     match Beam.Mcp.parseOptions {} args with
     | .ok opts => pure opts
     | .error err => throw <| IO.userError err
-  let opts ← if Beam.Cli.Toolchain.enabled then do
-    let beamCli ← Beam.Cli.Toolchain.executable "lean-beam"
-    let mismatch := IO.userError "bundled lean-beam-mcp uses only its containing toolchain"
-    unless opts.leanCmd?.isNone && opts.leanPlugin?.isNone do
-      throw mismatch
-    if let some selected := opts.beamCli? then
-      unless ← Beam.sameFilePath beamCli (System.FilePath.mk selected) do
-        throw mismatch
-    pure { opts with beamCli? := some beamCli.toString }
-  else
-    pure opts
+  let installation ← Beam.Cli.Installation.current
+  let opts ← installation.mcpOptions opts
   if opts.showVersion then
-    IO.println (← readIdentity opts).text
+    IO.println (← readIdentity installation opts).text
     return
   match opts.selfCheckPath? with
   | some path =>
@@ -66,7 +62,7 @@ def main (args : List String) : IO Unit := do
         beamCli? := opts.beamCli?
       } path
   | none =>
-      Server.runStdio (serverOptions opts)
+      Server.runStdio (serverOptions installation opts)
 
 
 end Beam.Mcp.Application

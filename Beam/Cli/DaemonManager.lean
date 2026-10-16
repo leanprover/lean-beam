@@ -8,8 +8,8 @@ import Lean
 import Beam.Broker.Client
 import Beam.Broker.Transport
 import Beam.Cli.DaemonConfig
+import Beam.Cli.Args
 import Beam.Cli.Lock
-import Beam.Cli.Project
 import Beam.Daemon.Debug
 import Beam.Daemon.Paths
 import Beam.Daemon.Registry
@@ -701,20 +701,6 @@ private def startDaemonEntry
       terminateStartedDaemon started
       throw <| IO.userError (← daemonStartupFailure logPath detail)
 
-def desiredConfig (home root : System.FilePath) : IO DesiredConfig := do
-  unless ← hasLeanProject root do
-    throw <| IO.userError s!"could not resolve Lean Beam daemon config for {root}"
-  let toolchain ← leanToolchain root
-  let (bundle, bundleId) ← ensureToolchainBundle root home toolchain
-  ensureLeanBundleExists bundle
-  let lean : LeanBackendConfig := {
-    command := ← leanBin root
-    plugin := bundle.plugin
-    toolchain
-    bundleId
-  }
-  pure { root, lean, daemonBin := bundle.daemon }
-
 structure ProjectDaemonClient where
   endpoint : Transport.Endpoint
   identity : DaemonIdentity
@@ -1194,14 +1180,15 @@ private def finishOwnedProjectDaemon
             pure ()
 
 def withProjectDaemonOwner
-    (home root : System.FilePath)
+    (resolve : System.FilePath → IO DesiredConfig)
+    (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none)
     (act : ProjectDaemonOwner → IO α) : IO α := do
   let controlDir ← controlDirFor root explicitControlDir?
   -- Establish or validate the control boundary before bundle resolution can create project-local
   -- `.beam` state for a previously unseen toolchain.
   preparePrivateControlDir controlDir
-  let desired ← desiredConfig home root
+  let desired ← resolve root
   -- Allocate all fallible owner bookkeeping before the child and registry generation exist.
   let exitCodeRef ← IO.mkRef (none : Option UInt32)
   let owned ← withProjectControl root (explicitControlDir? := some controlDir) fun control =>
@@ -1218,16 +1205,17 @@ def withProjectDaemonOwner
     finishOwnedProjectDaemon root controlDir owned exitCodeRef
 
 private def lookupProjectDaemon
+    (requirement : System.FilePath → IO SessionRequirement)
     (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none) : IO ProjectDaemonClient := do
   let control ← projectControl root explicitControlDir?
   match ← selectProjectControl root control with
   | .selected entry =>
-      if Toolchain.enabled then
-        let desired ← desiredConfig (← Toolchain.home) root
-        unless entry.configHash == desired.configHash do
-          throw <| IO.userError <|
-            configMismatchMessage root control.dir entry desired.configHash
+      match ← requirement root with
+      | .selected => pure ()
+      | .matchingRuntime expected =>
+          unless entry.configHash == expected do
+            throw <| IO.userError <| configMismatchMessage root control.dir entry expected
       pure <| .ofSessionDescriptor entry control.dir
   | .absent =>
       throw <| IO.userError (missingOwnerMessage root control.dir)
@@ -1238,8 +1226,9 @@ private def lookupProjectDaemon
       throw <| IO.userError <| (RegistryBlocker.invalid problem).message root control.dir
 
 def withProjectDaemon
+    (requirement : System.FilePath → IO SessionRequirement)
     (root : System.FilePath)
     (act : ProjectDaemonClient → IO α)
     (explicitControlDir? : Option System.FilePath := none) : IO α := do
-  act (← lookupProjectDaemon root explicitControlDir?)
+  act (← lookupProjectDaemon requirement root explicitControlDir?)
 end Beam.Cli

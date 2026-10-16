@@ -7,8 +7,6 @@ Author: Emilio J. Gallego Arias
 import Lean
 import Beam.Broker.Protocol
 import Beam.Cli.Args
-import Beam.Cli.Toolchain
-import Beam.Cli.RuntimeBundle
 import Beam.Lean.Workspace
 import Beam.Path
 import Beam.Project
@@ -19,21 +17,6 @@ open Lean
 namespace Beam.Cli
 
 open Beam.Broker
-
-partial def climbParents (path : System.FilePath) (count : Nat) : System.FilePath :=
-  match count with
-  | 0 => path
-  | n + 1 => climbParents (path.parent.getD path) n
-
-def beamHome : IO System.FilePath := do
-  if Toolchain.enabled then
-    return ← Toolchain.home
-  match ← IO.getEnv "BEAM_HOME" with
-  | some root =>
-      Beam.resolveExistingPath <| System.FilePath.mk root
-  | none =>
-      let app ← IO.appPath
-      Beam.resolveExistingPath <| climbParents app 4
 
 abbrev hasLeanProject := Beam.Project.hasLeanProject
 
@@ -78,19 +61,5 @@ def explicitProjectRoot (opts : CliOptions) (action : String) : IO System.FilePa
   | some root => pure root
   | none =>
       throw <| IO.userError s!"{action} requires an explicit --root PATH"
-
-def leanToolchain (root : System.FilePath) : IO String := do
-  if Toolchain.enabled then
-    discard <| Toolchain.projectLean root
-    return ← Toolchain.version
-  let path := root / "lean-toolchain"
-  unless ← path.pathExists do
-    throw <| IO.userError s!"missing lean-toolchain in {root}"
-  pure <| Beam.trimLine (← IO.FS.readFile path)
-
-def leanBin (root : System.FilePath) : IO String := do
-  if Toolchain.enabled then
-    return (← Toolchain.projectLean root).toString
-  Beam.readCmdTrim "elan" #["which", "lean"] (some root)
 
 end Beam.Cli

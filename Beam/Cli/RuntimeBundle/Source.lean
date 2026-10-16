@@ -5,24 +5,13 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
+import Beam.Cli.Hash
 import Beam.Cli.InstallLayout
 import Beam.Path
 
 open Lean
 
 namespace Beam.Cli
-
-def hashByte (acc : UInt64) (byte : UInt8) : UInt64 :=
-  (acc ^^^ byte.toUInt64) * 1099511628211
-
-def hashBytes (bytes : ByteArray) (init : UInt64 := 14695981039346656037) : UInt64 :=
-  bytes.foldl hashByte init
-
-def hashString (text : String) (init : UInt64 := 14695981039346656037) : UInt64 :=
-  hashBytes text.toUTF8 init
-
-def mixField (acc : UInt64) (text : String) : UInt64 :=
-  hashString text <| hashByte acc 0
 
 partial def collectTreeFiles (current : System.FilePath) : IO (Array System.FilePath) := do
   let entries := (← current.readDir).qsort (fun a b => a.fileName < b.fileName)

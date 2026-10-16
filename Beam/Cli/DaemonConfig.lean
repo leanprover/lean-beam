@@ -5,7 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
-import Beam.Cli.RuntimeBundle.Source
+import Beam.Cli.Hash
 import Beam.Daemon.Protocol
 
 open Lean
@@ -54,5 +54,15 @@ def DesiredConfig.configHash (config : DesiredConfig) : String :=
   let fields := config.root.toString :: config.lean.hashFields config.daemonBin
   let hash := fields.foldl mixField 14695981039346656037
   s!"{hash.toNat}"
+
+/-- The attachment contract is about session identity, independent of runtime provenance. -/
+inductive SessionRequirement where
+  | selected
+  | matchingRuntime (configHash : String)
+
+/-- Runtime effects selected by the application; callers retain control of when they run. -/
+structure RuntimeAccess where
+  resolve : System.FilePath → IO DesiredConfig
+  attachment : System.FilePath → IO SessionRequirement
 
 end Beam.Cli

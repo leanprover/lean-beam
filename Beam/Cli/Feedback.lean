@@ -16,7 +16,6 @@ import Beam.Feedback
 import Beam.Feedback.Broker
 import Beam.System
 import Beam.Version
-import Beam.Cli.RuntimeIdentity
 
 open Lean
 
@@ -81,16 +80,8 @@ private partial def parseOptions (opts : Options) : List String → IO Options
 private def confidentialIdentityJson : Json :=
   ({ name := Beam.Version.cliName } : Beam.Version.Identity).asJson
 
-private def versionIdentityJson (home : System.FilePath) : IO Json := do
-  let appPath ← IO.appPath
-  let wrapper? ← IO.getEnv "BEAM_WRAPPER_PATH"
-  let publicCommand? ← IO.getEnv "BEAM_PUBLIC_COMMAND"
-  let identity ← Beam.Cli.RuntimeIdentity.read
-    (publicCommand?.getD "beam-cli")
-    (some home)
-    (wrapper? := wrapper?)
-    (beamCli? := some appPath.toString)
-  pure identity.asJson
+private def versionIdentityJson (identity : IO Beam.Version.Identity) : IO Json := do
+  pure (← identity).asJson
 
 private def feedbackDaemonRequestTimeoutMs : Nat :=
   5000
@@ -130,12 +121,12 @@ private def collectDaemonPayload
       pure (Json.null, Json.null, warnings.push <| blocker.message root controlDir)
 
 private def collectNonConfidential
-    (home : System.FilePath)
+    (identity : IO Beam.Version.Identity)
     (root? : Option System.FilePath)
     (explicitControlDir? : Option System.FilePath)
     (warnings : Array String) : IO Beam.Feedback.Collection := do
   let generatedAt ← Beam.utcTimestamp
-  let identity ← versionIdentityJson home
+  let identity ← versionIdentityJson identity
   let (stats, openDocs, daemon, warnings) ←
     match root? with
     | none =>
@@ -177,7 +168,7 @@ private def applyOverrides
     | some redact => { input with redact }
     | none => input
 
-def run (home : System.FilePath) (cliOpts : CliOptions) (args : List String) : IO Unit := do
+def run (identity : IO Beam.Version.Identity) (cliOpts : CliOptions) (args : List String) : IO Unit := do
   if args == ["--help"] || args == ["-h"] then
     IO.println help
     return
@@ -211,7 +202,7 @@ def run (home : System.FilePath) (cliOpts : CliOptions) (args : List String) : I
       pure (none, #[])
   let collection ←
     if input.confidential then collectConfidential
-    else collectNonConfidential home root? cliOpts.explicitControlDir? warnings
+    else collectNonConfidential identity root? cliOpts.explicitControlDir? warnings
   let allowedRoots ←
     if Beam.Feedback.Internal.needsEvidenceRoots input then
       match root? with

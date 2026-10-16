@@ -22,30 +22,8 @@ private def installedRuntimeCurrent
     return false
   Beam.sameFilePath current home
 
-def read
-    (name : String)
-    (home? : Option System.FilePath := none)
-    (wrapper? : Option String := none)
-    (beamCli? : Option String := none)
-    (serverBinary? : Option String := none)
-    (mcpProtocol? : Option String := none)
-    (activeRoot? : Option System.FilePath := none)
-    (runtimeActive? : Option Bool := none) : IO Identity := do
-  if Beam.Cli.Toolchain.enabled then
-    let p ← Beam.Cli.Toolchain.provenance
-    return {
-      name := if name == "beam-cli" then cliName else name
-      wrapper? := wrapper?
-      beamHome? := home?.map (·.toString)
-      beamCli? := beamCli?
-      serverBinary? := serverBinary?
-      mcpProtocol? := mcpProtocol?
-      activeRoot? := activeRoot?.map (·.toString)
-      runtimeActive?
-      runtimePayload? := some p.payloadHash
-      sourceCommit? := some p.sourceCommit
-      bundledLean? := some p.leanVersion
-    }
+/-- Populate installation metadata without changing the caller's process identity. -/
+def managed (base : Identity) (home? : Option System.FilePath) : IO Identity := do
   let runtimeResolution? ←
     match home? with
     | some home => pure <| some (← Beam.Cli.resolveRuntimeHome home)
@@ -90,39 +68,24 @@ def read
       |>.orElse (fun _ => invalidRuntime?.map (·.location.payload))
   let runtimeError? :=
     invalidRuntime?.map Beam.Cli.describeInstalledRuntimeError
-  pure {
-    name
-    mcpProtocol?
-    wrapper?
+  pure { base with
     beamHome? := home?.map (·.toString)
-    beamCli?
-    serverBinary?
     runtimePayload?
     manifest? := manifest?.map (·.toString)
     sourceCommit?
     sourceBranch?
     sourceDirty?
-    activeRoot? := activeRoot?.map (·.toString)
-    runtimeActive?
     runtimeCurrent?
     runtimeError?
   }
 
-def mcpServerIdentity
-    (home? : Option System.FilePath)
-    (beamCli? : Option String)
-    (serverBinary? : Option String)
-    (activeRoot? : Option System.FilePath := none)
-    (runtimeActive? : Option Bool := none)
-    (wrapper? : Option String := none) : IO Identity :=
-  read
-    mcpServerName
-    home?
-    (wrapper? := wrapper?)
-    (beamCli? := beamCli?)
-    (serverBinary? := serverBinary?)
-    (mcpProtocol? := some mcpProtocolVersion)
-    (activeRoot? := activeRoot?)
-    (runtimeActive? := runtimeActive?)
+/-- Render a previously observed SDK identity without further filesystem reads. -/
+def bundled (base : Identity) (p : Toolchain.Provenance) : Identity := {
+  base with
+  name := if base.name == "beam-cli" then cliName else base.name
+  runtimePayload? := some p.payloadHash
+  sourceCommit? := some p.sourceCommit
+  bundledLean? := some p.leanVersion
+}
 
 end Beam.Cli.RuntimeIdentity

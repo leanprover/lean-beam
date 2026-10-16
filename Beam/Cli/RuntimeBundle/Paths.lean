@@ -5,7 +5,6 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
-import Beam.Cli.Toolchain
 import Beam.LSP.Lib.NativeLib
 import Beam.System
 
