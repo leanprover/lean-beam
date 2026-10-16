@@ -181,6 +181,15 @@ private def writePrivateFileAtomically
 private def openPrivateFileAtomically
     (dir : System.FilePath)
     (leaf stem : String) : IO IO.FS.Handle := do
+  if System.Platform.isWindows then
+    -- CRT handles cannot be renamed while open. Owner admission holds the control lock and the
+    -- parent has a private DACL; replace the old log, then create its new inode exclusively.
+    -- Retain that exact handle so later writes never reopen or follow a replaced path.
+    let path := dir / leaf
+    if ← path.pathExists then IO.FS.removeFile path
+    let handle ← IO.FS.Handle.mk path .writeNew
+    IO.setAccessRights path { user := { read := true, write := true } }
+    return handle
   let (tmp, handle) ← createPrivateTempFile dir stem
   try
     IO.FS.rename tmp (dir / leaf)
@@ -677,11 +686,11 @@ private def startDaemonEntry
       match ← waitForDaemonReady started identity with
       | .ok endpoint =>
           if (← started.child.tryWait).isSome then
-            pure <| .error "Beam daemon exited immediately after reporting readiness"
+            pure <| Except.error "Beam daemon exited immediately after reporting readiness"
           else
             let entry ← registryEntryFor desired identity capability started.child.pid.toNat endpoint
-            pure (.ok entry)
-      | .error detail => pure (.error detail)
+            pure (Except.ok entry)
+      | .error detail => pure (Except.error detail)
     catch err =>
       terminateStartedDaemon started
       throw err
@@ -1214,6 +1223,11 @@ private def lookupProjectDaemon
   let control ← projectControl root explicitControlDir?
   match ← selectProjectControl root control with
   | .selected entry =>
+      if Toolchain.enabled then
+        let desired ← desiredConfig (← Toolchain.home) root
+        unless entry.configHash == desired.configHash do
+          throw <| IO.userError <|
+            configMismatchMessage root control.dir entry desired.configHash
       pure <| .ofSessionDescriptor entry control.dir
   | .absent =>
       throw <| IO.userError (missingOwnerMessage root control.dir)

@@ -1,5 +1,7 @@
 # Setup
 
+Lean release builders can use the separate [native toolchain build/install interface](TOOLCHAIN_BUNDLING.md).
+
 Use this document as the single path from a Lean Beam checkout to a working `lean-beam` command.
 It covers installation, validated and compatible Lean toolchains, first CLI use, MCP registration,
 installer locations, and offline setup notes.

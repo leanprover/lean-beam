@@ -18,6 +18,11 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Added
 
+- Build and install `lean-beam` for an explicitly selected native Lean installation, with a
+  relocatable bundled runtime, installed provenance, and session invalidation on payload changes.
+  The native distribution includes the CLI, MCP server, daemon, and LSP plugin
+  ([#262](https://github.com/leanprover/lean-beam/pull/262), @ejgallego).
+
 - Validated Lean `v4.35.0` final support and made it the repository's default Lean toolchain
   ([#263](https://github.com/leanprover/lean-beam/pull/263), @ejgallego).
 - Validated Lean `v4.35.0-rc4` support and made it the repository's default Lean toolchain.

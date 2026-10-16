@@ -12,13 +12,59 @@ open System
 package "beam" where
   enableArtifactCache := true
   restoreAllArtifacts := true
+  buildDir := if (get_config? beamToolchain) == some "true" then
+    ".lake/toolchain-build" else ".lake/build"
+  moreLinkArgs := if System.Platform.isWindows then #["-ladvapi32"] else #[]
+  moreLeanArgs := if (get_config? beamToolchain) == some "true" then
+    #["-Dweak.beam.toolchain=true"] else #[]
 
+/-- Used by the native distribution builder to check the selected Lake process's exact ABI. -/
+script beamToolchainCompilerId do
+  IO.println Lean.githash
+  return 0
+
+/-- Compile the control-directory helper with the selected Lean compiler and native SDK headers. -/
 target beamControlDirObj (pkg) : FilePath := do
   let srcFile := pkg.dir / "Beam" / "Native" / "control_dir.c"
   let oFile := pkg.buildDir / "native" / "control_dir.o"
   let srcTarget ← inputTextFile srcFile
-  buildFileAfterDep oFile srcTarget fun srcFile => do
-    compileO oFile srcFile #["-I", (← getLeanIncludeDir).toString, "-fPIC"]
+  let lean ← getLeanInstall
+  let includeDir ← getLeanIncludeDir
+  let compiler ← getLeanCc
+  -- Lean's packaged generated-C sysroot contains no OS headers. These helpers call OS APIs,
+  -- so retain the selected compiler/configuration flags with its native system header search.
+  let (nativeFlags, _) := lean.ccFlags.foldl (init := ((#[] : Array String), false))
+    fun (flags, skipNext) flag =>
+      if skipNext then (flags, false)
+      else if flag == "--sysroot" || (flag == "-isystem" && System.Platform.isWindows) then
+        -- The full Windows SDK supplies clang intrinsics too. Including the packaged subset
+        -- as well makes stdatomic.h's include_next hit a second copy with the same include guard.
+        (flags, true)
+      else if flag == "-nostdinc" || flag.startsWith "--sysroot=" then (flags, false)
+      else (flags.push flag, false)
+  let sdkFlags ← if System.Platform.isOSX then do
+    let sdk ← IO.Process.output { cmd := "xcrun", args := #["--show-sdk-path"] }
+    unless sdk.exitCode == 0 do error s!"cannot locate the native Apple SDK: {sdk.stderr}"
+    pure #["-isysroot", sdk.stdout.trimAscii.toString]
+  else if System.Platform.isWindows then do
+    -- The packaged compiler omits intrinsics used by the full Windows SDK. Borrow native SDK
+    -- headers while still compiling with the selected Lean compiler and linking its libraries.
+    let resourceDir ← match ← IO.getEnv "BEAM_NATIVE_CLANG_RESOURCE_DIR" with
+      | some dir => pure dir
+      | none => do
+        let sdk ← IO.Process.output { cmd := "clang", args := #["--print-resource-dir"] }
+        unless sdk.exitCode == 0 do error "cannot locate native clang SDK headers"
+        pure sdk.stdout.trimAscii.toString
+    unless ← (FilePath.mk resourceDir / "include" / "x86intrin.h").pathExists do
+      error "native Windows builds require a full clang SDK on PATH (for example MSYS2 clang64)"
+    pure #["-resource-dir", resourceDir]
+  else pure #[]
+  buildO oFile srcTarget #[] (nativeFlags ++ sdkFlags ++ #["-I", includeDir.toString, "-fPIC"]) compiler
+    (extraDepTrace := do
+      addLeanTrace
+      addPureTrace compiler.toString "compiler"
+      pure BuildTrace.nil)
+
 
 lean_lib Beam.LSP where
   globs := #[.andSubmodules `Beam.LSP]
