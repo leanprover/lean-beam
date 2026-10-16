@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: Emilio J. Gallego Arias
 -/
 
+import Beam.CompilerRevision
 import Beam.Broker.Errors
 import Beam.Cli.Args
 import Beam.Cli.Broker
@@ -22,6 +23,26 @@ open Lean
 open BeamTest.Broker.JsonAssert (requireJsonNull requireJsonString)
 
 namespace BeamTest.Broker.CliDaemonTest
+
+-- The native compiler-origin check must not accidentally become a loaded-runtime query.
+elab "#check_beam_compiler_literal" : command => do
+  let some (.defnInfo declaration) := (← Lean.getEnv).find? `Beam.compiledCompilerRevision
+    | throwError "missing compiled Beam identity"
+  match declaration.value with
+  | Lean.Expr.lit (Lean.Literal.strVal revision) =>
+      unless revision == Lean.githash do throwError "incorrect frozen compiler revision"
+  | _ => throwError "Beam compiler revision must be an elaborated literal, independent of the loaded runtime"
+
+  for (label, compiled, loaded, selected, expected) in [
+      ("matching revisions", "a", "a", "a", true),
+      ("stale compiled revision", "stale", "a", "a", false),
+      ("foreign loaded runtime", "a", "foreign", "a", false),
+      ("foreign selected compiler", "a", "a", "foreign", false),
+      ("missing revisions", "", "", "", false)] do
+    unless Beam.compilerRevisionsMatch compiled loaded selected == expected do
+      throwError "compiler revision agreement failed for {label}; expected {expected}"
+
+#check_beam_compiler_literal
 
 private def require (label : String) (cond : Bool) : IO Unit := do
   unless cond do

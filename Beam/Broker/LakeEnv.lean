@@ -9,6 +9,7 @@ import Lake.Config.InstallPath
 import Lake.CLI.Serve
 import Lake.Load.Workspace
 import Beam.Broker.LakeHelper
+import Beam.CompilerRevision
 
 open System
 open Std
@@ -43,9 +44,9 @@ private def computeLakeEnv (leanCmd? : Option String) : IO Lake.Env := do
   | .ok env => pure env
   | .error err => throw <| IO.userError s!"failed to compute Lake environment: {err}"
 
-/-- A `Workspace` contains live Lean values, so only load it across an exact Lean ABI match. -/
+/-- Live Lean values require agreement with both the elaborating compiler and loaded runtime. -/
 private def canLoadWorkspaceInProcess (lakeEnv : Lake.Env) : Bool :=
-  !lakeEnv.lean.githash.isEmpty && lakeEnv.lean.githash == Lean.githash
+  Beam.compilerRevisionsMatch Beam.compiledCompilerRevision Lean.githash lakeEnv.lean.githash
 
 private def detectConfigFile? (root : FilePath) : IO (Option (FilePath × FilePath)) := do
   let leanConfig := root / "lakefile.lean"

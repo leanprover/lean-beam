@@ -170,8 +170,9 @@ private def mkLeanSaveSpecInProcess
           return .error {
             code := .saveUnsupportedSetup
             message :=
-              "lean-beam save requires the target and broker to use the same Lean build; " ++
-              "use lake build instead"
+              "lean-beam save requires matching compiler revisions for Beam's compiled code, " ++
+              "its loaded Lean runtime, and the target compiler; " ++
+              "rebuild or reinstall Beam for the target Lean build, or use lake build instead"
           }
     let some mod := ws.findModuleBySrc? path
       | return .error {
