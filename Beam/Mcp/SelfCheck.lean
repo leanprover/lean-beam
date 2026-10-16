@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
+import Beam.Mcp.Options
 import Beam.Mcp.Protocol
 import Beam.Mcp.Stdio
 import Beam.Path
@@ -14,11 +15,6 @@ import Beam.System
 open Lean
 
 namespace Beam.Mcp.SelfCheck
-
-structure Options where
-  leanCmd? : Option String := none
-  leanPlugin? : Option String := none
-  beamCli? : Option String := none
 
 private abbrev stdio : IO.Process.StdioConfig where
   stdin := .piped
@@ -39,7 +35,7 @@ private def timeoutMs : IO Nat := do
         throw <| IO.userError "invalid LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS value '0': expected a positive timeout"
       pure timeout
 
-private def childArgs (opts : Options) : List String :=
+private def childArgs (opts : LaunchOptions) : List String :=
   [("--beam-cli", opts.beamCli?), ("--lean-cmd", opts.leanCmd?),
     ("--lean-plugin", opts.leanPlugin?)].flatMap fun (flag, value?) =>
       value?.toList.flatMap fun value => [flag, value]
@@ -180,7 +176,7 @@ private def terminateChild {cfg : IO.Process.StdioConfig} (child : IO.Process.Ch
   catch _ =>
     pure ()
 
-def run (opts : Options) (pathText : String) : IO Unit := do
+def run (opts : LaunchOptions) (pathText : String) : IO Unit := do
   let root ← Beam.resolveExistingPath (← IO.currentDir)
   let resolvedPath ← Beam.resolvePathAgainstRoot root (System.FilePath.mk pathText)
   let appPath ← IO.appPath

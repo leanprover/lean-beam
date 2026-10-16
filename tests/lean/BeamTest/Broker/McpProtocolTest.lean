@@ -565,13 +565,13 @@ private def checkRuntimeSetupErrors : IO Unit := do
         (config.lean?.bind (·.lakeHelper?)).isSome
 
   for (label, options) in #[
-      ("Lean command only", ({ beamCli? := some "unused", leanCmd? := some "lean" } : Beam.Mcp.Runtime.Options)),
-      ("Lean plugin only", ({ beamCli? := some "unused", leanPlugin? := some plugin.toString } : Beam.Mcp.Runtime.Options)),
+      ("Lean command only", ({ beamCli? := some "unused", leanCmd? := some "lean" } : Beam.Mcp.LaunchOptions)),
+      ("Lean plugin only", ({ beamCli? := some "unused", leanPlugin? := some plugin.toString } : Beam.Mcp.LaunchOptions)),
       ("beam-cli with explicit runtime", ({
         beamCli? := some "unused"
         leanCmd? := some "lean"
         leanPlugin? := some plugin.toString
-      } : Beam.Mcp.Runtime.Options))
+      } : Beam.Mcp.LaunchOptions))
     ] do
     match ← Beam.Mcp.Runtime.mkBrokerConfig options projectRoot with
     | .ok _ =>

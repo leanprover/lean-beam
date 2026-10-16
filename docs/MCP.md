@@ -173,6 +173,8 @@ request dispatcher and runtime teardown boundary.
   and normalized output.
 - [Beam/Mcp/Protocol.lean](../Beam/Mcp/Protocol.lean) owns the current MCP JSON-RPC helpers.
 - [Beam/Mcp/Runtime.lean](../Beam/Mcp/Runtime.lean) owns root-to-runtime configuration.
+- [Beam/Mcp/Options.lean](../Beam/Mcp/Options.lean) defines runtime launch options shared by server
+  setup and self-check. CLI controls extend that record and are excluded from child launches.
 - [Beam/Mcp/SelfCheck.lean](../Beam/Mcp/SelfCheck.lean) owns the installed-wrapper self-check.
 - [Beam/Mcp/Server.lean](../Beam/Mcp/Server.lean) owns descriptor resolution, lazy broker-runtime
   access, the typed protocol-family state machine, and the synchronous protocol-test seam. The

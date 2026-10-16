@@ -447,12 +447,6 @@ private def CallReporter.finish (reporter : CallReporter) : IO Unit := do
   | some status => status.finish
   | none => pure ()
 
-private def runtimeOptions (opts : Options) : Runtime.Options := {
-  leanCmd? := opts.leanCmd?
-  leanPlugin? := opts.leanPlugin?
-  beamCli? := opts.beamCli?
-}
-
 private def createRuntimeWithConfig
     (workspaceId : Beam.Broker.WorkspaceId)
     (config : Beam.Broker.BrokerConfig) :
@@ -467,7 +461,7 @@ private def createRuntimeForRoot
     (workspaceId : Beam.Broker.WorkspaceId)
     (root : System.FilePath) :
     IO (Except RpcError (Beam.Broker.ServerRuntime × System.FilePath)) := do
-  match ← Runtime.mkBrokerConfig (runtimeOptions opts) root with
+  match ← Runtime.mkBrokerConfig opts.toLaunchOptions root with
   | .error err =>
       pure <| .error err
   | .ok config =>
@@ -488,7 +482,7 @@ private def ensureBrokerWorkspace
         pure <| .error <| RpcError.invalidRequest
           s!"workspace '{workspaceId}' is already initialized for {trackedRoot}, not {root}"
   | none =>
-      match ← Runtime.mkBrokerConfig (runtimeOptions opts) root with
+      match ← Runtime.mkBrokerConfig opts.toLaunchOptions root with
       | .error err => pure <| .error err
       | .ok config =>
           match ← runtime.initWorkspaceWithConfig workspaceId config (some .set) with

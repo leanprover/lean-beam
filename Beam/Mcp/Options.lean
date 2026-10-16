@@ -6,10 +6,14 @@ Author: Emilio J. Gallego Arias
 
 namespace Beam.Mcp
 
-structure Options where
+/-- Runtime selection shared by server setup and child self-check launches. -/
+structure LaunchOptions where
   leanCmd? : Option String := none
   leanPlugin? : Option String := none
   beamCli? : Option String := none
+
+/-- CLI controls stay outside the options forwarded to a child server. -/
+structure Options extends LaunchOptions where
   selfCheckPath? : Option String := none
   showVersion : Bool := false
 

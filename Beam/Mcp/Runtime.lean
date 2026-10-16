@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
+import Beam.Mcp.Options
 import Beam.Broker.Config
 import Beam.Mcp.Protocol
 import Beam.Mcp.SetupError
@@ -13,11 +14,6 @@ import Beam.Path
 open Lean
 
 namespace Beam.Mcp.Runtime
-
-structure Options where
-  leanCmd? : Option String := none
-  leanPlugin? : Option String := none
-  beamCli? : Option String := none
 
 private structure LeanRuntimeConfig where
   leanCmd : String
@@ -75,7 +71,7 @@ private def resolveFromBeamCli (beamCli : String) (root : System.FilePath) : IO 
         catch e =>
           pure <| .error s!"{beamCli} mcp-config returned an unusable runtime path: {e}"
 
-private def resolveLeanRuntime (opts : Options) (root : System.FilePath) : IO (Except RpcError LeanRuntimeConfig) := do
+private def resolveLeanRuntime (opts : LaunchOptions) (root : System.FilePath) : IO (Except RpcError LeanRuntimeConfig) := do
   match opts.beamCli?, opts.leanCmd?, opts.leanPlugin? with
   | none, some leanCmd, some leanPluginText =>
       let leanPlugin ←
@@ -99,7 +95,7 @@ private def resolveLeanRuntime (opts : Options) (root : System.FilePath) : IO (E
         "choose exactly one Lean runtime source: --beam-cli PATH, or " ++
           "--lean-cmd CMD with --lean-plugin PATH"
 
-def mkBrokerConfig (opts : Options) (root : System.FilePath) : IO (Except RpcError Beam.Broker.BrokerConfig) := do
+def mkBrokerConfig (opts : LaunchOptions) (root : System.FilePath) : IO (Except RpcError Beam.Broker.BrokerConfig) := do
   let root ←
     try
       Beam.resolveExistingPath root

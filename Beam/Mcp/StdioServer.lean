@@ -659,11 +659,7 @@ def main (args : List String) : IO Unit := do
     return
   match opts.selfCheckPath? with
   | some path =>
-      SelfCheck.run {
-        leanCmd? := opts.leanCmd?
-        leanPlugin? := opts.leanPlugin?
-        beamCli? := opts.beamCli?
-      } path
+      SelfCheck.run opts.toLaunchOptions path
   | none =>
       runStdio opts
 
