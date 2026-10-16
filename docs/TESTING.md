@@ -424,15 +424,16 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
 
 - `macos-platform`: the combined macOS job described above
 - `native-toolchain`: [tests/test-native-toolchain.py](../tests/test-native-toolchain.py), including
-  installation and relocation into paths with spaces, CRLF sources, inferred project roots and
-  termination at filesystem roots, save/replay, native consumer builds, and MCP self-checks.
+  installation and relocation into paths with spaces and Unicode characters, CRLF sources, inferred
+  project roots and termination at filesystem roots, save/replay, native consumer builds, and MCP self-checks.
   Its build also checks [pure path boundaries](../tests/lean/BeamTest/PathBoundaryTest.lean), including
   native filesystem roots, trailing separators, Unicode names, module names, and sibling-prefix
   rejection. The [`beam-cli-daemon-test`](../tests/lean/BeamTest/Broker/CliDaemonTest.lean) target
   imports the same pure checks for fast-suite coverage.
   Windows x86_64 builds use MSYS2 clang64, then run the installed CLI and MCP server with only
   the toolchain's `bin` directory and Windows `System32` on `PATH`. Elan is added only for project
-  selector checks. The Windows run also checks private session-directory DACLs. This coverage
+  selector checks. The Windows run also checks private session-directory DACLs and verifies that
+  rejecting an insecure directory preserves its ACL and contents. This coverage
   applies to the bundled toolchain runtime; see [platform scope](COMPATIBILITY.md#current-targets).
 - `lsp`: [tests/test-lsp.sh](../tests/test-lsp.sh)
 - `beam-fast`: [tests/test-beam-fast.sh](../tests/test-beam-fast.sh)
