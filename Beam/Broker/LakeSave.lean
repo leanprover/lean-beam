@@ -29,7 +29,7 @@ open Lake
 private def moduleOutputOptionalCName : Name :=
   .str (.str (.str .anonymous "Lake") "ModuleOutputDescrs") "c?"
 
--- Lake in nightly-2026-10-13 made `c` optional to support postponed code generation. Beam saves
+-- Lake 4.36 (starting with v4.36.0-rc1) makes `c` optional for postponed code generation. Beam saves
 -- generated C, so that record shape must carry `some c` rather than leave the output absent.
 -- Select the record shape at elaboration time so save traces work across the supported range.
 elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServer:term ", "

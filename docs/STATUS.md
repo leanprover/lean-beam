@@ -154,8 +154,10 @@ client protocol.
 
 - Lean plugin loading currently depends on `-Dexperimental.module=true`.
 - Lean plugin loading is toolchain-keyed, not toolchain-agnostic.
-- The supported Lean release window is 4.33–4.35; Lean 4.28–4.32 are no longer supported.
-- Exact CI-validated toolchains use the latest stable point of each supported release line, as listed in
+- The supported Lean release window is 4.33–4.36; the repository defaults to the 4.36.0-rc1
+  release candidate. Lean 4.28–4.32 are no longer supported.
+- Exact CI-validated toolchains use the latest stable point of each supported stable line plus
+  the pinned RC before its stable release, as listed in
   [validated-lean-toolchains](../validated-lean-toolchains). Canonical RC and patch variants from
   [compatible-lean-release-lines](../compatible-lean-release-lines) are admitted separately and
   must build and pass a local plugin load/elaboration probe for their exact fingerprint.

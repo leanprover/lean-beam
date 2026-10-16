@@ -131,8 +131,9 @@ Beam retains prior immutable runtime payloads so updates remain atomic. Use `lea
 preview old installed state and follow the [prune guide](docs/SETUP.md#prune-old-installed-state)
 before applying cleanup.
 
-Lean Beam fully validates the latest stable point of each supported release line, listed in
-[`validated-lean-toolchains`](validated-lean-toolchains) and locally qualifies canonical RC/patch
+Lean Beam defaults to Lean 4.36.0-rc1, a release candidate. It fully validates the latest stable
+point of each supported release line plus the pinned RC, listed in
+[`validated-lean-toolchains`](validated-lean-toolchains), and locally qualifies other canonical RC/patch
 variants from [`compatible-lean-release-lines`](compatible-lean-release-lines). See
 [docs/SETUP.md](docs/SETUP.md#validated-and-compatible-toolchains) for bundle setup and
 [docs/CUSTOM_TOOLCHAINS.md](docs/CUSTOM_TOOLCHAINS.md) for explicitly accepted local Lean builds.

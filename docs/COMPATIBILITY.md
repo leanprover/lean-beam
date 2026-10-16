@@ -12,24 +12,27 @@ A Lean release line is the canonical `major.minor` family recorded in
 
 - The core product goal is still the small Lean request shaped like `runAt(pos, "lean text")`,
   with typed request and response data.
-- The supported Lean release window is 4.33–4.35. Lean 4.28–4.32, including their RC and patch
+- The supported Lean release window is 4.33–4.36. The repository defaults to 4.36.0-rc1, a release
+  candidate. Lean 4.28–4.32, including their RC and patch
   variants, are no longer admitted by the validated-toolchain or compatible-release-line registries.
 - Exact CI-validated Lean toolchains listed in `validated-lean-toolchains`: the latest stable point
-  release of each supported line. Linux runs the exact compatibility matrix; macOS runs it in full
+  release of each stable line, plus the pinned RC before its stable release. Linux runs the exact
+  compatibility matrix; macOS runs it in full
   mode, while combined mode qualifies the repository-pinned version. Installer tests prebuild every
   validated toolchain in both modes. See the [CI map](TESTING.md#ci-map).
-  CI does not build RCs or superseded stable points. Canonical RC and patch toolchains remain admitted by release lines in
+  The pinned default is the only RC admitted to that matrix. Other canonical RC and patch toolchains remain admitted by release lines in
   `compatible-lean-release-lines`. Release-line variants must build and pass the local plugin
   qualification probe for their exact fingerprint.
   Shims must name the Lean/Lake API boundary they support and should be removed when the support
   window no longer needs them.
-- Source-build compatibility with `leanprover/lean4-nightly:nightly-2026-10-13`, including Lake's
-  optional `ModuleOutputDescrs.c?` output descriptor. This pinned nightly is a development target;
+- Source-build compatibility with `leanprover/lean4-nightly:nightly-2026-10-13`. This pinned nightly is a development target;
   nightly toolchains still require explicit custom-toolchain admission and are not added to the
   validated release registry.
 - Module saves publish the `.ir.sig` companion and its Lake output descriptor on every supported
   toolchain. The internal module-save request requires an IR signature output path. Save traces
-  use Lake's full `ModulePreSetup.trace` directly.
+  use Lake's full `ModulePreSetup.trace` directly. Lake 4.33–4.35 require the C output descriptor;
+  4.36 and the pinned nightly use optional `ModuleOutputDescrs.c?`. Beam supplies the generated C
+  descriptor on both shapes.
 - Runtime bundle metadata schema 2 and install manifest schema 3. Install manifest schema 2 is
   cleanup-only compatibility during the 0.2 release line: identity and `lean-beam prune` may read it,
   but the installer does not reuse it. Remove the schema-2 decoder when 0.3 development opens.

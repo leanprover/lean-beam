@@ -22,7 +22,8 @@ canonical_toolchain_re = re.compile(
     r"^leanprover/lean4:v"
     r"(?P<major>0|[1-9][0-9]*)\."
     r"(?P<minor>0|[1-9][0-9]*)\."
-    r"(?P<patch>0|[1-9][0-9]*)$"
+    r"(?P<patch>0|[1-9][0-9]*)"
+    r"(?:-rc(?P<rc>[1-9][0-9]*))?$"
 )
 release_line_re = re.compile(
     r"^leanprover/lean4:v"
@@ -122,6 +123,7 @@ except RuntimeError as ex:
 
 validated = [entry for _, entry in validated_entries]
 compatible = [entry for _, entry in compatible_entries]
+pinned_toolchain = pinned_toolchain_path.read_text(encoding="utf-8").strip()
 failures: list[str] = []
 
 if not validated:
@@ -134,9 +136,14 @@ for line_no, toolchain in validated_entries:
     match = canonical_toolchain_re.fullmatch(toolchain)
     if match is None:
         failures.append(
-            f"{validated_registry_path}:{line_no}: expected a canonical stable Lean toolchain: {toolchain}"
+            f"{validated_registry_path}:{line_no}: expected a canonical Lean toolchain: {toolchain}"
         )
         continue
+    if match.group("rc") is not None and toolchain != pinned_toolchain:
+        failures.append(
+            f"{validated_registry_path}:{line_no}: only the pinned default may be a release "
+            f"candidate: {toolchain}"
+        )
     release_line = f"leanprover/lean4:v{match.group('major')}.{match.group('minor')}"
     validated_by_release_line.setdefault(release_line, []).append(toolchain)
     if release_line not in compatible:
@@ -163,11 +170,10 @@ for release_line in compatible:
     points = validated_by_release_line.get(release_line, [])
     if len(points) != 1:
         failures.append(
-            f"{validated_registry_path}: expected exactly one stable point for {release_line}, "
+            f"{validated_registry_path}: expected exactly one validated point for {release_line}, "
             f"found {len(points)}"
         )
 
-pinned_toolchain = pinned_toolchain_path.read_text(encoding="utf-8").strip()
 if pinned_toolchain not in validated:
     failures.append(f"{pinned_toolchain_path}: pinned toolchain is not validated: {pinned_toolchain}")
 

@@ -18,6 +18,8 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Added
 
+- Support Lean `v4.36.0-rc1` and use it as the repository's default toolchain. The pinned release
+  candidate joins the exact CI and installer targets alongside stable 4.33.1, 4.34.1, and 4.35.0.
 - Validated Lean `v4.35.0` final support and made it the repository's default Lean toolchain
   ([#263](https://github.com/leanprover/lean-beam/pull/263), @ejgallego).
 - Validated Lean `v4.35.0-rc4` support and made it the repository's default Lean toolchain.

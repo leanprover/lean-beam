@@ -681,15 +681,17 @@ Exact validated Lean toolchains live in
 [validated-lean-toolchains](../validated-lean-toolchains), while canonical RC and patch admission
 lives in [compatible-lean-release-lines](../compatible-lean-release-lines). Use those registries,
 not this maintainer note, as the source of truth. Keep one exact toolchain per release line: its
-latest stable point release. RCs and superseded stable points use local qualification. The CI
-matrix guard checks stable-only entries, one per line, and inclusion of the pinned default.
+latest stable point release, or the pinned RC before that line has a stable release. Other RCs and
+superseded stable points use local qualification. The CI matrix guard checks canonical entries,
+one per line, inclusion of the pinned default, and rejection of every unpinned RC.
 
-The remaining shim supports the pinned nightly development target. Re-check it when that target
-changes and delete obsolete compatibility code rather than preserving stale branches.
+The remaining shim spans the supported stable releases, 4.36 RC, and pinned nightly development
+target. Re-check it when those targets change and delete obsolete compatibility code rather than
+preserving stale branches.
 
 - `Beam/Broker/LakeSave.lean`: `mkModuleOutputDescrsCompat` selects the supported Lake output
-  descriptor for generated C: released toolchains require `c`, while nightly-2026-10-13 uses
-  optional `c?`. Beam supplies `some c` on the nightly because saves write generated C.
+  descriptor for generated C: 4.33–4.35 require `c`, while 4.36 and nightly-2026-10-13 use
+  optional `c?`. Beam supplies `some c` on that shape because saves write generated C.
 
 Lean v4.33 is the minimum supported release. Save traces use `ModulePreSetup.trace` directly,
 and module IR signature paths come from `Module.irSigFile`. Module-save requests require all four

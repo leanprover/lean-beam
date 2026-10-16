@@ -381,9 +381,10 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
 - `beam-slow`: [tests/test-beam-slow.sh](../tests/test-beam-slow.sh)
 - `beam-install`: [tests/test-beam-install.sh](../tests/test-beam-install.sh)
 - `beam-toolchain-compat`: [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh)
-  `<toolchain>` for the latest stable point of each supported release line, on Linux and in full
+  `<toolchain>` for the latest stable point of each supported stable line plus the pinned RC before
+  its stable release, on Linux and in full
   macOS mode. Combined macOS mode qualifies the repository-pinned version.
-  RCs and superseded stable points qualify locally instead of receiving dedicated CI jobs.
+  Other RCs and superseded stable points qualify locally instead of receiving dedicated CI jobs.
 - `shell-lint`: [scripts/lint-shell.sh](../scripts/lint-shell.sh)
 
 ## Extended Fork CI

@@ -61,15 +61,17 @@ installed wrappers directly.
 
 ## Validated And Compatible Toolchains
 
-The supported Lean release window is 4.33–4.35. Projects on Lean 4.28–4.32 must upgrade their Lean
+The supported Lean release window is 4.33–4.36. The repository defaults to 4.36.0-rc1, a release
+candidate. Projects on Lean 4.28–4.32 must upgrade their Lean
 toolchain or keep a Beam checkout that still supports their release line.
 
 Lean Beam distinguishes exact validated toolchains from compatible release lines. Exact toolchains
 listed in [`validated-lean-toolchains`](../validated-lean-toolchains) receive dedicated Linux
 compatibility jobs. The [CI macOS mode](TESTING.md#ci-map) selects one combined job or the full
 macOS matrix. Installer tests prebuild every validated toolchain in either mode.
-That list contains the latest stable point release in each supported line: 4.33.1, 4.34.1, and
-4.35.0. CI does not build RCs or superseded stable points.
+That list contains the latest stable point release in each stable line (4.33.1, 4.34.1, and
+4.35.0), plus the pinned 4.36.0-rc1 until 4.36 has a stable release. Other RCs and superseded
+stable points use local qualification.
 The wrapper reports that validated allowlist with:
 
 ```bash

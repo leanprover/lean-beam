@@ -228,6 +228,7 @@ jobs:
       matrix:
         os: ${{ fromJSON(vars.BEAM_FULL_MACOS_CI == 'true' && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
         toolchain:
+          - leanprover/lean4:v4.36.0-rc1
           - leanprover/lean4:v4.35.0
           - leanprover/lean4:v4.34.1
           - leanprover/lean4:v4.33.1

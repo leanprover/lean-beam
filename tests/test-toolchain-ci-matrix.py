@@ -31,6 +31,8 @@ class ToolchainCiMatrixTest(unittest.TestCase):
             line for line in (self.root / "validated-lean-toolchains").read_text().splitlines()
             if line and not line.startswith("#")
         ]
+        self.pinned = (self.root / "lean-toolchain").read_text().strip()
+        self.stable_points = [point for point in self.points if "-rc" not in point]
 
     def replace(self, relative, old, new):
         path = self.root / relative
@@ -56,23 +58,44 @@ class ToolchainCiMatrixTest(unittest.TestCase):
     def test_current_matrix(self):
         self.run_guard()
 
-    def test_rc_is_rejected_even_when_matrix_matches(self):
-        self.replace_point(self.points[0], self.points[0] + "-rc1")
-        self.run_guard("expected a canonical stable Lean toolchain")
+    def test_unpinned_rc_is_rejected_even_when_matrix_matches(self):
+        point = next(point for point in self.stable_points if point != self.pinned)
+        self.replace_point(point, point + "-rc1")
+        self.run_guard("only the pinned default may be a release candidate")
+
+    def test_pinned_rc_is_accepted(self):
+        candidate = self.pinned.split("-rc", 1)[0] + "-rc7"
+        self.replace_point(self.pinned, candidate)
+        (self.root / "lean-toolchain").write_text(candidate + "\n")
+        self.run_guard()
+
+    def test_noncanonical_pinned_rc_is_rejected(self):
+        candidate = self.pinned.split("-rc", 1)[0] + "-rc01"
+        self.replace_point(self.pinned, candidate)
+        (self.root / "lean-toolchain").write_text(candidate + "\n")
+        self.run_guard("expected a canonical Lean toolchain")
 
     def test_two_stable_points_in_one_line_are_rejected(self):
-        point = self.points[0]
+        point = self.stable_points[0]
         line, patch = point.rsplit(".", 1)
         extra = f"{line}.{int(patch) + 1}"
         self.replace("validated-lean-toolchains", point, f"{point}\n{extra}")
         self.replace(".github/workflows/ci.yml", f"- {point}", f"- {point}\n          - {extra}")
-        self.run_guard("expected exactly one stable point")
+        self.run_guard("expected exactly one validated point")
 
     def test_missing_release_line_coverage_is_rejected(self):
         point = self.points[-1]
         self.replace("validated-lean-toolchains", point + "\n", "")
         self.replace(".github/workflows/ci.yml", "          - " + point + "\n", "")
-        self.run_guard("expected exactly one stable point")
+        self.run_guard("expected exactly one validated point")
+
+    def test_stable_and_rc_in_one_line_are_rejected(self):
+        point = self.pinned
+        stable = point.split("-rc", 1)[0]
+        extra = stable if point != stable else stable + "-rc8"
+        self.replace("validated-lean-toolchains", point, f"{point}\n{extra}")
+        self.replace(".github/workflows/ci.yml", f"- {point}", f"- {point}\n          - {extra}")
+        self.run_guard("expected exactly one validated point")
 
     def test_toolchain_outside_supported_lines_is_rejected(self):
         self.replace_point(self.points[-1], "leanprover/lean4:v999.0.0")

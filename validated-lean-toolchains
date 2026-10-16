@@ -1,4 +1,5 @@
-# CI-validated Lean toolchains: the latest stable point of each compatible release line.
+# CI-validated Lean toolchains: latest stable points, plus the pinned RC before its stable release.
+leanprover/lean4:v4.36.0-rc1
 leanprover/lean4:v4.35.0
 leanprover/lean4:v4.34.1
 leanprover/lean4:v4.33.1
