@@ -18,6 +18,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Added
 
+- Dated Lean nightly toolchain distribution qualification runs separately in CI and through a
+  reproducible local command, recording SDK identity and native build/install/runtime diagnostics
+  ([#265](https://github.com/leanprover/lean-beam/pull/265), @ejgallego).
 - Build and install `lean-beam` for an explicitly selected native Lean installation, with a
   relocatable bundled runtime, installed provenance, and session invalidation on payload changes.
   The native distribution includes the CLI, MCP server, daemon, and LSP plugin
