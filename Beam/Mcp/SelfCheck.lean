@@ -40,27 +40,9 @@ private def timeoutMs : IO Nat := do
       pure timeout
 
 private def childArgs (opts : Options) : List String :=
-  let args := []
-  let args :=
-    match opts.beamCli? with
-    | some beamCli => args ++ ["--beam-cli", beamCli]
-    | none => args
-  let args :=
-    match opts.leanCmd? with
-    | some leanCmd => args ++ ["--lean-cmd", leanCmd]
-    | none => args
-  let args :=
-    match opts.leanPlugin? with
-    | some leanPlugin => args ++ ["--lean-plugin", leanPlugin]
-    | none => args
-  args
-
-private def root : IO System.FilePath := do
-  Beam.resolveExistingPath (← IO.currentDir)
-
-private def resolveFile (root : System.FilePath) (pathText : String) : IO System.FilePath := do
-  let path := System.FilePath.mk pathText
-  Beam.resolvePathAgainstRoot root path
+  [("--beam-cli", opts.beamCli?), ("--lean-cmd", opts.leanCmd?),
+    ("--lean-plugin", opts.leanPlugin?)].flatMap fun (flag, value?) =>
+      value?.toList.flatMap fun value => [flag, value]
 
 private def fieldError (label field : String) (json : Json) (err : String) : String :=
   s!"{label}: missing or invalid '{field}': {err}; response: {json.compress}"
@@ -72,12 +54,7 @@ private def requireObjValAs [FromJson α]
     (label field : String) (json : Json) : Except String α :=
   (json.getObjValAs? α field).mapError (fieldError label field json)
 
-private def expectResult (label : String) (json : Json) : Except String Json := do
-  match json.getObjVal? "error" with
-  | .ok err => throw s!"{label} failed: {err.compress}"
-  | .error _ => requireObjVal label "result" json
-
-/-- Validate each envelope before deciding whether to skip a notification. -/
+/-- Validate an envelope and return its result, skipping notifications. -/
 private def validateResponse
     (expectedId : Json) (phase : String) (json : Json) : Except String (Option Json) := do
   let revision ← requireObjValAs (α := String) "self-check response" "jsonrpc" json
@@ -95,24 +72,24 @@ private def validateResponse
       let id ← requireObjVal "self-check response" "id" json
       unless id == expectedId do
         throw s!"expected self-check {phase} id {expectedId.compress}, got {json.compress}"
-      pure (some json)
+      match json.getObjVal? "error" with
+      | .ok err => throw s!"{phase} failed: {err.compress}"
+      | .error _ => return some (← requireObjVal phase "result" json)
 
-private def validateComplete (label : String) (json : Json) : Except String Json := do
-  let result ← expectResult label json
+private def validateComplete (label : String) (result : Json) : Except String Unit := do
   let resultType ← requireObjValAs (α := String) s!"{label} result" "resultType" result
   unless resultType == "complete" do
     throw s!"{label} returned resultType {resultType}, expected complete"
-  pure result
 
-private def validateDiscovery (json : Json) : Except String Unit := do
-  let result ← validateComplete "server/discover" json
+private def validateDiscovery (result : Json) : Except String Unit := do
+  validateComplete "server/discover" result
   let supported ← requireObjValAs (α := Array String)
     "server/discover result" "supportedVersions" result
   unless supported.contains protocolVersion do
     throw s!"server/discover did not advertise MCP protocol {protocolVersion}: {result.compress}"
 
-private def validateSync (json : Json) : Except String Unit := do
-  let result ← validateComplete "lean_sync" json
+private def validateSync (result : Json) : Except String Unit := do
+  validateComplete "lean_sync" result
   let isError? ← (optionalField? (α := Bool) result "isError").mapError
     (fun err => s!"lean_sync result: {err}")
   if isError?.getD false then
@@ -126,7 +103,7 @@ private def validateSync (json : Json) : Except String Unit := do
 private def fromValidation (result : Except String α) : IO α :=
   IO.ofExcept <| result.mapError IO.userError
 
-private partial def readResponse
+private partial def readResult
     (stdout : IO.FS.Handle)
     (expectedId : Json)
     (phase : String) : IO Json := do
@@ -138,8 +115,8 @@ private partial def readResponse
     | .ok json => pure json
     | .error err => throw <| IO.userError s!"lean-beam-mcp self-check child wrote invalid JSON during {phase}: {err}: {line}"
   match ← fromValidation (validateResponse expectedId phase json) with
-  | none => readResponse stdout expectedId phase
-  | some response => pure response
+  | none => readResult stdout expectedId phase
+  | some result => pure result
 
 private def modernMeta : Json :=
   Json.mkObj [
@@ -185,9 +162,9 @@ private def checkProtocol
     (pathText : String) : IO Unit := do
   sendDiscover stdin
   fromValidation <| validateDiscovery
-    (← readResponse stdout (toJson (1 : Nat)) "server/discover response")
+    (← readResult stdout (toJson (1 : Nat)) "server/discover response")
   sendSync stdin root pathText
-  fromValidation <| validateSync (← readResponse stdout (toJson (2 : Nat)) "lean_sync response")
+  fromValidation <| validateSync (← readResult stdout (toJson (2 : Nat)) "lean_sync response")
   -- Keep stdin alive through the final response; the protocol task then releases it.
   stdin.flush
 
@@ -204,8 +181,8 @@ private def terminateChild {cfg : IO.Process.StdioConfig} (child : IO.Process.Ch
     pure ()
 
 def run (opts : Options) (pathText : String) : IO Unit := do
-  let root ← root
-  let resolvedPath ← resolveFile root pathText
+  let root ← Beam.resolveExistingPath (← IO.currentDir)
+  let resolvedPath ← Beam.resolvePathAgainstRoot root (System.FilePath.mk pathText)
   let appPath ← IO.appPath
   let timeout ← timeoutMs
   let (stdin, child) ← (← IO.Process.spawn {
