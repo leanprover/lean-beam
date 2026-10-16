@@ -1093,20 +1093,16 @@ def ServerRuntime.create
     closeDone := ← IO.Promise.new
   }
 
-private def detachWorkspaceSessions
-    (workspace : WorkspaceState) : WorkspaceState × Array Session :=
-  let (lean, leanSession?) := detachBackendSession workspace.lean
-  ({ workspace with lean }, leanSession?.toArray)
-
-private def detachRuntimeSessions (server : ServerRuntime) : IO (Array Session) := do
+private def detachRuntimeSessions (server : ServerRuntime) : IO (List Session) := do
   server.withState do
     let state ← get
     let (state, sessions) := state.workspaces.toList.foldl (init := (state, [])) fun
         (state, sessions) (workspaceId, workspace) =>
-      let (workspace, detached) := detachWorkspaceSessions workspace
-      (setWorkspace state workspaceId workspace, detached.toList.reverse ++ sessions)
+      let (lean, session?) := detachBackendSession workspace.lean
+      let sessions := if let some session := session? then session :: sessions else sessions
+      (setWorkspace state workspaceId { workspace with lean }, sessions)
     set state
-    pure sessions.reverse.toArray
+    pure sessions.reverse
 
 private def recordFirstCleanupError
     (firstError? : Option IO.Error)
@@ -1126,7 +1122,7 @@ private def shutdownSessionsBestEffort :
       shutdownSessionsBestEffort sessions firstError?
 
 private def shutdownRuntimeSessions (server : ServerRuntime) : IO Unit := do
-  shutdownSessionsBestEffort (← detachRuntimeSessions server).toList none
+  shutdownSessionsBestEffort (← detachRuntimeSessions server) none
 
 private def awaitRuntimeClose
     (promise : IO.Promise (Except IO.Error Unit)) : IO Unit := do
@@ -1199,7 +1195,7 @@ private def duplicateRootWorkspace?
 private structure WorkspaceTransition (α : Type) where
   state : State
   result : Except ResponseFailure α
-  detachedSessions : Array Session := #[]
+  detachedSession? : Option Session := none
 
 private def initWorkspaceTransition
     (state : State)
@@ -1218,13 +1214,12 @@ private def initWorkspaceTransition
             { state, result := .error <| responseFailureFor .invalidParams <|
                 s!"workspace root {config.root} is already owned by workspace '{otherId}'" }
           else
-            let (_, detachedSessions) := detachWorkspaceSessions current
             {
               state := setFreshWorkspace state workspaceId config
               result := .ok <|
                 workspaceInitResult workspaceId config.root mode false true
                   (some current.config.root)
-              detachedSessions
+              detachedSession? := current.lean.session?
             }
         else if current.config == config then
           { state, result := .ok <|
@@ -1261,7 +1256,6 @@ private def dropWorkspaceTransition
             reason? := some "notFound"
           } }
     | some workspace =>
-        let (_, detachedSessions) := detachWorkspaceSessions workspace
         {
           state := { state with workspaces := state.workspaces.erase workspaceId }
           result := .ok {
@@ -1269,7 +1263,7 @@ private def dropWorkspaceTransition
             dropped := true
             invalidatedHandles := true
           }
-          detachedSessions
+          detachedSession? := workspace.lean.session?
         }
 
 private def ServerRuntime.runWorkspaceTransition
@@ -1279,12 +1273,13 @@ private def ServerRuntime.runWorkspaceTransition
     let transition := transition (← get)
     set transition.state
     pure transition
-  shutdownSessionsBestEffort transition.detachedSessions.toList none
+  if let some session := transition.detachedSession? then
+    shutdownSession session
   pure transition.result
 
 /--
 Initialize, verify, or reset a workspace through a typed in-process boundary. Reset commits the new
-workspace ownership atomically, then drains any detached backend sessions outside the state mutex.
+workspace ownership atomically, then drains its detached session outside the state mutex.
 -/
 def ServerRuntime.initWorkspaceWithConfig
     (server : ServerRuntime)
@@ -1310,7 +1305,7 @@ private def responseOfTypedResult [ToJson α] : Except ResponseFailure α → Re
 
 /--
 Remove a workspace through a typed in-process boundary. The workspace is erased atomically before
-its detached backend sessions are drained outside the state mutex.
+its detached session is drained outside the state mutex.
 -/
 def ServerRuntime.dropWorkspace
     (server : ServerRuntime)
@@ -1339,14 +1334,13 @@ private def cancelRegisteredRequest
   | some active =>
     let sessions ← server.withState do
       let state ← get
-      pure <| state.workspaces.toList.flatMap fun (workspaceId, workspace) =>
+      pure <| state.workspaces.toList.filterMap fun (workspaceId, workspace) =>
         if active.workspaceId?.all (fun selected => selected == workspaceId) then
-          [workspace.lean.session?]
+          workspace.lean.session?
         else
-          []
-    for session? in sessions do
-      if let some session := session? then
-        discard <| PendingRequestStore.cancelMatching session.pending session.stdin active.cancelRef
+          none
+    for session in sessions do
+      discard <| PendingRequestStore.cancelMatching session.pending session.stdin active.cancelRef
     pure true
   | none => pure false
 

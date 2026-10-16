@@ -1228,16 +1228,23 @@ private partial def waitForTaskBefore
     IO.sleep 10
     waitForTaskBefore task blockedBy (tries - 1)
 
-private def stubbornSession
+private def shutdownObservedSession
     (workspaceId : WorkspaceId)
-    (root sentinel : System.FilePath) : IO Session := do
+    (root sentinel : System.FilePath)
+    (delaySeconds : Nat := 30) : IO Session := do
   let proc ← IO.Process.spawn {
     toStdioConfig := brokerStdio
     cmd := "python3"
     args := #[
       "-c",
-      "import pathlib, sys, time; sys.stdin.buffer.readline(); pathlib.Path(sys.argv[1]).write_text('shutdown'); time.sleep(30)",
-      sentinel.toString
+      "import sys, time\n" ++
+      "sys.stdin.buffer.readline()\n" ++
+      "with open(sys.argv[1], 'a') as stream:\n" ++
+      " stream.write(sys.argv[2] + '\\n')\n" ++
+      "time.sleep(int(sys.argv[3]))\n",
+      sentinel.toString,
+      workspaceId,
+      toString delaySeconds
     ]
   }
   let pending ← Std.Mutex.new ({} : Std.TreeMap Lean.JsonRpc.RequestID PendingRequest)
@@ -1247,7 +1254,7 @@ private def stubbornSession
     workspaceGeneration := 1
     root
     epoch := 1
-    sessionToken := s!"stubborn-{workspaceId}"
+    sessionToken := s!"shutdown-observed-{workspaceId}"
     proc
     stdin := IO.FS.Stream.ofHandle proc.stdin
     stdout := IO.FS.Stream.ofHandle proc.stdout
@@ -1324,7 +1331,7 @@ private def checkLifecycleTeardownReleasesStateMutex
   let replacementConfig : BrokerConfig := { root := replacementRoot }
   let observerConfig : BrokerConfig := { root := observerRoot }
   let runtime ← ServerRuntime.create targetConfig targetId
-  let session ← stubbornSession targetId targetRoot sentinel
+  let session ← shutdownObservedSession targetId targetRoot sentinel
   runtime.state.atomically do
     let state ← get
     let targetWorkspace : WorkspaceState := {
@@ -1378,6 +1385,81 @@ private def checkLifecycleTeardownReleasesStateMutex
 private def checkLifecycleTeardownConcurrency : IO Unit := do
   checkLifecycleTeardownReleasesStateMutex .reset
   checkLifecycleTeardownReleasesStateMutex .drop
+
+private def failedStderrCapture
+    (path : System.FilePath)
+    (mode : IO.FS.Mode) : IO (BackendStderrCapture × IO.Error) :=
+  IO.FS.withFile path mode fun source => do
+    let capture ← startBackendStderrCapture source
+    match ← capture.finishAfterWriterExit with
+    | .sourceFailed err => pure (capture, err)
+    | .drained | .pipeStillOpen => throw <| IO.userError "stderr source failure fixture did not fail"
+
+private def checkRuntimeCloseDetachesAllSessions (failShutdown : Bool) : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-close-sessions-{← IO.monoNanosNow}"
+  let shutdownLog := base / "shutdown-order"
+  IO.FS.createDirAll base
+  let runtime ← ServerRuntime.create { root := base / "first" } "first"
+  try
+    for workspaceId in ["idle", "last"] do
+      match ← runtime.initWorkspaceWithConfig workspaceId { root := base / workspaceId } with
+      | .ok _ => pure ()
+      | .error failure => throw <| IO.userError failure.error.message
+    let mut firstFailure? : Option IO.Error := none
+    for workspaceId in ["first", "last"] do
+      let mut session ← shutdownObservedSession workspaceId (base / workspaceId) shutdownLog 0
+      if failShutdown then
+        -- A write-only file and a directory fail differently on read, without platform-specific
+        -- errno assertions. Both captures finish before close so this test has no timing race.
+        let (capture, sourceFailure) ←
+          if workspaceId == "first" then
+            failedStderrCapture (base / "write-only-source") .write
+          else
+            failedStderrCapture base .read
+        let failureMessage := s!"backend stderr source failed while draining: {sourceFailure}"
+        if let some (.userError firstMessage) := firstFailure? then
+          require "shutdown failures must distinguish first from last"
+            (failureMessage != firstMessage)
+        firstFailure? := firstFailure? <|> some (IO.userError failureMessage)
+        session := { session with stderrCapture := capture }
+      runtime.state.atomically do
+        let state ← get
+        let some workspace := state.workspaces.get? workspaceId
+          | throw <| IO.userError "close fixture workspace is missing"
+        let session := { session with workspaceGeneration := workspace.generation }
+        let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
+        set { state with workspaces := state.workspaces.insert workspaceId workspace }
+    -- Both close calls must preserve the first typed failure instead of skipping a later session,
+    -- replacing it with the last failure, or turning the repeated close into a success.
+    for _ in [:2] do
+      let outcome ←
+        try
+          runtime.close
+          pure (.ok () : Except IO.Error Unit)
+        catch err => pure (.error err)
+      match firstFailure?, outcome with
+      | none, .ok () => pure ()
+      | some (.userError expected), .error (.userError actual) =>
+          require "runtime close retains the first typed shutdown failure" (actual == expected)
+      | _, _ => throw <| IO.userError "runtime close changed its typed shutdown outcome"
+      require "runtime close shuts down sessions once in workspace order, including after a failure"
+        ((← IO.FS.readFile shutdownLog) == "first\nlast\n")
+    -- Repeated close must neither detach again nor advance an idle workspace's epoch.
+    runtime.state.atomically do
+      let state ← get
+      for (workspaceId, expectedEpoch) in [("first", 3), ("idle", 1), ("last", 3)] do
+        let some workspace := state.workspaces.get? workspaceId
+          | throw <| IO.userError "runtime close erased a workspace"
+        require s!"runtime close detaches {workspaceId}'s session" workspace.lean.session?.isNone
+        require s!"runtime close advances {workspaceId}'s epoch exactly once"
+          (workspace.lean.nextEpoch == expectedEpoch)
+  finally
+    try
+      runtime.close
+    catch _ =>
+      pure ()
+    finally
+      IO.FS.removeDirAll base
 
 private def checkDeadSessionCleanupReleasesStateMutex : IO Unit := do
   let nonce ← IO.monoNanosNow
@@ -1815,6 +1897,8 @@ def main : IO Unit := do
   checkWorkspaceRoutingFields
   checkWorkspaceLifecycleProtocol
   checkLifecycleTeardownConcurrency
+  checkRuntimeCloseDetachesAllSessions false
+  checkRuntimeCloseDetachesAllSessions true
   checkDeadSessionCleanupReleasesStateMutex
   checkWorkspaceSnapshotResetIsolation
   checkCompletedRequestResetIsolation

@@ -159,9 +159,17 @@ use it instead of maintaining their own operation lists.
 Workspace teardown must not wait for backend shutdown while holding `ServerRuntime.state`: reset,
 drop, and runtime close detach backend sessions and commit the new workspace state atomically, then
 wait for or terminate the detached processes after releasing the mutex. This keeps teardown of one
-workspace from blocking state access for every other workspace. Request-time cleanup follows the
-same detach-then-clean-up pattern and remains fenced to the request's workspace generation. Starting
-a replacement backend session may still perform process I/O while holding the mutex.
+workspace from blocking state access for every other workspace. If cleanup throws, a reset's new
+workspace ownership or a drop's removal remains committed; the error does not roll back the
+transition. Request-time cleanup follows the same detach-then-clean-up pattern and remains fenced
+to the request's workspace generation. Starting a replacement backend session may still perform
+process I/O while holding the mutex.
+
+Each workspace owns at most one Lean session. A reset or drop carries an optional detached session;
+broker-wide close collects the sessions across all workspaces and attempts every shutdown while
+retaining the first typed `IO.Error`. Concurrent and repeated close calls observe that same outcome.
+Cancellation collects only present sessions selected by the request's workspace scope and matches
+pending work by its exact admission identity.
 
 ## MCP Projection Changes
 
