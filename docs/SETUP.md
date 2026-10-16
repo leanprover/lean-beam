@@ -50,6 +50,12 @@ process.
 The agent flags install the bundled Lean skill into the corresponding agent home. Rocq goal
 probes and the Rocq skill are installed separately from the frozen [rocq-beam](https://github.com/ejgallego/rocq-beam) project.
 
+If you previously installed the Rocq skill with `--rocq-skill`, move that agent home's
+`skills/rocq-beam` directory aside before installing from `rocq-beam`. The old copy uses a
+`.lean-beam-skill` ownership marker; the standalone installer requires `.rocq-beam-skill` and
+refuses to overwrite the old directory. Install the standalone Rocq skill for the same agent,
+then restart active agent sessions so they load the new `rocq-beam` commands.
+
 The installer requires `elan` on `PATH`. Make sure `~/.local/bin` is on `PATH` before using the
 installed wrappers directly.
 

@@ -1516,13 +1516,7 @@ private structure StartedSyncedRequest where
   session : Session
   uri : DocumentUri
   version : Nat
-  priorProgress? : Option SyncFileProgress := none
-  tracked : Option (DocumentUri × Nat) := none
   pending : PendingRequest
-
-private def trackedDocumentVersion (uri : DocumentUri) (docState : DocState) :
-    Option (DocumentUri × Nat) :=
-  some (uri, docState.version)
 
 private def documentVersionMismatchFailure
     (expectedVersion acceptedVersion : Nat)
@@ -1538,8 +1532,7 @@ private def startSyncedDocumentRequest
     (session : Session)
     (snapshot : FileSyncSnapshot)
     (method : String)
-    (mkParams : DocumentUri → DocState → Json)
-    (trackedFor : DocumentUri → DocState → Option (DocumentUri × Nat))
+    (mkParams : DocumentUri → Json)
     (expectedVersion? : Option Nat := none)
     (clientRequestId? : Option String := none)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
@@ -1560,12 +1553,11 @@ private def startSyncedDocumentRequest
         return .error <| documentVersionMismatchFailure expectedVersion docState.version uri
   | none =>
       pure ()
-  let tracked := trackedFor uri docState
-  let params := mkParams uri docState
+  let params := mkParams uri
   let (session, pending) ←
     startRequestJsonTrackedDetailed session method params
       (clientRequestId? := clientRequestId?)
-      (tracked := tracked)
+      (tracked := some (uri, docState.version))
       (initialProgress? := docState.fileProgress?)
       (emitProgress? := emitProgress?)
       (diagnosticScope := diagnosticScope)
@@ -1576,8 +1568,6 @@ private def startSyncedDocumentRequest
     session
     uri
     version := docState.version
-    priorProgress? := docState.fileProgress?
-    tracked
     pending
   }
 
@@ -1585,8 +1575,7 @@ private def startSyncedWorkspaceRequest
     (workspaceId : WorkspaceId)
     (snapshot : FileSyncSnapshot)
     (method : String)
-    (mkParams : DocumentUri → DocState → Json)
-    (trackedFor : DocumentUri → DocState → Option (DocumentUri × Nat))
+    (mkParams : DocumentUri → Json)
     (expectedVersion? : Option Nat := none)
     (clientRequestId? : Option String := none)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
@@ -1595,7 +1584,7 @@ private def startSyncedWorkspaceRequest
     (cancelRef? : Option (IO.Ref Bool) := none) :
     M (Except ResponseFailure StartedSyncedRequest) :=
   withSessionForSnapshot workspaceId snapshot fun session =>
-    startSyncedDocumentRequest session snapshot method mkParams trackedFor expectedVersion?
+    startSyncedDocumentRequest session snapshot method mkParams expectedVersion?
       clientRequestId? emitProgress? diagnosticScope emitDiagnostic? cancelRef?
 
 private def awaitSyncedDocumentRequest
@@ -1604,9 +1593,8 @@ private def awaitSyncedDocumentRequest
     (cancelRef? : Option (IO.Ref Bool) := none) : HandlerM PendingResult := do
   liftHandlerIO <| propagatePendingCancellation started.session cancelRef?
   let pending ← awaitPending started.pending
-  if started.tracked.isSome then
-    withFailureProgress pending.progress? <|
-      liftHandlerIO <| mergeFileProgressIfCurrent server started.session started.uri pending.progress?
+  withFailureProgress pending.progress? <|
+    liftHandlerIO <| mergeFileProgressIfCurrent server started.session started.uri pending.progress?
   withFailureProgress pending.progress? <|
     withCurrentMatchingSession server started.session fun _ => pure ()
   pure pending
@@ -1668,13 +1656,12 @@ private def startTrackedDiagnosticsBarrierIO
       let session := synced.session
       let uri := synced.uri
       let docState ← requireDocState session uri
-      let tracked := trackedDocumentVersion uri docState
       let params := toJson (WaitForDiagnosticsParams.mk uri docState.version)
       let method := diagnosticsBarrierMethod
       let (session, pending) ←
         startRequestJsonTrackedDetailed session method params
           (clientRequestId? := req.clientRequestId?)
-          (tracked := tracked)
+          (tracked := some (uri, docState.version))
           (initialProgress? := docState.fileProgress?)
           (emitProgress? := emitProgress?)
           (diagnosticScope := diagnosticScope)
@@ -2128,7 +2115,7 @@ private def handleRunAtOp
   let snapshot ← liftFailureIO <| readRequestSyncSnapshot server req path
   let started ← liftFailureIO <| server.withRequestSessionState req do
     startSyncedWorkspaceRequest req.workspaceId snapshot method
-      (fun uri _ => Json.mkObj <|
+      (fun uri => Json.mkObj <|
         [ ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier }))
         , ("position", toJson ({ line := request.line, character := request.character : Lsp.Position }))
         , ("text", toJson request.text)
@@ -2136,7 +2123,6 @@ private def handleRunAtOp
         match request.storeHandle? with
         | some b => [("storeHandle", toJson b)]
         | none => [])
-      trackedDocumentVersion
       (expectedVersion? := some request.version)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
@@ -2172,8 +2158,7 @@ private def handlePositionLspOp
     readRequestSyncSnapshot server req (System.FilePath.mk request.path)
   let started ← liftFailureIO <| server.withRequestSessionState req do
     startSyncedWorkspaceRequest req.workspaceId snapshot method
-      (fun uri _ => positionLspParams request uri extraFields)
-      trackedDocumentVersion
+      (fun uri => positionLspParams request uri extraFields)
       (expectedVersion? := some request.version)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
@@ -2241,10 +2226,9 @@ private def handleDocumentSymbolsOp
     readRequestSyncSnapshot server req (System.FilePath.mk request.path)
   let started ← liftFailureIO <| server.withRequestSessionState req do
     startSyncedWorkspaceRequest req.workspaceId snapshot method
-      (fun uri _ => Json.mkObj [
+      (fun uri => Json.mkObj [
         ("textDocument", toJson ({ uri := uri : TextDocumentIdentifier }))
       ])
-      trackedDocumentVersion
       (expectedVersion? := some request.version)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
@@ -2303,8 +2287,7 @@ private def handleCodeActionResolveOp
       s!"codeAction.data targets {sourceUri}, not requested document {snapshot.uri}"
   let started ← liftFailureIO <| server.withRequestSessionState req do
     startSyncedWorkspaceRequest req.workspaceId snapshot method
-      (fun _uri _docState => toJson request.codeAction)
-      trackedDocumentVersion
+      (fun _uri => toJson request.codeAction)
       (expectedVersion? := some request.version)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
@@ -2345,11 +2328,10 @@ private def handleGoalsOp
   let started ← liftFailureIO <| server.withRequestSessionState req do
     let position : Lsp.Position := { line := request.line, character := request.character }
     startSyncedWorkspaceRequest req.workspaceId snapshot method
-      (fun uri _docState => Json.mkObj [
+      (fun uri => Json.mkObj [
         ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier })),
         ("position", toJson position)
       ])
-      trackedDocumentVersion
       (expectedVersion? := some request.version)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
@@ -2374,7 +2356,7 @@ private def handleTodoOp
     readRequestSyncSnapshot server req (System.FilePath.mk request.path)
   let started ← liftFailureIO <| server.withRequestSessionState req do
     startSyncedWorkspaceRequest req.workspaceId snapshot method
-      (fun uri _docState => Json.mkObj <|
+      (fun uri => Json.mkObj <|
         [ ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier }))
         , ("range", toJson range)
         ] ++
@@ -2384,7 +2366,6 @@ private def handleTodoOp
         (match request.suggest? with
         | some suggest => [("suggest", toJson suggest)]
         | none => []))
-      trackedDocumentVersion
       (expectedVersion? := some request.version)
       (clientRequestId? := req.clientRequestId?)
       (emitProgress? := emitProgress?)
@@ -2408,7 +2389,7 @@ private def handleRunWithOp
     | .error resp => pure (.error resp)
     | .ok (session, rawHandle) =>
         let startedResult ← startSyncedDocumentRequest session snapshot method
-          (fun uri _ => Json.mkObj <|
+          (fun uri => Json.mkObj <|
             [ ("textDocument", toJson ({ uri := uri : TextDocumentIdentifier }))
             , ("handle", rawHandle)
             , ("text", toJson request.text)
@@ -2418,7 +2399,6 @@ private def handleRunWithOp
             (match request.linear? with
             | some b => [("linear", toJson b)]
             | none => []))
-          trackedDocumentVersion
           (clientRequestId? := req.clientRequestId?)
           (emitProgress? := emitProgress?)
           (cancelRef? := cancelRef?)
@@ -2445,11 +2425,10 @@ private def handleReleaseOp
     | .error resp => pure (.error resp)
     | .ok (session, rawHandle) =>
         let startedResult ← startSyncedDocumentRequest session snapshot method
-          (fun uri _ => Json.mkObj [
+          (fun uri => Json.mkObj [
             ("textDocument", toJson ({ uri := uri : TextDocumentIdentifier })),
             ("handle", rawHandle)
           ])
-          trackedDocumentVersion
           (clientRequestId? := req.clientRequestId?)
           (emitProgress? := emitProgress?)
           (cancelRef? := cancelRef?)

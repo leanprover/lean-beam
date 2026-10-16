@@ -220,7 +220,7 @@ def expectErrCode (resp : Beam.Broker.Response) (code : String) : IO Unit := do
   | .successResult .. =>
       throw <| IO.userError s!"expected error {code}, got success {(toJson resp).compress}"
   | .errorResult failure =>
-      if failure.error.code != code && failure.error.code != "-32602" then
+      if failure.error.code != code then
         throw <| IO.userError s!"expected error {code}, got {(toJson resp).compress}"
 
 def expectOpCountAtLeast (payload : Json) (backend op : String) (minCount : Nat) : IO Unit := do

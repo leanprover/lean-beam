@@ -11,6 +11,7 @@ import Beam.Broker.Readiness
 import Beam.Broker.Server
 import Beam.Daemon.Startup
 import Beam.JsonPretty
+import BeamTest.Broker.ClientUtil
 import BeamTest.Broker.JsonAssert
 import Lean
 
@@ -20,6 +21,19 @@ open Beam.Broker
 open BeamTest.Broker.JsonAssert
 
 namespace BeamTest.Broker.ProtocolTest
+
+private def checkExactErrorAssertions : IO Unit := do
+  let wrong : Response := .errorResult {
+    error := { code := "-32602", message := "unrelated invalid-parameter failure" }
+  }
+  for expected in #[BrokerFailureCode.contentModified, .requestCancelled, .workerExited, .invalidParams] do
+    BeamTest.Broker.TestUtil.expectErrCode (errorResponseFor expected) expected.name
+    let accepted ←
+      try
+        BeamTest.Broker.TestUtil.expectErrCode wrong expected.name
+        pure true
+      catch _ => pure false
+    require s!"error assertion must reject -32602 when expecting {expected.name}" (!accepted)
 
 private def checkDaemonReadinessProtocol : IO Unit := do
   let identity : DaemonIdentity := {
@@ -1720,6 +1734,7 @@ private def checkWrapperDaemonAuthorization : IO Unit := do
       IO.FS.removeDirAll base
 
 def main : IO Unit := do
+  checkExactErrorAssertions
   checkDaemonReadinessProtocol
   checkServerHelloProtocol
   checkResponseJsonShape
