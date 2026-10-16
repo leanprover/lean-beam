@@ -13,6 +13,8 @@ cd "$(dirname "$0")/.."
 . tests/lib/tmp-guards.sh
 # shellcheck source=tests/lib/wait.sh
 . tests/lib/wait.sh
+# shellcheck source=tests/lib/toolchain-compat-owner.sh
+. tests/lib/toolchain-compat-owner.sh
 
 BEAM_TEST_SUITE="${BEAM_TEST_SUITE:-beam-toolchain-compat}"
 bundle_timeout="${BEAM_TOOLCHAIN_COMPAT_TIMEOUT:-600}"
@@ -62,17 +64,7 @@ expect_owned_tmp_dir() {
 }
 
 cleanup() {
-  if [ -n "${stale_project_root:-}" ] && [ -d "$stale_project_root" ]; then
-    HOME="$tmp_env_root/home" CODEX_HOME="$tmp_env_root/codex" CLAUDE_HOME="$tmp_env_root/claude" \
-      ELAN_HOME="$host_elan_home" BEAM_INSTALL_BUNDLE_DIR="$tmp_bundle_dir" \
-      ./scripts/lean-beam --root "$stale_project_root" stop > /dev/null 2>&1 || true
-  fi
-  if [ -n "${stale_owner_pid:-}" ]; then
-    if kill -0 "$stale_owner_pid" 2>/dev/null; then
-      kill -INT "$stale_owner_pid" 2>/dev/null || true
-    fi
-    wait "$stale_owner_pid" 2>/dev/null || true
-  fi
+  cleanup_stale_owner
   if [ "$toolchain_failed" = "true" ]; then
     case "$keep_tmp_on_failure" in
       1|true|True|TRUE|yes|Yes|YES|on|On|ON)
@@ -265,14 +257,18 @@ if expected not in messages:
 PY
 }
 
+stale_wrapper_command=(
+  env
+  "HOME=$tmp_env_root/home"
+  "CODEX_HOME=$tmp_env_root/codex"
+  "CLAUDE_HOME=$tmp_env_root/claude"
+  "ELAN_HOME=$host_elan_home"
+  "BEAM_INSTALL_BUNDLE_DIR=$tmp_bundle_dir"
+  ./scripts/lean-beam --root "$stale_project_root"
+)
+
 run_stale_wrapper() {
-  env \
-    HOME="$tmp_env_root/home" \
-    CODEX_HOME="$tmp_env_root/codex" \
-    CLAUDE_HOME="$tmp_env_root/claude" \
-    ELAN_HOME="$host_elan_home" \
-    BEAM_INSTALL_BUNDLE_DIR="$tmp_bundle_dir" \
-    ./scripts/lean-beam --root "$stale_project_root" "$@"
+  ${stale_wrapper_command[@]+"${stale_wrapper_command[@]}"} "$@"
 }
 
 run_stale_wrapper_checked() {
@@ -280,16 +276,6 @@ run_stale_wrapper_checked() {
   shift
   if ! run_stale_wrapper "$@" > "$stale_sync_stdout" 2> "$stale_sync_stderr"; then
     print_toolchain_context "$label"
-    return 1
-  fi
-}
-
-start_stale_owner() {
-  run_stale_wrapper serve > "$stale_owner_stdout" 2> "$stale_owner_stderr" &
-  stale_owner_pid="$!"
-  if ! wait_for_file_text "$stale_owner_stderr" "serving Beam session" \
-      "toolchain compatibility session owner" 600 0.1; then
-    print_toolchain_context "explicit session owner failed to start"
     return 1
   fi
 }
