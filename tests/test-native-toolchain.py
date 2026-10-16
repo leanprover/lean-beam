@@ -23,9 +23,9 @@ watchdog = importlib.util.module_from_spec(watchdog_spec)
 watchdog_spec.loader.exec_module(watchdog)
 
 
-def run(args, *, cwd=REPO, env=None, ok=True):
+def run(args, *, cwd=REPO, env=None, ok=True, timeout=600):
     result = subprocess.run([str(a) for a in args], cwd=cwd, env=env,
-                            text=True, encoding="utf-8", capture_output=True, timeout=600)
+                            text=True, encoding="utf-8", capture_output=True, timeout=timeout)
     if ok and result.returncode:
         raise AssertionError(f"{args}: {result.returncode}\n{result.stdout}\n{result.stderr}")
     return result
@@ -77,17 +77,16 @@ def main():
         # configuration and CLI first, then prove the native builder uses its requested mode
         # without replacing that CLI or changing the ordinary configuration.
         run([lean_prefix / "bin" / f"lake{EXE}", "--reconfigure", "-KbeamToolchain=false",
-             "--no-cache", "build", "beam-cli", "beam-mcp-protocol-test"], env=build_env)
+             "--no-cache", "build", "beam-cli", "beam-mcp-protocol-test",
+             "BeamTest.PathBoundaryTest"], env=build_env)
         # Exercise the same typed self-check fixtures with the native SDK's header/DLL environment.
         run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "90", "--",
              REPO / ".lake/build/bin" / f"beam-mcp-protocol-test{EXE}", "--self-check-tests"],
             env=build_env)
         standalone = REPO / ".lake" / "build" / "bin" / f"beam-cli{EXE}"
         standalone_hash = hashlib.sha256(standalone.read_bytes()).hexdigest()
-        configs = [REPO / ".lake" / "lakefile.olean.trace",
-                   REPO / ".lake" / "config" / "0" / "lakefile.olean.trace"]
-        config_before = {path: path.read_bytes() for path in configs if path.exists()}
-        assert config_before, "standalone Lake configuration trace was not written"
+        config_trace = REPO / ".lake" / "config" / "0" / "lakefile.olean.trace"
+        config_before = config_trace.read_bytes()
         def control_dir_object_trace():
             path = REPO / ".lake/toolchain-build/native/control_dir.o.trace"
             return json.loads(path.read_text())["depHash"]
@@ -106,7 +105,7 @@ def main():
         if first_native_trace is not None:
             assert final_native_trace == first_native_trace, final_native_trace
         assert hashlib.sha256(standalone.read_bytes()).hexdigest() == standalone_hash
-        assert all(path.read_bytes() == content for path, content in config_before.items())
+        assert config_trace.read_bytes() == config_before, "native build changed the standalone Lake configuration"
         ordinary = run([standalone, "toolchain-build-info"], ok=False)
         assert ordinary.returncode != 0 and "not built with -KbeamToolchain=true" in ordinary.stderr, ordinary
         ordinary_help = run([standalone, "--help"]).stdout
@@ -152,7 +151,7 @@ def main():
     install_env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(scratch))
     run(["cmake", f"-DLEAN_PREFIX={lean_prefix}", f"-DPREFIX={prefix}",
          "-P", install_source / "scripts" / "install-toolchain.cmake"], env=install_env)
-    relocated = scratch / "relocated toolchain with spaces"
+    relocated = scratch / "relocated toolchain with spaces λ"
     prefix.rename(relocated)
     beam = relocated / "bin" / f"lean-beam{EXE}"
     lake = relocated / "bin" / f"lake{EXE}"
@@ -173,6 +172,19 @@ def main():
                BEAM_INSTALL_BUNDLE_DIR=str(scratch / "forbidden-install-cache"),
                BEAM_BUNDLE_DIR=str(scratch / "forbidden-runtime-cache"),
                BEAM_PUBLIC_COMMAND="ambient-wrong-name")
+    # A project without a selector must locate sibling Lean/Lake without invoking elan.
+    # Apply this environment to every installed entrypoint, including version/help commands.
+    if os.name == "nt":
+        env["PATH"] = os.pathsep.join([str(relocated / "bin"),
+                                      str(Path(os.environ["SystemRoot"]) / "System32")])
+    else:
+        shim = scratch / "shim"
+        shim.mkdir()
+        for forbidden_command in ["elan", "git", "curl", "date"]:
+            trap = shim / forbidden_command
+            trap.write_text(f'#!/bin/sh\necho "unexpected {forbidden_command} invocation" >&2\nexit 99\n')
+            trap.chmod(0o755)
+        env["PATH"] = str(shim) + os.pathsep + str(relocated / "bin") + os.pathsep + env["PATH"]
     version = run([beam, "version"], cwd=scratch, env=env).stdout
     assert version.startswith("lean-beam "), version
     assert metadata["payloadHash"] in version and metadata["leanVersion"] in version, version
@@ -182,7 +194,7 @@ def main():
     foreign_cli = run([mcp, "--beam-cli", lean_prefix / "bin" / f"lean{EXE}", "--version"],
                       cwd=scratch, env=env, ok=False)
     assert foreign_cli.returncode != 0 and "containing toolchain" in foreign_cli.stderr, foreign_cli
-    project = scratch / "project with spaces"
+    project = scratch / "project with spaces λ"
     project.mkdir()
     config = 'name = "native_test"\n[leanOptions]\nmaxRecDepth = 777\n[[lean_lib]]\nname = "Demo"\n'
     config += '[[lean_exe]]\nname = "nativeCheck"\nroot = "NativeCheck"\n'
@@ -198,19 +210,21 @@ def main():
     if args.crlf:
         text = text.replace("\n", "\r\n")
     source.write_text(text, encoding="utf-8", newline="")
-    # This project has no selector, and elan must not be used to locate sibling Lean/Lake.
-    shim = scratch / "shim"
-    shim.mkdir()
-    if os.name != "nt":
-        elan = shim / "elan"
-        elan.write_text('#!/bin/sh\necho "unexpected elan invocation" >&2\nexit 99\n')
-        elan.chmod(0o755)
-    if os.name != "nt":
-        for forbidden_command in ["git", "curl", "date"]:
-            trap = shim / forbidden_command
-            trap.write_text(f'#!/bin/sh\necho "unexpected {forbidden_command} invocation" >&2\nexit 99\n')
-            trap.chmod(0o755)
-    env["PATH"] = str(shim) + os.pathsep + str(relocated / "bin") + os.pathsep + env["PATH"]
+    nested = project / "nested directory"
+    nested.mkdir()
+    inferred = json.loads(run([beam, "status"], cwd=nested, env=env, timeout=20).stdout)
+    assert inferred["ok"] and inferred["result"]["state"] == "absent", inferred
+    assert Path(inferred["result"]["workspace"]).samefile(project), inferred
+    # A filesystem root has no parent on POSIX or Windows. Discovery must terminate there,
+    # whether the host has a project marker at that root or reports no project.
+    filesystem_root = Path(project.anchor)
+    at_root = run([beam, "status"], cwd=filesystem_root, env=env, ok=False, timeout=20)
+    if at_root.returncode:
+        assert "could not infer project root" in at_root.stderr, at_root
+    else:
+        root_status = json.loads(at_root.stdout)
+        assert root_status["ok"], root_status
+        assert Path(root_status["result"]["workspace"]).samefile(filesystem_root), root_status
     doctor = run([beam, "--root", project, "doctor"], env=env).stdout
     assert "bundle source: toolchain" in doctor and metadata["payloadHash"] in doctor, doctor
     native_help = run([beam, "--help"], env=env).stdout
@@ -370,7 +384,12 @@ def main():
         # read access must not hold a session descriptor and its generation capability.
         unsafe_session = scratch / "unsafe session directory"
         unsafe_session.mkdir()
+        sentinel = unsafe_session / "sentinel.txt"
+        sentinel.write_bytes(b"existing session directory must stay untouched\n")
         run(["icacls", unsafe_session, "/grant", "*S-1-1-0:(OI)(CI)RX"], cwd=scratch, env=env)
+        prior_acl = scratch / "unsafe-session-before.acl"
+        run(["icacls", unsafe_session, "/save", prior_acl, "/T"], cwd=scratch, env=env)
+        prior_contents = sentinel.read_bytes()
         unsafe_args = [str(beam), "--root", str(project), "--session-dir", str(unsafe_session)]
         unsafe = subprocess.Popen([*unsafe_args, "serve"], cwd=project, env=env,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -383,10 +402,17 @@ def main():
                 run([*unsafe_args, "stop"], env=env, ok=False)
                 unsafe.terminate()
                 unsafe.communicate(timeout=10)
+        after_acl = scratch / "unsafe-session-after.acl"
+        run(["icacls", unsafe_session, "/save", after_acl, "/T"], cwd=scratch, env=env)
+        assert after_acl.read_bytes() == prior_acl.read_bytes(), "unsafe session directory ACL changed"
+        assert sentinel.read_bytes() == prior_contents, "unsafe session directory contents changed"
+        assert {path.name for path in unsafe_session.iterdir()} == {sentinel.name}, unsafe_session
 
     assert real_elan, "selector tests require elan (the no-selector workflow above must not invoke it)"
-    if os.name != "nt":
-        elan.unlink()
+    if os.name == "nt":
+        env["PATH"] = str(Path(real_elan).parent) + os.pathsep + env["PATH"]
+    else:
+        (shim / "elan").unlink()
     env["ELAN_HOME"] = str(scratch / "elan-home")
     run([real_elan, "toolchain", "link", "native-match", relocated], env=env)
     (project / "lean-toolchain").write_text("native-match\n")

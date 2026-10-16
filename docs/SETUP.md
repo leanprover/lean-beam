@@ -1,6 +1,7 @@
 # Setup
 
-Lean release builders can use the separate [native toolchain build/install interface](TOOLCHAIN_BUNDLING.md).
+The checkout installer below targets Linux and macOS. Lean release builders, including Windows
+x86_64 builders, can use the separate [native toolchain build/install interface](TOOLCHAIN_BUNDLING.md).
 
 Use this document as the single path from a Lean Beam checkout to a working `lean-beam` command.
 It covers installation, validated and compatible Lean toolchains, first CLI use, MCP registration,

@@ -9,6 +9,9 @@ hypothetical clients.
 The [native toolchain build/install interface](TOOLCHAIN_BUNDLING.md) also targets an explicitly
 supplied native Lean installation, including development compilers, when its build and runtime
 regression passes. The standalone toolchain registries below govern the standalone install path.
+Windows x86_64 support is limited to this native toolchain interface and its bundled CLI, MCP server,
+daemon, and LSP plugin. The checkout installer and shell wrappers target Linux
+and macOS.
 
 A Lean release line is the canonical `major.minor` family recorded in
 `compatible-lean-release-lines`. An exact toolchain variant is a canonical immutable

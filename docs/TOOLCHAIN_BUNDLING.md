@@ -3,6 +3,8 @@
 Release builders can compile Beam for one explicitly selected Lean installation without running the
 standalone installer. This mode uses the containing installation's Lean, Lake, daemon, and plugin.
 The standalone installer and its toolchain registries retain their existing behavior.
+Windows x86_64 support covers this bundled runtime; the checkout installer and shell wrappers
+target Linux and macOS.
 
 The three installation models have different responsibilities:
 
@@ -33,6 +35,8 @@ instead pass `-DNATIVE_CLANG_RESOURCE_DIR=/sdk/lib/clang/VERSION` to the build c
 with the selected Lean installation's compiler and links against its libraries.
 `control_dir.c` uses this compiler and native header setup; its object-cache identity includes
 the selected Lean toolchain and compiler.
+The installed Windows runtime does not require MSYS2 or Git Bash on `PATH`. Elan is needed only
+when resolving a project's `lean-toolchain` selector.
 
 `LEAN_PREFIX` contains `bin/lean`, `bin/lake`, the compiler configuration, and Lean/Lake libraries.
 It can be any native build stage or installed toolchain. The scripts do not select a stage number,
@@ -118,10 +122,8 @@ Run the native build/install/relocation/runtime regression with:
 python3 tests/test-native-toolchain.py /path/to/selected/lean/stage
 ```
 
-The `native-toolchain` CI job exercises Linux x86_64/aarch64 and Windows layouts with the
-repository's supported compiler. The combined `macos-platform` job also runs this test on macOS.
-Setting `BEAM_FULL_MACOS_CI=true` enables separate macOS x86_64/aarch64 native jobs instead;
-see [the CI layout](TESTING.md#ci-map).
+CI runs this regression on Linux, macOS, and Windows x86_64 with the repository's pinned compiler.
+See the [CI map](TESTING.md#ci-map) for platform matrices and Windows qualification details.
 A release integration must also run this test against the actual compiler being shipped. Wasm, MCP
 registration and skill installation are outside this build/install interface.
 

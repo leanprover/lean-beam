@@ -31,10 +31,10 @@ partial def findRootUpwards (start : System.FilePath) : IO (Option System.FilePa
     let found ← hasLeanProject dir
     if found then
       pure (some dir)
-    else if dir == System.FilePath.mk "/" then
-      pure none
     else
-      loop (dir.parent.getD dir)
+      match dir.parent with
+      | none => pure none
+      | some parent => loop parent
   loop dir
 
 def projectRoot (opts : CliOptions) : IO System.FilePath := do

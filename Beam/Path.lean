@@ -67,11 +67,13 @@ should resolve both paths first with `resolveExistingPath` / `resolvePathAgainst
 def pathRelativeToRoot? (root path : System.FilePath) : Option String := do
   let rootStr := root.toString
   let pathStr := path.toString
-  let rootPrefix := rootStr ++ s!"{System.FilePath.pathSeparator}"
-  if pathStr.startsWith rootPrefix then
-    some <| (pathStr.drop rootPrefix.length).toString
-  else if pathStr == rootStr then
+  let separator := String.singleton System.FilePath.pathSeparator
+  -- Filesystem roots already end in a separator (for example `/` or `C:\`).
+  let rootPrefix := if rootStr.endsWith separator then rootStr else rootStr ++ separator
+  if pathStr == rootStr then
     some "."
+  else if pathStr.startsWith rootPrefix then
+    some <| (pathStr.drop rootPrefix.length).toString
   else
     none
 
