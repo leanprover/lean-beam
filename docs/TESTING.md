@@ -376,7 +376,8 @@ macOS matrix is desired. Repository names and actors do not select the policy.
 
 The combined `macos-platform` job covers every test family.
 It runs shell lint, fast broker tests, LSP tests, MCP conformance and SDK tests, the slow suite,
-pinned-toolchain qualification, and installer tests as separate steps in one checkout.
+pinned-toolchain qualification, native installation/relocation, and installer tests as separate
+steps in one checkout.
 The job shares Lean setup and incremental build outputs; each suite keeps its own temporary
 projects and homes. Independent test steps continue after another test fails, while a failed step
 still fails the job. The job has a 120-minute timeout.
@@ -391,6 +392,8 @@ Linux retains the separate parallel jobs and the exact toolchain compatibility m
 modes. The combined macOS job runs toolchain qualification once at the repository-pinned Lean
 version. Full mode runs the complete per-version macOS compatibility matrix.
 Installer tests still prebuild every toolchain in `validated-lean-toolchains`.
+Native toolchain jobs retain Linux x86_64/aarch64 and Windows coverage in both modes. Full mode
+also runs native macOS x86_64/aarch64 jobs.
 
 The variable belongs to the repository running the workflow. A fork-originated PR running in
 `leanprover/lean-beam` therefore uses the upstream repository's setting. To enable full mode in a
@@ -404,6 +407,7 @@ gh workflow run ci.yml --repo OWNER/REPO --ref BRANCH
 The current GitHub Actions workflow maps to the testing surfaces like this:
 
 - `macos-platform`: the combined macOS job described above
+- `native-toolchain`: [tests/test-native-toolchain.py](../tests/test-native-toolchain.py)
 - `lsp`: [tests/test-lsp.sh](../tests/test-lsp.sh)
 - `beam-fast`: [tests/test-beam-fast.sh](../tests/test-beam-fast.sh)
 - `mcp-conformance`: [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh)

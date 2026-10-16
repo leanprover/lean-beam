@@ -8,6 +8,7 @@ import Lean
 import Beam.Cli.InstallLayout
 import Beam.Git
 import Beam.Path
+import Beam.Cli.Toolchain
 
 open Lean
 
@@ -56,6 +57,7 @@ structure Identity where
   runtimePayload? : Option String := none
   manifest? : Option String := none
   sourceCommit? : Option String := none
+  bundledLean? : Option String := none
   sourceBranch? : Option String := none
   sourceDirty? : Option Bool := none
   activeRoot? : Option String := none
@@ -77,6 +79,7 @@ def Identity.asJson (identity : Identity) : Json :=
     optionalField "runtime_payload" identity.runtimePayload? ++
     optionalField "manifest" identity.manifest? ++
     optionalField "source_commit" identity.sourceCommit? ++
+    optionalField "bundled_lean" identity.bundledLean? ++
     optionalField "source_branch" identity.sourceBranch? ++
     optionalBoolField "source_dirty" identity.sourceDirty? ++
     optionalField "active_root" identity.activeRoot? ++
@@ -112,6 +115,9 @@ def Identity.textLines (identity : Identity) : List String :=
   (match identity.sourceCommit? with
   | some commit => [s!"source commit: {commit}"]
   | none => []) ++
+  (match identity.bundledLean? with
+  | some version => [s!"bundled Lean: {version}"]
+  | none => []) ++
   (match identity.sourceBranch? with
   | some branch => [s!"source branch: {branch}"]
   | none => []) ++
@@ -143,6 +149,21 @@ def mkRuntimeIdentity
     (mcpProtocol? : Option String := none)
     (activeRoot? : Option System.FilePath := none)
     (runtimeActive? : Option Bool := none) : IO Identity := do
+  if Beam.Cli.Toolchain.enabled then
+    let p ← Beam.Cli.Toolchain.provenance
+    return {
+      name := if name == "beam-cli" then cliName else name
+      wrapper? := wrapper?
+      beamHome? := home?.map (·.toString)
+      beamCli? := beamCli?
+      serverBinary? := serverBinary?
+      mcpProtocol? := mcpProtocol?
+      activeRoot? := activeRoot?.map (·.toString)
+      runtimeActive?
+      runtimePayload? := some p.payloadHash
+      sourceCommit? := some p.sourceCommit
+      bundledLean? := some p.leanVersion
+    }
   let runtimeResolution? ←
     match home? with
     | some home => pure <| some (← Beam.Cli.resolveRuntimeHome home)

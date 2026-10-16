@@ -235,12 +235,25 @@ private def sessionStatus (opts : CliOptions) : IO Unit := do
   printResponse <| Response.success (toJson result)
 
 def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
+  if Toolchain.enabled && opts.args.head?.any (["install-layout", "install-manifest",
+      "install-manifest-with-source-commit", "install-runtime-validate"].contains ·) then
+    throw <| IO.userError
+      "bundled lean-beam does not provide standalone install or MCP setup commands; use its containing Lean toolchain's installer"
   match opts.args with
   | [] | ["-h"] | ["--help"] | ["help"] =>
-      IO.println usage
+      IO.println (usage Toolchain.enabled)
   | "version" :: [] | "--version" :: [] =>
       printVersion home
+  | "toolchain-build-info" :: [] =>
+      unless Toolchain.enabled do
+        throw <| IO.userError "this executable was not built with -KbeamToolchain=true"
+      printJsonLine <| Json.mkObj [
+        ("leanGithash", toJson Lean.githash),
+        ("lakeSupportsDeferredCompilation", toJson Toolchain.lakeSupportsDeferredCompilation)
+      ]
   | "bundle-install" :: toolchain :: [] =>
+      if Toolchain.enabled then
+        throw <| IO.userError "bundled lean-beam uses only its containing toolchain; reinstall that toolchain to repair its runtime"
       let cacheRoot ←
         match ← IO.getEnv "BEAM_INSTALL_BUNDLE_DIR" with
         | some path => pure <| System.FilePath.mk path
@@ -250,6 +263,8 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       let _ ← ensureToolchainBundleIn cacheRoot home toolchain
       pure ()
   | "prune" :: args =>
+      if Toolchain.enabled then
+        throw <| IO.userError "bundled lean-beam has no standalone runtimes to prune"
       runInstallPrune home args
   | "validated-toolchains" :: [] =>
       printValidatedToolchains home
@@ -426,6 +441,6 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
   | "recover" :: args =>
       recoverProjectSession opts args
   | _ =>
-      throw <| IO.userError usage
+      throw <| IO.userError (usage Toolchain.enabled)
 
 end Beam.Cli

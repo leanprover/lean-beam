@@ -6,6 +6,7 @@
 /.codex
 /.codex-worktrees/
 /.tmp/
+/.native-test/
 .beam/
 __pycache__/
 *.pyc

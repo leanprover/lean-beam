@@ -6,6 +6,10 @@ hypothetical clients.
 
 ## Current Targets
 
+The [native toolchain build/install interface](TOOLCHAIN_BUNDLING.md) also targets an explicitly
+supplied native Lean installation, including development compilers, when its build and runtime
+regression passes. The standalone toolchain registries below govern the standalone install path.
+
 A Lean release line is the canonical `major.minor` family recorded in
 `compatible-lean-release-lines`. An exact toolchain variant is a canonical immutable
 `major.minor.patch` or `major.minor.patch-rcN` name within that family.

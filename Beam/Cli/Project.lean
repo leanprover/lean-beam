@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Lean
 import Beam.Broker.Protocol
 import Beam.Cli.Args
+import Beam.Cli.Toolchain
 import Beam.Cli.RuntimeBundle
 import Beam.Lean.Workspace
 import Beam.Path
@@ -25,6 +26,8 @@ partial def climbParents (path : System.FilePath) (count : Nat) : System.FilePat
   | n + 1 => climbParents (path.parent.getD path) n
 
 def beamHome : IO System.FilePath := do
+  if Toolchain.enabled then
+    return ← Toolchain.home
   match ← IO.getEnv "BEAM_HOME" with
   | some root =>
       Beam.resolveExistingPath <| System.FilePath.mk root
@@ -77,12 +80,17 @@ def explicitProjectRoot (opts : CliOptions) (action : String) : IO System.FilePa
       throw <| IO.userError s!"{action} requires an explicit --root PATH"
 
 def leanToolchain (root : System.FilePath) : IO String := do
+  if Toolchain.enabled then
+    discard <| Toolchain.projectLean root
+    return ← Toolchain.version
   let path := root / "lean-toolchain"
   unless ← path.pathExists do
     throw <| IO.userError s!"missing lean-toolchain in {root}"
   pure <| Beam.trimLine (← IO.FS.readFile path)
 
-def leanBin (root : System.FilePath) : IO String :=
+def leanBin (root : System.FilePath) : IO String := do
+  if Toolchain.enabled then
+    return (← Toolchain.projectLean root).toString
   Beam.readCmdTrim "elan" #["which", "lean"] (some root)
 
 end Beam.Cli

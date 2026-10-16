@@ -25,12 +25,15 @@ partial def waitTaskWithTimeout
     loop (remainingMs - sleepMs)
   loop timeoutMs
 
-/-- Return the POSIX permission bits reported by `lstat`, without following the final symlink. -/
+/-- POSIX lstat bits, or 0700 only for a private Windows DACL; never follow reparse points. -/
 @[extern "lean_beam_lstat_mode"]
 private opaque lstatMode (path : @& String) : IO UInt32
 
 def fileModeNoFollow (path : System.FilePath) : IO UInt32 :=
   lstatMode path.toString
+
+@[extern "lean_beam_set_private_dir_rights"]
+private opaque setPrivateDirRights (path : @& String) : IO Unit
 
 def privateDirRights : IO.FileRight := {
   user := { read := true, write := true, execution := true }
@@ -57,7 +60,9 @@ def PrivateDirObservation.problem : PrivateDirObservation → Option String
   | .absent => some "the path disappeared during private-directory preparation"
   | .symlink => some "symbolic links are not accepted"
   | .nonPrivate mode =>
-      some s!"existing mode is {permissionModeText mode}, expected 0700"
+      if System.Platform.isWindows then
+        some "the Windows DACL must grant full access to the current user and no access to other ordinary accounts"
+      else some s!"existing mode is {permissionModeText mode}, expected 0700"
   | .notDirectory => some "the path is not a directory"
 
 /-- Inspect an exact directory leaf without following its final symbolic link. -/
@@ -96,7 +101,7 @@ def preparePrivateDir (dir : System.FilePath) : IO PrivateDirObservation := do
   | .alreadyExists .. => return ← observePrivateDir dir
   | err => throw err
   try
-    IO.setAccessRights dir privateDirRights
+    setPrivateDirRights dir.toString
     let observation ← observePrivateDir dir
     unless observation == .privateDir do
       try
@@ -120,7 +125,8 @@ def requirePrivateDir
   | some problem =>
       throw <| IO.userError <|
         s!"unsafe {label} {dir}: {problem}. Select a dedicated directory that is a real " ++
-          "directory with mode 0700; Beam does not change permissions on existing paths"
+          (if System.Platform.isWindows then "directory with a private Windows DACL"
+           else "directory with mode 0700") ++ "; Beam does not change permissions on existing paths"
 
 /-- Create a missing private leaf or validate an existing one without adopting it. -/
 def ensurePrivateDir (label : String) (dir : System.FilePath) : IO Unit := do
@@ -162,7 +168,7 @@ def commandAvailable (cmd : String) (args : Array String := #["--help"]) : IO Bo
   catch _ =>
     pure false
 
-def utcTimestamp : IO String := do
-  readCmdTrim "date" #["-u", "+%Y-%m-%dT%H:%M:%SZ"]
+@[extern "lean_beam_utc_timestamp"]
+opaque utcTimestamp : IO String
 
 end Beam

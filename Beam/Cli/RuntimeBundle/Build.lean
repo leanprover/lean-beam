@@ -260,12 +260,19 @@ def ensureToolchainBundleInForFingerprint (cacheRoot home : System.FilePath) (to
 
 def ensureToolchainBundleIn (cacheRoot home : System.FilePath) (toolchain : String) :
     IO (LeanBundlePaths × String) := do
+  if Toolchain.enabled then
+    let paths : LeanBundlePaths := { daemon := ← Toolchain.daemon, plugin := ← Toolchain.plugin }
+    ensureLeanBundleExists paths
+    return (paths, ← Toolchain.runtimeId)
   ensureAcceptedLeanToolchain home toolchain
   let fingerprint ← toolchainFingerprint toolchain
   ensureToolchainBundleInForFingerprint cacheRoot home toolchain fingerprint
 
 def ensureToolchainBundle (root home : System.FilePath) (toolchain : String) :
     IO (LeanBundlePaths × String) := do
+  if Toolchain.enabled then
+    discard <| Toolchain.projectLean root
+    return ← ensureToolchainBundleIn home home toolchain
   ensureAcceptedLeanToolchain home toolchain
   let fingerprint ← toolchainFingerprint toolchain
   match ← existingToolchainBundleInAnyForFingerprint? (← installBundleCacheRoots) home toolchain fingerprint with

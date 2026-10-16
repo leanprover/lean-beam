@@ -8,8 +8,8 @@ import Lean
 
 namespace Beam.Cli
 
-def usage : String :=
-  String.intercalate "\n" [
+def usage (bundled : Bool) : String :=
+  String.intercalate "\n" <| [
     "usage:",
     "  lean-beam --version",
     "  lean-beam version",
@@ -34,9 +34,11 @@ def usage : String :=
     "  lean-beam [--root PATH] close <path>",
     "  lean-beam [--root PATH] close-save <path> [+all-diagnostics]",
     "  lean-beam [--root PATH] feedback-report --stdin|--input <path> [--bundle none|dir|zip] [--output-dir <path>] [--no-redact]",
+  ] ++ (if bundled then [] else [
     "  lean-beam prune [--apply] [--bundles]",
     "  lean-beam validated-toolchains",
-    "  lean-beam compatible-release-lines",
+    "  lean-beam compatible-release-lines"
+  ]) ++ [
     "  lean-beam [--root PATH] doctor",
     "  lean-beam [--root PATH] open-files",
     "  lean-beam [--root PATH] cancel <request-id>",

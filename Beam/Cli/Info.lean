@@ -21,6 +21,13 @@ namespace Beam.Cli
 open Beam.Broker
 
 def printVersion (home : System.FilePath) : IO Unit := do
+  if Toolchain.enabled then
+    let p ← Toolchain.provenance
+    IO.println s!"lean-beam {Beam.Version.projectVersion}"
+    IO.println s!"source commit: {p.sourceCommit}"
+    IO.println s!"runtime payload: {p.payloadHash}"
+    IO.println s!"bundled Lean: {p.leanVersion}"
+    return
   let appPath ← IO.appPath
   let wrapper? ← IO.getEnv "BEAM_WRAPPER_PATH"
   let publicCommand? ← IO.getEnv "BEAM_PUBLIC_COMMAND"
@@ -89,6 +96,22 @@ private def acceptedLeanBundleDoctorInfo
   }
 
 private def printLeanDoctorInfo (home root : System.FilePath) : IO Unit := do
+  if Toolchain.enabled then
+    let lean ← Toolchain.projectLean root
+    let p ← Toolchain.provenance
+    let (paths, id) ← ensureToolchainBundle root home p.leanVersion
+    IO.println "public command: lean-beam"
+    IO.println s!"source commit: {p.sourceCommit}"
+    IO.println s!"runtime payload: {p.payloadHash}"
+    IO.println s!"bundled Lean: {p.leanVersion}"
+    IO.println s!"bundled Lake: {p.lakeVersion}"
+    IO.println s!"lean binary: {lean}"
+    IO.println "bundle source: toolchain"
+    IO.println s!"bundle id: {id}"
+    IO.println "bundle ready: true"
+    IO.println s!"bundle daemon: {paths.daemon}"
+    IO.println s!"plugin: {paths.plugin}"
+    return
   let toolchain ← leanToolchain root
   let support ← leanToolchainSupport home toolchain
   let toolchainValidated := support.acceptance == .validated
@@ -181,11 +204,16 @@ def doctor (home : System.FilePath) (opts : CliOptions) : IO Unit := do
   printLeanDoctorInfo home root
 
 def printValidatedToolchains (home : System.FilePath) : IO Unit := do
+  if Toolchain.enabled then
+    throw <| IO.userError
+      "bundled lean-beam has no standalone toolchain registry; use version or doctor for its bundled Lean identity"
   let (_, toolchains) ← validatedLeanToolchains home
   for toolchain in toolchains do
     IO.println toolchain
 
 def printCompatibleReleaseLines (home : System.FilePath) : IO Unit := do
+  if Toolchain.enabled then
+    throw <| IO.userError "bundled lean-beam supports its containing Lean installation only"
   let (_, lines) ← compatibleLeanReleaseLines home
   for line in lines do
     IO.println line.registryEntry
