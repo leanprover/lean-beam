@@ -49,5 +49,21 @@ file(SHA256 "${PREFIX}/bin/beam-daemon${EXE}" DAEMON_HASH)
 file(SHA256 "${PREFIX}/bin/lean-beam-mcp${EXE}" MCP_HASH)
 file(SHA256 "${PRIVATE}/${PLUGIN}" PLUGIN_HASH)
 string(SHA256 PAYLOAD_HASH "${CLI_HASH}:${DAEMON_HASH}:${MCP_HASH}:${PLUGIN_HASH}")
+
+# Compiler version descriptions are data, including custom quotes and control characters.
+function(beam_json_string value output)
+  string(REPLACE "\\" "\\\\" escaped "${value}")
+  string(REPLACE "\"" "\\\"" escaped "${escaped}")
+  foreach(code RANGE 1 31)
+    string(ASCII ${code} control)
+    string(HEX "${control}" hex)
+    string(REPLACE "${control}" "\\u00${hex}" escaped "${escaped}")
+  endforeach()
+  set(${output} "\"${escaped}\"" PARENT_SCOPE)
+endfunction()
+foreach(field BEAM_BUILD_SOURCE_COMMIT PAYLOAD_HASH BEAM_BUILD_LEAN_VERSION
+    BEAM_BUILD_LEAN_GITHASH BEAM_BUILD_LAKE_VERSION)
+  beam_json_string("${${field}}" ${field}_JSON)
+endforeach()
 file(WRITE "${PRIVATE}/provenance.json"
-  "{\"schemaVersion\":1,\"sourceCommit\":\"${BEAM_BUILD_SOURCE_COMMIT}\",\"payloadHash\":\"${PAYLOAD_HASH}\",\"leanVersion\":\"${BEAM_BUILD_LEAN_VERSION}\",\"leanGithash\":\"${BEAM_BUILD_LEAN_GITHASH}\",\"lakeVersion\":\"${BEAM_BUILD_LAKE_VERSION}\"}\n")
+  "{\"schemaVersion\":1,\"sourceCommit\":${BEAM_BUILD_SOURCE_COMMIT_JSON},\"payloadHash\":${PAYLOAD_HASH_JSON},\"leanVersion\":${BEAM_BUILD_LEAN_VERSION_JSON},\"leanGithash\":${BEAM_BUILD_LEAN_GITHASH_JSON},\"lakeVersion\":${BEAM_BUILD_LAKE_VERSION_JSON}}\n")

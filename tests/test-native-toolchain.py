@@ -53,6 +53,7 @@ def main():
     parser.add_argument("--previous-lean-prefix", type=Path,
                         help="qualify compiler switching through the same native object cache")
     args = parser.parse_args()
+    run([sys.executable, REPO / "tests/test-native-provenance.py"])
     lean_prefix = args.lean_prefix.resolve()
     real_elan = shutil.which("elan")
     args.scratch.mkdir(parents=True, exist_ok=True)
