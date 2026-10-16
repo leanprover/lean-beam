@@ -1,0 +1,63 @@
+# Copyright (c) 2026 Lean FRO LLC. All rights reserved.
+# Released under Apache 2.0 license as described in the file LICENSE.
+# Author: Emilio J. Gallego Arias
+
+name: Lean Nightly
+
+on:
+  schedule:
+    - cron: '37 12 * * *'
+  workflow_dispatch:
+    inputs:
+      toolchain:
+        description: 'Dated Lean nightly toolchain (empty resolves the latest published nightly)'
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - 'Beam/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'Beam.lean'
+      - 'lean-toolchain'
+      - 'lakefile.lean'
+      - 'lake-manifest.json'
+      - '.github/workflows/nightly.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lean-nightly-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nightly:
+    name: nightly toolchain distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld cmake
+      - name: Install elan without a default toolchain
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Qualify one dated nightly SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_TOOLCHAIN: ${{ inputs.toolchain || '' }}
+        run: bash tests/test-beam-nightly.sh "$NIGHTLY_TOOLCHAIN"
+      - name: Upload toolchain identity and test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-validation
+          path: build/nightly-validation/
+          retention-days: 14

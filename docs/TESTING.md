@@ -95,6 +95,8 @@ Additional Beam lanes:
 - [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) `<toolchain>`: exact
   validated or release-line-compatible bundle qualification, admission diagnostics, module save/replay
   (including the required `.ir.sig` companion), and stale-import diagnostic wording compatibility
+- [tests/test-beam-nightly.sh](../tests/test-beam-nightly.sh) `[dated-toolchain] [report-dir]`: isolated
+  native build/install, relocation, installed-runtime, and save/replay qualification for a dated SDK
 - [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh): external MCP `2025-11-25`
   conformance scenarios over the local Streamable HTTP bridge
 - [tests/test-mcp-modern-sdk.sh](../tests/test-mcp-modern-sdk.sh): released official TypeScript
@@ -209,6 +211,48 @@ home, agent homes, bundle directory, platform, and captured build/bundle/stale-d
 log tails so the bundle or stale-diagnostic state can be diagnosed from the test log. Set
 `BEAM_TOOLCHAIN_COMPAT_KEEP_TMP_ON_FAILURE=1` to preserve the fake roots for local inspection after
 a failed run.
+
+## Nightly Qualification
+
+[Lean Nightly](../.github/workflows/nightly.yml) runs daily, on relevant pull requests, and through
+manual workflow dispatch on Linux. Each run resolves the latest published Lean nightly once, or
+accepts an explicit `leanprover/lean4-nightly:nightly-YYYY-MM-DD` toolchain. Mutable aliases are
+rejected. The lane qualifies the [native toolchain distribution path](TOOLCHAIN_BUNDLING.md) used
+by release builders.
+
+To reproduce one run locally:
+
+```bash
+bash tests/test-beam-nightly.sh leanprover/lean4-nightly:nightly-2026-10-13
+```
+
+Omit the argument to resolve the latest published nightly. The script resolves that SDK's installation
+prefix and passes it directly to [test-native-toolchain.py](../tests/test-native-toolchain.py) in an
+owned temporary source checkout. That test owns native build/install, relocation, provenance,
+installed CLI and MCP execution, module save/replay and native consumers, and rejection of foreign
+or incomplete runtimes. Packaging assertions stay in that test so the nightly lane follows changes
+to the upstream integration path without maintaining another implementation.
+
+The source overlay includes modified, added, and deleted files without copying Git metadata.
+Private Elan settings reuse installed compilers and isolate caller overrides; inherited
+`ELAN_TOOLCHAIN`, `LEAN_SYSROOT`, and `LAKE_CACHE_DIR` values are cleared. The repository's
+`lean-toolchain` and custom-toolchain registry retain their source contents. Native qualification
+uses the explicitly supplied SDK rather than standalone registry admission.
+
+Reports default to `build/nightly-validation/`; an optional second argument selects another report
+directory. `toolchain.txt` and `metadata.json` record the dated tag, SDK prefix, Lean version and
+compiler commit, Lake version, Beam commit, source dirty status, and platform. `native.log` captures
+the native qualification output; `result.txt` records `running`, `failed`, or `passed`. CI uploads
+the report even on failure. A failed stage stops the lane and prints its log tail; the temporary
+checkout and Elan settings are removed on exit. Reusing
+a report directory replaces the lane's prior reports and logs so a failed rerun cannot present
+older results. [test-beam-nightly-driver.py](../tests/test-beam-nightly-driver.py) checks orchestration,
+source isolation, and failure cleanup without downloading or compiling Lean.
+
+The regular CI lanes continue to cover standalone installation, broker/LSP behavior, and mixed
+toolchain workspaces. Native platform CI covers the supported release SDK across platforms;
+nightly distribution qualification remains one Linux job and leaves public toolchain registries
+unchanged.
 
 ## Save Replay Timeout Investigation
 
