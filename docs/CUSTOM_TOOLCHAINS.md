@@ -26,6 +26,11 @@ toolchain prebuild options are documented in
 
 ## Bundle Resolution
 
+Standalone Beam resolves the project's `lean-toolchain` selector explicitly. The compiler executable
+and bundle use the same observed Lean/Lake fingerprint, so an inherited `ELAN_TOOLCHAIN` does not
+silently select a different compiler for the bundle. Bundled Beam uses its containing installation;
+see the [installation comparison](TOOLCHAIN_BUNDLING.md).
+
 When a project requests a Lean toolchain, Beam resolves helpers in this order:
 
 1. an installed bundle cache under the Beam install state

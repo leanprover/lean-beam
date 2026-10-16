@@ -51,17 +51,17 @@ private def readManagedSelector (root : System.FilePath) : IO String := do
   unless ← path.pathExists do throw <| IO.userError s!"missing lean-toolchain in {root}"
   pure <| Beam.trimLine (← IO.FS.readFile path)
 
-private def managedLean (root : System.FilePath) : IO String :=
-  Beam.readCmdTrim "elan" #["which", "lean"] (some root)
+private def leanExecutableIn (leanPrefix : System.FilePath) : System.FilePath :=
+  leanPrefix / "bin" / (if System.Platform.isWindows then "lean.exe" else "lean")
 
 private def resolveManaged (home root : System.FilePath) : IO DesiredConfig := do
   let selector ← readManagedSelector root
-  let (bundle, bundleId) ← ensureToolchainBundle root home selector
+  let (fingerprint, bundle, bundleId) ← ensureToolchainBundle root home selector
   ensureLeanBundleExists bundle
   pure {
     root
     lean := {
-      command := ← managedLean root
+      command := (leanExecutableIn <| System.FilePath.mk fingerprint.leanPrefix).toString
       plugin := bundle.plugin
       toolchain := selector
       bundleId
@@ -227,12 +227,6 @@ private def managedDoctorLines (home root : System.FilePath) : IO (List String) 
   let toolchainAccepted := support.acceptance.accepted
   let releaseLine :=
     support.acceptance.releaseLine?.map (·.versionText) |>.getD "(not applicable)"
-  let leanCmd? ←
-    if toolchainAccepted then
-      let leanCmd ← managedLean root
-      pure (some leanCmd)
-    else
-      pure none
   let runtimeRoot ← runtimeBundleCacheRoot root
   let platform ← bundlePlatform
   let srcHash ← sourceHash home
@@ -241,6 +235,9 @@ private def managedDoctorLines (home root : System.FilePath) : IO (List String) 
       acceptedLeanBundleDoctorInfo home runtimeRoot toolchain
     else
       pure rejectedLeanBundleDoctorInfo
+  let leanCmd := if toolchainAccepted then
+    (leanExecutableIn <| System.FilePath.mk bundleInfo.leanPrefix).toString
+  else rejectedToolchainDiagnosticText
   pure [
     s!"project toolchain: {toolchain}",
     s!"project toolchain admission: {support.acceptance.label}",
@@ -250,7 +247,7 @@ private def managedDoctorLines (home root : System.FilePath) : IO (List String) 
     s!"validated toolchains registry: {support.validatedPath}",
     s!"compatible release lines registry: {support.compatiblePath}",
     s!"custom toolchains registry: {support.customPath}",
-    s!"lean binary: {leanCmd?.getD rejectedToolchainDiagnosticText}",
+    s!"lean binary: {leanCmd}",
     s!"bundle platform: {platform}",
     s!"bundle source: {bundleInfo.source}",
     s!"bundle source hash: {srcHash}",

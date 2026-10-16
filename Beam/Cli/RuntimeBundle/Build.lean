@@ -264,15 +264,18 @@ def ensureToolchainBundleIn (cacheRoot home : System.FilePath) (toolchain : Stri
   let fingerprint ← toolchainFingerprint toolchain
   ensureToolchainBundleInForFingerprint cacheRoot home toolchain fingerprint
 
+/-- Return the selected bundle together with the compiler fingerprint used to admit it. -/
 def ensureToolchainBundle (root home : System.FilePath) (toolchain : String) :
-    IO (LeanBundlePaths × String) := do
+    IO (ToolchainFingerprint × LeanBundlePaths × String) := do
   ensureAcceptedLeanToolchain home toolchain
   let fingerprint ← toolchainFingerprint toolchain
-  match ← existingToolchainBundleInAnyForFingerprint? (← installBundleCacheRoots) home toolchain fingerprint with
-  | some bundle => pure bundle
-  | none =>
-      let cacheRoot ← runtimeBundleCacheRootForWrite root
-      ensureToolchainBundleInForFingerprint cacheRoot home toolchain fingerprint
+  let (paths, bundleId) ←
+    match ← existingToolchainBundleInAnyForFingerprint? (← installBundleCacheRoots) home toolchain fingerprint with
+    | some bundle => pure bundle
+    | none =>
+        let cacheRoot ← runtimeBundleCacheRootForWrite root
+        ensureToolchainBundleInForFingerprint cacheRoot home toolchain fingerprint
+  pure (fingerprint, paths, bundleId)
 
 def predictedToolchainBundleForFingerprint (cacheRoot home : System.FilePath) (toolchain : String)
     (fingerprint : ToolchainFingerprint) : IO (LeanBundlePaths × String) := do
