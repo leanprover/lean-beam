@@ -82,7 +82,6 @@ def managed (base : Identity) (home? : Option System.FilePath) : IO Identity := 
 /-- Render a previously observed SDK identity without further filesystem reads. -/
 def bundled (base : Identity) (p : Toolchain.Provenance) : Identity := {
   base with
-  name := if base.name == "beam-cli" then cliName else base.name
   runtimePayload? := some p.payloadHash
   sourceCommit? := some p.sourceCommit
   bundledLean? := some p.leanVersion

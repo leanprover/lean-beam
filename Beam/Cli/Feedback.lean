@@ -80,9 +80,6 @@ private partial def parseOptions (opts : Options) : List String → IO Options
 private def confidentialIdentityJson : Json :=
   ({ name := Beam.Version.cliName } : Beam.Version.Identity).asJson
 
-private def versionIdentityJson (identity : IO Beam.Version.Identity) : IO Json := do
-  pure (← identity).asJson
-
 private def feedbackDaemonRequestTimeoutMs : Nat :=
   5000
 
@@ -126,7 +123,7 @@ private def collectNonConfidential
     (explicitControlDir? : Option System.FilePath)
     (warnings : Array String) : IO Beam.Feedback.Collection := do
   let generatedAt ← Beam.utcTimestamp
-  let identity ← versionIdentityJson identity
+  let identity := (← identity).asJson
   let (stats, openDocs, daemon, warnings) ←
     match root? with
     | none =>

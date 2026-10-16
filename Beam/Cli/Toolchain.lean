@@ -74,9 +74,10 @@ def ResolutionError.message : ResolutionError → String
       "bundled Beam and Lean use different compiler builds; reinstall this toolchain"
   | .selectorUnavailable selector =>
       s!"cannot resolve the project's lean-toolchain selector '{selector}'; install or link it with elan, then use lean-beam from the project's toolchain"
-  | .selectorMismatch bundled _ =>
+  | .selectorMismatch bundled selected =>
       "project does not select the bundled Lean installation; use lean-beam from the project's toolchain. " ++
-        s!"Bundled Lean: {bundled}. Inspect the project's selector with `elan run SELECTOR lean --print-prefix`."
+        s!"Bundled Lean: {bundled}. Selected Lean: {selected}. " ++
+        "Inspect the project's selector with `elan run SELECTOR lean --print-prefix`."
   | .missingArtifact kind path => s!"missing {kind} at {path}"
   | .io error => error.toString
 
@@ -94,13 +95,13 @@ def Layout.readProvenance (sdk : Layout) : IO (Except ResolutionError Provenance
       pure p
   catch error => pure <| .error <| .io error
 
-/-- Immutable observations from a single operation. The declared selector is not a version label. -/
+/-- Immutable observations from a single operation; executable identity is independent of version labels. -/
 structure Facts where
   layout : Layout
   provenance : Provenance
   compilerGithash : String
   canonicalLean : System.FilePath
-  declaredSelection? : Option (String × System.FilePath)
+  declaredLean? : Option System.FilePath
 
 /-- Pure admission policy: a selector must name this installation, not merely an equal compiler. -/
 def validate (root : System.FilePath) (facts : Facts) : Except ResolutionError DesiredConfig := do
@@ -108,9 +109,9 @@ def validate (root : System.FilePath) (facts : Facts) : Except ResolutionError D
   validateProvenance (facts.layout.home / "provenance.json") p
   unless facts.compilerGithash == p.leanGithash do
     throw .compilerMismatch
-  if let some (_, selected) := facts.declaredSelection? then
+  if let some selected := facts.declaredLean? then
     unless selected == facts.canonicalLean do
-      throw <| .selectorMismatch (facts.layout.executable "lean") selected
+      throw <| .selectorMismatch facts.canonicalLean selected
   pure {
     root
     lean := {
@@ -132,7 +133,7 @@ def Layout.resolve (sdk : Layout) (root : System.FilePath) :
     let lean := sdk.executable "lean"
     let compilerGithash ← Beam.readCmdTrim lean.toString #["--githash"]
     let canonicalLean ← Beam.resolveExistingPath lean
-    let declaredSelection? ← if ← (root / "lean-toolchain").pathExists then do
+    let declaredLean? ← if ← (root / "lean-toolchain").pathExists then do
       let selector := Beam.trimLine (← IO.FS.readFile (root / "lean-toolchain"))
       let selected ← try
         IO.Process.output {
@@ -148,14 +149,14 @@ def Layout.resolve (sdk : Layout) (root : System.FilePath) :
         lean.fileName.getD "lean"
       let selectedLean ← try Beam.resolveExistingPath selectedLean
         catch _ => return .error <| .selectorUnavailable selector
-      pure <| some (selector, selectedLean)
+      pure <| some selectedLean
     else pure none
     let facts : Facts := {
       layout := sdk
       provenance := p
       compilerGithash
       canonicalLean
-      declaredSelection?
+      declaredLean?
     }
     let desired ← match validate root facts with
       | .ok desired => pure desired

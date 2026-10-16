@@ -71,7 +71,10 @@ class PartialSetupDoctorTest(unittest.TestCase):
         self.assertIn("fixture: toolchain is not installed", result.stderr)
         self.assertIn("daemon status: absent", report)
         self.assertIn("daemon incidents: none", report)
-        self.assertEqual(self.elan_log.read_text().splitlines(), ["which lean"])
+        self.assertEqual(
+            self.elan_log.read_text().splitlines(),
+            [f"run {toolchain.strip()} lean --version"],
+        )
         self.assertFalse((self.project / ".beam").exists())
         self.assertEqual((self.project / "lean-toolchain").read_text(), toolchain)
 

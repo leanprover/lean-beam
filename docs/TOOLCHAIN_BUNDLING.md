@@ -4,6 +4,22 @@ Release builders can compile Beam for one explicitly selected Lean installation 
 standalone installer. This mode uses the containing installation's Lean, Lake, daemon, and plugin.
 The standalone installer and its toolchain registries retain their existing behavior.
 
+The three installation models have different responsibilities:
+
+| Installation | Lean selection | Beam runtime artifacts |
+| --- | --- | --- |
+| Regular Lean through elan | Elan's normal selection, including inherited overrides | Beam is provided separately unless the Lean distributor bundles it |
+| Standalone Beam, from a checkout or its installer | The project's declared `lean-toolchain`, resolved explicitly | Managed installed bundles, with a qualified local build as fallback |
+| Beam bundled with Lean | The containing Lean installation; a declared project selector must name that installation | The installed sibling executables and private plugin, with no fallback build |
+
+The implementation calls the standalone strategy **managed**, and the bundled strategy **SDK**.
+Here a Lean SDK means the complete Lean installation, including Lean, Lake, and their libraries.
+Operating-system SDK headers used to compile native helpers are a separate build dependency.
+This interface lets distributors opt into bundling Beam; an ordinary elan toolchain need not contain it.
+
+For managed Beam, the compiler executable and bundle come from the same resolved toolchain
+fingerprint. An inherited `ELAN_TOOLCHAIN` does not retarget either part of a project runtime.
+
 Use CMake 3.21 or later from a Beam source checkout pinned to an immutable revision:
 
 ```sh
@@ -51,6 +67,9 @@ Toolchain mode ignores `BEAM_HOME`, `BEAM_INSTALL_BUNDLE_DIR`, and `BEAM_BUNDLE_
 fetches Beam sources nor builds or selects standalone runtime bundles. Missing runtime files are
 errors; reinstall the toolchain to repair them. Session and other state-location controls keep
 their normal meaning.
+Malformed provenance makes `version` and `doctor` fail. Doctor prints and flushes session and recovery
+diagnostics before inspecting the runtime. Recorded-owner `stop` and `recover` remain available because
+they use the saved session descriptor rather than resolving the current runtime.
 
 Standalone runtime management commands (`bundle-install`, `prune`, `validated-toolchains`, and
 `compatible-release-lines`) and standalone install metadata helpers are unavailable
@@ -70,9 +89,9 @@ with the same exact compiler-ABI check before loading a workspace in-process.
 Use `elan run SELECTOR lean-beam-mcp` to launch the MCP server with an explicit toolchain.
 If launched through an elan proxy, the launch directory and elan overrides select the executable
 when the server starts.
-The running server remains bound to its containing SDK; later MCP requests do not repeat elan's
-selection. It can serve multiple projects using that SDK, but rejects projects selecting a different
-installation. Start the matching SDK's server for those projects. The checkout installer retains
+The running server remains bound to its containing Lean installation; later MCP requests do not
+repeat elan's selection. It can serve multiple projects using that installation, but rejects projects
+selecting a different installation. Start the matching toolchain's server for those projects. The checkout installer retains
 its ability to serve projects using different toolchains from one MCP server.
 
 The normal foreground owner and document-version contract applies:
@@ -106,13 +125,13 @@ see [the CI layout](TESTING.md#ci-map).
 A release integration must also run this test against the actual compiler being shipped. Wasm, MCP
 registration and skill installation are outside this build/install interface.
 
-Runtime resolution is owned by the application installation adapters. The SDK adapter observes
+Runtime resolution is owned by the application installation adapters. The bundled adapter observes
 provenance, compiler identity, and any declared project selector once for each resolution operation,
 then applies a pure admission check. The managed adapter owns source and bundle-cache resolution.
 Both supply complete runtime configurations to session and broker code; those components do not
 interpret SDK directories, install manifests, or cache layouts.
 
 The application selects an adapter at startup without resolving a project. Starting an owner first
-validates the private control directory, then resolves its runtime. Attaching to an SDK-bound owner
+validates the private control directory, then resolves its runtime. Attaching to a bundled-runtime owner
 checks the current payload identity. Stopping or recovering a recorded owner does not require the
 current runtime to resolve, so broken or replaced installation metadata cannot prevent cleanup.

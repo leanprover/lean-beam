@@ -348,6 +348,13 @@ The CLI daemon test also exercises pure SDK admission: selector aliases, exact i
 compiler/provenance mismatches, and payload changes. The native installation regression checks that
 an existing owner remains stoppable with malformed provenance.
 
+`bash tests/test-beam-wrapper-toolchain.sh` compares managed runtime configuration with and without
+an inherited elan override, then starts an owner and runs an actual probe under that override.
+It also checks that `doctor` names the same compiler as the bundle. The slow suite runs this slice.
+`python3 tests/test-native-provenance.py` exercises the CMake installer with fixture artifacts and
+version strings containing quotes, backslashes, Unicode, and control characters. It requires
+CMake 3.21 or later and runs as part of native toolchain qualification.
+
 The focused CLI daemon test also checks that a failed stderr evidence sink does not stop pipe
 draining, that sink failure observation is synchronized, and that a pipe held open past leader exit
 produces a bounded `pipeStillOpen` outcome rather than an unbounded task join.

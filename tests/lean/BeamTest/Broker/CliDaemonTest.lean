@@ -1702,19 +1702,21 @@ private def checkSdkRuntimeAdmission : IO Unit := do
     provenance := p
     compilerGithash := Lean.githash
     canonicalLean := "/sdk/bin/lean"
-    declaredSelection? := none
+    declaredLean? := none
   }
   let resolve := Beam.Cli.Toolchain.validate "/project"
   let admitted ← IO.ofExcept <| (resolve facts).mapError (·.message)
   require "SDK runtime identity includes the observed payload"
     (admitted.lean.bundleId.contains "payload-one")
-  let alias ← IO.ofExcept <| (resolve { facts with
-    declaredSelection? := some ("project-alias", facts.canonicalLean)
+  let matching ← IO.ofExcept <| (resolve { facts with
+    declaredLean? := some facts.canonicalLean
   }).mapError (·.message)
-  require "selector aliases do not replace compiler version metadata"
-    (alias.lean.toolchain == p.leanVersion)
-  match resolve { facts with declaredSelection? := some ("same-build", "/other/bin/lean") } with
-  | .error (.selectorMismatch ..) => pure ()
+  require "matching declared installation preserves the compiler's version metadata"
+    (matching.lean.toolchain == p.leanVersion)
+  match resolve { facts with declaredLean? := some "/other/bin/lean" } with
+  | .error error@(.selectorMismatch ..) =>
+      requireSubstring "selector mismatch includes the expected executable" "/sdk/bin/lean" error.message
+      requireSubstring "selector mismatch includes the selected executable" "/other/bin/lean" error.message
   | _ => throw <| IO.userError "equal compiler builds in different installations must be rejected"
   match resolve { facts with compilerGithash := "foreign-compiler" } with
   | .error .compilerMismatch => pure ()

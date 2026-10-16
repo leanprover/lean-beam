@@ -47,6 +47,8 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
   `--custom-toolchain <toolchain>`, recorded in the runtime's `custom-lean-toolchains` registry
 - conservative installed-state maintenance through `lean-beam prune`, with a dry run by default,
   ownership and manifest validation, and optional stale installed bundle-cache cleanup
+- a [native build/install interface for Lean distributors](TOOLCHAIN_BUNDLING.md), using one selected
+  Lean installation and its bundled Beam artifacts without standalone runtime caches
 
 ### MCP And Agent Integration
 

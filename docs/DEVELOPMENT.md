@@ -555,8 +555,10 @@ compatibility boundary: it is never stale-reaped, and a crashed installer requir
 operator recovery. Reusable CLI argument parsing lives in
 [Beam/Cli/Args.lean](../Beam/Cli/Args.lean). Project-root inference lives in
 [Beam/Cli/Project.lean](../Beam/Cli/Project.lean). The application adapter in
-[Beam/Cli/Installation.lean](../Beam/Cli/Installation.lean) selects managed or SDK runtime
-resolution. SDK observations and pure admission checks live in
+[Beam/Cli/Installation.lean](../Beam/Cli/Installation.lean) selects managed (checkout or standalone
+installer) or SDK (bundled with a complete Lean installation) runtime resolution.
+The managed resolver retains the selected bundle's fingerprint to derive the compiler executable.
+SDK observations and pure admission checks live in
 [Beam/Cli/Toolchain.lean](../Beam/Cli/Toolchain.lean).
 Shared filesystem path helpers live in [Beam/Path.lean](../Beam/Path.lean). Use them instead of
 copying string-prefix checks or raw `IO.FS.realPath` wrappers:
