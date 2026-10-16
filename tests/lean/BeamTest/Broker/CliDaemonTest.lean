@@ -15,6 +15,7 @@ import Beam.Cli.RuntimeBundle
 import Beam.Daemon.Debug
 import Beam.Daemon.Paths
 import Beam.Path
+import Beam.Runtime.SharedLibs
 import BeamTest.Broker.JsonAssert
 import BeamTest.Broker.InterruptWatcherTest
 import BeamTest.PathBoundaryTest
@@ -1337,7 +1338,9 @@ private def checkLockLifecycle : IO Unit := do
 
 private def writeFakeBundleArtifacts (workspace : System.FilePath) : IO Unit := do
   let paths := Beam.Cli.leanBundlePathsFor workspace
-  for path in #[paths.daemon, paths.plugin] do
+  let libDir := Beam.Runtime.buildSharedLibDir (workspace / ".lake" / "build")
+  let libraries := Beam.Runtime.sharedLibNames.toArray.map fun (name : String) => libDir / name
+  for path in #[paths.daemon, paths.plugin] ++ libraries do
     if let some parent := path.parent then
       IO.FS.createDirAll parent
     IO.FS.writeFile path "fake artifact\n"
@@ -1583,6 +1586,16 @@ private def checkRuntimeBundleMetadataAcceptance : IO Unit := do
 
     require "complete bundle source hash should use typed ready metadata"
       ((← Beam.Cli.completeBundleSourceHash? bundleDir) == some sourceHash)
+
+    let libDir := Beam.Runtime.buildSharedLibDir (workspace / ".lake" / "build")
+    for name in Beam.Runtime.sharedLibNames do
+      let library := libDir / name
+      IO.FS.removeFile library
+      require s!"bundle should reject missing shared runtime library {name}"
+        (!(← Beam.Cli.bundleReady bundleDir toolchain sourceHash sampleFingerprint))
+      require "bundle with an incomplete shared runtime should not expose a source hash"
+        ((← Beam.Cli.completeBundleSourceHash? bundleDir).isNone)
+      IO.FS.writeFile library "fake artifact\n"
 
     let metadataPath := Beam.Cli.bundleMetadataPath bundleDir
     let metadataTarget := root / "metadata-symlink-target.json"

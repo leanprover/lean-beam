@@ -1,8 +1,9 @@
 # Bundling Beam with a native Lean installation
 
-Release builders can compile Beam for one explicitly selected Lean installation without running the
-standalone installer. This mode uses the containing installation's Lean, Lake, daemon, and plugin.
-The standalone installer and its toolchain registries retain their existing behavior.
+This is the release-builder interface for including Beam in a Lean toolchain distribution,
+including distributions installed through elan. Builders compile Beam for the selected Lean
+installation; the resulting commands use that installation's Lean, Lake, daemon, and plugin.
+Installing from a Beam checkout with `scripts/install-beam.sh` is the other installation case.
 Windows x86_64 support covers this bundled runtime; the checkout installer and shell wrappers
 target Linux and macOS.
 
@@ -49,6 +50,8 @@ the recorded toolchain build. Git metadata is needed only for the build.
 Native configuration and outputs live separately under `.lake/toolchain-lakefile.lean` and
 `.lake/toolchain-build`. A warmed standalone configuration or CLI is preserved; the native
 scripts explicitly reconfigure their own Lake file for the requested build mode.
+That output tree is a staging layout; normal native commands run after installation into a complete
+Lean SDK.
 
 `PREFIX` is the destination Lean installation, with its corresponding Lean files installed by the
 release builder. It may equal `LEAN_PREFIX`. Spaces are supported. The installed Beam files are:
@@ -63,6 +66,12 @@ The executables locate these files relative to themselves. The MCP server uses t
 `lean-beam` automatically and rejects runtime options selecting a different toolchain. Provenance
 records the Beam source commit, a SHA-256 identity of the CLI, daemon, MCP server, and plugin payload,
 and the selected Lean/Lake identities.
+The three Beam executables dynamically link to the containing installation's Lean and Lake
+shared libraries. Unix executables use a relative `lib/lean` search path; Windows loads the
+matching DLLs from `bin`. The install script does not copy another Lean runtime or retain a
+search path into the build machine's toolchain. Keep the complete Lean shared-library set,
+including the split-library stubs, with the installation when relocating or packaging it.
+
 `lean-beam version` and `lean-beam --root PROJECT doctor` read this installed record. The payload
 identity also participates in session configuration: replacing it requires stopping the old
 foreground owner before attaching to a new session.

@@ -31,3 +31,22 @@ beam_shared_lib_name() {
       ;;
   esac
 }
+
+beam_runtime_shared_lib_names() {
+  local name ext
+  ext="$(beam_shared_lib_ext)"
+  for name in Init_shared leanshared_1 leanshared_2 leanshared Lake_shared; do
+    printf 'lib%s.%s\n' "$name" "$ext"
+  done
+}
+
+beam_runtime_shared_lib_dir() {
+  case "$(uname -s)" in
+    CYGWIN*|MINGW*|MSYS*|Windows_NT)
+      printf 'bin\n'
+      ;;
+    *)
+      printf 'lib/lean\n'
+      ;;
+  esac
+}

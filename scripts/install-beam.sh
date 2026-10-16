@@ -153,6 +153,16 @@ runtime_payload_spec=(
   "required|wrapperPaths|scripts/lean-beam-mcp|bin/lean-beam-mcp"
 )
 
+while IFS= read -r runtime_shared_lib; do
+  runtime_shared_lib_source=".lake/build/$(beam_runtime_shared_lib_dir)/$runtime_shared_lib"
+  if [ "$(beam_shared_lib_ext)" = "dll" ]; then
+    runtime_shared_lib_dest="libexec/$runtime_shared_lib"
+  else
+    runtime_shared_lib_dest="lib/lean/$runtime_shared_lib"
+  fi
+  runtime_payload_spec+=("required|runtimePaths|$runtime_shared_lib_source|$runtime_shared_lib_dest")
+done < <(beam_runtime_shared_lib_names)
+
 usage() {
   cat <<EOF
 Usage:
@@ -1024,10 +1034,14 @@ resolve_prepared_toolchain_selection() {
 }
 
 runtime_artifacts_ready() {
+  local name
   [ -x "$beam_cli" ] \
     && [ -x "$repo_root/.lake/build/bin/beam-daemon" ] \
     && [ -x "$repo_root/.lake/build/bin/lean-beam-mcp" ] \
-    && [ -f "$repo_root/.lake/build/lib/$beam_lsp_plugin_shared_lib" ]
+    && [ -f "$repo_root/.lake/build/lib/$beam_lsp_plugin_shared_lib" ] || return 1
+  while IFS= read -r name; do
+    [ -f "$repo_root/.lake/build/$(beam_runtime_shared_lib_dir)/$name" ] || return 1
+  done < <(beam_runtime_shared_lib_names)
 }
 
 print_install_plan() {

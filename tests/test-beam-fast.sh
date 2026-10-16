@@ -278,6 +278,10 @@ fi
 
 mcp_http_timeout="${BEAM_MCP_HTTP_TIMEOUT:-60}"
 python3 tests/test-mcp-http-bridge.py --timeout "$mcp_http_timeout" > /dev/null
+# Keep cold target-toolchain compilation outside the self-check's protocol deadline.
+fixture_toolchain="$(awk 'NR==1 {print $1}' tests/save_olean_project/lean-toolchain)"
+run_quiet_test "MCP self-check fixture runtime" env BEAM_INSTALL_BUNDLE_DIR="$BEAM_BUNDLE_DIR" \
+  .lake/build/bin/beam-cli bundle-install "$fixture_toolchain"
 mcp_self_check_timeout="${BEAM_MCP_SELF_CHECK_TIMEOUT_MS:-120000}"
 mcp_self_check_watchdog="${BEAM_MCP_SELF_CHECK_WATCHDOG_SECONDS:-600}"
 (cd tests/save_olean_project && \

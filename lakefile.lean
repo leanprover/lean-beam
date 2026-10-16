@@ -23,6 +23,45 @@ script beamToolchainCompilerId do
   IO.println Lean.githash
   return 0
 
+/-- Stage a complete runtime library without modifying an existing destination in place. -/
+private def stageBeamSharedLibrary (src dst : FilePath) : IO Unit := do
+  let bytes ← IO.FS.readBinFile src
+  let alreadyStaged ← try
+    let metadata ← dst.symlinkMetadata
+    pure <| metadata.type == .file && (← IO.FS.readBinFile dst) == bytes
+  catch
+    | .noFileOrDirectory .. => pure false
+    | e => throw e
+  unless alreadyStaged do
+    IO.FS.createDirAll (dst.parent.getD ".")
+    let tmp := FilePath.mk s!"{dst}.beam-stage-{← IO.Process.getPID}-{← IO.monoNanosNow}.tmp"
+    try
+      IO.FS.withFile tmp .writeNew fun handle => handle.write bytes
+      IO.FS.rename tmp dst
+    catch e =>
+      try removeFileIfExists tmp catch _ => pure ()
+      throw e
+
+/-- Link the selected Lean/Lake shared libraries and stage their exact runtime dependencies. -/
+target beamSharedRuntime (pkg) : Dynlib := do
+  let lean ← getLeanInstall
+  let dstDir := pkg.buildDir / if System.Platform.isWindows then "bin" else "lib/lean"
+  let lake := (LakeInstall.ofLean lean).sharedDynlib
+  let copies ← (lake.deps.push lake).mapM fun lib => do
+    let dst := dstDir / nameToSharedLib lib.name true
+    let input ← inputBinFile lib.path
+    input.mapM fun source => do
+      -- These are already-built SDK inputs; stage them without adding duplicate split-library
+      -- stubs to Lake's artifact cache.
+      stageBeamSharedLibrary source dst
+  return (Job.collectArray copies).map fun _ => lake
+
+/-- All source, standalone-install, and native-toolchain layouts use the same relative libdir. -/
+def beamSharedRuntimeLinkArgs : Array String :=
+  if System.Platform.isWindows then #[]
+  else if System.Platform.isOSX then #["-Wl,-rpath,@loader_path/../lib/lean"]
+  else #["-Wl,-rpath,$ORIGIN/../lib/lean"]
+
 /-- Compile the control-directory helper with the selected Lean compiler and native SDK headers. -/
 target beamControlDirObj (pkg) : FilePath := do
   let srcFile := pkg.dir / "Beam" / "Native" / "control_dir.c"
@@ -128,14 +167,22 @@ lean_exe "beam-lsp-search-workload-report" where
 lean_exe "beam-daemon" where
   root := `Beam.Broker.ServerMain
   supportInterpreter := true
+  moreLinkLibs := #[beamSharedRuntime]
+  moreLinkArgs := beamSharedRuntimeLinkArgs
 
 lean_exe "lean-beam-mcp" where
   root := `Beam.Mcp.ServerMain
   supportInterpreter := true
+  moreLinkLibs := #[beamSharedRuntime]
+  moreLinkArgs := beamSharedRuntimeLinkArgs
 
 @[default_target]
 lean_exe "beam-cli" where
   root := `Beam.Cli
+  -- On Windows this also selects Lake's shared Lean runtime linker flags.
+  supportInterpreter := System.Platform.isWindows
+  moreLinkLibs := #[beamSharedRuntime]
+  moreLinkArgs := beamSharedRuntimeLinkArgs
 
 lean_exe "beam-daemon-smoke-test" where
   srcDir := "tests/lean"

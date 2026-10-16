@@ -64,6 +64,44 @@ Preferred maintainer entrypoints:
   process when the probe loop is finished
 - contributor process questions: [CONTRIBUTING.md](../CONTRIBUTING.md)
 
+### Executable Linking And Runtime Libraries
+
+The three product executables use Lake's `moreLinkLibs` and `Dynlib` interfaces. The build derives
+Lake's shared-library path and complete dependency graph from `LakeInstall.ofLean`, including
+the core split-library stubs. On Windows, `supportInterpreter`
+selects Lake's shared Lean linker flags, so the CLI enables it there too.
+
+The build stages matching libraries beside its outputs and publishes each complete file by
+rename. Prebuilt libraries are staged directly as SDK inputs, and unchanged libraries keep
+their existing files. The bootstrap shell installer and typed Lean install layout each describe
+the runtime payload because the installer must work before the CLI is built; installation and
+bundle tests check that the layouts agree.
+
+Size measurements must distinguish the executable files from the library set. Native SDK installs
+reuse Lean's existing libraries; standalone installs and target-toolchain bundles carry their own.
+
+### Installation Cases
+
+Beam has two installation cases:
+
+- **Included in a Lean toolchain distribution**, which elan installs with Lean. Beam commands
+  live in the toolchain's `bin`, the LSP plugin in `lib/lean-beam`, and the executables reuse the
+  toolchain's Lean/Lake shared libraries. Release builders use the
+  [toolchain build/install interface](TOOLCHAIN_BUNDLING.md) to prepare this payload.
+- **Installed from a checkout with `scripts/install-beam.sh`.** Wrapper links live in
+  `~/.local/bin`; private commands live in the installed payload's `libexec`. The installer
+  packages their matching Lean/Lake libraries. Lean requests use an internal bundle containing
+  a daemon and plugin built for the project's toolchain. The project still needs that Lean toolchain.
+
+Both cases use the same Lake linking target and load the matching LSP plugin through Lean's
+`--plugin=PATH`. Unix executable library lookup is relative to `../lib/lean`; Windows runtime
+DLLs live beside the executables, in toolchain `bin` or standalone `libexec`.
+
+`.lake/build` and `.lake/toolchain-build` are staging outputs for these installers.
+Target-toolchain bundles and caches are implementation details of the checkout installation.
+Their SDK fingerprints and absolute workspace metadata still govern reuse; they are not a
+separate installation interface or a relocatable distribution format.
+
 ## Human And AI Roles
 
 - README is for humans who want to understand and use the project

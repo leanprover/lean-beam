@@ -83,6 +83,18 @@ def main():
         run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "90", "--",
              REPO / ".lake/build/bin" / f"beam-mcp-protocol-test{EXE}", "--self-check-tests"],
             env=build_env)
+        # A failed/interrupted prior staging operation must be repairable without rewriting
+        # intact libraries. Exercise an existing destination, including DLL replacement.
+        suffix = "dll" if os.name == "nt" else "dylib" if os.uname().sysname == "Darwin" else "so"
+        runtime_dir = REPO / ".lake" / "build" / ("bin" if os.name == "nt" else "lib/lean")
+        stub = runtime_dir / f"libInit_shared.{suffix}"
+        intact = {p: p.stat().st_mtime_ns for p in runtime_dir.glob(f"lib*shared*.{suffix}") if p != stub}
+        stub.write_bytes(b"incomplete shared library")
+        run([lean_prefix / "bin" / f"lake{EXE}", "--no-cache", "build", "beamSharedRuntime"], env=build_env)
+        sdk_dir = lean_prefix / ("bin" if os.name == "nt" else "lib/lean")
+        assert stub.read_bytes() == (sdk_dir / stub.name).read_bytes()
+        assert all(p.stat().st_mtime_ns == timestamp for p, timestamp in intact.items())
+        assert not list(runtime_dir.glob("*.beam-stage-*.tmp"))
         standalone = REPO / ".lake" / "build" / "bin" / f"beam-cli{EXE}"
         standalone_hash = hashlib.sha256(standalone.read_bytes()).hexdigest()
         config_trace = REPO / ".lake" / "config" / "0" / "lakefile.olean.trace"
@@ -188,6 +200,19 @@ def main():
     version = run([beam, "version"], cwd=scratch, env=env).stdout
     assert version.startswith("lean-beam "), version
     assert metadata["payloadHash"] in version and metadata["leanVersion"] in version, version
+    if os.name != "nt":
+        # A relocated Beam executable must load its containing toolchain's libraries. The
+        # original build prefix is still present: hiding the relocated library detects an
+        # accidental static link or an absolute fallback to that build prefix.
+        suffix = "dylib" if os.uname().sysname == "Darwin" else "so"
+        core = relocated / "lib" / "lean" / f"libleanshared.{suffix}"
+        parked_core = core.with_name(core.name + ".parked")
+        core.rename(parked_core)
+        try:
+            missing_core = run([beam, "version"], cwd=scratch, env=env, ok=False)
+            assert missing_core.returncode != 0 and "libleanshared" in missing_core.stderr, missing_core
+        finally:
+            parked_core.rename(core)
     mcp = relocated / "bin" / f"lean-beam-mcp{EXE}"
     mcp_version = run([mcp, "--version"], cwd=scratch, env=env).stdout
     assert "lean-beam-mcp" in mcp_version and metadata["payloadHash"] in mcp_version, mcp_version

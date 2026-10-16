@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Lean
 import Beam.LSP.Lib.NativeLib
 import Beam.Path
+import Beam.Runtime.SharedLibs
 
 open Lean
 
@@ -85,7 +86,8 @@ def bundleSourceHashInputLabels : List String :=
 
 def installRuntimePaths : List String :=
   ["libexec/beam-cli", "libexec/beam-daemon",
-    "libexec/lean-beam-mcp", s!"libexec/{Beam.LSP.Lib.pluginSharedLibName}"]
+    "libexec/lean-beam-mcp", s!"libexec/{Beam.LSP.Lib.pluginSharedLibName}"] ++
+  Beam.Runtime.sharedLibNames.map (fun name => s!"{Beam.Runtime.installedSharedLibDir}/{name}")
 
 def installWrapperPaths : List String :=
   ["bin/lean-beam", "bin/lean-beam-search", "bin/lean-beam-mcp"]

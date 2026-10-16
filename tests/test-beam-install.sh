@@ -115,6 +115,10 @@ assert_runtime_layout() {
   assert_not_exists "$runtime_root/libexec/beam-client"
   assert_file "$runtime_root/libexec/lean-beam-mcp"
   assert_file "$runtime_root/libexec/$beam_lsp_plugin_shared_lib"
+  local shared_lib
+  while IFS= read -r shared_lib; do
+    assert_file "$runtime_root/lib/lean/$shared_lib"
+  done < <(beam_runtime_shared_lib_names)
   assert_not_exists "$runtime_root/.lake/build"
   assert_file "$runtime_root/bin/lean-beam"
   assert_file "$runtime_root/bin/lean-beam-search"
@@ -274,6 +278,10 @@ assert_bundle_layout() {
     assert_file "$workspace/.lake/build/bin/beam-daemon"
     assert_not_exists "$workspace/.lake/build/bin/beam-client"
     assert_file "$workspace/.lake/build/lib/$beam_lsp_plugin_shared_lib"
+    local shared_lib
+    while IFS= read -r shared_lib; do
+      assert_file "$workspace/.lake/build/$(beam_runtime_shared_lib_dir)/$shared_lib"
+    done < <(beam_runtime_shared_lib_names)
   done
 }
 
@@ -1412,6 +1420,21 @@ assert_file "$blocked_codex_home/skills/lean-beam/custom.txt"
 assert_not_exists "$blocked_codex_home/skills/rocq-beam"
 
 remove_tmp_tree "$source_checkout"
+
+# The original Lean toolchain remains installed. Hiding the packaged library must fail startup,
+# proving installed commands cannot fall back to a build-machine library or a static Lean copy.
+installed_lean_shared_lib="$installed_runtime_root/lib/lean/libleanshared.$(beam_shared_lib_ext)"
+parked_lean_shared_lib="$installed_lean_shared_lib.parked"
+mv "$installed_lean_shared_lib" "$parked_lean_shared_lib"
+missing_lean_shared_err="$tmp_root/missing-lean-shared.err"
+if "$installed_lean_beam" --version > /dev/null 2> "$missing_lean_shared_err"; then
+  mv "$parked_lean_shared_lib" "$installed_lean_shared_lib"
+  echo "expected installed lean-beam to require its packaged Lean shared library" >&2
+  exit 1
+fi
+mv "$parked_lean_shared_lib" "$installed_lean_shared_lib"
+assert_contains "$missing_lean_shared_err" 'libleanshared'
+remove_tmp_file "$missing_lean_shared_err"
 
 project_root="$tmp_root/external-project"
 rsync -a --exclude='.beam/' tests/save_olean_project/ "$project_root"/

@@ -9,6 +9,7 @@ import Beam.Cli.RuntimeBundle.Fingerprint
 import Beam.Cli.RuntimeBundle.Paths
 import Beam.Path
 import Beam.System
+import Beam.Runtime.SharedLibs
 
 open Lean
 
@@ -59,8 +60,14 @@ private def bundleMetadataWorkspaceMatches
 
 private def bundleArtifactsReady (workspace : System.FilePath) : IO Bool := do
   let paths := leanBundlePathsFor workspace
-  return (← Beam.regularNonSymlinkFile paths.daemon) &&
-    (← Beam.regularNonSymlinkFile paths.plugin)
+  unless (← Beam.regularNonSymlinkFile paths.daemon) &&
+      (← Beam.regularNonSymlinkFile paths.plugin) do
+    return false
+  let libDir := Beam.Runtime.buildSharedLibDir (workspace / ".lake" / "build")
+  for name in Beam.Runtime.sharedLibNames do
+    unless ← Beam.regularNonSymlinkFile (libDir / name) do
+      return false
+  return true
 
 def bundleMetadataPath (bundleDir : System.FilePath) : System.FilePath :=
   bundleDir / "metadata.json"
