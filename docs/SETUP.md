@@ -213,6 +213,13 @@ UTF-16 code units. To probe a tactic replacement, select its first character aft
 to use its before-state. See [Position Semantics](../skills/lean-beam/references/workflow-details.md#position-semantics)
 for the argument order and a before/after example.
 
+`lean-beam doctor` reports session state, recovery details, and recent daemon incident paths before
+inspecting Lean setup. The session report is flushed to stdout before any Lean setup probe; setup
+failures then appear on stderr and produce a nonzero exit status. Pass `--root PATH` to inspect a
+known directory after its Lean project markers disappear, and `--session-dir PATH` when the session
+uses a separate control directory. Inspection preserves the session descriptor and incident files
+and does not start a session or build a bundle.
+
 Start one foreground owner for the wrapper session and keep it running. In another terminal or agent
 process, ask questions against saved Lean files in that project:
 

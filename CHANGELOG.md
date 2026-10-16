@@ -11,6 +11,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 - Workspace statistics expose `session` and `metrics` directly, and `open-files` exposes
   `session.files`. Remove the former `sessions.lean` and `byBackend.lean` wrappers.
   Stats session details no longer repeat the enclosing workspace identity and root.
+- `lean-beam doctor` reports session and recovery diagnostics before inspecting Lean setup.
+  An explicit root can be inspected after Lean project markers disappear; setup failures still
+  produce a nonzero exit status.
 
 ### Removed
 

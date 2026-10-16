@@ -220,7 +220,7 @@ private def serveProject
         wrapperSessionCommand root owner.client.controlDir .stop
 
 private def sessionStatus (opts : CliOptions) : IO Unit := do
-  let root ← projectRootAny opts
+  let root ← inspectionRoot opts
   let sessionDir ← Beam.Daemon.controlDirFor root opts.explicitControlDir?
   let result : SessionStatus ←
     match ← observeProjectRegistry root opts.explicitControlDir? with
@@ -408,15 +408,15 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
   | "doctor" :: [] =>
       doctor home opts
   | "open-files" :: [] =>
-      let root ← projectRootAny opts
+      let root ← inspectionRoot opts
       withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBroker root client Request.openDocs
   | "cancel" :: requestId :: [] =>
-      let root ← projectRootAny opts
+      let root ← inspectionRoot opts
       withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBroker root client <| Request.cancel requestId
   | "stats" :: [] =>
-      let root ← projectRootAny opts
+      let root ← inspectionRoot opts
       withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBroker root client Request.stats
   | "status" :: [] =>

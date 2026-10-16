@@ -656,15 +656,15 @@ private def checkProjectRootSelection : IO Unit := do
     IO.FS.writeFile (rocqRoot / "_RocqProject") "\n"
     let expectedLeanRoot ← Beam.resolveExistingPath leanRoot
     require "Rocq project markers should not affect Lean root inference"
-      ((← Beam.Cli.inferProjectRootAny nested) == expectedLeanRoot)
+      ((← Beam.Cli.inferInspectionRoot nested) == expectedLeanRoot)
     let explicitLean ← Beam.resolveExistingPath leanRoot
     require "an explicit root should select the requested Lean workspace"
-      ((← Beam.Cli.projectRootAny { explicitRoot? := some explicitLean }) == explicitLean)
+      ((← Beam.Cli.inspectionRoot { explicitRoot? := some explicitLean }) == explicitLean)
 
     IO.FS.writeFile (rocqRoot / "lean-toolchain") "leanprover/lean4:stable\n"
     let sharedRoot ← Beam.resolveExistingPath rocqRoot
     require "root inference should select the nearest Lean project"
-      ((← Beam.Cli.inferProjectRootAny rocqRoot) == sharedRoot)
+      ((← Beam.Cli.inferInspectionRoot rocqRoot) == sharedRoot)
   finally
     if ← root.pathExists then
       IO.FS.removeDirAll root

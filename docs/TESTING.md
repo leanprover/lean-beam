@@ -92,6 +92,10 @@ Default Beam entrypoints:
 
 Additional Beam lanes:
 
+- [tests/test-beam-doctor.py](../tests/test-beam-doctor.py): missing-toolchain and missing-project-marker
+  inspection, session output before toolchain probing, selected-session incident reporting,
+  preserved recovery evidence, failure exit status, and absence of setup writes
+
 - [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) `<toolchain>`: exact
   validated or release-line-compatible bundle qualification, admission diagnostics, module save/replay
   (including the required `.ir.sig` companion), and stale-import diagnostic wording compatibility

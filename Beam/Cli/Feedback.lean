@@ -202,7 +202,7 @@ def run (home : System.FilePath) (cliOpts : CliOptions) (args : List String) : I
   let (root?, warnings) ←
     if needsRoot then
       try
-        let root ← projectRootAny cliOpts
+        let root ← inspectionRoot cliOpts
         pure (some root, #[])
       catch e =>
         pure (none, #[e.toString])

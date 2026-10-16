@@ -151,10 +151,9 @@ private def printDaemonFailureIncidentDoctorInfo
     IO.println line
 
 def doctor (home : System.FilePath) (opts : CliOptions) : IO Unit := do
-  let root ← projectRoot opts
+  let root ← inspectionRoot opts
   IO.println s!"beam home: {home}"
   IO.println s!"project root: {root}"
-  printLeanDoctorInfo home root
   let registry ← Beam.Daemon.registryPathFor root opts.explicitControlDir?
   IO.println s!"registry: {registry}"
   match ← observeProjectRegistry root opts.explicitControlDir? with
@@ -178,6 +177,8 @@ def doctor (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       IO.println "daemon status: unsafe"
       IO.println s!"daemon safety error: {reason.message}"
   printDaemonFailureIncidentDoctorInfo root opts.explicitControlDir?
+  (← IO.getStdout).flush
+  printLeanDoctorInfo home root
 
 def printValidatedToolchains (home : System.FilePath) : IO Unit := do
   let (_, toolchains) ← validatedLeanToolchains home

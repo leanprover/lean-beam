@@ -59,15 +59,16 @@ def projectRoot (opts : CliOptions) : IO System.FilePath := do
       | some root => requireLeanProjectRoot root
       | none => throw <| IO.userError "could not infer lean project root; use --root PATH"
 
-def inferProjectRootAny (start : System.FilePath) : IO System.FilePath := do
+def inferInspectionRoot (start : System.FilePath) : IO System.FilePath := do
   match ← findRootUpwards start with
   | some root => pure root
   | none => throw <| IO.userError "could not infer project root; use --root PATH"
 
-def projectRootAny (opts : CliOptions) : IO System.FilePath := do
+/-- Select an inspection root, retaining explicit roots after Lean project markers disappear. -/
+def inspectionRoot (opts : CliOptions) : IO System.FilePath := do
   match opts.explicitRoot? with
   | some root => pure root
-  | none => inferProjectRootAny (System.FilePath.mk ".")
+  | none => inferInspectionRoot (System.FilePath.mk ".")
 
 def explicitProjectRoot (opts : CliOptions) (action : String) : IO System.FilePath := do
   match opts.explicitRoot? with
