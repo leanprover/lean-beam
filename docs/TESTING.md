@@ -345,7 +345,7 @@ macOS matrix is desired. Repository names and actors do not select the policy.
 
 The combined `macos-platform` job covers every test family.
 It runs shell lint, fast broker tests, LSP tests, MCP conformance and SDK tests, the slow suite,
-pinned-toolchain qualification, installer tests, and Rocq tests as separate steps in one checkout.
+pinned-toolchain qualification, and installer tests as separate steps in one checkout.
 The job shares Lean setup and incremental build outputs; each suite keeps its own temporary
 projects and homes. Independent test steps continue after another test fails, while a failed step
 still fails the job. The job has a 120-minute timeout.

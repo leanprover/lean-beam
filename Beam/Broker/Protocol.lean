@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
+import Beam.JsonFields
 import Beam.LSP.Todo
 import Beam.Workspace.Protocol
 
@@ -179,13 +180,7 @@ structure Handle where
 
 instance : FromJson Handle where
   fromJson? json := do
-    let .obj fields := json
-      | throw "broker handle must be an object"
-    let allowed := #["workspaceId", "epoch", "session", "raw"]
-    let unexpected := fields.foldl (init := #[]) fun acc field _ =>
-      if allowed.contains field then acc else acc.push field
-    unless unexpected.isEmpty do
-      throw s!"broker handle accepts no undeclared fields: {String.intercalate ", " unexpected.toList}"
+    requireOnlyJsonFields "broker handle" #["workspaceId", "epoch", "session", "raw"] json
     pure {
       workspaceId := ← json.getObjValAs? WorkspaceId "workspaceId"
       epoch := ← json.getObjValAs? Nat "epoch"
@@ -550,15 +545,6 @@ private def optionalField? [FromJson α] (j : Json) (field : String) : Except St
   | .error _ =>
       pure none
 
-private def requiredField [FromJson α] (j : Json) (field : String) : Except String α := do
-  let value ←
-    match j.getObjVal? field with
-    | .ok value => pure value
-    | .error _ => throw s!"missing '{field}'"
-  match fromJson? value with
-  | .ok decoded => pure decoded
-  | .error err => throw s!"invalid '{field}': {err}"
-
 private def decodeRequestFile
     (j : Json) : Except String RequestFile := do
   pure {
@@ -740,16 +726,6 @@ def displayDetails (progress : SyncFileProgress) (includeDoneTrue : Bool := true
   s!"{rangePrefix}updates={progress.updates}{doneSuffix}"
 
 end SyncFileProgress
-
-private def requireOnlyJsonFields
-    (label : String)
-    (allowed : Array String) : Json → Except String Unit
-  | .obj fields =>
-      let unexpected := fields.foldl (init := #[]) fun unexpected field _ =>
-        if allowed.contains field then unexpected else unexpected.push field
-      unless unexpected.isEmpty do
-        throw s!"{label} accepts no undeclared fields: {String.intercalate ", " unexpected.toList}"
-  | other => throw s!"{label} must be an object, got {other.compress}"
 
 structure SyncDiagnosticCounts where
   error : Nat := 0

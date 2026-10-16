@@ -87,10 +87,6 @@ def startupLogTail?
   catch _ =>
     pure none
 
-private def optionLine (label : String) : Option String → Option String
-  | none => none
-  | some value => some s!"  {label}: {value}"
-
 def daemonRegistryContext?
     (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none) : IO (Option String) := do
@@ -104,10 +100,10 @@ def daemonRegistryContext?
         let workspace := entry.workspace
         let workspaceLines := [
           s!"  workspace: {workspace.workspaceId}",
-          s!"    root: {workspace.root}"
-        ] ++
-          (optionLine "  toolchain" workspace.toolchain?).toList ++
-          [s!"    bundleId: {workspace.bundleId}"]
+          s!"    root: {workspace.root}",
+          s!"    toolchain: {workspace.toolchain}",
+          s!"    bundleId: {workspace.bundleId}"
+        ]
         let lines := ([
           s!"Beam daemon registry ({path}):",
           s!"  schemaVersion: {entry.schemaVersion}",

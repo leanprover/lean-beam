@@ -88,11 +88,11 @@ private def checkLeanConfigLowering : IO Unit := do
     lean.toWorkspaceBinding
       Beam.Cli.projectDaemonWorkspaceId root
   require "Lean-only lowering should retain the complete Lean command"
-    (leanOnly.leanCmd? == some lean.command)
+    (leanOnly.leanCmd == lean.command)
   require "Lean-only lowering should retain the complete Lean plugin"
-    (leanOnly.plugin? == some lean.plugin.toString)
+    (leanOnly.plugin == lean.plugin.toString)
   require "Lean-only lowering should retain the complete Lean toolchain"
-    (leanOnly.toolchain? == some lean.toolchain)
+    (leanOnly.toolchain == lean.toolchain)
   require "Lean-only lowering should retain its bundle identity"
     (leanOnly.bundleId == lean.bundleId)
   let leanOnlyDesired : Beam.Cli.DesiredConfig := {
@@ -814,9 +814,9 @@ private def checkDaemonFailureContext : IO Unit := do
       workspace := {
         workspaceId := Beam.Cli.projectDaemonWorkspaceId
         root := root.toString
-        leanCmd? := some "lean --server"
-        plugin? := some "/tmp/beam-plugin"
-        toolchain? := some "leanprover/lean4:test"
+        leanCmd := "lean --server"
+        plugin := "/tmp/beam-plugin"
+        toolchain := "leanprover/lean4:test"
         bundleId := "bundle-test"
       }
       configHash := "config-test"
@@ -961,9 +961,9 @@ private def writeTestRegistryEntry
     workspace := {
       workspaceId := Beam.Cli.projectDaemonWorkspaceId
       root := root.toString
-      leanCmd? := some "lean --server"
-      plugin? := some "/tmp/beam-plugin"
-      toolchain? := some "leanprover/lean4:test"
+      leanCmd := "lean --server"
+      plugin := "/tmp/beam-plugin"
+      toolchain := "leanprover/lean4:test"
       bundleId := "bundle-test"
     }
     configHash := "config-test"
@@ -1038,29 +1038,28 @@ private def checkTypedRegistryReads : IO Unit := do
       | .invalid (.malformed detail) =>
           require label (detail.contains needle)
       | state => throw <| IO.userError s!"{label}: descriptor was classified as {state.status}"
+      require s!"{label}: malformed descriptor should be preserved"
+        ((← IO.FS.readFile registryPath) == json.compress)
 
     expectMalformedRegistry "missing daemon binary should fail the typed boundary"
       "invalid registry schema" (eraseObjectField validJson "daemonBin")
 
     let workspaceJson ← IO.ofExcept <| validJson.getObjVal? "workspace"
+    for field in #["rocqCmd", "unexpected"] do
+      expectMalformedRegistry s!"workspace descriptor rejects undeclared field {field}"
+        field <| validJson.setObjVal! "workspace" <|
+          workspaceJson.setObjVal! field (toJson "coq-lsp")
+    expectMalformedRegistry "session descriptor rejects undeclared fields"
+      "unexpected" (validJson.setObjVal! "unexpected" (toJson true))
     expectMalformedRegistry "missing bundle id should fail the typed boundary"
       "invalid registry schema" <|
         validJson.setObjVal! "workspace" (eraseObjectField workspaceJson "bundleId")
-    expectMalformedRegistry "partial Lean backend should fail descriptor validation"
-      "must configure the Lean command, plugin, and toolchain together" <|
-        validJson.setObjVal! "workspace" (eraseObjectField workspaceJson "plugin")
-    expectMalformedRegistry "Lean backend without a toolchain should fail descriptor validation"
-      "must configure the Lean command, plugin, and toolchain together" <|
-        validJson.setObjVal! "workspace" (eraseObjectField workspaceJson "toolchain")
-    expectMalformedRegistry "backend-free workspace should fail descriptor validation"
-      "must configure the Lean backend" <|
-        validJson.setObjVal! "workspace" <|
-          eraseObjectField
-            (eraseObjectField (eraseObjectField workspaceJson "leanCmd") "plugin") "toolchain"
-    expectMalformedRegistry "Lean toolchain without Lean backend should fail descriptor validation"
-      "cannot name a Lean toolchain without a Lean backend" <|
-        validJson.setObjVal! "workspace" <|
-          eraseObjectField (eraseObjectField workspaceJson "leanCmd") "plugin"
+    for field in #["leanCmd", "plugin", "toolchain"] do
+      expectMalformedRegistry s!"workspace descriptor requires {field}"
+        field <| validJson.setObjVal! "workspace" (eraseObjectField workspaceJson field)
+      expectMalformedRegistry s!"workspace descriptor rejects null {field}"
+        "invalid registry schema" <| validJson.setObjVal! "workspace" <|
+          workspaceJson.setObjVal! field Json.null
     expectMalformedRegistry "empty bundle id should fail descriptor validation"
       "bundle id must not be empty" <|
         validJson.setObjVal! "workspace" <| workspaceJson.setObjVal! "bundleId" (toJson "")

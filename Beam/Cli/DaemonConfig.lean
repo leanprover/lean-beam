@@ -29,9 +29,9 @@ def toWorkspaceBinding (config : LeanBackendConfig) (workspaceId : WorkspaceId)
   workspaceId
   root := root.toString
   bundleId := config.bundleId
-  leanCmd? := some config.command
-  plugin? := some config.plugin.toString
-  toolchain? := some config.toolchain
+  leanCmd := config.command
+  plugin := config.plugin.toString
+  toolchain := config.toolchain
 }
 
 def daemonArgs (config : LeanBackendConfig) : Array String :=

@@ -18,7 +18,7 @@ structure DocState where
   version : Nat
   /-- Saved source text without line-ending normalization; controls versions and freshness. -/
   rawSourceHash : UInt64
-  /-- Hash of the backend's document text; Lean normalizes CRLF to LF. -/
+  /-- Hash of Lean's document text, with CRLF normalized to LF. -/
   documentHash : UInt64
   /-- Lake's source trace hash; `Lake.Hash.ofText` normalizes CRLF independently. -/
   lakeTraceHash : Lake.Hash
@@ -53,7 +53,7 @@ abbrev ModuleHistories := Std.TreeMap String ModuleHistory
 structure FileSnapshot where
   /-- Saved source text without line-ending normalization. -/
   rawSourceHash : UInt64
-  /-- Text accepted by the backend, normalized to LF for Lean. -/
+  /-- Text accepted by Lean, with CRLF normalized to LF. -/
   documentHash : UInt64
   /-- Lake's normalized source trace hash. -/
   lakeTraceHash : Lake.Hash
@@ -65,21 +65,20 @@ structure FileSnapshot where
 /--
 Capture the three hash representations from one source text before synchronizing the document.
 
-Raw source identity controls versions and disk freshness. The document identity matches the
-backend's text contract: normalize CRLF to LF for Lean and keep the supplied text for Rocq. Lake
+Raw source identity controls versions and disk freshness. The document identity matches Lean's
+text contract by normalizing CRLF to LF. Lake
 uses that same normalized text through its own `Hash.ofText` contract, including its hash mixing.
 Keep the Lake result instead of reconstructing it from the worker hash; the LSP worker does not
 need to depend on Lake's hash representation. LF/CRLF changes can therefore advance the source
 version while retaining both the Lean document identity and Lake source trace identity.
 -/
 def FileSnapshot.ofText
-    (backend : Backend)
     (text : String)
     (textMTime : Lake.MTime)
     (readSeq : Nat := 0)
     (moduleName? : Option String := none) : FileSnapshot := {
   rawSourceHash := hash text
-  documentHash := hash (if backend == .lean then text.crlfToLf else text)
+  documentHash := hash text.crlfToLf
   lakeTraceHash := Lake.Hash.ofText text
   textMTime
   readSeq

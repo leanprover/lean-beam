@@ -157,9 +157,9 @@ private def checkLineEndingVersion : IO Unit := do
   let lf := "def value := 1\n"
   let crlf := "def value := 1\r\n"
   let opened := DocumentState.syncFileDecision {} uri
-    (DocumentState.FileSnapshot.ofText .lean lf default (moduleName? := some "Foo"))
+    (DocumentState.FileSnapshot.ofText lf default (moduleName? := some "Foo"))
   let changed := DocumentState.syncFileDecision opened.docs uri
-    (DocumentState.FileSnapshot.ofText .lean crlf default (moduleName? := some "Foo"))
+    (DocumentState.FileSnapshot.ofText crlf default (moduleName? := some "Foo"))
   require "line ending edits still advance the source version"
     (changed.action == .change && changed.version == 2)
   let some doc := changed.docs.get? uri

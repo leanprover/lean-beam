@@ -13,6 +13,8 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 - Remove the redundant backend selector from broker requests and continuation handles. CLI commands
   `serve`, `doctor`, and `validated-toolchains` no longer accept a trailing `lean` argument. Lean goals reject
   the former Rocq-only `text`, `compact`, and `ppFormat` options.
+- Require complete Lean configuration in CLI session descriptors and reject undeclared descriptor
+  and workspace-binding fields.
 
 ### Added
 

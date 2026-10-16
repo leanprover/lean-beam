@@ -25,59 +25,29 @@ EOF
   handle_version="$(beam_wrapper_update_version HandleSmoke "$beam_script" update HandleSmoke.lean)"
 
   mint_handle_stdin="$(printf 'constructor' | "$beam_script" run-at-handle HandleSmoke.lean "$handle_version" 0 27 --stdin)"
-  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle_stdin" read_json_text_field ok)" != "true" ]; then
-    echo "expected wrapper handle mint via --stdin to succeed" >&2
-    printf '%s\n' "$mint_handle_stdin" >&2
-    exit 1
-  fi
-  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle_stdin" read_json_text_field result.handle.session)" = "" ]; then
-    echo "expected wrapper handle mint via --stdin to return a handle with a session token" >&2
-    printf '%s\n' "$mint_handle_stdin" >&2
-    exit 1
-  fi
+  assert_json_field_equals "handle mint via --stdin" "$mint_handle_stdin" ok true
+  assert_json_field_nonempty "handle mint via --stdin" "$mint_handle_stdin" result.handle.session
+  assert_json_field_absent "handle mint via --stdin" "$mint_handle_stdin" result.handle.backend
 
   handle_mint_file="handle-mint.txt"
   printf 'constructor' > "$handle_mint_file"
   mint_handle_file="$("$beam_script" run-at-handle HandleSmoke.lean "$handle_version" 0 27 --text-file "$handle_mint_file")"
-  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle_file" read_json_text_field ok)" != "true" ]; then
-    echo "expected wrapper handle mint via --text-file to succeed" >&2
-    printf '%s\n' "$mint_handle_file" >&2
-    exit 1
-  fi
-  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle_file" read_json_text_field result.handle.session)" = "" ]; then
-    echo "expected wrapper handle mint via --text-file to return a handle with a session token" >&2
-    printf '%s\n' "$mint_handle_file" >&2
-    exit 1
-  fi
+  assert_json_field_equals "handle mint via --text-file" "$mint_handle_file" ok true
+  assert_json_field_nonempty "handle mint via --text-file" "$mint_handle_file" result.handle.session
+  assert_json_field_absent "handle mint via --text-file" "$mint_handle_file" result.handle.backend
   branch_handle_file="branch-handle.json"
   printf '%s\n' "$mint_handle_file" > "$branch_handle_file"
 
   mint_handle="$("$beam_script" run-at-handle HandleSmoke.lean "$handle_version" 0 27 "constructor")"
-  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle" read_json_text_field ok)" != "true" ]; then
-    echo "expected wrapper handle mint to succeed" >&2
-    printf '%s\n' "$mint_handle" >&2
-    exit 1
-  fi
-  if [ "$(BEAM_JSON_PAYLOAD="$mint_handle" read_json_text_field result.handle.session)" = "" ]; then
-    echo "expected wrapper handle mint to return a handle with a session token" >&2
-    printf '%s\n' "$mint_handle" >&2
-    exit 1
-  fi
+  assert_json_field_equals "handle mint" "$mint_handle" ok true
+  assert_json_field_nonempty "handle mint" "$mint_handle" result.handle.session
+  assert_json_field_absent "handle mint" "$mint_handle" result.handle.backend
 
   branch_step_stdin_err="$(beam_wrapper_mktemp_file run-with-stdin)"
   branch_step_stdin="$(printf 'exact trivial' | BEAM_DEBUG_TEXT=1 "$beam_script" run-with HandleSmoke.lean "$mint_handle_stdin" --stdin 2>"$branch_step_stdin_err")"
-  if [ "$(BEAM_JSON_PAYLOAD="$branch_step_stdin" read_json_text_field ok)" != "true" ]; then
-    echo "expected wrapper non-linear handle continuation via --stdin to succeed" >&2
-    printf '%s\n' "$branch_step_stdin" >&2
-    cat "$branch_step_stdin_err" >&2
-    exit 1
-  fi
-  if [ "$(BEAM_JSON_PAYLOAD="$branch_step_stdin" read_json_text_field result.handle.session)" = "" ]; then
-    echo "expected wrapper non-linear handle continuation via --stdin to return a successor handle" >&2
-    printf '%s\n' "$branch_step_stdin" >&2
-    cat "$branch_step_stdin_err" >&2
-    exit 1
-  fi
+  assert_json_field_equals "handle continuation via --stdin" "$branch_step_stdin" ok true "$branch_step_stdin_err"
+  assert_json_field_nonempty "handle continuation via --stdin" "$branch_step_stdin" result.handle.session "$branch_step_stdin_err"
+  assert_json_field_absent "handle continuation via --stdin" "$branch_step_stdin" result.handle.backend "$branch_step_stdin_err"
   if ! grep -q 'debug text for run-with: source=stdin' "$branch_step_stdin_err"; then
     echo "expected wrapper run-with debug-text mode to report stdin as the continuation text source" >&2
     cat "$branch_step_stdin_err" >&2
@@ -85,16 +55,9 @@ EOF
   fi
 
   branch_step_file="$(printf 'exact trivial' | "$beam_script" run-with HandleSmoke.lean --handle-file "$branch_handle_file" --stdin)"
-  if [ "$(BEAM_JSON_PAYLOAD="$branch_step_file" read_json_text_field ok)" != "true" ]; then
-    echo "expected wrapper non-linear handle continuation via --handle-file to succeed" >&2
-    printf '%s\n' "$branch_step_file" >&2
-    exit 1
-  fi
-  if [ "$(BEAM_JSON_PAYLOAD="$branch_step_file" read_json_text_field result.handle.session)" = "" ]; then
-    echo "expected wrapper non-linear handle continuation via --handle-file to return a successor handle" >&2
-    printf '%s\n' "$branch_step_file" >&2
-    exit 1
-  fi
+  assert_json_field_equals "handle continuation via --handle-file" "$branch_step_file" ok true
+  assert_json_field_nonempty "handle continuation via --handle-file" "$branch_step_file" result.handle.session
+  assert_json_field_absent "handle continuation via --handle-file" "$branch_step_file" result.handle.backend
 
   stdin_conflict_err="$(beam_wrapper_mktemp_file run-with-stdin-conflict)"
   if printf '%s\n' "$mint_handle" | "$beam_script" run-with HandleSmoke.lean - --stdin >"$stdin_conflict_err" 2>&1; then
@@ -109,16 +72,9 @@ EOF
   fi
 
   branch_step="$(printf '%s\n' "$mint_handle" | "$beam_script" run-with HandleSmoke.lean - "exact trivial")"
-  if [ "$(BEAM_JSON_PAYLOAD="$branch_step" read_json_text_field ok)" != "true" ]; then
-    echo "expected wrapper non-linear handle continuation to succeed" >&2
-    printf '%s\n' "$branch_step" >&2
-    exit 1
-  fi
-  if [ "$(BEAM_JSON_PAYLOAD="$branch_step" read_json_text_field result.handle.session)" = "" ]; then
-    echo "expected wrapper non-linear handle continuation to return a successor handle" >&2
-    printf '%s\n' "$branch_step" >&2
-    exit 1
-  fi
+  assert_json_field_equals "handle continuation" "$branch_step" ok true
+  assert_json_field_nonempty "handle continuation" "$branch_step" result.handle.session
+  assert_json_field_absent "handle continuation" "$branch_step" result.handle.backend
 
   branch_done="$(printf '%s\n' "$branch_step" | "$beam_script" run-with HandleSmoke.lean - "exact trivial")"
   if [ "$(BEAM_JSON_PAYLOAD="$branch_done" read_json_text_field ok)" != "true" ]; then
@@ -144,16 +100,9 @@ EOF
   linear_handle_file="linear-handle.json"
   printf '%s\n' "$mint_linear" > "$linear_handle_file"
   linear_step="$("$beam_script" run-with-linear HandleSmoke.lean --handle-file "$linear_handle_file" --text-file "$linear_text_file")"
-  if [ "$(BEAM_JSON_PAYLOAD="$linear_step" read_json_text_field ok)" != "true" ]; then
-    echo "expected wrapper linear handle continuation via --handle-file and --text-file to succeed" >&2
-    printf '%s\n' "$linear_step" >&2
-    exit 1
-  fi
-  if [ "$(BEAM_JSON_PAYLOAD="$linear_step" read_json_text_field result.handle.session)" = "" ]; then
-    echo "expected wrapper linear handle continuation via --handle-file and --text-file to return a successor handle" >&2
-    printf '%s\n' "$linear_step" >&2
-    exit 1
-  fi
+  assert_json_field_equals "linear handle continuation" "$linear_step" ok true
+  assert_json_field_nonempty "linear handle continuation" "$linear_step" result.handle.session
+  assert_json_field_absent "linear handle continuation" "$linear_step" result.handle.backend
 
   linear_reuse_err="$(beam_wrapper_mktemp_file linear-reuse)"
   if printf '%s\n' "$mint_linear" | "$beam_script" run-with HandleSmoke.lean - "exact trivial" >"$linear_reuse_err" 2>&1; then
@@ -222,16 +171,9 @@ EOF
 
   portable_helper_version="$(beam_wrapper_update_version "portable HandleSmoke" "$beam_script" update HandleSmoke.lean)"
   portable_helper_root="$(PATH="$portable_wrapper_bin:$PATH" "$portable_wrapper_bin/lean-beam-search" mint HandleSmoke.lean "$portable_helper_version" 0 27 "constructor")"
-  if [ "$(BEAM_JSON_PAYLOAD="$portable_helper_root" read_json_text_field ok)" != "true" ]; then
-    echo "expected symlinked helper to work when readlink -f is unavailable" >&2
-    printf '%s\n' "$portable_helper_root" >&2
-    exit 1
-  fi
-  if [ "$(BEAM_JSON_PAYLOAD="$portable_helper_root" read_json_text_field result.handle.session)" = "" ]; then
-    echo "expected symlinked helper mint to return a handle with a session token" >&2
-    printf '%s\n' "$portable_helper_root" >&2
-    exit 1
-  fi
+  assert_json_field_equals "symlinked helper mint" "$portable_helper_root" ok true
+  assert_json_field_nonempty "symlinked helper mint" "$portable_helper_root" result.handle.session
+  assert_json_field_absent "symlinked helper mint" "$portable_helper_root" result.handle.backend
 
   wrapper_shadow_root="$beam_wrapper_tmp_root/wrapper-shadow-root"
   mkdir -p "$wrapper_shadow_root/scripts" "$wrapper_shadow_root/.lake/build/bin" "$wrapper_shadow_root/libexec"

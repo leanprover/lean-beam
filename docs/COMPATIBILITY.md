@@ -34,7 +34,9 @@ A Lean release line is the canonical `major.minor` family recorded in
   cleanup-only compatibility during the 0.2 release line: identity and `lean-beam prune` may read it,
   but the installer does not reuse it. Remove the schema-2 decoder when 0.3 development opens.
 - CLI session descriptor schema 4. It freezes one workspace binding plus one
-  generation identity, lifecycle, endpoint, and capability. Schema-less, schema-1, the superseded
+  generation identity, lifecycle, endpoint, and capability. Workspace bindings require a Lean
+  command, plugin, toolchain, and bundle identity. Descriptors and their workspace bindings reject
+  undeclared fields, including removed Rocq configuration. Schema-less, schema-1, the superseded
   schema-2 multi-binding shape, schema 3 with its obsolete client-executable and
   caller-selected-port fields, and unknown records are reported and remain fenced;
   normal startup does not decode, delete, or migrate them.

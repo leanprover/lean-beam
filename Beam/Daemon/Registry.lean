@@ -52,24 +52,15 @@ private def validateWorkspaceBinding (workspace : WorkspaceBinding) : Except Str
   let rootPath := System.FilePath.mk workspace.root
   unless rootPath.isAbsolute do
     throw s!"session workspace '{workspace.workspaceId}' root is not absolute"
-  if let some leanCmd := workspace.leanCmd? then
-    if leanCmd.isEmpty then
-      throw s!"session workspace '{workspace.workspaceId}' Lean command must not be empty"
-  if let some plugin := workspace.plugin? then
-    if plugin.isEmpty then
-      throw s!"session workspace '{workspace.workspaceId}' Lean plugin must not be empty"
-  if let some toolchain := workspace.toolchain? then
-    if toolchain.isEmpty then
-      throw s!"session workspace '{workspace.workspaceId}' Lean toolchain must not be empty"
-  if workspace.toolchain?.isSome && workspace.leanCmd?.isNone then
-    throw s!"session workspace '{workspace.workspaceId}' cannot name a Lean toolchain without a Lean backend"
-  if workspace.leanCmd?.isSome != workspace.plugin?.isSome ||
-      workspace.leanCmd?.isSome != workspace.toolchain?.isSome then
-    throw s!"session workspace '{workspace.workspaceId}' must configure the Lean command, plugin, and toolchain together"
-  if workspace.leanCmd?.isNone then
-    throw s!"session workspace '{workspace.workspaceId}' must configure the Lean backend"
+  if workspace.leanCmd.isEmpty then
+    throw s!"session workspace '{workspace.workspaceId}' Lean command must not be empty"
+  if workspace.plugin.isEmpty then
+    throw s!"session workspace '{workspace.workspaceId}' Lean plugin must not be empty"
+  if workspace.toolchain.isEmpty then
+    throw s!"session workspace '{workspace.workspaceId}' Lean toolchain must not be empty"
   if workspace.bundleId.isEmpty then
     throw s!"session workspace '{workspace.workspaceId}' bundle id must not be empty"
+
 private def validateSessionDescriptor (entry : SessionDescriptor) : Except String Unit := do
   if entry.daemonId.isEmpty then
     throw "session descriptor daemonId must not be empty"

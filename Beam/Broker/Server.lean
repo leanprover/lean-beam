@@ -748,7 +748,7 @@ private def readFileSyncSnapshot
     path
     uri
     text
-    file := DocumentState.FileSnapshot.ofText backend text textMTime readSeq moduleName?
+    file := DocumentState.FileSnapshot.ofText text textMTime readSeq moduleName?
   }
 
 private def workspaceForSnapshot

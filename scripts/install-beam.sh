@@ -218,10 +218,6 @@ Requirements:
 EOF
 }
 
-skill_install_names() {
-  printf 'lean-beam\n'
-}
-
 skill_install_path_summary() {
   printf '%s/lean-beam\n' "$1"
 }
@@ -1337,7 +1333,7 @@ install_skill_target() {
   local label="$1"
   local skills_home="$2"
   install_skills "$skills_home"
-  printf '%s: %s: %s\n' "$label" "$(skill_install_names)" "$skills_home"
+  printf '%s: lean-beam: %s\n' "$label" "$skills_home"
 }
 
 verify_skill_home_targets() {
@@ -1493,7 +1489,7 @@ print_prebuilt_toolchain_summary() {
 
 skill_state_for_summary() {
   if [ "$1" -eq 1 ]; then
-    printf '%s installed\n' "$(skill_install_names)"
+    printf 'lean-beam installed\n'
   else
     printf 'not installed\n'
   fi

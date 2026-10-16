@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
+import Beam.JsonFields
 import Beam.Path
 import Beam.Broker.Client
 import Beam.Broker.Transport
@@ -49,11 +50,24 @@ local instance : FromJson UInt16 where
 structure WorkspaceBinding where
   workspaceId : WorkspaceId
   root : String
-  leanCmd? : Option String := none
-  plugin? : Option String := none
-  toolchain? : Option String := none
+  leanCmd : String
+  plugin : String
+  toolchain : String
   bundleId : String
-  deriving FromJson, ToJson
+  deriving ToJson
+
+instance : FromJson WorkspaceBinding where
+  fromJson? json := do
+    Beam.requireOnlyJsonFields "session workspace"
+      #["workspaceId", "root", "leanCmd", "plugin", "toolchain", "bundleId"] json
+    pure {
+      workspaceId := ← Beam.requiredField json "workspaceId"
+      root := ← Beam.requiredField json "root"
+      leanCmd := ← Beam.requiredField json "leanCmd"
+      plugin := ← Beam.requiredField json "plugin"
+      toolchain := ← Beam.requiredField json "toolchain"
+      bundleId := ← Beam.requiredField json "bundleId"
+    }
 
 /--
 The private descriptor for one wrapper-owned CLI session.
@@ -74,7 +88,27 @@ structure SessionDescriptor where
   configHash : String
   daemonBin : String
   startedAt : String
-  deriving FromJson, ToJson
+  deriving ToJson
+
+instance : FromJson SessionDescriptor where
+  fromJson? json := do
+    Beam.requireOnlyJsonFields "session descriptor" #[
+      "schemaVersion", "lifecycle", "daemonId", "capability", "pid", "ownerPid", "port",
+      "workspace", "configHash", "daemonBin", "startedAt"
+    ] json
+    pure {
+      schemaVersion := ← Beam.requiredField json "schemaVersion"
+      lifecycle := ← Beam.requiredField json "lifecycle"
+      daemonId := ← Beam.requiredField json "daemonId"
+      capability := ← Beam.requiredField json "capability"
+      pid := ← Beam.requiredField json "pid"
+      ownerPid := ← Beam.requiredField json "ownerPid"
+      port := ← Beam.requiredField json "port"
+      workspace := ← Beam.requiredField json "workspace"
+      configHash := ← Beam.requiredField json "configHash"
+      daemonBin := ← Beam.requiredField json "daemonBin"
+      startedAt := ← Beam.requiredField json "startedAt"
+    }
 
 def SessionDescriptor.identity (entry : SessionDescriptor) : DaemonIdentity := {
   daemonId := entry.daemonId
