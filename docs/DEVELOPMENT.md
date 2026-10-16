@@ -553,8 +553,11 @@ locks intentionally keep the lower-level unbounded helper because another proces
 be compiling a helper bundle. The shell installer's `.install-lock` remains an atomic directory
 compatibility boundary: it is never stale-reaped, and a crashed installer requires explicit
 operator recovery. Reusable CLI argument parsing lives in
-[Beam/Cli/Args.lean](../Beam/Cli/Args.lean). Project-root inference
-and Lean toolchain lookup live in [Beam/Cli/Project.lean](../Beam/Cli/Project.lean).
+[Beam/Cli/Args.lean](../Beam/Cli/Args.lean). Project-root inference lives in
+[Beam/Cli/Project.lean](../Beam/Cli/Project.lean). The application adapter in
+[Beam/Cli/Installation.lean](../Beam/Cli/Installation.lean) selects managed or SDK runtime
+resolution. SDK observations and pure admission checks live in
+[Beam/Cli/Toolchain.lean](../Beam/Cli/Toolchain.lean).
 Shared filesystem path helpers live in [Beam/Path.lean](../Beam/Path.lean). Use them instead of
 copying string-prefix checks or raw `IO.FS.realPath` wrappers:
 
@@ -584,9 +587,12 @@ explicit owner lifetime, OS-assigned endpoint readiness, and explicit non-signal
 [Beam/Cli/DaemonManager.lean](../Beam/Cli/DaemonManager.lean). Broker request plumbing,
 progress messages, connection-owned cancellation-on-interrupt, and response failure notes live in
 [Beam/Cli/Broker.lean](../Beam/Cli/Broker.lean). User-facing stdout/stderr formatting helpers live
-in [Beam/Cli/Output.lean](../Beam/Cli/Output.lean). Doctor, validated/compatible toolchain registry,
-install layout/manifest, and MCP config reporting live in
-[Beam/Cli/Info.lean](../Beam/Cli/Info.lean). The command dispatch
+in [Beam/Cli/Output.lean](../Beam/Cli/Output.lean). Version, doctor, and MCP config reporting live in
+[Beam/Cli/Info.lean](../Beam/Cli/Info.lean), with runtime inspection supplied by the installation
+adapter. Standalone toolchain registry and install layout/manifest commands live in
+[Beam/Cli/InstallCommands.lean](../Beam/Cli/InstallCommands.lean). Identity data and rendering in
+[Beam/Version.lean](../Beam/Version.lean) are pure; installation metadata is discovered in
+[Beam/Cli/RuntimeIdentity.lean](../Beam/Cli/RuntimeIdentity.lean). The command dispatch
 table lives in [Beam/Cli/Commands.lean](../Beam/Cli/Commands.lean), and [Beam/Cli/Usage.lean](../Beam/Cli/Usage.lean)
 owns the help text. Lean command to broker-request projection lives in
 [Beam/Cli/LeanOperation.lean](../Beam/Cli/LeanOperation.lean). Install and bundle layout metadata,
@@ -607,7 +613,9 @@ write schema 3 and name creation-time toolchain provenance explicitly. Schema 2 
 identity and `lean-beam prune`, but installer reuse requires the current schema; the compatibility
 window and removal trigger live in [COMPATIBILITY.md](COMPATIBILITY.md).
 Keep [Beam/Cli.lean](../Beam/Cli.lean) as the executable entry point: parse top-level options,
-resolve `BEAM_HOME`, and delegate to `runCommand`.
+select the installation adapter, and delegate to `runCommand`. Adapter selection does not validate
+a runtime. Runtime resolution happens at its consumer, after private control-directory validation
+when starting an owner. Recorded-owner stop and recovery do not resolve the current runtime.
 
 Installer shell helpers are split by ownership boundary: generic path/style helpers live in
 [scripts/install-lib.sh](../scripts/install-lib.sh), write-location prompting and validation live in

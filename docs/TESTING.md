@@ -339,6 +339,15 @@ checks successful logging, nonzero exit, bounded returned output, and timeout wi
 a partial response, and actual descendant termination. Windows execution still needs qualification
 on a Windows runner.
 
+`python3 tests/test-runtime-boundary.py` checks the transitive imports of shared identity,
+configuration, session, and MCP execution modules. It rejects dependencies on installation layout,
+SDK discovery, managed bundle resolution, or application startup. The fast suite runs this guard.
+`python3 tests/test-mcp-application.py` starts the MCP executable with a missing `BEAM_HOME` and
+unused runtime overrides, verifying that protocol discovery does not require runtime resolution.
+The CLI daemon test also exercises pure SDK admission: selector aliases, exact installation identity,
+compiler/provenance mismatches, and payload changes. The native installation regression checks that
+an existing owner remains stoppable with malformed provenance.
+
 The focused CLI daemon test also checks that a failed stderr evidence sink does not stop pipe
 draining, that sink failure observation is synchronized, and that a pipe held open past leader exit
 produces a bounded `pipeStillOpen` outcome rather than an unbounded task join.

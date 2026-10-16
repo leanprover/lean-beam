@@ -172,11 +172,17 @@ request dispatcher and runtime teardown boundary.
 - [Beam/Mcp/Projection.lean](../Beam/Mcp/Projection.lean) owns MCP tool names, descriptors, schemas,
   and normalized output.
 - [Beam/Mcp/Protocol.lean](../Beam/Mcp/Protocol.lean) owns the current MCP JSON-RPC helpers.
-- [Beam/Mcp/Runtime.lean](../Beam/Mcp/Runtime.lean) owns root-to-runtime configuration.
+- [Beam/Mcp/Application.lean](../Beam/Mcp/Application.lean) composes CLI startup, installation
+  identity, and a resolver for each workspace admitted after startup.
+- [Beam/Mcp/Runtime.lean](../Beam/Mcp/Runtime.lean) is the application adapter from launch options
+  and CLI `mcp-config` output to a complete broker configuration.
+- [Beam/Version.lean](../Beam/Version.lean) holds pure identity data and rendering; installation
+  discovery belongs to the application adapters.
 - [Beam/Mcp/SelfCheck.lean](../Beam/Mcp/SelfCheck.lean) owns the installed-wrapper self-check.
 - [Beam/Mcp/Server.lean](../Beam/Mcp/Server.lean) owns descriptor resolution, lazy broker-runtime
-  access, the typed protocol-family state machine, and the synchronous protocol-test seam. The
-  broker runtime is authoritative for workspace state.
+  access, the typed protocol-family state machine, and the synchronous protocol-test seam. Runtime
+  resolution and process identity are supplied as explicit application effects. The broker runtime
+  is authoritative for workspace state.
 - [Beam/Mcp/StdioServer.lean](../Beam/Mcp/StdioServer.lean) owns the permanent stdin reader,
   concurrent coordination, cancellation, cache-control barriers, and serialized output.
 

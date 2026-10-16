@@ -18,6 +18,7 @@ export BEAM_SESSION_ROOT="$beam_fast_state_root/sessions"
 
 bash scripts/check-daemon-safety.sh
 bash scripts/check-task-priority.sh
+python3 tests/test-runtime-boundary.py
 bash scripts/check-markdown-links.sh
 bash scripts/check-toolchain-ci-matrix.sh
 python3 tests/test-toolchain-ci-matrix.py
@@ -88,6 +89,7 @@ run_quiet_test mcp-projection .lake/build/bin/beam-mcp-projection-test
 run_quiet_test mcp-protocol python3 tests/lib/process_watchdog.py \
   --timeout "${BEAM_MCP_PROTOCOL_TEST_WATCHDOG_SECONDS:-240}" -- \
   .lake/build/bin/beam-mcp-protocol-test
+run_quiet_test mcp-application python3 tests/test-mcp-application.py
 run_quiet_test daemon-smoke .lake/build/bin/beam-daemon-smoke-test
 run_quiet_test sync-concurrency .lake/build/bin/beam-sync-concurrency-test
 run_quiet_test daemon-save-stream .lake/build/bin/beam-daemon-save-stream-test

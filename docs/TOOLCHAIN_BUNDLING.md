@@ -105,3 +105,14 @@ Setting `BEAM_FULL_MACOS_CI=true` enables separate macOS x86_64/aarch64 native j
 see [the CI layout](TESTING.md#ci-map).
 A release integration must also run this test against the actual compiler being shipped. Wasm, MCP
 registration and skill installation are outside this build/install interface.
+
+Runtime resolution is owned by the application installation adapters. The SDK adapter observes
+provenance, compiler identity, and any declared project selector once for each resolution operation,
+then applies a pure admission check. The managed adapter owns source and bundle-cache resolution.
+Both supply complete runtime configurations to session and broker code; those components do not
+interpret SDK directories, install manifests, or cache layouts.
+
+The application selects an adapter at startup without resolving a project. Starting an owner first
+validates the private control directory, then resolves its runtime. Attaching to an SDK-bound owner
+checks the current payload identity. Stopping or recovering a recorded owner does not require the
+current runtime to resolve, so broken or replaced installation metadata cannot prevent cleanup.

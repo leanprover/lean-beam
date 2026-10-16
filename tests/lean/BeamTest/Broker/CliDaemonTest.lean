@@ -8,6 +8,7 @@ import Beam.Broker.Errors
 import Beam.Cli.Args
 import Beam.Cli.Broker
 import Beam.Cli.Info
+import Beam.Cli.Installation
 import Beam.Cli.LeanOperation
 import Beam.Cli.Lock
 import Beam.Cli.RuntimeBundle
@@ -1686,7 +1687,58 @@ private def checkRuntimeBundleMetadataAcceptance : IO Unit := do
     catch _ =>
       pure ()
 
+private def checkSdkRuntimeAdmission : IO Unit := do
+  let layout : Beam.Cli.Toolchain.Layout := { root := "/sdk" }
+  let p : Beam.Cli.Toolchain.Provenance := {
+    schemaVersion := 1
+    sourceCommit := "beam-source"
+    payloadHash := "payload-one"
+    leanVersion := "SDK compiler version"
+    leanGithash := Lean.githash
+    lakeVersion := "Lake version"
+  }
+  let facts : Beam.Cli.Toolchain.Facts := {
+    layout
+    provenance := p
+    compilerGithash := Lean.githash
+    canonicalLean := "/sdk/bin/lean"
+    declaredSelection? := none
+  }
+  let resolve := Beam.Cli.Toolchain.validate "/project"
+  let admitted ← IO.ofExcept <| (resolve facts).mapError (·.message)
+  require "SDK runtime identity includes the observed payload"
+    (admitted.lean.bundleId.contains "payload-one")
+  let alias ← IO.ofExcept <| (resolve { facts with
+    declaredSelection? := some ("project-alias", facts.canonicalLean)
+  }).mapError (·.message)
+  require "selector aliases do not replace compiler version metadata"
+    (alias.lean.toolchain == p.leanVersion)
+  match resolve { facts with declaredSelection? := some ("same-build", "/other/bin/lean") } with
+  | .error (.selectorMismatch ..) => pure ()
+  | _ => throw <| IO.userError "equal compiler builds in different installations must be rejected"
+  match resolve { facts with compilerGithash := "foreign-compiler" } with
+  | .error .compilerMismatch => pure ()
+  | _ => throw <| IO.userError "SDK compiler probe must match installed provenance"
+  for invalid in [{ p with schemaVersion := 0 }, { p with payloadHash := "" },
+      { p with leanGithash := "foreign-compiler" }] do
+    match resolve { facts with provenance := invalid } with
+    | .error (.invalidProvenance ..) => pure ()
+    | _ => throw <| IO.userError "invalid SDK provenance must fail before runtime construction"
+  let replacement ← IO.ofExcept <| (resolve { facts with
+    provenance := { p with payloadHash := "payload-two" }
+  }).mapError (·.message)
+  require "replacement payload changes the required session identity"
+    (replacement.configHash != admitted.configHash)
+  let installation := Beam.Cli.Installation.sdk layout
+  for command in ["stop", "recover", "--help", "version", "doctor"] do
+    require s!"SDK {command} is admitted without resolving the installation"
+      (installation.admitCommand [command]).isOk
+  match installation.admitCommand ["bundle-install", "some-toolchain"] with
+  | .error .standaloneBundle => pure ()
+  | _ => throw <| IO.userError "SDK runtime maintenance belongs to its installer"
+
 def main : IO Unit := do
+  checkSdkRuntimeAdmission
   checkLeanConfigLowering
   checkProjectDaemonRequestSealing
   checkClientResponsePresentation

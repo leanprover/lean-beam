@@ -76,7 +76,11 @@ def main():
         # configuration and CLI first, then prove the native builder uses its requested mode
         # without replacing that CLI or changing the ordinary configuration.
         run([lean_prefix / "bin" / f"lake{EXE}", "--reconfigure", "-KbeamToolchain=false",
-             "--no-cache", "build", "beam-cli"], env=build_env)
+             "--no-cache", "build", "beam-cli", "beam-mcp-protocol-test"], env=build_env)
+        # Exercise the same typed self-check fixtures with the native SDK's header/DLL environment.
+        run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "90", "--",
+             REPO / ".lake/build/bin" / f"beam-mcp-protocol-test{EXE}", "--self-check-tests"],
+            env=build_env)
         standalone = REPO / ".lake" / "build" / "bin" / f"beam-cli{EXE}"
         standalone_hash = hashlib.sha256(standalone.read_bytes()).hexdigest()
         configs = [REPO / ".lake" / "lakefile.olean.trace",
@@ -277,9 +281,11 @@ def main():
             provenance.write_text(json.dumps(changed))
             replaced = call("stats", ok=False)
             assert replaced.returncode != 0, replaced
-            provenance.write_text(json.dumps(metadata))
+            # Stop uses the recorded owner capability even if current runtime metadata is broken.
+            provenance.write_text("{broken provenance")
             call("stop")
             assert owner.wait(timeout=30) == 0, owner_log.read_text()
+            provenance.write_text(json.dumps(metadata))
         finally:
             if owner.poll() is None:
                 provenance.write_text(json.dumps(metadata))
