@@ -280,6 +280,14 @@ one-time clean local check outside MCP. See the
 reports all currently cached broker workspaces for debugging; callers must not use it to establish
 context for a later operation.
 
+Each entry in the `workspaces` result from `beam_stats` has a `session` object describing its
+current Lean server session and a `metrics` object containing workspace operation counters.
+Workspace identity and root appear on the enclosing entry. An inactive session has `active: false`;
+an active session also has `epoch` and `openDocCount`.
+The counters include earlier Lean sessions of that workspace, so a session restart increments
+`sessionRestarts` without resetting the request counters. Resetting the workspace, or dropping and
+recreating it, starts fresh counters. Recreating the broker process also starts fresh counters.
+
 `beam_feedback_report` requires a descriptor to validate its local workspace target. Beam does not
 upload or submit the report; the tool returns it to the MCP caller and can optionally write a local
 evidence bundle. Non-confidential mode collects project context for that workspace without starting

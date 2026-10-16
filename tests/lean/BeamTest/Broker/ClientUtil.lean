@@ -223,29 +223,26 @@ def expectErrCode (resp : Beam.Broker.Response) (code : String) : IO Unit := do
       if failure.error.code != code then
         throw <| IO.userError s!"expected error {code}, got {(toJson resp).compress}"
 
-def expectOpCountAtLeast (payload : Json) (backend op : String) (minCount : Nat) : IO Unit := do
-  let byBackend ← IO.ofExcept <| payload.getObjVal? "byBackend"
-  let backendPayload ← IO.ofExcept <| byBackend.getObjVal? backend
-  let ops ← IO.ofExcept <| backendPayload.getObjVal? "ops"
+def expectOpCountAtLeast (payload : Json) (op : String) (minCount : Nat) : IO Unit := do
+  let metrics ← IO.ofExcept <| payload.getObjVal? "metrics"
+  let ops ← IO.ofExcept <| metrics.getObjVal? "ops"
   let opPayload ← IO.ofExcept <| ops.getObjVal? op
   let count ← IO.ofExcept <| opPayload.getObjValAs? Nat "count"
   if count < minCount then
-    throw <| IO.userError s!"expected {backend}/{op} count >= {minCount}, got {count}"
+    throw <| IO.userError s!"expected {op} count >= {minCount}, got {count}"
 
-def expectBackendMetricAtLeast (payload : Json) (backend field : String) (minCount : Nat) : IO Unit := do
-  let byBackend ← IO.ofExcept <| payload.getObjVal? "byBackend"
-  let backendPayload ← IO.ofExcept <| byBackend.getObjVal? backend
-  let count ← IO.ofExcept <| backendPayload.getObjValAs? Nat field
+def expectMetricAtLeast (payload : Json) (field : String) (minCount : Nat) : IO Unit := do
+  let metrics ← IO.ofExcept <| payload.getObjVal? "metrics"
+  let count ← IO.ofExcept <| metrics.getObjValAs? Nat field
   if count < minCount then
-    throw <| IO.userError s!"expected {backend}.{field} >= {minCount}, got {count}"
+    throw <| IO.userError s!"expected {field} >= {minCount}, got {count}"
 
-def expectOpMetricAtLeast (payload : Json) (backend op field : String) (minCount : Nat) : IO Unit := do
-  let byBackend ← IO.ofExcept <| payload.getObjVal? "byBackend"
-  let backendPayload ← IO.ofExcept <| byBackend.getObjVal? backend
-  let ops ← IO.ofExcept <| backendPayload.getObjVal? "ops"
+def expectOpMetricAtLeast (payload : Json) (op field : String) (minCount : Nat) : IO Unit := do
+  let metrics ← IO.ofExcept <| payload.getObjVal? "metrics"
+  let ops ← IO.ofExcept <| metrics.getObjVal? "ops"
   let opPayload ← IO.ofExcept <| ops.getObjVal? op
   let count ← IO.ofExcept <| opPayload.getObjValAs? Nat field
   if count < minCount then
-    throw <| IO.userError s!"expected {backend}/{op}.{field} >= {minCount}, got {count}"
+    throw <| IO.userError s!"expected {op}.{field} >= {minCount}, got {count}"
 
 end BeamTest.Broker.TestUtil

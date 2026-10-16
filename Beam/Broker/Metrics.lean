@@ -21,7 +21,11 @@ structure OpStats where
   maxLatencyMs : Nat := 0
   lastLatencyMs : Nat := 0
 
-structure BackendMetrics where
+/--
+Workspace counters retained across Lean session restarts.
+Resetting the workspace or dropping and recreating it starts fresh counters.
+-/
+structure WorkspaceMetrics where
   sessionStarts : Nat := 0
   sessionRestarts : Nat := 0
   requestCount : Nat := 0
@@ -70,7 +74,7 @@ def opStatsJson (stats : OpStats) : Json :=
     ("lastLatencyMs", toJson stats.lastLatencyMs)
   ]
 
-def backendMetricsJson (metrics : BackendMetrics) : Json :=
+def workspaceMetricsJson (metrics : WorkspaceMetrics) : Json :=
   Json.mkObj <|
     [
       ("sessionStarts", toJson metrics.sessionStarts),

@@ -1073,9 +1073,52 @@ private def checkWorkspaceLifecycleProtocol : IO Unit := do
   let some processStats := processStatsResp.result?
     | throw <| IO.userError s!"process-wide stats failed: {(toJson processStatsResp).compress}"
   requireFieldAbsent "process-wide stats" "root" processStats
-  requireFieldAbsent "process-wide stats" "sessions" processStats
-  requireFieldAbsent "process-wide stats" "byBackend" processStats
+  requireFieldAbsent "process-wide stats" "session" processStats
+  requireFieldAbsent "process-wide stats" "metrics" processStats
   discard <| IO.ofExcept <| processStats.getObjVal? "workspaces"
+  let scopedStatsResp ← runtime.dispatchRequest { Request.stats with workspaceId? := some "fixture" }
+  let some scopedStats := scopedStatsResp.result?
+    | throw <| IO.userError s!"workspace stats failed: {(toJson scopedStatsResp).compress}"
+  requireFieldAbsent "workspace stats" "sessions" scopedStats
+  requireFieldAbsent "workspace stats" "byBackend" scopedStats
+  let session ← requireObjVal "workspace stats" "session" scopedStats
+  requireJsonBool "workspace session" "active" false session
+  let metrics ← requireObjVal "workspace stats" "metrics" scopedStats
+  let starts ← IO.ofExcept <| metrics.getObjValAs? Nat "sessionStarts"
+  require "inspection should not start a session" (starts == 0)
+
+  let seedMetrics := runtime.state.atomically do
+    let state ← get
+    let some workspace := state.workspaces.get? "fixture"
+      | throw <| IO.userError "metrics fixture workspace is missing"
+    let metrics : WorkspaceMetrics := {
+      sessionStarts := 2
+      sessionRestarts := 1
+      requestCount := 1
+      successCount := 1
+      ops := ({} : Std.TreeMap String OpStats).insert "run_at" {
+        count := 1, successCount := 1
+      }
+    }
+    set { state with workspaces := state.workspaces.insert "fixture" { workspace with metrics } }
+  let requireFreshMetrics := fun label => do
+    let response ← runtime.dispatchRequest { Request.stats with workspaceId? := some "fixture" }
+    let some payload := response.result?
+      | throw <| IO.userError s!"{label}: stats failed: {(toJson response).compress}"
+    let metrics ← requireObjVal label "metrics" payload
+    for field in #["sessionStarts", "sessionRestarts", "requestCount", "successCount",
+        "errorCount", "cancelledCount", "workerExitedCount", "invalidParamsCount"] do
+      let count ← IO.ofExcept <| metrics.getObjValAs? Nat field
+      require s!"{label} clears {field}" (count == 0)
+    let ops ← requireObjVal label "ops" metrics
+    require s!"{label} clears per-operation counters" (ops == Json.mkObj [])
+  seedMetrics
+  match ← runtime.initWorkspaceWithConfig "fixture" ({ root } : BrokerConfig) (some .reset) with
+  | .error failure =>
+      throw <| IO.userError s!"metrics fixture reset failed: {failure.error.message}"
+  | .ok _ => pure ()
+  requireFreshMetrics "workspace reset"
+  seedMetrics
 
   let resetResult : Beam.Workspace.InitResult := {
     workspaceId := "fixture"
@@ -1150,6 +1193,7 @@ private def checkWorkspaceLifecycleProtocol : IO Unit := do
         (initialized.workspaceId == "fixture" && initialized.root == root)
       require "typed broker workspace initialization should report a new runtime"
         (!initialized.runtimeReused && !initialized.invalidatedHandles)
+  requireFreshMetrics "workspace recreation after drop"
 
 private inductive LifecycleTeardown where
   | reset
@@ -1409,7 +1453,7 @@ private def checkDeadSessionCleanupReleasesStateMutex : IO Unit := do
     require "an old-generation close should not restore its detached session"
       replacement.lean.session?.isNone
     require "an old-generation close should not update replacement metrics"
-      (replacement.leanMetrics.requestCount == 0)
+      (replacement.metrics.requestCount == 0)
   finally
     if !(← release.pathExists) then
       IO.FS.writeFile release "release"

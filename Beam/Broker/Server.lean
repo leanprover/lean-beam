@@ -78,7 +78,7 @@ structure WorkspaceState where
   config : BrokerConfig
   nextFileSnapshotSeq : Nat := 1
   lean : SessionState := {}
-  leanMetrics : BackendMetrics := {}
+  metrics : WorkspaceMetrics := {}
 
 structure State where
   bootstrapConfig : BrokerConfig
@@ -303,13 +303,13 @@ private def recordSessionSpawn (workspaceId : WorkspaceId) (restart : Bool) : M 
     match getWorkspace? state workspaceId with
     | none => state
     | some workspace =>
-        let metrics := workspace.leanMetrics
+        let metrics := workspace.metrics
         let metrics := {
           metrics with
           sessionStarts := metrics.sessionStarts + 1
           sessionRestarts := metrics.sessionRestarts + (if restart then 1 else 0)
         }
-        setWorkspace state workspaceId { workspace with leanMetrics := metrics }
+        setWorkspace state workspaceId { workspace with metrics }
 
 private def recordRequestMetrics
     (workspaceId : WorkspaceId)
@@ -325,7 +325,7 @@ private def recordRequestMetrics
         if workspace.generation != workspaceGeneration then
           state
         else
-          let metrics := workspace.leanMetrics
+          let metrics := workspace.metrics
           let opStats := (metrics.ops.get? op).getD {}
           let opStats := opStats.record ok errorCode? latencyMs
           let metrics := {
@@ -338,7 +338,7 @@ private def recordRequestMetrics
             invalidParamsCount := metrics.invalidParamsCount + (if isInvalidParamsCode errorCode? then 1 else 0)
             ops := metrics.ops.insert op opStats
           }
-          setWorkspace state workspaceId { workspace with leanMetrics := metrics }
+          setWorkspace state workspaceId { workspace with metrics }
 
 private def sessionSnapshotJson (session? : Option Session) : Json :=
   match session? with
@@ -346,8 +346,6 @@ private def sessionSnapshotJson (session? : Option Session) : Json :=
   | some session =>
       Json.mkObj [
         ("active", toJson true),
-        ("workspaceId", toJson session.workspaceId),
-        ("root", toJson session.root.toString),
         ("epoch", toJson session.epoch),
         ("openDocCount", toJson session.docs.toList.length)
       ]
@@ -356,12 +354,8 @@ private def workspaceStatsJson (workspaceId : WorkspaceId) (workspace : Workspac
   Json.mkObj [
     ("id", toJson workspaceId),
     ("root", toJson workspace.config.root.toString),
-    ("sessions", Json.mkObj [
-      ("lean", sessionSnapshotJson workspace.lean.session?)
-    ]),
-    ("byBackend", Json.mkObj [
-      ("lean", backendMetricsJson workspace.leanMetrics)
-    ])
+    ("session", sessionSnapshotJson workspace.lean.session?),
+    ("metrics", workspaceMetricsJson workspace.metrics)
   ]
 
 private def statsPayload (workspaceId? : Option WorkspaceId := none) : M Json := do

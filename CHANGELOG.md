@@ -6,6 +6,12 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 0.2.0 beta development is open. Add user-facing changes here as they land.
 
+### Changed
+
+- Workspace statistics expose `session` and `metrics` directly, and `open-files` exposes
+  `session.files`. Remove the former `sessions.lean` and `byBackend.lean` wrappers.
+  Stats session details no longer repeat the enclosing workspace identity and root.
+
 ### Removed
 
 - Move Rocq goal probes, agent skill, and `coq-lsp` setup to the independent `rocq-beam` project.

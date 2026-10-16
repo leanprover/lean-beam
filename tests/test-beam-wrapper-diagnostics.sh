@@ -184,7 +184,7 @@ echo "[beam-wrapper:diagnostics] starting blocking-error diagnostics"
   fi
 
   stats_out="$("$beam_script" stats)"
-  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.sessions.lean.openDocCount)" != "0" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.session.openDocCount)" != "0" ]; then
     echo "expected final close to leave zero open Beam daemon documents" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1

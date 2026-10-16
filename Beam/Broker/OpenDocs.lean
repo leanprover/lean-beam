@@ -95,9 +95,7 @@ def payload
     (leanSession? : Option SessionView) : IO Json := do
   pure <| Json.mkObj [
     ("root", toJson root.toString),
-    ("sessions", Json.mkObj [
-      ("lean", ← sessionJson leanSession?)
-    ])
+    ("session", ← sessionJson leanSession?)
   ]
 
 end OpenDocs

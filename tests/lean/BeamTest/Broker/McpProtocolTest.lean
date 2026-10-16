@@ -1653,11 +1653,12 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     let workspaceKey := (Beam.Workspace.Descriptor.ofRoot expectedRoot).cacheKey
     let workspaceStats ← requireObjVal "beam stats workspaces" workspaceKey workspaces
     requireJsonString "beam stats workspace" "root" expectedRoot.toString workspaceStats
-    discard <| requireObjVal "beam stats workspace" "sessions" workspaceStats
-    let byBackend ← requireObjVal "beam stats workspace" "byBackend" workspaceStats
-    let leanMetrics ← requireObjVal "beam stats byBackend" "lean" byBackend
-    let ops ← requireObjVal "beam stats lean metrics" "ops" leanMetrics
-    let syncStats ← requireObjVal "beam stats lean ops" "sync_file" ops
+    discard <| requireObjVal "beam stats workspace" "session" workspaceStats
+    requireFieldAbsent "beam stats workspace" "sessions" workspaceStats
+    requireFieldAbsent "beam stats workspace" "byBackend" workspaceStats
+    let metrics ← requireObjVal "beam stats workspace" "metrics" workspaceStats
+    let ops ← requireObjVal "beam stats metrics" "ops" metrics
+    let syncStats ← requireObjVal "beam stats ops" "sync_file" ops
     let syncCount ← IO.ofExcept <| syncStats.getObjValAs? Nat "count"
     require "beam stats should include prior sync_file calls" (syncCount >= 1)
 

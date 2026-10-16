@@ -15,11 +15,10 @@ namespace BeamTest.Broker.SaveStreamTest
 open BeamTest.Broker.TestUtil
 
 private def expectNoTrackedLeanDoc (payload : Json) (path : String) : IO Unit := do
-  let sessions ← IO.ofExcept <| payload.getObjVal? "sessions"
-  let leanSession ← IO.ofExcept <| sessions.getObjVal? "lean"
-  let files ← IO.ofExcept <| leanSession.getObjVal? "files"
+  let session ← IO.ofExcept <| payload.getObjVal? "session"
+  let files ← IO.ofExcept <| session.getObjVal? "files"
   let .arr files := files
-    | throw <| IO.userError s!"expected open_docs lean.files array, got {files.compress}"
+    | throw <| IO.userError s!"expected open_docs session.files array, got {files.compress}"
   for file in files do
     let trackedPath ← IO.ofExcept <| file.getObjValAs? String "path"
     if trackedPath == path then

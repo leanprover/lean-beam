@@ -439,7 +439,7 @@ signal_owner_pid="$beam_wrapper_last_owner_pid"
     exit 1
   fi
   stats_out="$("$beam_script" --root "$signal_root" stats)"
-  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.byBackend.lean.invalidParamsCount)" -lt 1 ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.invalidParamsCount)" -lt 1 ]; then
     echo "expected duplicate active BEAM_REQUEST_ID wrapper conflict to increment invalidParamsCount" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1

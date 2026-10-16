@@ -22,7 +22,7 @@ beam_wrapper_start_owner "$standalone_root"
   "$beam_script" stats > /dev/null
 
   stats_out="$("$beam_script" stats)"
-  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.sessions.lean.openDocCount)" != "0" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.session.openDocCount)" != "0" ]; then
     echo "expected a newly served Lean session to start with zero open documents" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1
@@ -42,7 +42,7 @@ beam_wrapper_start_owner "$standalone_root"
   fi
 
   stats_out="$("$beam_script" stats)"
-  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.sessions.lean.openDocCount)" != "1" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.session.openDocCount)" != "1" ]; then
     echo "expected initial wrapper sync/probe to open exactly one Beam daemon document" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1
@@ -54,12 +54,12 @@ beam_wrapper_start_owner "$standalone_root"
     printf '%s\n' "$open_files_initial" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$open_files_initial" read_json_text_field result.sessions.lean.files.0.diskStatus)" != "matchesTracked" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$open_files_initial" read_json_text_field result.session.files.0.diskStatus)" != "matchesTracked" ]; then
     echo "expected open-files after initial probe to report SaveSmoke/B.lean as matching tracked text" >&2
     printf '%s\n' "$open_files_initial" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$open_files_initial" read_json_text_field result.sessions.lean.files.0.checkpointed)" != "false" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$open_files_initial" read_json_text_field result.session.files.0.checkpointed)" != "false" ]; then
     echo "expected open-files after initial probe to report checkpointed = false" >&2
     printf '%s\n' "$open_files_initial" >&2
     exit 1
@@ -89,8 +89,8 @@ beam_wrapper_start_owner "$standalone_root"
   fi
   open_files_synced="$("$beam_script" open-files)"
   assert_json_completed_file_progress "open-files after sync" "$open_files_synced" \
-    result.sessions.lean.files.0.fileProgress
-  if [ "$(BEAM_JSON_PAYLOAD="$open_files_synced" read_json_text_field result.sessions.lean.files.0.checkpointed)" != "false" ]; then
+    result.session.files.0.fileProgress
+  if [ "$(BEAM_JSON_PAYLOAD="$open_files_synced" read_json_text_field result.session.files.0.checkpointed)" != "false" ]; then
     echo "expected open-files after sync to keep checkpointed = false before save" >&2
     printf '%s\n' "$open_files_synced" >&2
     exit 1
@@ -138,7 +138,7 @@ beam_wrapper_start_owner "$standalone_root"
   fi
 
   open_files_saved="$("$beam_script" open-files)"
-  if [ "$(BEAM_JSON_PAYLOAD="$open_files_saved" read_json_text_field result.sessions.lean.files.0.checkpointed)" != "true" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$open_files_saved" read_json_text_field result.session.files.0.checkpointed)" != "true" ]; then
     echo "expected open-files after save to report checkpointed = true" >&2
     printf '%s\n' "$open_files_saved" >&2
     exit 1
@@ -146,12 +146,12 @@ beam_wrapper_start_owner "$standalone_root"
 
   sed_in_place_portable 's/2/3/' SaveSmoke/B.lean
   open_files_dirty="$("$beam_script" open-files)"
-  if [ "$(BEAM_JSON_PAYLOAD="$open_files_dirty" read_json_text_field result.sessions.lean.files.0.diskStatus)" != "differsFromTracked" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$open_files_dirty" read_json_text_field result.session.files.0.diskStatus)" != "differsFromTracked" ]; then
     echo "expected open-files to detect an on-disk edit for an already known file incrementally" >&2
     printf '%s\n' "$open_files_dirty" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$open_files_dirty" read_json_text_field result.sessions.lean.files.0.checkpointed)" != "false" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$open_files_dirty" read_json_text_field result.session.files.0.checkpointed)" != "false" ]; then
     echo "expected open-files to clear checkpointed once the on-disk file diverges" >&2
     printf '%s\n' "$open_files_dirty" >&2
     exit 1
@@ -171,13 +171,13 @@ beam_wrapper_start_owner "$standalone_root"
   assert_json_completed_file_progress "second sync" "$sync_second" fileProgress
 
   open_files_second="$("$beam_script" open-files)"
-  if [ "$(BEAM_JSON_PAYLOAD="$open_files_second" read_json_text_field result.sessions.lean.files.0.diskStatus)" != "matchesTracked" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$open_files_second" read_json_text_field result.session.files.0.diskStatus)" != "matchesTracked" ]; then
     echo "expected open-files after second sync to report the disk and tracked text as matching again" >&2
     printf '%s\n' "$open_files_second" >&2
     exit 1
   fi
   assert_json_completed_file_progress "open-files after second sync" "$open_files_second" \
-    result.sessions.lean.files.0.fileProgress
+    result.session.files.0.fileProgress
 
   sync_third="$("$beam_script" sync SaveSmoke/B.lean)"
   if [ "$(BEAM_JSON_PAYLOAD="$sync_third" read_json_text_field ok)" != "true" ]; then
@@ -234,7 +234,7 @@ beam_wrapper_start_owner "$standalone_root"
   fi
 
   stats_out="$("$beam_script" stats)"
-  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.sessions.lean.openDocCount)" != "0" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.session.openDocCount)" != "0" ]; then
     echo "expected close to leave zero open Beam daemon documents" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1

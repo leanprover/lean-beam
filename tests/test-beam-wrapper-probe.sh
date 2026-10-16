@@ -298,7 +298,7 @@ fi
     printf '%s\n' "$stats_out" >&2
     exit 1
   fi
-  run_at_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.byBackend.lean.ops.run_at.count)"
+  run_at_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.ops.run_at.count)"
   if [ "${run_at_count:-0}" -lt 1 ]; then
     echo "expected wrapper stats to record at least one run_at request" >&2
     printf '%s\n' "$stats_out" >&2
@@ -406,43 +406,43 @@ fi
   assert_json_field_absent "wrapper todo" "$todo_out" result.items.0.runAtText
 
   stats_out="$("$beam_script" stats)"
-  hover_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.byBackend.lean.ops.hover.count)"
+  hover_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.ops.hover.count)"
   if [ "${hover_count:-0}" -lt 1 ]; then
     echo "expected wrapper stats to record at least one hover request" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1
   fi
-  signature_help_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.byBackend.lean.ops.signature_help.count)"
+  signature_help_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.ops.signature_help.count)"
   if [ "${signature_help_count:-0}" -lt 1 ]; then
     echo "expected wrapper stats to record at least one signature_help request" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1
   fi
-  definition_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.byBackend.lean.ops.definition.count)"
+  definition_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.ops.definition.count)"
   if [ "${definition_count:-0}" -lt 1 ]; then
     echo "expected wrapper stats to record at least one definition request" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1
   fi
-  references_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.byBackend.lean.ops.references.count)"
+  references_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.ops.references.count)"
   if [ "${references_count:-0}" -lt 1 ]; then
     echo "expected wrapper stats to record at least one references request" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1
   fi
-  document_symbols_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.byBackend.lean.ops.document_symbols.count)"
+  document_symbols_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.ops.document_symbols.count)"
   if [ "${document_symbols_count:-0}" -lt 1 ]; then
     echo "expected wrapper stats to record at least one document_symbols request" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1
   fi
-  workspace_symbols_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.byBackend.lean.ops.workspace_symbols.count)"
+  workspace_symbols_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.ops.workspace_symbols.count)"
   if [ "${workspace_symbols_count:-0}" -lt 1 ]; then
     echo "expected wrapper stats to record at least one workspace_symbols request" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1
   fi
-  goals_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.byBackend.lean.ops.goals.count)"
+  goals_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.ops.goals.count)"
   if [ "${goals_count:-0}" -lt 2 ]; then
     echo "expected wrapper stats to record at least two goals requests" >&2
     printf '%s\n' "$stats_out" >&2

@@ -638,6 +638,13 @@ private def runWorkerExitSmoke
   let workerExitRequestId := some "worker-exit-slow"
   let slowPath := "tests/scenario/docs/SlowPoll.lean"
   let slowVersion ← updateVersion endpoint slowPath
+  let beforeStats ← expectOk <| ← runClient endpoint {
+    Beam.Broker.Request.stats with workspaceId? := some testWorkspaceId
+  }
+  let beforeMetrics ← requireObjVal "pre-restart stats" "metrics" beforeStats
+  let beforeRequests ← IO.ofExcept <| beforeMetrics.getObjValAs? Nat "requestCount"
+  let beforeStarts ← IO.ofExcept <| beforeMetrics.getObjValAs? Nat "sessionStarts"
+  let beforeRestarts ← IO.ofExcept <| beforeMetrics.getObjValAs? Nat "sessionRestarts"
   let startedPath := root / ".tmp" / s!"beam-worker-exit-{← IO.monoNanosNow}.started"
   IO.FS.createDirAll startedPath.parent.get!
   let slowTask ← IO.asTask (prio := Task.Priority.dedicated) <| runClientWithProgress endpoint {
@@ -697,6 +704,23 @@ private def runWorkerExitSmoke
     }
   }
   expectErrCode staleAfterRestart "contentModified"
+
+  let afterStats ← expectOk <| ← runClient endpoint {
+    Beam.Broker.Request.stats with workspaceId? := some testWorkspaceId
+  }
+  let afterMetrics ← requireObjVal "post-restart stats" "metrics" afterStats
+  let afterRequests ← IO.ofExcept <| afterMetrics.getObjValAs? Nat "requestCount"
+  let afterStarts ← IO.ofExcept <| afterMetrics.getObjValAs? Nat "sessionStarts"
+  let afterRestarts ← IO.ofExcept <| afterMetrics.getObjValAs? Nat "sessionRestarts"
+  require "request counters survive a Lean session restart" (afterRequests > beforeRequests)
+  require "a replacement session increments sessionStarts" (afterStarts == beforeStarts + 1)
+  require "a replacement session increments sessionRestarts" (afterRestarts == beforeRestarts + 1)
+  let session ← requireObjVal "post-restart stats" "session" afterStats
+  requireJsonBool "post-restart session" "active" true session
+  requireFieldAbsent "stats session" "workspaceId" session
+  requireFieldAbsent "stats session" "root" session
+  discard <| IO.ofExcept <| session.getObjValAs? Nat "epoch"
+  discard <| IO.ofExcept <| session.getObjValAs? Nat "openDocCount"
 
 private def runHandleSmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
@@ -774,22 +798,22 @@ private def runSaveAndStatsSmoke
     Beam.Broker.Request.stats with
     workspaceId? := some testWorkspaceId
   }
-  expectOpCountAtLeast stats "lean" "sync_file" 1
-  expectOpCountAtLeast stats "lean" "refresh_file" 1
-  expectOpCountAtLeast stats "lean" "update_file" 1
-  expectOpCountAtLeast stats "lean" "run_at" 3
+  expectOpCountAtLeast stats "sync_file" 1
+  expectOpCountAtLeast stats "refresh_file" 1
+  expectOpCountAtLeast stats "update_file" 1
+  expectOpCountAtLeast stats "run_at" 3
 
-  expectOpCountAtLeast stats "lean" "hover" 4
-  expectOpCountAtLeast stats "lean" "goals" 2
-  expectOpCountAtLeast stats "lean" "code_action_resolve" 1
-  expectOpCountAtLeast stats "lean" "run_with" 3
-  expectOpCountAtLeast stats "lean" "release" 1
-  expectOpCountAtLeast stats "lean" "save_olean" 1
-  expectBackendMetricAtLeast stats "lean" "cancelledCount" 1
-  expectBackendMetricAtLeast stats "lean" "workerExitedCount" 1
-  expectBackendMetricAtLeast stats "lean" "sessionRestarts" 1
-  expectOpMetricAtLeast stats "lean" "run_at" "cancelledCount" 1
-  expectOpMetricAtLeast stats "lean" "run_at" "workerExitedCount" 1
+  expectOpCountAtLeast stats "hover" 4
+  expectOpCountAtLeast stats "goals" 2
+  expectOpCountAtLeast stats "code_action_resolve" 1
+  expectOpCountAtLeast stats "run_with" 3
+  expectOpCountAtLeast stats "release" 1
+  expectOpCountAtLeast stats "save_olean" 1
+  expectMetricAtLeast stats "cancelledCount" 1
+  expectMetricAtLeast stats "workerExitedCount" 1
+  expectMetricAtLeast stats "sessionRestarts" 1
+  expectOpMetricAtLeast stats "run_at" "cancelledCount" 1
+  expectOpMetricAtLeast stats "run_at" "workerExitedCount" 1
 
 private def requireWorkspaceListed (payload : Json) (workspaceId : String) : IO Unit := do
   let workspaces ← IO.ofExcept <| payload.getObjVal? "workspaces"
@@ -969,11 +993,11 @@ private def runInitialWorkspaceDropDebugPayloadSmoke (endpoint : Beam.Broker.End
   })
   requireJsonBool "drop initial workspace" "dropped" true drop
   let stats ← expectOk (← runClient endpoint Beam.Broker.Request.stats)
-  for field in ["root", "sessions", "byBackend"] do
+  for field in ["root", "session", "metrics"] do
     requireFieldAbsent "stats after initial workspace drop" field stats
   discard <| requireObjVal "stats after initial workspace drop" "workspaces" stats
   let openDocs ← expectOk (← runClient endpoint Beam.Broker.Request.openDocs)
-  for field in ["root", "sessions"] do
+  for field in ["root", "session"] do
     requireFieldAbsent "open_docs after initial workspace drop" field openDocs
   discard <| requireObjVal "open_docs after initial workspace drop" "workspaces" openDocs
 

@@ -367,6 +367,12 @@ on-disk source with the broker's tracked text. `checkpointed` means this daemon 
 artifacts or predict whether another save will succeed; `lean-beam save` is authoritative for those
 checks.
 
+The `open-files` result contains `session.active` and `session.files`. The workspace result from
+`lean-beam stats` also has a single `session` object, plus `metrics` for operation counters retained
+across Lean server session restarts. Workspace identity and root appear on the enclosing result;
+an active stats session adds only `epoch` and `openDocCount` to `active`. Resetting or recreating the
+workspace starts fresh counters, as does restarting the daemon.
+
 The running Lean server and existing file workers are not guaranteed to pick up Lake workspace
 configuration changes. After editing a lakefile, manifest, package override, `lean-toolchain`, Lean
 options, plugins, or dynamic libraries, run `lean-beam --root ROOT stop`, then start a new

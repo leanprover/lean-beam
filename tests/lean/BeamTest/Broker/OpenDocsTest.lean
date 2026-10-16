@@ -30,11 +30,12 @@ private def checkInactivePayload : IO Unit := do
   let root := System.FilePath.mk "/workspace"
   let payload ← OpenDocs.payload root none
   requireJsonString "open docs payload" "root" root.toString payload
-  let sessions ← requireObjVal "open docs payload" "sessions" payload
-  let leanSession ← requireObjVal "open docs sessions" "lean" sessions
-  requireJsonBool "inactive lean session" "active" false leanSession
-  require "inactive lean session has empty files"
-    ((← requireArray "inactive lean files" (← requireObjVal "inactive lean session" "files" leanSession)).isEmpty)
+  requireFieldAbsent "open docs payload" "sessions" payload
+  let session ← requireObjVal "open docs payload" "session" payload
+  requireJsonBool "inactive session" "active" false session
+  require "inactive session has empty files"
+    ((← requireArray "inactive files" (← requireObjVal "inactive session" "files" session)).isEmpty)
+
 private def checkDocProjection : IO Unit := do
   let root := System.FilePath.mk s!"/tmp/beam-open-docs-test-{← IO.monoNanosNow}"
   try
@@ -53,7 +54,9 @@ private def checkDocProjection : IO Unit := do
       root
       docs
     }
-    let sessionJson ← OpenDocs.sessionJson (some session)
+    let payload ← OpenDocs.payload root (some session)
+    requireFieldAbsent "open docs payload" "sessions" payload
+    let sessionJson ← requireObjVal "open docs payload" "session" payload
     requireJsonBool "open docs active session" "active" true sessionJson
     let file ← requireOnlyFile "open docs saved session" sessionJson
     requireJsonString "open docs file" "uri" uri file
