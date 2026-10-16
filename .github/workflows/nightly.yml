@@ -1,0 +1,116 @@
+# Copyright (c) 2026 Lean FRO LLC. All rights reserved.
+# Released under Apache 2.0 license as described in the file LICENSE.
+# Author: Emilio J. Gallego Arias
+
+name: Lean Nightly
+
+on:
+  schedule:
+    - cron: '37 12 * * *'
+  workflow_dispatch:
+    inputs:
+      toolchain:
+        description: 'Dated Lean nightly toolchain (empty resolves the latest published nightly)'
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - 'Beam/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'Beam.lean'
+      - 'lean-toolchain'
+      - 'lakefile.lean'
+      - 'lake-manifest.json'
+      - '.github/workflows/nightly.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lean-nightly-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nightly:
+    name: nightly toolchain distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld cmake
+      - name: Install elan without a default toolchain
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Select one dated nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TOOLCHAIN: ${{ inputs.toolchain || '' }}
+        run: |
+          python3 - <<'PYTHON'
+          import datetime
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import urllib.request
+
+          report = Path(".native-test/selection")
+          report.mkdir(parents=True)
+          toolchain = os.environ["REQUESTED_TOOLCHAIN"]
+          if not toolchain:
+              request = urllib.request.Request(
+                  "https://api.github.com/repos/leanprover/lean4-nightly/releases?per_page=5",
+                  headers={"Accept": "application/vnd.github+json",
+                           "Authorization": "Bearer " + os.environ["GH_TOKEN"]},
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  releases = json.load(response)
+              releases = [r for r in releases if not r["draft"] and
+                          re.fullmatch(r"nightly-\d{4}-\d{2}-\d{2}", r["tag_name"])]
+              if not releases:
+                  raise SystemExit("no published dated Lean nightly release found")
+              release = max(releases, key=lambda r: r["published_at"])
+              (report / "release.json").write_text(json.dumps(release, indent=2) + "\n")
+              toolchain = "leanprover/lean4-nightly:" + release["tag_name"]
+          match = re.fullmatch(r"leanprover/lean4-nightly:nightly-(\d{4}-\d{2}-\d{2})", toolchain)
+          if not match:
+              raise SystemExit("expected leanprover/lean4-nightly:nightly-YYYY-MM-DD")
+          datetime.date.fromisoformat(match[1])
+          (report / "toolchain.txt").write_text(toolchain + "\n")
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write("NIGHTLY_TOOLCHAIN=" + toolchain + "\n")
+          print(toolchain)
+          PYTHON
+      - name: Install selected SDK and qualify native distribution
+        run: |
+          unset ELAN_TOOLCHAIN LEAN_SYSROOT LAKE_CACHE_DIR
+          elan toolchain install "$NIGHTLY_TOOLCHAIN"
+          lean_prefix="$(elan run "$NIGHTLY_TOOLCHAIN" lean --print-prefix)"
+          lean_version="$("$lean_prefix/bin/lean" --version)"
+          if [[ "$lean_version" != *"${NIGHTLY_TOOLCHAIN##*:}"* ]]; then
+            echo "nightly toolchain name/version mismatch: $NIGHTLY_TOOLCHAIN: $lean_version" >&2
+            exit 1
+          fi
+          python3 tests/test-native-toolchain.py "$lean_prefix" --crlf
+      - name: Retain native qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-native-qualification
+          include-hidden-files: true
+          retention-days: 14
+          path: |
+            .native-test/selection/*
+            .native-test/**/qualification.json
+            .native-test/**/owner.log
+            .native-test/**/postponed-owner.log
+            .native-test/**/.beam/*.log
+            .native-test/**/.beam/*.json

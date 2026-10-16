@@ -29,13 +29,15 @@ A Lean release line is the canonical `major.minor` family recorded in
   qualification probe for their exact fingerprint.
   Shims must name the Lean/Lake API boundary they support and should be removed when the support
   window no longer needs them.
-- Source-build compatibility with `leanprover/lean4-nightly:nightly-2026-10-13`. This pinned nightly is a development target;
-  nightly toolchains still require explicit custom-toolchain admission and are not added to the
-  validated release registry.
+- Lean nightly toolchain distributions, qualified separately on Linux by
+  [Lean Nightly](../.github/workflows/nightly.yml) through the native build/install interface.
+  Each run selects one dated SDK and records its compiler identity. Standalone installations require
+  explicit custom-toolchain admission for nightly toolchains; native builds use their supplied SDK
+  directly. Nightlies are not added to the validated release registry.
 - Module saves publish the `.ir.sig` companion and its Lake output descriptor on every supported
   toolchain. The internal module-save request requires an IR signature output path. Save traces
   use Lake's full `ModulePreSetup.trace` directly. Lake 4.33–4.35 require the C output descriptor;
-  4.36 and the pinned nightly use optional `ModuleOutputDescrs.c?`. Beam supplies the generated C
+  4.36 and current nightly SDKs use optional `ModuleOutputDescrs.c?`. Beam supplies the generated C
   descriptor on both shapes.
 - [Construction-cache metadata](../Beam/Cli/RuntimeBundle/Metadata.lean) schema 6,
   standalone installation manifest schema 4, and native installation manifest schema 3.

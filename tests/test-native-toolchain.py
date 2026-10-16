@@ -2,17 +2,21 @@
 """Build, relocate, and exercise a toolchain-only Beam payload (no standalone installer)."""
 
 import argparse
+import datetime
 import errno
 import hashlib
 import importlib.util
 import json
 import os
+import platform
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -24,6 +28,7 @@ watchdog_spec.loader.exec_module(watchdog)
 
 
 def run(args, *, cwd=REPO, env=None, ok=True):
+    print("+", shlex.join(str(a) for a in args), flush=True)
     result = subprocess.run([str(a) for a in args], cwd=cwd, env=env,
                             text=True, encoding="utf-8", capture_output=True, timeout=600)
     if ok and result.returncode:
@@ -66,25 +71,10 @@ def check_relative_native_includes(lake, scratch, env, includes):
     print("native SDK relative include paths: both object traces passed A -> B -> A", flush=True)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("lean_prefix", type=Path)
-    parser.add_argument("--scratch", type=Path, default=REPO / ".native-test")
-    parser.add_argument("--skip-build", action="store_true")
-    parser.add_argument("--build-only", action="store_true", help="check native/standalone build isolation only")
-    parser.add_argument("--crlf", action="store_true", help="exercise Windows line endings on any host")
-    parser.add_argument("--previous-lean-prefix", type=Path,
-                        help="qualify compiler switching through the same native object cache")
-    parser.add_argument("--native-system-include-dir", type=Path, action="append", default=[],
-                        help="Windows native SDK system include directory; repeat for multiple directories")
-    args = parser.parse_args()
+def qualify(args, lean_prefix, scratch):
     # The parent captures UTF-8, including unittest failures with non-ASCII fixture names.
     run([sys.executable, "-X", "utf8", REPO / "tests/test-native-provenance.py"])
-    lean_prefix = args.lean_prefix.resolve()
     real_elan = shutil.which("elan")
-    args.scratch.mkdir(parents=True, exist_ok=True)
-    scratch = Path(tempfile.mkdtemp(prefix="toolchain-", dir=args.scratch.resolve()))
-    print(f"native toolchain test scratch: {scratch}", flush=True)
     management_commands = ["prune", "validated-toolchains", "compatible-release-lines"]
     build_commit = None
     if not args.skip_build:
@@ -542,6 +532,76 @@ def main():
     assert not (project / ".beam" / "bundles").exists()
     assert not (home / ".codex").exists() and not (home / ".claude").exists()
     print("native toolchain build/install/relocation/runtime/save checks passed", flush=True)
+
+
+def write_report(path, report):
+    staged = path.with_name(path.name + ".tmp")
+    staged.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    staged.replace(path)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("lean_prefix", type=Path)
+    parser.add_argument("--scratch", type=Path, default=REPO / ".native-test")
+    parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--build-only", action="store_true", help="check native/standalone build isolation only")
+    parser.add_argument("--crlf", action="store_true", help="exercise Windows line endings on any host")
+    parser.add_argument("--previous-lean-prefix", type=Path,
+                        help="qualify compiler switching through the same native object cache")
+    parser.add_argument("--native-system-include-dir", type=Path, action="append", default=[],
+                        help="Windows native SDK system include directory; repeat for multiple directories")
+    args = parser.parse_args(argv)
+    lean_prefix = args.lean_prefix.resolve()
+    args.scratch.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="toolchain-", dir=args.scratch.resolve()))
+    report_path = scratch / "qualification.json"
+    report = {
+        "lean_prefix": str(lean_prefix),
+        "platform": platform.platform(),
+        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "options": {
+            "skip_build": args.skip_build,
+            "build_only": args.build_only,
+            "crlf": args.crlf,
+            "previous_lean_prefix": str(args.previous_lean_prefix) if args.previous_lean_prefix else None,
+            "native_system_include_dirs": [str(path) for path in args.native_system_include_dir],
+        },
+    }
+    print(f"native toolchain test scratch: {scratch}", flush=True)
+    try:
+        # Retain each successful observation even if a later SDK probe or build fails.
+        report["beam_commit"] = run(["git", "rev-parse", "HEAD"]).stdout.strip()
+        report["source_dirty"] = bool(run(["git", "status", "--porcelain"]).stdout.strip())
+        report["lean_version"] = run([lean_prefix / "bin" / f"lean{EXE}", "--version"]).stdout.strip()
+        report["lean_githash"] = run([lean_prefix / "bin" / f"lean{EXE}", "--githash"]).stdout.strip()
+        report["lake_version"] = run([lean_prefix / "bin" / f"lake{EXE}", "--version"]).stdout.strip()
+        print(json.dumps(report, indent=2), flush=True)
+        write_report(report_path, {**report, "result": "running"})
+        qualify(args, lean_prefix, scratch)
+    except Exception as failure:
+        outcome = {
+            **report,
+            "result": "failed",
+            "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "failure": traceback.format_exc(),
+        }
+        if isinstance(failure, (subprocess.TimeoutExpired, subprocess.CalledProcessError)):
+            for stream in ("stdout", "stderr"):
+                value = getattr(failure, stream)
+                if value is not None:
+                    outcome[stream] = (
+                        value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
+                    )
+        try:
+            write_report(report_path, outcome)
+        except OSError as error:
+            print(f"could not write qualification report: {error}", file=sys.stderr)
+        raise
+    else:
+        write_report(report_path, {**report, "result": "passed",
+                                  "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+        print(f"native qualification report: {report_path}", flush=True)
 
 
 if __name__ == "__main__":

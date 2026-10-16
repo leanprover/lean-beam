@@ -36,6 +36,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 - Support Lean `v4.36.0-rc1` and use it as the repository's default toolchain. The pinned release
   candidate joins the exact CI and installer targets alongside stable 4.33.1, 4.34.1, and 4.35.0.
+- Qualify dated Lean nightlies with the same native distribution test used by release SDKs,
+  retaining compiler identity, test outcome, and native runtime diagnostics in CI
+  ([#265](https://github.com/leanprover/lean-beam/pull/265), @ejgallego).
 - Build and install `lean-beam` for an explicitly selected native Lean installation, with a
   relocatable bundled runtime, installed provenance, and session invalidation on payload changes.
   The native distribution includes the CLI, MCP server, daemon, and LSP plugin. Project-loading

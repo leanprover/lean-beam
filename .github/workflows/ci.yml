@@ -104,6 +104,20 @@ jobs:
           lean_prefix="$(lean --print-prefix)"
           python3 tests/test-native-toolchain.py "$lean_prefix" --crlf
 
+      - name: Retain native qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-qualification-macos-platform
+          include-hidden-files: true
+          retention-days: 14
+          path: |
+            .native-test/**/qualification.json
+            .native-test/**/owner.log
+            .native-test/**/postponed-owner.log
+            .native-test/**/.beam/*.log
+            .native-test/**/.beam/*.json
+
       - name: Beam Install Test
         if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' }}
         run: bash tests/test-beam-install.sh
@@ -178,13 +192,15 @@ jobs:
             python tests/test-native-toolchain.py "$lean_prefix" --crlf
           fi
 
-      - name: Retain native runtime diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v6
+      - name: Retain native qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
-          name: native-runtime-diagnostics-${{ matrix.os }}
+          name: native-qualification-${{ matrix.os }}
           include-hidden-files: true
+          retention-days: 14
           path: |
+            .native-test/**/qualification.json
             .native-test/**/owner.log
             .native-test/**/postponed-owner.log
             .native-test/**/.beam/*.log

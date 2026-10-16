@@ -14,6 +14,22 @@ The repository treats testing as three distinct surfaces:
 
 This split is organizational. It is also the supported top-level test layout.
 
+Choose a suite by the behavior being changed; the individual fixtures below are a coverage map,
+not a checklist of additional commands to run after that suite:
+
+| Change | Qualification command |
+| --- | --- |
+| Broker, wrapper, MCP, or standalone packaging | `bash tests/test-beam.sh` |
+| Plugin requests, positions, cancellation, or handles | `bash tests/test-lsp.sh` |
+| A bundled distribution for any release or nightly SDK | `python3 tests/test-native-toolchain.py /path/to/SDK` |
+| Standalone admission for a particular Lean version | `bash tests/test-beam-toolchain-compat.sh TOOLCHAIN` |
+| Maintainer workflow helpers | `bash tests/test-maintainer.sh` |
+
+`test-beam.sh` already runs the fast, slow, and installer suites. The slow suite owns the wrapper
+aggregate and its focused slices. Use those smaller commands to investigate a failure or iterate
+on one behavior. A new compiler version should be an input to an existing qualification command;
+it should not introduce another runner with its own checkout, cleanup, and reporting behavior.
+
 Importable Lean test code lives under [tests/lean/BeamTest](../tests/lean/BeamTest) and is exposed
 to Lake as the `BeamTest` library. The rest of [tests](../tests) contains shell and Python
 entrypoints, scenario scripts, interactive golden inputs, fixture projects, and shared test helper
@@ -99,6 +115,8 @@ Additional Beam lanes:
 - [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) `<toolchain>`: exact
   validated or release-line-compatible bundle qualification, admission diagnostics, module save/replay
   (including the required `.ir.sig` companion), and stale-import diagnostic wording compatibility
+- [tests/test-native-toolchain.py](../tests/test-native-toolchain.py) `<SDK-prefix>`: native
+  build/install, relocation, installed-runtime, and save/replay qualification for any supplied SDK
 - [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh): external MCP `2025-11-25`
   conformance scenarios over the local Streamable HTTP bridge
 - [tests/test-mcp-modern-sdk.sh](../tests/test-mcp-modern-sdk.sh): released official TypeScript
@@ -247,6 +265,60 @@ home, agent homes, bundle directory, platform, and captured build/bundle/stale-d
 log tails so the bundle or stale-diagnostic state can be diagnosed from the test log. Set
 `BEAM_TOOLCHAIN_COMPAT_KEEP_TMP_ON_FAILURE=1` to preserve the fake roots for local inspection after
 a failed run.
+
+## Native Toolchain Qualification
+
+[tests/test-native-toolchain.py](../tests/test-native-toolchain.py) takes an SDK prefix and checks
+build/install, relocation, provenance, installed CLI/MCP execution, module save/replay, native
+consumers, and rejection of foreign or incomplete runtimes. Release and nightly CI use the same
+assertions and reporting; see [release qualification](TOOLCHAIN_BUNDLING.md#release-qualification)
+for the build integration contract.
+
+Each invocation prints its unique scratch directory under `.native-test/` (`--scratch` overrides
+the parent). Its `qualification.json` records SDK and Beam identity, source dirty status, platform,
+and test options. The result starts as `running`, becomes `passed` or `failed` on completion, and
+may remain `running` after interruption. Reports are published by atomic replacement. A failed
+update preserves the previous complete record; failure to publish the final success report fails
+the command. Failure-report I/O preserves the original test error.
+
+Failed SDK probes retain earlier observations. Failure reports include the traceback and captured
+subprocess timeout output; commands are printed as they run, and command failures include captured
+stdout/stderr. Scratch directories remain available for diagnosis, and reruns create new directories.
+Native CI jobs, including the combined macOS job, retain reports and owner/runtime logs on success
+or failure, including `.beam` JSON records, without uploading SDK copies or build outputs.
+[test-native-provenance.py](../tests/test-native-provenance.py) covers report failure paths alongside
+construction provenance without downloading or building Lean.
+
+For local filesystem isolation, the existing [defensive validation wrapper](../scripts/validate-defensive.sh)
+can run the command in a clone:
+`bash scripts/validate-defensive.sh --keep-root -- python3 tests/test-native-toolchain.py "$lean_prefix" --crlf`.
+The wrapper prints its retained root; SDK relocation may require extra disk space when the clone
+and installed SDK are on different filesystems.
+
+## Nightly Qualification
+
+[Lean Nightly](../.github/workflows/nightly.yml) runs daily, on relevant pull requests, and through
+manual workflow dispatch on Linux. It selects and installs the latest published dated nightly once,
+or accepts an explicit `leanprover/lean4-nightly:nightly-YYYY-MM-DD`, then invokes the native
+qualification command above. Mutable aliases are rejected. Selection details are retained under
+`.native-test/selection/`, including the dated tag before installation starts.
+
+The workflow clears inherited `ELAN_TOOLCHAIN`, `LEAN_SYSROOT`, and `LAKE_CACHE_DIR` values and
+leaves the repository's `lean-toolchain` and public toolchain registries unchanged. Keep the lane
+advisory rather than a required branch-protection check: an upstream nightly regression can affect
+otherwise unrelated Beam changes. A passing run qualifies that exact Beam revision and SDK;
+it does not admit the SDK to stable support. Native release CI covers supported platforms;
+nightly qualification remains one Linux job. Standalone installation and mixed-toolchain workspace
+coverage stay in their existing suites.
+
+To reproduce a run, use a dedicated checkout and the tag recorded by CI:
+
+```bash
+unset ELAN_TOOLCHAIN LEAN_SYSROOT LAKE_CACHE_DIR
+elan toolchain install leanprover/lean4-nightly:nightly-2026-10-19
+lean_prefix="$(elan run leanprover/lean4-nightly:nightly-2026-10-19 lean --print-prefix)"
+python3 tests/test-native-toolchain.py "$lean_prefix" --crlf
+```
 
 ## Save Replay Timeout Investigation
 
@@ -399,13 +471,16 @@ progress notifications or the underlying `lean_sync` / `waitForDiagnostics` path
 
 ## Maintainer Surface
 
-The maintainer surface covers local workflow helpers:
+Run [tests/test-maintainer.sh](../tests/test-maintainer.sh) for local workflow helpers.
+Its component checks are listed here for focused debugging, not as additional required commands:
 
-- [tests/test-maintainer.sh](../tests/test-maintainer.sh)
 - [tests/test-codex-harness.sh](../tests/test-codex-harness.sh)
 - [tests/test-validate-defensive.sh](../tests/test-validate-defensive.sh)
 - [tests/test-extended-ci.py](../tests/test-extended-ci.py): offline destination, revision, and CLI
-  failure checks for the fork-CI helper; also included in the fast suite
+  failure checks for the fork-CI helper
+
+The fast suite also invokes the extended-CI, toolchain-compatibility ownership, and defensive-wrapper
+checks. That overlap lets either suite check its own dependencies; running both repeats those checks.
 
 The aggregate maintainer runner skips [tests/test-codex-harness.sh](../tests/test-codex-harness.sh) when the current checkout has tracked edits, because that harness regression intentionally verifies that new task worktrees start from a clean primary checkout.
 

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Lean FRO LLC. All rights reserved.
 # Released under Apache 2.0 license as described in the file LICENSE.
-"""Exercise the real native build writer and installer with fixture compiler probes."""
+"""Exercise native construction provenance and qualification reports with fixture compiler probes."""
 
+from contextlib import redirect_stderr, redirect_stdout
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
 EXE = ".exe" if os.name == "nt" else ""
@@ -416,6 +420,122 @@ string(JSON record SET "${{record}}" components targets 0 daemon "\\\"{path}\\\"
         result = self.run_script("install-toolchain.cmake", destination)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(destination.exists())
+
+
+class NativeQualificationReportTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="beam-native-report-")
+        self.addCleanup(temp.cleanup)
+        self.scratch = Path(temp.name)
+        spec = importlib.util.spec_from_file_location(
+            "native_qualification", REPO / "tests/test-native-toolchain.py")
+        self.native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.native)
+        self.arguments = [str(self.scratch / "SDK"), "--scratch", str(self.scratch)]
+
+    def invoke(self, *options):
+        output = io.StringIO()
+        with (
+            redirect_stdout(output),
+            redirect_stderr(output),
+            mock.patch.object(self.native, "run", side_effect=self.observe),
+        ):
+            self.native.main([*self.arguments, *options])
+
+    def observe(self, args):
+        args = [str(arg) for arg in args]
+        output = {"rev-parse": "beam-fixture-commit", "status": "", "--version": "fixture version",
+                  "--githash": "compiler-fixture-commit"}[args[1]]
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    def reports(self):
+        return [json.loads(path.read_text(encoding="utf-8"))
+                for path in self.scratch.glob("toolchain-*/qualification.json")]
+
+    def test_failed_run_and_successful_rerun_keep_distinct_evidence(self):
+        failure = RuntimeError("native qualification failed")
+        def fail_qualification(*_):
+            report, = self.reports()
+            self.assertEqual(report["result"], "running")
+            self.assertEqual(report["lean_githash"], "compiler-fixture-commit")
+            raise failure
+        with mock.patch.object(self.native, "qualify", side_effect=fail_qualification):
+            with self.assertRaises(RuntimeError) as raised:
+                self.invoke()
+        self.assertIs(raised.exception, failure)
+        with mock.patch.object(self.native, "qualify"):
+            self.invoke("--build-only", "--native-system-include-dir", "SDK headers")
+        reports = self.reports()
+        self.assertEqual({report["result"] for report in reports}, {"passed", "failed"})
+        for report in reports:
+            self.assertEqual(report["lean_githash"], "compiler-fixture-commit")
+            self.assertEqual(report["beam_commit"], "beam-fixture-commit")
+            self.assertFalse(report["source_dirty"])
+            self.assertEqual(report["options"]["build_only"], report["result"] == "passed")
+            self.assertEqual(report["options"]["native_system_include_dirs"],
+                             ["SDK headers"] if report["result"] == "passed" else [])
+            self.assertIn("finished_at", report)
+            if report["result"] == "failed":
+                self.assertIn("RuntimeError: native qualification failed", report["failure"])
+            else:
+                self.assertNotIn("failure", report)
+
+    def test_missing_sdk_fails_through_the_actual_cli(self):
+        result = subprocess.run(
+            [sys.executable, str(REPO / "tests/test-native-toolchain.py"), *self.arguments],
+            cwd=REPO, capture_output=True, text=True, encoding="utf-8", timeout=30)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        report, = self.reports()
+        self.assertEqual(report["result"], "failed")
+        self.assertEqual(Path(report["lean_prefix"]), (self.scratch / "SDK").resolve())
+        self.assertTrue(report["beam_commit"])
+        self.assertIn("FileNotFoundError", result.stderr)
+        self.assertIn("FileNotFoundError", report["failure"])
+        self.assertNotIn("lean_version", report)
+
+    def test_report_failure_preserves_original_qualification_error(self):
+        failure = RuntimeError("native qualification failed")
+        with (
+            mock.patch.object(self.native, "qualify", side_effect=failure),
+            mock.patch.object(self.native, "write_report", side_effect=[None, OSError("storage unavailable")]),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                self.invoke()
+        self.assertIs(raised.exception, failure)
+
+    def test_success_without_a_final_report_is_a_failure(self):
+        with (
+            mock.patch.object(self.native, "qualify"),
+            mock.patch.object(self.native, "write_report", side_effect=[None, OSError("storage unavailable")]),
+        ):
+            with self.assertRaisesRegex(OSError, "storage unavailable"):
+                self.invoke()
+
+    def test_failed_report_publication_preserves_previous_record(self):
+        path = self.scratch / "qualification.json"
+        previous = {"result": "running", "lean_githash": "compiler-fixture-commit"}
+        self.native.write_report(path, previous)
+        for operation in ("write_text", "replace"):
+            with (
+                self.subTest(operation=operation),
+                mock.patch.object(Path, operation, side_effect=OSError("storage unavailable")),
+            ):
+                with self.assertRaisesRegex(OSError, "storage unavailable"):
+                    self.native.write_report(path, {"result": "passed"})
+            self.assertEqual(json.loads(path.read_text()), previous)
+
+    def test_timeout_retains_compiler_output(self):
+        failure = subprocess.TimeoutExpired(["lake", "build"], 600,
+                                           output="compiler output λ\n".encode(), stderr=b"compiler stderr\n")
+        with mock.patch.object(self.native, "qualify", side_effect=failure):
+            with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                self.invoke()
+        self.assertIs(raised.exception, failure)
+        report, = self.reports()
+        self.assertEqual(report["result"], "failed")
+        self.assertIn("TimeoutExpired", report["failure"])
+        self.assertEqual(report["stdout"], "compiler output λ\n")
+        self.assertEqual(report["stderr"], "compiler stderr\n")
 
 
 if __name__ == "__main__":

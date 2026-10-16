@@ -259,6 +259,9 @@ The `native-toolchain` CI job exercises Linux x86_64/aarch64 and Windows layouts
 repository's supported compiler. The combined `macos-platform` job also runs this test on macOS.
 Setting `BEAM_FULL_MACOS_CI=true` enables separate macOS x86_64/aarch64 native jobs instead;
 see [the CI layout](TESTING.md#ci-map).
+The [nightly workflow](../.github/workflows/nightly.yml) selects a dated nightly SDK and invokes this
+same command; see [native qualification evidence](TESTING.md#native-toolchain-qualification)
+for reports and retained diagnostics.
 A release integration must also run this test against the actual compiler being shipped. Wasm, MCP
 registration and skill installation are outside this build/install interface.
 
