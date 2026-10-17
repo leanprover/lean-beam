@@ -102,4 +102,10 @@ def main (args : List String) : IO Unit := do
   stage linked
   rejected "linked inventory" <| InstallConstruction.finalize linked none members
   require (!(← (linked / "manifest.json").pathExists)) "linked inventory was published"
+  unless System.Platform.isWindows do
+    let nonportable := directory / "nonportable-inventory"
+    stage nonportable
+    write nonportable "literal\\backslash" "not a directory separator on POSIX"
+    rejected "literal backslash filename" <| InstallConstruction.finalize nonportable none members
+    require (!(← (nonportable / "manifest.json").pathExists)) "nonportable inventory was published"
   IO.println "construction membership, generation, immutability, artifact validation, and relocation passed"

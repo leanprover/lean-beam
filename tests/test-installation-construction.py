@@ -33,7 +33,11 @@ def check(prefix, environment):
         installation = directory / "one-target"
         assert (installation / "payload.bin").read_bytes() == bytes([0, 10, 13, 10, 26, 128, 255])
         manifest = json.loads((installation / "manifest.json").read_text(encoding="utf-8"))
+        expected = {"LICENSE", "libexec/beam-cli", "libexec/lean-beam-mcp", "payload.bin",
+                    "runtimes/0/daemon", "runtimes/0/plugin", "runtimes/1/daemon", "runtimes/1/plugin"}
+        assert {artifact["destination"] for artifact in manifest["artifacts"]} == expected
         for artifact in manifest["artifacts"]:
+            assert artifact["source"] == artifact["destination"], artifact
             actual = hashlib.sha256((installation / artifact["destination"]).read_bytes()).hexdigest()
             assert actual == artifact["hash"], artifact
 

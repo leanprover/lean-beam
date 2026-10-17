@@ -59,7 +59,9 @@ private partial def files (root directory : System.FilePath) : IO (Array System.
 
 private def inventory (root : System.FilePath) : IO (Array Beam.Installation.Artifact) := do
   (← files root root).mapM fun path => do
-    let relative := Beam.pathRelativeToRootOrSelf root path
+    -- The record uses '/' on every host; filesystem paths retain their native spelling.
+    let relative := String.intercalate "/"
+      (System.FilePath.mk (Beam.pathRelativeToRootOrSelf root path)).components
     pure { source := relative, destination := relative, hash := ← fileHash path }
 
 private def checkTargets (root : System.FilePath) (components : Beam.Installation.Components) : IO Unit := do
