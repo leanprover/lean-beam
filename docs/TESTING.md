@@ -179,11 +179,18 @@ guards. New tests that remove temp paths should declare their expected `/tmp` pr
 use the guard helpers instead of raw `rm -rf`; the helpers also allow the nested
 `/tmp/beam-validate-*/tmp/...` layout used by [scripts/validate-defensive.sh](../scripts/validate-defensive.sh).
 
+The installer and compatibility tests read toolchain registries through
+[tests/lib/toolchain-registry.sh](../tests/lib/toolchain-registry.sh). The reader trims surrounding
+whitespace (including CRLF endings) and skips blank lines and whole-line comments, matching the
+installer. It preserves entry order and contents for the existing policy checks.
+Run `python3 tests/test-toolchain-registry.py` to check this normalization without building Lean.
+
 For slow or offline validation, pre-seed the host elan cache before running installer tests. A
 typical setup is:
 
 ```bash
-grep -v '^[[:space:]]*#' validated-lean-toolchains | sed '/^[[:space:]]*$/d' |
+. tests/lib/toolchain-registry.sh
+beam_test_read_registry_entries validated-lean-toolchains |
   while IFS= read -r toolchain; do
     elan toolchain install "$toolchain"
   done

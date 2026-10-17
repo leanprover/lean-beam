@@ -15,6 +15,8 @@ cd "$(dirname "$0")/.."
 . tests/lib/wait.sh
 # shellcheck source=tests/lib/toolchain-compat-owner.sh
 . tests/lib/toolchain-compat-owner.sh
+# shellcheck source=tests/lib/toolchain-registry.sh
+. tests/lib/toolchain-registry.sh
 
 BEAM_TEST_SUITE="${BEAM_TEST_SUITE:-beam-toolchain-compat}"
 bundle_timeout="${BEAM_TOOLCHAIN_COMPAT_TIMEOUT:-600}"
@@ -185,8 +187,7 @@ run_toolchain_admission_check() {
   local expected_admission="release-line"
   local expected_release_line=""
   prepare_stale_diagnostic_project
-  if grep -v '^[[:space:]]*#' validated-lean-toolchains |
-      sed '/^[[:space:]]*$/d' | grep -qxF "$toolchain"; then
+  if beam_test_read_registry_entries validated-lean-toolchains | grep -qxF "$toolchain"; then
     expected_admission="validated"
   fi
   if ! run_stale_wrapper doctor > "$admission_stdout" 2> "$admission_stderr"; then
