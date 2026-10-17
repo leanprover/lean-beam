@@ -8,6 +8,7 @@ import Beam.CompilerRevision
 import Beam.Broker.Errors
 import Beam.Cli.Args
 import Beam.Cli.Broker
+import Beam.Cli.ClientDoctor
 import Beam.Cli.Info
 import Beam.Cli.LeanOperation
 import Beam.Cli.Lock
@@ -1645,7 +1646,31 @@ private def checkRuntimeBundleMetadataAcceptance : IO Unit := do
     catch _ =>
       pure ()
 
+private def checkClientDoctorFailureIsolation : IO Unit := do
+  let mut clients := #[]
+  for client in Beam.Cli.ClientDoctor.Client.all do
+    let report ← Beam.Cli.ClientDoctor.inspectSafely client false do
+      if client == .claude then throw <| IO.userError "DOCTOR_SECRET_SENTINEL"
+      return { client, discovered := true, skill := .checked }
+    clients := clients.push report
+  let report : Beam.Cli.ClientDoctor.Report := { workspace := "/workspace", clients }
+  require "doctor should retain all clients after one inspection throws" (clients.size == 5)
+  require "doctor should report an incomplete inspection" (report.exitCode == 2)
+  require "doctor should preserve other clients' results"
+    (clients.all fun result => result.client == .claude || result.skill == .checked)
+  require "doctor should redact unexpected exception contents"
+    (!((toJson report).compress.contains "DOCTOR_SECRET_SENTINEL"))
+  let some failed := clients.find? (·.client == .claude)
+    | throw <| IO.userError "missing failed client report"
+  require "doctor should mark both integrations unverified"
+    (failed.mcp == .unverified && failed.skill == .unverified && failed.discovered)
+  let explicit ← Beam.Cli.ClientDoctor.inspectSafely .pi true do
+    throw <| IO.userError "DOCTOR_SECRET_SENTINEL"
+  require "doctor should preserve explicit scope and Pi's lack of native MCP"
+    (explicit.mcp == .notApplicable && explicit.skill == .outOfScope)
+
 def main : IO Unit := do
+  checkClientDoctorFailureIsolation
   checkLeanConfigLowering
   checkProjectDaemonRequestSealing
   checkClientResponsePresentation

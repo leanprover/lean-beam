@@ -413,6 +413,86 @@ contract and the distinction between the inner loop and final batch validation l
 Detailed Lean workflow guidance lives in
 [../skills/lean-beam/SKILL.md](../skills/lean-beam/SKILL.md).
 
+## Inspect Client Configuration
+
+Check the Beam-related client files without starting a client, MCP server, Lean server, or project
+session:
+
+```bash
+lean-beam doctor clients
+lean-beam doctor clients --verbose
+lean-beam doctor clients codex
+lean-beam doctor clients claude
+lean-beam doctor clients pi
+lean-beam doctor clients opencode
+lean-beam doctor clients vibe
+lean-beam --root /path/to/workspace doctor clients opencode --json
+```
+
+This command works outside a Lean project. With no client argument, it reports clients whose config
+or Lean skill files it finds. An explicit client also reports absent optional integrations. The
+workspace context is the current directory, or `--root` when provided. The command does not infer a
+Lean project or use `--session-dir`.
+
+The default report summarizes each client and expands findings that need attention. Use `--verbose`
+for all inspected paths and individual checks, or `--json` for typed findings with stable codes and
+inspection limits. It checks JSON/TOML syntax, local MCP launch field types, disabled registrations, absolute
+executable paths, and existing installed-runtime metadata where identifiable. OpenCode's JSONC
+comments and trailing commas are supported. Pi receives settings and Lean skill checks; no native
+Pi MCP configuration is required or inspected. Skill checks establish that a non-empty file is
+readable in the listed standard locations, not that the running client loaded it. MCP and skills
+are independent optional integrations.
+
+Discovery follows the installer home overrides listed below, plus `XDG_CONFIG_HOME`, OpenCode's
+`OPENCODE_CONFIG` path, and standard workspace files. `OPENCODE_CONFIG_DIR` is inspected in addition
+to OpenCode's XDG global config. Pi's standard user/workspace `.agents/skills/lean-beam/SKILL.md`
+locations are included. Workspace ancestor searches stop at the nearest Git boundary or home
+directory and inspect at most 64 directories. Pi package manifests are read from existing npm caches or explicit local package directories.
+Packages that explicitly declare no skills do not make the check inconclusive. Uncached packages,
+additional skills, and complex filters remain unverified; package code is never loaded. `CLAUDE_CONFIG_DIR` is detected as an unverified override; supply its exact config file to
+inspect it separately.
+
+To inspect just one supplied config file, without inspecting other config layers or skill files:
+
+```bash
+lean-beam doctor clients codex --config /absolute/path/to/config.toml --json
+```
+
+For Pi, `--config` selects only a settings JSON file; package manifests are outside this scope.
+Relative `--config` paths resolve from the command's working directory. The JSON `scope` distinguishes `explicitConfigFile` from
+`userAndWorkspaceFiles`.
+
+Each JSON client report records separate `mcp` and `skill` states: `checked`, `notConfigured`,
+`notApplicable`, `outOfScope`, `unverified`, or `error`. Failed inspection is distinct from absence;
+a later successful check cannot erase an earlier error or unverified source.
+
+Finding statuses are `ok`, `warning`, `error`, `unknown`, and `notConfigured`. Exit status is `0` when
+the requested inspection has no errors or unknowns, `1` for known errors, and `2` for incomplete
+inspection or invalid command arguments; errors take precedence over unknown findings. Exit `0`
+does not require an optional integration to be installed and does not establish end-to-end client
+connectivity. In JSON mode, a completed inspection emits one report to stdout even when it exits
+`1` or `2`; invalid arguments or failure to start inspection are reported to stderr.
+
+OpenCode local config objects are merged in the documented precedence order; later scalar values
+and command arrays replace earlier values. Multiple project candidates remain unverified when their
+selection is ambiguous. Other ambiguous layers produce `config.layers` as
+`unknown`, including trust/approval-dependent project registrations. Individual partial definitions
+are not validated as complete launches when selection is unresolved. Claude registrations are selected
+by server name, with whole-entry precedence local > project > user. Independent aliases are checked
+separately. Disabled-server lists match those names; project rejection lists apply only to project
+registrations, not user or local registrations. Unsupported config containers, server definitions,
+and disabled-list shapes are reported as unverified rather than absent. Custom launchers, relative commands,
+client-specific expansion, tool filters, and non-empty environment/argument overrides are reported
+as unverified. Running clients, launch flags, system/cloud/managed configuration, and effective tool
+approval policy are outside this inspection scope.
+
+The command never edits, repairs, builds, downloads, executes configured commands, or creates Beam
+state. It accepts symlinked config files, refuses special files, and limits config/skill reads to
+1 MiB each. Reports omit raw config bodies, environment values, argument values, and parser error
+text that might contain secrets. Unexpected inspection failures are contained to the affected client;
+other clients still receive reports. Config paths and source keys remain visible. This is separate from
+`lean-beam-mcp --self-check`, which starts a child server and can build a bundle.
+
 ## MCP Setup
 
 Use this section only when your editor or agent client speaks MCP. The ordinary `lean-beam` CLI
@@ -592,8 +672,8 @@ Default install locations are:
 | Claude Code skill home | `$HOME/.claude` | interactive `change`, or `CLAUDE_HOME` |
 | Claude Code MCP config | `$HOME/.claude.json` | interactive `change`, `BEAM_CLAUDE_MCP_CONFIG`, or `--claude-mcp-config` |
 | Pi Agent skill home | `$HOME/.pi/agent` | interactive `change`, `PI_CODING_AGENT_DIR`, or `--pi-home` |
-| OpenCode config directory | `$HOME/.config/opencode` | interactive `change`, `OPENCODE_CONFIG_DIR`, or `--opencode-config-dir` |
-| OpenCode skill home | `$HOME/.config/opencode/skills` | derived from the OpenCode config directory |
+| OpenCode config directory | `${XDG_CONFIG_HOME:-$HOME/.config}/opencode` | interactive `change`, `OPENCODE_CONFIG_DIR`, or `--opencode-config-dir` |
+| OpenCode skill home | `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills` | derived from the OpenCode config directory |
 | Mistral Vibe home | `$HOME/.vibe` | interactive `change`, `VIBE_HOME`, or `--vibe-home` |
 | Mistral Vibe skill home | `$HOME/.vibe/skills` | derived from the Mistral Vibe home |
 | Mistral Vibe MCP config | `$HOME/.vibe/config.toml` | derived from the Mistral Vibe home |

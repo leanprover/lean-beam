@@ -110,6 +110,7 @@ run_quiet_test broker-open-docs .lake/build/bin/beam-broker-open-docs-test
 run_quiet_test cli-daemon .lake/build/bin/beam-cli-daemon-test
 run_quiet_test interrupt-watcher python3 tests/test-interrupt-watcher.py
 run_quiet_test feedback .lake/build/bin/beam-feedback-test
+run_quiet_test client-doctor python3 tests/test-client-doctor.py
 run_quiet_test mcp-projection .lake/build/bin/beam-mcp-projection-test
 run_quiet_test mcp-protocol python3 tests/lib/process_watchdog.py \
   --timeout "${BEAM_MCP_PROTOCOL_TEST_WATCHDOG_SECONDS:-240}" -- \

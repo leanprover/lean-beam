@@ -10,7 +10,7 @@ import Beam.Cli.Project
 
 namespace Beam.Cli
 
-def main (args : List String) : IO Unit := do
+def main (args : List String) : IO UInt32 := do
   let home ← beamHome
   let opts ← parseCliOptions {} args
   runCommand home opts

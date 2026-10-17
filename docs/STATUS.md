@@ -50,6 +50,10 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 
 ### MCP And Agent Integration
 
+- read-only `lean-beam doctor clients` inspection of listed Codex, Claude Code, Pi, OpenCode, and
+  Mistral Vibe user/workspace files, with typed findings, JSON output, and explicit incomplete
+  results for unverified config layers; Pi receives settings and Lean skill checks. Scope and
+  limitations are documented in [Setup](SETUP.md#inspect-client-configuration).
 - installed experimental `lean-beam-mcp` stdio server exposing the curated Lean Beam tool set
   through stateless MCP `2026-07-28`; initialization-based MCP `2025-11-25` remains available during
   the transition

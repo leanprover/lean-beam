@@ -132,7 +132,7 @@ set_codex_home "${CODEX_HOME:-$HOME/.codex}"
 set_claude_home "${CLAUDE_HOME:-$HOME/.claude}"
 set_claude_mcp_user_config "${BEAM_CLAUDE_MCP_CONFIG:-$HOME/.claude.json}"
 set_pi_home "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
-set_opencode_config_dir "${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"
+set_opencode_config_dir "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
 set_vibe_home "${VIBE_HOME:-$HOME/.vibe}"
 
 runtime_payload_spec=(
@@ -207,6 +207,7 @@ Environment:
   CODEX_HOME           override the Codex home used by --codex and --codex-mcp
   CLAUDE_HOME          override the Claude home used by --claude
   PI_CODING_AGENT_DIR  override the Pi Agent home used by --pi
+  XDG_CONFIG_HOME      base directory for the default OpenCode config directory
   OPENCODE_CONFIG_DIR  override the OpenCode config directory used by --opencode
   VIBE_HOME            override the Mistral Vibe home used by --vibe and --vibe-mcp
   BEAM_CLAUDE_MCP_CONFIG
