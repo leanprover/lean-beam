@@ -221,7 +221,7 @@ private def terminateBackendFailure
     (proc : IO.Process.Child brokerStdio)
     (capture : BackendStderrCapture) : IO String := do
   let exit? ← terminateBackendProcess proc
-  let captureOutcome ← capture.finishAfterWriterExit
+  let captureOutcome ← capture.awaitCompletion
   let message ← backendFailureMessage phase cause capture
   let message := match exit? with
     | some (.waitFailed err) => message ++ s!"\nbackend process exit observation failed: {err}"
@@ -536,7 +536,7 @@ private def shutdownSession
         | none => terminateBackendProcess session.proc
   if let some (.waitFailed err) := exit? then
     traceBroker s!"backend process exit observation failed: {err}"
-  match ← session.stderrCapture.finishAfterWriterExit with
+  match ← session.stderrCapture.awaitCompletion with
   | .drained => pure ()
   | .sourceFailed err =>
       throw <| IO.userError s!"backend stderr source failed while draining: {err}"
