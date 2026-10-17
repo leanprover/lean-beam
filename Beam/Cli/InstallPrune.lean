@@ -6,10 +6,6 @@ Author: Emilio J. Gallego Arias
 
 import Lean
 import Beam.Cli.InstallLayout
-import Beam.Cli.Lock
-import Beam.Cli.RuntimeBundle.Metadata
-import Beam.Cli.RuntimeBundle.Paths
-import Beam.Cli.RuntimeBundle.Source
 import Beam.Path
 
 open Lean
@@ -18,18 +14,15 @@ namespace Beam.Cli
 
 private structure InstallPruneOptions where
   apply : Bool := false
-  bundles : Bool := false
   help : Bool := false
 
 private structure InstallPruneContext where
   home : System.FilePath
   installRoot : System.FilePath
   versionsRoot : System.FilePath
-  bundleRoot : System.FilePath
 
 private structure InstallPrunePlan where
   oldRuntimes : Array System.FilePath := #[]
-  staleBundles : Array System.FilePath := #[]
 
 private def installLockPollMs : Nat :=
   100
@@ -82,7 +75,7 @@ private def withInstallLockTimeout
     releaseInstallLock lockDir
 
 private def installPruneUsage : String :=
-  "usage: lean-beam prune [--apply] [--bundles]"
+  "usage: lean-beam prune [--apply]"
 
 private def installPruneHelp : String :=
   String.intercalate "\n" [
@@ -92,7 +85,6 @@ private def installPruneHelp : String :=
     "",
     "options:",
     "  --apply      remove the displayed paths",
-    "  --bundles    also select stale or incomplete installed bundle-cache entries",
     "  -h, --help   show this help",
     "",
     "Restart active agents and MCP clients before using --apply.",
@@ -104,7 +96,6 @@ private def parseInstallPruneOptions (args : List String) : Except String Instal
   for arg in args do
     match arg with
     | "--apply" => opts := { opts with apply := true }
-    | "--bundles" => opts := { opts with bundles := true }
     | "-h" | "--help" => opts := { opts with help := true }
     | _ => throw s!"{installPruneUsage}\nunknown prune option: {arg}"
   pure opts
@@ -159,7 +150,6 @@ private def resolveInstallPruneContext (home : System.FilePath) : IO InstallPrun
     home
     installRoot := location.installRoot
     versionsRoot := location.versionsRoot
-    bundleRoot := location.installRoot / "state" / installBundlesDirName
   }
 
 private def validateInstallPruneContext (ctx : InstallPruneContext) : IO Unit := do
@@ -190,50 +180,8 @@ private def oldRuntimePaths (ctx : InstallPruneContext) : IO (Array System.FileP
       paths := paths.push resolved
   pure paths
 
-private def isDecimalName (path : System.FilePath) : Bool :=
-  match path.fileName with
-  | some name => !name.isEmpty && name.toList.all Char.isDigit
-  | none => false
-
-private def staleBundlePath? (bundleRoot : System.FilePath) (currentSourceHash : String)
-    (path : System.FilePath) : IO Bool := do
-  unless ← path.isDir do
-    return false
-  unless isDecimalName path do
-    return false
-  let resolved ← Beam.resolveExistingPath path
-  unless resolved.toString == path.toString do
-    return false
-  let some platformRoot := resolved.parent
-    | return false
-  let some resolvedBundleRoot := platformRoot.parent
-    | return false
-  unless resolvedBundleRoot.toString == bundleRoot.toString do
-    return false
-  return (← completeBundleSourceHash? resolved) != some currentSourceHash
-
-private def staleBundlePaths (ctx : InstallPruneContext) : IO (Array System.FilePath) := do
-  unless ← ctx.bundleRoot.pathExists do
-    return #[]
-  let bundleRoot ← Beam.resolveExistingPath ctx.bundleRoot
-  unless bundleRoot.toString == ctx.bundleRoot.toString do
-    fail s!"refusing to prune symlinked installed bundle cache root: {ctx.bundleRoot}"
-  let currentSourceHash ← sourceHash ctx.home
-  let platforms := (← bundleRoot.readDir).qsort (fun a b => a.fileName < b.fileName)
-  let mut paths := #[]
-  for platform in platforms do
-    if ← platform.path.isDir then
-      let entries := (← platform.path.readDir).qsort (fun a b => a.fileName < b.fileName)
-      for entry in entries do
-        if ← staleBundlePath? bundleRoot currentSourceHash entry.path then
-          paths := paths.push (← Beam.resolveExistingPath entry.path)
-  pure paths
-
-private def installPrunePlan (ctx : InstallPruneContext)
-    (opts : InstallPruneOptions) : IO InstallPrunePlan := do
-  let oldRuntimes ← oldRuntimePaths ctx
-  let staleBundles ← if opts.bundles then staleBundlePaths ctx else pure #[]
-  pure { oldRuntimes, staleBundles }
+private def installPrunePlan (ctx : InstallPruneContext) : IO InstallPrunePlan := do
+  pure { oldRuntimes := ← oldRuntimePaths ctx }
 
 private def printInstallPrunePlan (ctx : InstallPruneContext)
     (opts : InstallPruneOptions) (plan : InstallPrunePlan) : IO Unit := do
@@ -242,15 +190,10 @@ private def printInstallPrunePlan (ctx : InstallPruneContext)
   IO.println s!"current runtime: {ctx.home}"
   for path in plan.oldRuntimes do
     IO.println s!"old runtime: {path}"
-  for path in plan.staleBundles do
-    IO.println s!"stale bundle: {path}"
   IO.println s!"old runtimes: {plan.oldRuntimes.size}"
-  if opts.bundles then
-    IO.println s!"stale bundles: {plan.staleBundles.size}"
-  if !opts.apply && (!plan.oldRuntimes.isEmpty || !plan.staleBundles.isEmpty) then
-    let bundleArg := if opts.bundles then " --bundles" else ""
+  if !opts.apply && !plan.oldRuntimes.isEmpty then
     IO.println "restart active agents and MCP clients before applying this cleanup"
-    IO.println s!"dry run only; rerun `lean-beam prune --apply{bundleArg}` to remove these paths"
+    IO.println "dry run only; rerun `lean-beam prune --apply` to remove these paths"
 
 private def removeOldRuntime (ctx : InstallPruneContext) (path : System.FilePath) : IO Bool := do
   if !(← path.pathExists) then
@@ -262,36 +205,13 @@ private def removeOldRuntime (ctx : InstallPruneContext) (path : System.FilePath
   IO.FS.removeDirAll resolved
   pure true
 
-private def removeStaleBundle (ctx : InstallPruneContext)
-    (currentSourceHash : String) (path : System.FilePath) : IO Bool := do
-  if !(← path.pathExists) then
-    return false
-  let some platformRoot := path.parent
-    | fail s!"stale bundle path has no platform root: {path}"
-  let some bundleId := path.fileName
-    | fail s!"stale bundle path has no bundle id: {path}"
-  withLockTimeout (bundleBuildLockPath platformRoot bundleId) 1000 do
-    if ← staleBundlePath? ctx.bundleRoot currentSourceHash path then
-      IO.FS.removeDirAll path
-      pure true
-    else
-      pure false
-
-private def applyInstallPrune (ctx : InstallPruneContext)
-    (opts : InstallPruneOptions) (plan : InstallPrunePlan) : IO (Nat × Nat) := do
-  let mut runtimesRemoved := 0
+private def applyInstallPrune (ctx : InstallPruneContext) (plan : InstallPrunePlan) : IO Nat := do
+  let mut removed := 0
   for path in plan.oldRuntimes do
     if ← removeOldRuntime ctx path then
-      runtimesRemoved := runtimesRemoved + 1
+      removed := removed + 1
       IO.println s!"removed runtime: {path}"
-  let mut bundlesRemoved := 0
-  if opts.bundles then
-    let currentSourceHash ← sourceHash ctx.home
-    for path in plan.staleBundles do
-      if ← removeStaleBundle ctx currentSourceHash path then
-        bundlesRemoved := bundlesRemoved + 1
-        IO.println s!"removed stale bundle: {path}"
-  pure (runtimesRemoved, bundlesRemoved)
+  pure removed
 
 def runInstallPrune (home : System.FilePath) (args : List String) : IO Unit := do
   let opts ← IO.ofExcept <| parseInstallPruneOptions args
@@ -301,19 +221,16 @@ def runInstallPrune (home : System.FilePath) (args : List String) : IO Unit := d
   let ctx ← resolveInstallPruneContext home
   withInstallLockTimeout (ctx.installRoot / ".install-lock") 1000 do
     validateInstallPruneContext ctx
-    let plan ← installPrunePlan ctx opts
+    let plan ← installPrunePlan ctx
     printInstallPrunePlan ctx opts plan
     if opts.apply then
       try
-        let (runtimesRemoved, bundlesRemoved) ← applyInstallPrune ctx opts plan
+        let runtimesRemoved ← applyInstallPrune ctx plan
         IO.println s!"removed runtimes: {runtimesRemoved}"
-        if opts.bundles then
-          IO.println s!"removed stale bundles: {bundlesRemoved}"
       catch e =>
         IO.eprintln <|
           "prune stopped before completing the displayed plan; any removals reported above were applied"
-        let bundleArg := if opts.bundles then " --bundles" else ""
-        IO.eprintln s!"rerun `lean-beam prune{bundleArg}` to preview the remaining paths"
+        IO.eprintln "rerun `lean-beam prune` to preview the remaining paths"
         throw e
 
 end Beam.Cli

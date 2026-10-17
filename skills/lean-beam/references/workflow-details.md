@@ -319,9 +319,8 @@ Write the on-disk document as `prefix ++ E ++ suffix`.
   one-file rebuild asymptotically sublinear
 - `lean-beam save` and `lean-beam close-save` checkpoint one synced module after a completed barrier; they do
   not rebuild reverse dependencies and they do not turn workspace freshness into an `O(C)` problem
-- first-use bundle resolution is the expensive outlier: if no installed bundle matches the
-  toolchain, `beam` may build a local fallback bundle under `<root>/.beam/bundles`, which is real
-  `lake build`
+- runtime lookup never builds missing components; an unavailable project target requires explicit
+  installer work before normal execution can resume
 - if imported targets are stale or broken, `lean-beam sync` / `lean-beam save` fail instead of silently
   paying dependency-cone rebuild cost
 

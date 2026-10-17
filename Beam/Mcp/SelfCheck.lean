@@ -5,7 +5,6 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
-import Beam.Mcp.Options
 import Beam.Mcp.Protocol
 import Beam.Mcp.Stdio
 import Beam.Path
@@ -34,11 +33,6 @@ private def timeoutMs : IO Nat := do
       if timeout == 0 then
         throw <| IO.userError "invalid LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS value '0': expected a positive timeout"
       pure timeout
-
-private def childArgs (opts : LaunchOptions) : List String :=
-  [("--beam-cli", opts.beamCli?), ("--lean-cmd", opts.leanCmd?),
-    ("--lean-plugin", opts.leanPlugin?)].flatMap fun (flag, value?) =>
-      value?.toList.flatMap fun value => [flag, value]
 
 private def fieldError (label field : String) (json : Json) (err : String) : String :=
   s!"{label}: missing or invalid '{field}': {err}; response: {json.compress}"
@@ -176,15 +170,15 @@ private def terminateChild {cfg : IO.Process.StdioConfig} (child : IO.Process.Ch
   catch _ =>
     pure ()
 
-def run (opts : LaunchOptions) (pathText : String) : IO Unit := do
+def run (pathText : String) : IO Unit := do
   let root ← Beam.resolveExistingPath (← IO.currentDir)
   let resolvedPath ← Beam.resolvePathAgainstRoot root (System.FilePath.mk pathText)
-  let appPath ← IO.appPath
+  let appPath ← Beam.resolveExistingPath (← IO.appPath)
   let timeout ← timeoutMs
   let (stdin, child) ← (← IO.Process.spawn {
     toStdioConfig := stdio
     cmd := appPath.toString
-    args := (childArgs opts).toArray
+    args := #[]
     cwd := root.toString
   }).takeStdin
   let started ← IO.monoMsNow

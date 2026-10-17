@@ -6,7 +6,6 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Broker.Server
 import Beam.Mcp.Server
-import Beam.Mcp.SelfCheck
 import Beam.Mcp.Stdio
 
 open Lean
@@ -430,7 +429,8 @@ private def Coordinator.executeToolRequest
       admitted
       parsedParams
       notifications
-      initialProgress with
+      initialProgress
+      (isCancelled := do return !(← request.isActive)) with
   | .ok result => pure <| successResponseForEra admitted.era req.id result
   | .error err => pure <| errorResponse req.id err
 
@@ -648,19 +648,5 @@ partial def runStdio (opts : Options) : IO Unit := do
       throw e
   finally
     coordinator.closeTransport
-
-def main (args : List String) : IO Unit := do
-  let opts ←
-    match Beam.Mcp.parseOptions {} args with
-    | .ok opts => pure opts
-    | .error err => throw <| IO.userError err
-  if opts.showVersion then
-    IO.println (← Internal.serverVersionText opts)
-    return
-  match opts.selfCheckPath? with
-  | some path =>
-      SelfCheck.run opts.toLaunchOptions path
-  | none =>
-      runStdio opts
 
 end Beam.Mcp.Server

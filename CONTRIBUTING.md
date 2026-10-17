@@ -145,10 +145,15 @@ Use the smallest relevant suite first:
 - `python3 tests/test-mcp-stdio.py --iterations 1 --restart-cycles 1 --timeout 60`: focused MCP stdio
   lifecycle and workspace-routing coverage
 - `bash tests/test-beam-slow.sh`: Beam wrapper, save replay, and bundle-resolution changes
-- `bash tests/test-beam-install.sh`: installer, runtime layout, and `doctor` / `validated-toolchains`
+- `bash tests/test-beam-install.sh`: installer, complete runtime layout, immutable reuse, and `doctor`
 - `bash tests/test-beam-toolchain-compat.sh <toolchain>`: supported-toolchain bundle validation
 - `bash tests/test-beam.sh`: aggregate default Beam surface
 - `bash tests/test-maintainer.sh`: maintainer harness and defensive-validation helpers
 - `bash scripts/lint-shell.sh`: shell wrappers, installer, and shell tests
+
+Focused stdio, wrapper, and save scripts require `BEAM_TEST_INSTALLATION` to name a concrete
+constructed installation containing their project targets. `tests/test-beam-slow.sh` constructs
+that installation automatically; see [the test fixture guidance](docs/TESTING.md#beam-surface) for
+focused runs.
 
 More detail lives in [docs/TESTING.md](docs/TESTING.md).

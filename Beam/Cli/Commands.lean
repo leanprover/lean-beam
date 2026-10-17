@@ -10,10 +10,10 @@ import Beam.Cli.Broker
 import Beam.Cli.DaemonManager
 import Beam.Cli.Feedback
 import Beam.Cli.Info
+import Beam.Cli.Installation
 import Beam.Cli.InstallPrune
 import Beam.Cli.LeanOperation
 import Beam.Cli.Project
-import Beam.Cli.RuntimeBundle
 import Beam.Cli.Usage
 
 open Lean
@@ -75,6 +75,7 @@ private def mkSessionStatus
 }
 
 private def runLeanRunAt
+    (runtime : RuntimeAccess)
     (opts : CliOptions)
     (action path versionText lineText characterText : String)
     (textArgs : List String)
@@ -84,13 +85,14 @@ private def runLeanRunAt
   let character ← parseNatArg "character" characterText
   let parsedText ← parseTextArg s!"{action} <path> <version> <line> <character>" textArgs
   let root ← projectRoot opts
-  withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client => do
+  withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client => do
     let req ← withEnvClientRequestId <|
       leanRunAtRequest path version line character parsedText.text (storeHandle := storeHandle)
     maybeEmitTextDebug req.clientRequestId? action parsedText.source parsedText.text
     callBrokerWithProgress root client req (leanRunAtWaitSpec action path line character)
 
 private def runLeanRunWith
+    (runtime : RuntimeAccess)
     (opts : CliOptions)
     (action path : String)
     (args : List String)
@@ -111,10 +113,11 @@ private def runLeanRunWith
   let req ← withEnvClientRequestId <|
     leanRunWithRequest path handle parsedText.text (linear := linear)
   maybeEmitTextDebug req.clientRequestId? action parsedText.source parsedText.text
-  withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+  withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
     callBrokerWithProgress root client req (leanRunWithWaitSpec path (linear := linear))
 
 private def runLeanRelease
+    (runtime : RuntimeAccess)
     (opts : CliOptions)
     (action : String)
     (path : String)
@@ -123,7 +126,7 @@ private def runLeanRelease
   let (handle, extra) ← parseHandleInput s!"{action} <path>" args
   unless extra.isEmpty do
     throw <| IO.userError (handleArgUsage s!"{action} <path>")
-  withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+  withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
     callBroker root client <| leanReleaseRequest path handle
 
 private def stopProjectSession (opts : CliOptions) : IO Unit := do
@@ -205,10 +208,10 @@ private def runThenHoldUntilInterrupted
         throw <| IO.userError s!"owned Beam daemon exited with status {exitCode}{detail}"
 
 private def serveProject
-    (home : System.FilePath)
+    (runtime : RuntimeAccess)
     (opts : CliOptions) : IO Unit := do
   let root ← projectRoot opts
-  withProjectDaemonOwner home root
+  withProjectDaemonOwner runtime.resolve root
       (explicitControlDir? := opts.explicitControlDir?) fun owner =>
     runThenHoldUntilInterrupted owner do
       callBrokerQuiet root owner.client <| Request.ensure
@@ -234,45 +237,28 @@ private def sessionStatus (opts : CliOptions) : IO Unit := do
           (some blocker.statusDetail)
   printResponse <| Response.success (toJson result)
 
-def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
+def runCommand (installation : Installation) (opts : CliOptions) : IO Unit := do
+  IO.ofExcept <| (installation.admitCommand opts.args).mapError
+    (IO.userError ∘ CommandRejection.message)
+  let home := installation.home
+  let runtime := installation.runtime
   match opts.args with
   | [] | ["-h"] | ["--help"] | ["help"] =>
-      IO.println usage
+      IO.println installation.usage
   | "version" :: [] | "--version" :: [] =>
-      printVersion home
-  | "bundle-install" :: toolchain :: [] =>
-      let cacheRoot ←
-        match ← IO.getEnv "BEAM_INSTALL_BUNDLE_DIR" with
-        | some path => pure <| System.FilePath.mk path
-        | none =>
-            let roots ← installBundleCacheRoots
-            pure <| roots.headD (beamStateDir home / installBundlesDirName)
-      let _ ← ensureToolchainBundleIn cacheRoot home toolchain
-      pure ()
+      printVersion installation.cliIdentity
+  | "toolchain-build-info" :: [] =>
+      printJsonLine compilerBuildInfo
   | "prune" :: args =>
       runInstallPrune home args
-  | "validated-toolchains" :: [] =>
-      printValidatedToolchains home
-  | "compatible-release-lines" :: [] =>
-      printCompatibleReleaseLines home
-  | "install-layout" :: [] =>
-      printInstallLayout
-  | "install-manifest" :: payloadHash :: sourceCommitArg :: createdWithToolchains =>
-      printInstallManifest payloadHash sourceCommitArg createdWithToolchains
-  | "install-manifest-with-source-commit" :: manifestPath :: sourceCommitArg :: [] =>
-      printInstallManifestWithSourceCommit (System.FilePath.mk manifestPath) sourceCommitArg
-  | "install-runtime-validate" :: path :: [] =>
-      validateInstalledRuntimeForReuse (System.FilePath.mk path)
-  | "mcp-config" :: [] =>
-      printMcpConfig home opts
   | "feedback-report" :: args =>
-      Beam.Cli.Feedback.run home opts args
+      Beam.Cli.Feedback.run installation.cliIdentity opts args
   | "serve" :: [] =>
-      serveProject home opts
+      serveProject runtime opts
   | "run-at" :: path :: version :: line :: character :: text =>
-      runLeanRunAt opts "run-at" path version line character text
+      runLeanRunAt runtime opts "run-at" path version line character text
   | "run-at-handle" :: path :: version :: line :: character :: text =>
-      runLeanRunAt opts "run-at-handle" path version line character text
+      runLeanRunAt runtime opts "run-at-handle" path version line character text
         (storeHandle := true)
   | "hover" :: path :: versionText :: line :: character :: [] =>
       let root ← projectRoot opts
@@ -280,7 +266,7 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       let line ← parseNatArg "line" line
       let character ← parseNatArg "character" character
       let action := "hover"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanHoverRequest path version line character)
           (leanHoverWaitSpec path line character action)
@@ -290,7 +276,7 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       let line ← parseNatArg "line" line
       let character ← parseNatArg "character" character
       let action := "signature-help"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanSignatureHelpRequest path version line character)
           (leanSignatureHelpWaitSpec path line character action)
@@ -300,7 +286,7 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       let line ← parseNatArg "line" line
       let character ← parseNatArg "character" character
       let action := "definition"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanDefinitionRequest path version line character)
           (leanDefinitionWaitSpec path line character action)
@@ -311,7 +297,7 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       let character ← parseNatArg "character" character
       let includeDeclaration ← parseLeanReferencesArgs extra
       let action := "references"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanReferencesRequest path version line character includeDeclaration)
           (leanReferencesWaitSpec path line character action)
@@ -319,7 +305,7 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       let root ← projectRoot opts
       let version ← parseNatArg "version" versionText
       let action := "document-symbols"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanDocumentSymbolsRequest path version)
           (leanDocumentSymbolsWaitSpec path action)
@@ -330,7 +316,7 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
         | some query => pure query
         | none => throw <| IO.userError "usage: lean-beam [--root PATH] workspace-symbols <query...>"
       let action := "workspace-symbols"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanWorkspaceSymbolsRequest query)
           (leanWorkspaceSymbolsWaitSpec query action)
@@ -341,7 +327,7 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       let line ← parseNatArg "line" line
       let character ← parseNatArg "character" character
       let action := "goals"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanGoalsRequest path version line character mode)
           (leanGoalsWaitSpec path line character mode (some action))
@@ -354,34 +340,34 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       let endCharacter ← parseNatArg "endCharacter" endCharacter
       let (kinds?, suggest?) ← parseLeanTodoArgs extra
       let action := "todo"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanTodoRequest path version startLine startCharacter endLine endCharacter kinds? suggest?)
           (leanTodoWaitSpec path startLine startCharacter endLine endCharacter action)
   | "run-with" :: path :: args =>
-      runLeanRunWith opts "run-with" path args
+      runLeanRunWith runtime opts "run-with" path args
   | "run-with-linear" :: path :: args =>
-      runLeanRunWith opts "run-with-linear" path args
+      runLeanRunWith runtime opts "run-with-linear" path args
         (linear := true)
   | "release" :: path :: args =>
-      runLeanRelease opts "release" path args
+      runLeanRelease runtime opts "release" path args
   | "save" :: path :: extra => do
       let root ← projectRoot opts
       let diagnosticScope ← parseLeanSaveArgs extra
       let action := "save"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanSaveRequest path diagnosticScope)
           (leanSaveWaitSpec path (action? := some action))
   | "update" :: path :: [] =>
       let root ← projectRoot opts
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBroker root client <| leanUpdateRequest path
   | "sync" :: path :: extra => do
       let root ← projectRoot opts
       let diagnosticScope ← parseLeanSyncArgs extra
       let action := "sync"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanSyncRequest path diagnosticScope)
           (syncWaitSpec path action)
@@ -389,35 +375,35 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
       let root ← projectRoot opts
       let diagnosticScope ← parseLeanRefreshArgs extra
       let action := "refresh"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanRefreshRequest path diagnosticScope)
           (refreshWaitSpec path action)
   | "close" :: path :: [] =>
       let root ← projectRoot opts
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBroker root client <| leanCloseRequest path
   | "close-save" :: path :: extra =>
       let root ← projectRoot opts
       let diagnosticScope ← parseLeanCloseSaveArgs extra
       let action := "close-save"
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanCloseSaveRequest path diagnosticScope)
           (leanSaveWaitSpec path (closeAfter := true) (action? := some action))
   | "doctor" :: [] =>
-      doctor home opts
+      doctor home installation.doctorLines opts
   | "open-files" :: [] =>
       let root ← inspectionRoot opts
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBroker root client Request.openDocs
   | "cancel" :: requestId :: [] =>
       let root ← inspectionRoot opts
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBroker root client <| Request.cancel requestId
   | "stats" :: [] =>
       let root ← inspectionRoot opts
-      withProjectDaemon root (explicitControlDir? := opts.explicitControlDir?) fun client =>
+      withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBroker root client Request.stats
   | "status" :: [] =>
       sessionStatus opts
@@ -426,6 +412,6 @@ def runCommand (home : System.FilePath) (opts : CliOptions) : IO Unit := do
   | "recover" :: args =>
       recoverProjectSession opts args
   | _ =>
-      throw <| IO.userError usage
+      throw <| IO.userError installation.usage
 
 end Beam.Cli

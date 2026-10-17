@@ -17,8 +17,9 @@ beam_wrapper_last_owner_pid=""
 . tests/lib/tmp-guards.sh
 
 beam_wrapper_require_bins() {
-  beam_script="$PWD/scripts/lean-beam"
-  search_helper="$PWD/scripts/lean-beam-search"
+  : "${BEAM_TEST_INSTALLATION:?run tests/test-beam-slow.sh to construct the test installation}"
+  beam_script="$BEAM_TEST_INSTALLATION/bin/lean-beam"
+  search_helper="$BEAM_TEST_INSTALLATION/bin/lean-beam-search"
 
   if [ ! -x "$beam_script" ]; then
     echo "missing lean-beam wrapper at $beam_script" >&2

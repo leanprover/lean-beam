@@ -15,6 +15,7 @@ namespace Beam.Cli
 structure LeanBundlePaths where
   daemon : System.FilePath
   plugin : System.FilePath
+  sharedLibraries : Array System.FilePath := #[]
   deriving Repr
 
 def ensurePathExists (kind : String) (path : System.FilePath) : IO Unit := do

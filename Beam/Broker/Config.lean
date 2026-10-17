@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
+import Beam.Runtime
 
 namespace Beam.Broker
 
@@ -27,6 +28,16 @@ structure BrokerConfig where
   deriving BEq, Inhabited, Repr
 
 namespace BrokerConfig
+
+/-- Pure lowering; the workspace owner retains the corresponding admitted runtime identity. -/
+def ofRuntime (root : System.FilePath) (runtime : Beam.Runtime.Description) : BrokerConfig := {
+  root
+  lean? := some {
+    command := runtime.command
+    plugin := runtime.plugin
+    lakeHelper? := some runtime.daemonBin
+  }
+}
 
 /-- Assemble the typed runtime model from optional fields at a process boundary. -/
 def ofOptions

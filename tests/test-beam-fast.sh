@@ -18,6 +18,7 @@ export BEAM_SESSION_ROOT="$beam_fast_state_root/sessions"
 
 bash scripts/check-daemon-safety.sh
 bash scripts/check-task-priority.sh
+python3 tests/test-runtime-boundary.py
 bash scripts/check-markdown-links.sh
 python3 scripts/ci-toolchains.py > /dev/null
 python3 tests/test-toolchain-ci-matrix.py
@@ -58,6 +59,8 @@ run_quiet_lake_build \
   Beam.LSP:shared \
   beam-cli \
   beam-daemon \
+  beam-daemon-fixture \
+  beam-lake-helper-client-fixture \
   lean-beam-mcp \
   BeamTest.Broker.StreamDedupTest \
   BeamTest.Broker.RequestHandleTest \
@@ -74,11 +77,21 @@ run_quiet_lake_build \
   beam-cli-daemon-test \
   beam-feedback-test \
   beam-mcp-projection-test \
+  beam-installation-construction-test \
+  beam-installation-lookup-test \
+  beam-installation-stage-fixture \
   beam-mcp-protocol-test
+
+export BEAM_TEST_INSTALLATION="$beam_fast_state_root/installation"
+export BEAM_TEST_PROJECT="$beam_fast_state_root/project"
+run_quiet_test "stage installed test runtime" python3 tests/installation_fixture.py \
+  "$BEAM_TEST_INSTALLATION" --project "$BEAM_TEST_PROJECT"
+beam_test_cli="$BEAM_TEST_INSTALLATION/bin/lean-beam"
+beam_test_mcp="$BEAM_TEST_INSTALLATION/bin/lean-beam-mcp"
 
 # Exercise implicit root discovery at the actual filesystem root, without passing it through argv.
 # A regression must fail within the watchdog budget rather than loop forever at a Windows drive root.
-python3 - <<'PY'
+python3 - "$BEAM_TEST_INSTALLATION" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -89,7 +102,7 @@ from process_watchdog import run_with_watchdog
 repo = Path.cwd().resolve()
 root = Path(repo.anchor)
 suffix = ".exe" if sys.platform == "win32" else ""
-cli = (repo / ".lake/build/bin" / ("beam-cli" + suffix)).resolve(strict=True)
+cli = (Path(sys.argv[1]) / "libexec" / ("beam-cli" + suffix)).resolve(strict=True)
 has_project = any((root / marker).exists()
                   for marker in ("lean-toolchain", "lakefile.toml", "lakefile.lean"))
 result = run_with_watchdog([cli, "status"], timeout=20, cwd=root)
@@ -111,9 +124,15 @@ run_quiet_test cli-daemon .lake/build/bin/beam-cli-daemon-test
 run_quiet_test interrupt-watcher python3 tests/test-interrupt-watcher.py
 run_quiet_test feedback .lake/build/bin/beam-feedback-test
 run_quiet_test mcp-projection .lake/build/bin/beam-mcp-projection-test
+run_quiet_test installation-construction python3 tests/test-installation-construction.py
+run_quiet_test installation-lookup python3 tests/test-installation-lookup.py
+run_quiet_test installation-entrypoints python3 tests/test-installation-entrypoints.py
+run_quiet_test lake-helper-lifetime python3 tests/lib/process_watchdog.py \
+  --timeout 180 -- python3 tests/test-lake-helper-lifetime.py
 run_quiet_test mcp-protocol python3 tests/lib/process_watchdog.py \
   --timeout "${BEAM_MCP_PROTOCOL_TEST_WATCHDOG_SECONDS:-240}" -- \
   .lake/build/bin/beam-mcp-protocol-test
+run_quiet_test mcp-application python3 tests/test-mcp-application.py
 run_quiet_test daemon-smoke .lake/build/bin/beam-daemon-smoke-test
 run_quiet_test sync-concurrency .lake/build/bin/beam-sync-concurrency-test
 run_quiet_test daemon-save-stream .lake/build/bin/beam-daemon-save-stream-test
@@ -151,7 +170,7 @@ feedback_failure_output() {
   # Capture stderr in memory while discarding any unexpected stdout.
   if output="$(
     printf '%s\n' "$input" \
-      | scripts/lean-beam --root tests/save_olean_project feedback-report --stdin "$@" \
+      | "$beam_test_cli" --root "$BEAM_TEST_PROJECT" feedback-report --stdin "$@" \
           2>&1 > /dev/null
   )"; then
     echo "expected $label" >&2
@@ -160,60 +179,28 @@ feedback_failure_output() {
   printf '%s\n' "$output"
 }
 
-source_tree_commit="$(git rev-parse HEAD 2>/dev/null || true)"
-source_tree_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-source_tree_dirty=""
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  if [ -n "$(git status --short)" ]; then
-    source_tree_dirty="true"
-  else
-    source_tree_dirty="false"
-  fi
-fi
+source_tree_commit="$(git rev-parse HEAD)"
+lean_beam_version="$("$beam_test_cli" --version)"
+assert_output_contains "installed lean-beam --version" "$lean_beam_version" "lean-beam 0.2.0-beta"
+assert_output_contains "installed lean-beam --version" "$lean_beam_version" "wrapper: $beam_test_cli"
+assert_output_contains "installed lean-beam --version" "$lean_beam_version" "beam cli: $BEAM_TEST_INSTALLATION/libexec/beam-cli"
+assert_output_contains "installed lean-beam --version" "$lean_beam_version" "runtime payload: "
+assert_output_contains "installed lean-beam --version" "$lean_beam_version" "source commit: $source_tree_commit"
+assert_output_omits "installed lean-beam --version" "$lean_beam_version" "source branch:"
+assert_output_omits "installed lean-beam --version" "$lean_beam_version" "source dirty:"
 
-beam_cli_version="$(.lake/build/bin/beam-cli --version)"
-assert_output_contains "beam-cli --version" "$beam_cli_version" "beam-cli 0.2.0-beta"
-assert_output_contains "beam-cli --version" "$beam_cli_version" "beam home: "
-assert_output_contains "beam-cli --version" "$beam_cli_version" "beam cli: "
-assert_output_contains "beam-cli --version" "$beam_cli_version" ".lake/build/bin/beam-cli"
-if [ -n "$source_tree_commit" ]; then
-  assert_output_contains "beam-cli --version" "$beam_cli_version" "source commit: $source_tree_commit"
-fi
-if [ -n "$source_tree_branch" ] && [ "$source_tree_branch" != "HEAD" ]; then
-  assert_output_contains "beam-cli --version" "$beam_cli_version" "source branch: $source_tree_branch"
-fi
-if [ -n "$source_tree_dirty" ]; then
-  assert_output_contains "beam-cli --version" "$beam_cli_version" "source dirty: $source_tree_dirty"
-fi
-
-lean_beam_version="$(scripts/lean-beam --version)"
-assert_output_contains "lean-beam --version" "$lean_beam_version" "lean-beam 0.2.0-beta"
-assert_output_contains "lean-beam --version" "$lean_beam_version" "wrapper: "
-assert_output_contains "lean-beam --version" "$lean_beam_version" "scripts/lean-beam"
-assert_output_contains "lean-beam --version" "$lean_beam_version" ".lake/build/bin/beam-cli"
-assert_output_contains "lean-beam --version" "$lean_beam_version" "runtime payload: (source tree)"
-if [ -n "$source_tree_commit" ]; then
-  assert_output_contains "lean-beam --version" "$lean_beam_version" "source commit: $source_tree_commit"
-fi
-if [ -n "$source_tree_branch" ] && [ "$source_tree_branch" != "HEAD" ]; then
-  assert_output_contains "lean-beam --version" "$lean_beam_version" "source branch: $source_tree_branch"
-fi
-if [ -n "$source_tree_dirty" ]; then
-  assert_output_contains "lean-beam --version" "$lean_beam_version" "source dirty: $source_tree_dirty"
-fi
-
-lean_beam_help="$(scripts/lean-beam --help)"
+lean_beam_help="$("$beam_test_cli" --help)"
 assert_output_contains "lean-beam --help" "$lean_beam_help" \
   "lean-beam [--root PATH] run-at"
 assert_output_omits "lean-beam --help" "$lean_beam_help" "lean-run-at"
 assert_output_omits "lean-beam --help" "$lean_beam_help" "reset-stats"
 
-if scripts/lean-beam feedback --help > /dev/null 2>&1; then
+if "$beam_test_cli" feedback --help > /dev/null 2>&1; then
   echo "expected obsolete lean-beam feedback command to be rejected" >&2
   exit 1
 fi
 
-feedback_help="$(scripts/lean-beam feedback-report --help)"
+feedback_help="$("$beam_test_cli" feedback-report --help)"
 assert_output_contains "lean-beam feedback-report --help" "$feedback_help" "does not upload or submit feedback"
 assert_output_contains "lean-beam feedback-report --help" "$feedback_help" "input must be a JSON object"
 assert_output_contains "lean-beam feedback-report --help" "$feedback_help" "title, summary, reproduction, expected, actual"
@@ -236,8 +223,8 @@ feedback_unknown_output="$(
 )"
 assert_output_contains "lean-beam feedback-report unknown input" "$feedback_unknown_output" "feedback input accepts no undeclared fields: confidental"
 
-feedback_smoke_input='{"title":"CLI feedback fixture","kind":"bug","severity":"medium","summary":"Smoke report.","reproduction":"scripts/lean-beam feedback-report --stdin","expected":"A report card is returned.","actual":"A report card is returned."}'
-feedback_smoke_output="$(printf '%s\n' "$feedback_smoke_input" | scripts/lean-beam --root tests/save_olean_project feedback-report --stdin)"
+feedback_smoke_input='{"title":"CLI feedback fixture","kind":"bug","severity":"medium","summary":"Smoke report.","reproduction":"lean-beam feedback-report --stdin","expected":"A report card is returned.","actual":"A report card is returned."}'
+feedback_smoke_output="$(printf '%s\n' "$feedback_smoke_input" | "$beam_test_cli" --root "$BEAM_TEST_PROJECT" feedback-report --stdin)"
 assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" '"markdown"'
 assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" 'CLI feedback fixture'
 assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" '"kind": "bug"'
@@ -247,8 +234,8 @@ assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" 'Rev
 assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" 'Beam does not submit feedback automatically'
 
 feedback_confidential_secret='PRIVATE_CLI_CODE_57de'
-feedback_confidential_input="{\"title\":\"CLI confidential feedback fixture\",\"summary\":\"Private workspace report.\",\"reproduction\":\"scripts/lean-beam feedback-report --stdin\",\"expected\":\"A confidential report card is returned.\",\"actual\":\"A confidential report card is returned.\",\"request\":{\"source\":\"$feedback_confidential_secret\"},\"confidential\":true}"
-feedback_confidential_output="$(printf '%s\n' "$feedback_confidential_input" | scripts/lean-beam --root tests/save_olean_project feedback-report --stdin)"
+feedback_confidential_input="{\"title\":\"CLI confidential feedback fixture\",\"summary\":\"Private workspace report.\",\"reproduction\":\"lean-beam feedback-report --stdin\",\"expected\":\"A confidential report card is returned.\",\"actual\":\"A confidential report card is returned.\",\"request\":{\"source\":\"$feedback_confidential_secret\"},\"confidential\":true}"
+feedback_confidential_output="$(printf '%s\n' "$feedback_confidential_input" | "$beam_test_cli" --root "$BEAM_TEST_PROJECT" feedback-report --stdin)"
 assert_output_contains "lean-beam confidential feedback" "$feedback_confidential_output" '"confidential": true'
 assert_output_contains "lean-beam confidential feedback" "$feedback_confidential_output" 'do not post this report publicly'
 assert_output_contains "lean-beam confidential feedback" "$feedback_confidential_output" '"collection_warnings": []'
@@ -265,7 +252,7 @@ if [ -e "$feedback_confidential_non_project_root/lakefile.lean" ] \
 fi
 feedback_confidential_non_project_root_output="$(
   printf '%s\n' "$feedback_confidential_input" \
-    | scripts/lean-beam --root "$feedback_confidential_non_project_root" feedback-report --stdin
+    | "$beam_test_cli" --root "$feedback_confidential_non_project_root" feedback-report --stdin
 )"
 assert_output_contains "lean-beam confidential feedback without project root" \
   "$feedback_confidential_non_project_root_output" '"confidential": true'
@@ -278,85 +265,30 @@ feedback_confidential_error_output="$(
 )"
 assert_output_contains "lean-beam confidential feedback --no-redact" "$feedback_confidential_error_output" "'confidential' cannot be combined with --no-redact"
 
-mcp_bin_version="$(.lake/build/bin/lean-beam-mcp --version)"
-assert_output_contains "lean-beam-mcp binary --version" "$mcp_bin_version" "lean-beam-mcp 0.2.0-beta"
-assert_output_contains "lean-beam-mcp binary --version" "$mcp_bin_version" "mcp protocol: 2026-07-28"
-assert_output_contains "lean-beam-mcp binary --version" "$mcp_bin_version" "server binary: "
-
-mcp_wrapper_version="$(scripts/lean-beam-mcp --version)"
-assert_output_contains "lean-beam-mcp wrapper --version" "$mcp_wrapper_version" "lean-beam-mcp 0.2.0-beta"
-assert_output_contains "lean-beam-mcp wrapper --version" "$mcp_wrapper_version" "wrapper: "
-assert_output_contains "lean-beam-mcp wrapper --version" "$mcp_wrapper_version" "scripts/lean-beam-mcp"
-assert_output_contains "lean-beam-mcp wrapper --version" "$mcp_wrapper_version" "server binary: "
-assert_output_contains "lean-beam-mcp wrapper --version" "$mcp_wrapper_version" ".lake/build/bin/lean-beam-mcp"
-assert_output_contains "lean-beam-mcp wrapper --version" "$mcp_wrapper_version" "runtime payload: (source tree)"
-if [ -n "$source_tree_commit" ]; then
-  assert_output_contains "lean-beam-mcp wrapper --version" "$mcp_wrapper_version" "source commit: $source_tree_commit"
-fi
-if [ -n "$source_tree_branch" ] && [ "$source_tree_branch" != "HEAD" ]; then
-  assert_output_contains "lean-beam-mcp wrapper --version" "$mcp_wrapper_version" "source branch: $source_tree_branch"
-fi
-if [ -n "$source_tree_dirty" ]; then
-  assert_output_contains "lean-beam-mcp wrapper --version" "$mcp_wrapper_version" "source dirty: $source_tree_dirty"
-fi
+mcp_wrapper_version="$("$beam_test_mcp" --version)"
+assert_output_contains "installed MCP --version" "$mcp_wrapper_version" "lean-beam-mcp 0.2.0-beta"
+assert_output_contains "installed MCP --version" "$mcp_wrapper_version" "mcp protocol: 2026-07-28"
+assert_output_contains "installed MCP --version" "$mcp_wrapper_version" "wrapper: $beam_test_mcp"
+assert_output_contains "installed MCP --version" "$mcp_wrapper_version" "server binary: $BEAM_TEST_INSTALLATION/libexec/lean-beam-mcp"
+assert_output_contains "installed MCP --version" "$mcp_wrapper_version" "source commit: $source_tree_commit"
 
 mcp_http_timeout="${BEAM_MCP_HTTP_TIMEOUT:-60}"
 python3 tests/test-mcp-http-bridge.py --timeout "$mcp_http_timeout" > /dev/null
 mcp_self_check_timeout="${BEAM_MCP_SELF_CHECK_TIMEOUT_MS:-120000}"
 mcp_self_check_watchdog="${BEAM_MCP_SELF_CHECK_WATCHDOG_SECONDS:-600}"
-(cd tests/save_olean_project && \
+mcp_self_check_watchdog_script="$PWD/tests/lib/process_watchdog.py"
+(cd "$BEAM_TEST_PROJECT" && \
   LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS="$mcp_self_check_timeout" \
-    python3 ../../tests/lib/process_watchdog.py --timeout "$mcp_self_check_watchdog" -- \
-      ../../scripts/lean-beam-mcp --self-check PositionEmptyLine.lean > /dev/null)
+    python3 "$mcp_self_check_watchdog_script" --timeout "$mcp_self_check_watchdog" -- \
+      "$beam_test_mcp" --self-check PositionEmptyLine.lean > /dev/null)
 
-self_check_timeout_dir="$(mktemp -d /tmp/lean-beam-mcp-self-check-timeout-XXXXXX)"
-self_check_timeout_err="$(mktemp /tmp/lean-beam-mcp-self-check-timeout-err-XXXXXX)"
-self_check_fake_cli="$self_check_timeout_dir/beam-cli"
-self_check_fake_cli_pid="$self_check_timeout_dir/beam-cli.pid"
-# shellcheck disable=SC2016 # Keep fake-script variables unexpanded until the fake CLI runs.
-printf '%s\n' \
-  '#!/usr/bin/env sh' \
-  'printf "%s\n" "$$" > "$LEAN_BEAM_FAKE_CLI_PID"' \
-  'sleep 30' \
-  > "$self_check_fake_cli"
-chmod +x "$self_check_fake_cli"
-if (cd tests/save_olean_project && \
-    LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS=10000 \
-    LEAN_BEAM_FAKE_CLI_PID="$self_check_fake_cli_pid" \
-    python3 ../../tests/lib/process_watchdog.py --timeout 60 -- \
-      ../../.lake/build/bin/lean-beam-mcp \
-      --beam-cli "$self_check_fake_cli" --self-check PositionEmptyLine.lean \
-    > /dev/null 2>"$self_check_timeout_err"); then
-  echo "expected MCP self-check to time out while lazily starting lean_sync" >&2
-  if [ -s "$self_check_fake_cli_pid" ]; then
-    kill "$(cat "$self_check_fake_cli_pid")" 2> /dev/null || true
-  fi
-  rm -rf -- "$self_check_timeout_dir"
-  rm -f "$self_check_timeout_err"
-  exit 1
-fi
-if ! grep -Fq \
-    'timed out after 10000 ms waiting for lean-beam-mcp self-check' \
-    "$self_check_timeout_err"; then
-  echo "expected MCP self-check to report its probe timeout" >&2
-  cat "$self_check_timeout_err" >&2
-  if [ -s "$self_check_fake_cli_pid" ]; then
-    kill "$(cat "$self_check_fake_cli_pid")" 2> /dev/null || true
-  fi
-  rm -rf -- "$self_check_timeout_dir"
-  rm -f "$self_check_timeout_err"
-  exit 1
-fi
-if [ -s "$self_check_fake_cli_pid" ]; then
-  kill "$(cat "$self_check_fake_cli_pid")" 2> /dev/null || true
-fi
-rm -rf -- "$self_check_timeout_dir"
-rm -f "$self_check_timeout_err"
+# Owned self-check timeout/teardown fixtures run in beam-mcp-protocol-test. Component
+# provider stalls are obsolete: shipped MCP has no external CLI discovery path.
 
 self_check_missing_file_err="$(mktemp /tmp/lean-beam-mcp-self-check-missing-file-XXXXXX)"
-if (cd tests/save_olean_project && \
-    python3 ../../tests/lib/process_watchdog.py --timeout "$mcp_self_check_watchdog" -- \
-      ../../scripts/lean-beam-mcp --self-check DoesNotExist.lean \
+if (cd "$BEAM_TEST_PROJECT" && \
+    python3 "$mcp_self_check_watchdog_script" --timeout "$mcp_self_check_watchdog" -- \
+      "$beam_test_mcp" --self-check DoesNotExist.lean \
       > /dev/null 2>"$self_check_missing_file_err"); then
   echo "expected MCP self-check to reject a missing Lean file" >&2
   rm -f "$self_check_missing_file_err"
@@ -371,7 +303,7 @@ fi
 rm -f "$self_check_missing_file_err"
 
 mcp_removed_root_err="$(mktemp /tmp/lean-beam-mcp-removed-root-XXXXXX)"
-if scripts/lean-beam-mcp --root tests/save_olean_project \
+if "$beam_test_mcp" --root "$BEAM_TEST_PROJECT" \
     > /dev/null 2>"$mcp_removed_root_err"; then
   echo "expected lean-beam-mcp to reject the removed --root option" >&2
   rm -f "$mcp_removed_root_err"
@@ -387,7 +319,7 @@ rm -f "$mcp_removed_root_err"
 
 cli_non_workspace_root="$(mktemp -d /tmp/beam-cli-non-workspace-root-XXXXXX)"
 cli_non_workspace_err="$(mktemp /tmp/beam-cli-non-workspace-root-err-XXXXXX)"
-if .lake/build/bin/beam-cli --root "$cli_non_workspace_root" serve \
+if "$beam_test_cli" --root "$cli_non_workspace_root" serve \
     > /dev/null 2>"$cli_non_workspace_err"; then
   echo "expected beam-cli Lean root validation to reject a non-workspace root" >&2
   rm -rf -- "$cli_non_workspace_root"
@@ -413,10 +345,10 @@ import sys
 
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("BEAM_MCP_SMOKE_REQUEST_TIMEOUT", "60"))
 SHUTDOWN_TIMEOUT_SECONDS = int(os.environ.get("BEAM_MCP_SMOKE_SHUTDOWN_TIMEOUT", "30"))
-workspace = {"root": os.path.abspath("tests/save_olean_project")}
+workspace = {"root": os.environ["BEAM_TEST_PROJECT"]}
 
 proc = subprocess.Popen(
-    ["scripts/lean-beam-mcp"],
+    [os.path.join(os.environ["BEAM_TEST_INSTALLATION"], "bin", "lean-beam-mcp")],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
@@ -549,7 +481,7 @@ if (
     sys.exit(1)
 
 server_version_content = server_version.get("result", {}).get("structuredContent", {})
-if not server_version_content.get("wrapper", "").endswith("scripts/lean-beam-mcp"):
+if not server_version_content.get("wrapper", "").endswith("/bin/lean-beam-mcp"):
     print(f"expected wrapper-launched MCP beam_version to report wrapper path: {server_version}", file=sys.stderr)
     proc.kill()
     sys.exit(1)
@@ -558,14 +490,8 @@ if expected_commit and server_version_content.get("source_commit") != expected_c
     print(f"expected wrapper-launched MCP beam_version to report source_commit={expected_commit}: {server_version}", file=sys.stderr)
     proc.kill()
     sys.exit(1)
-expected_branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout.strip()
-if expected_branch and expected_branch != "HEAD" and server_version_content.get("source_branch") != expected_branch:
-    print(f"expected wrapper-launched MCP beam_version to report source_branch={expected_branch}: {server_version}", file=sys.stderr)
-    proc.kill()
-    sys.exit(1)
-status = subprocess.run(["git", "status", "--short"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-if status.returncode == 0 and server_version_content.get("source_dirty") is not bool(status.stdout.strip()):
-    print(f"expected wrapper-launched MCP beam_version to report source_dirty={bool(status.stdout.strip())}: {server_version}", file=sys.stderr)
+if "source_branch" in server_version_content or "source_dirty" in server_version_content:
+    print(f"installed identity must come from its manifest, not a surrounding checkout: {server_version}", file=sys.stderr)
     proc.kill()
     sys.exit(1)
 if server_version_content.get("runtime_active") is not False:

@@ -9,9 +9,8 @@ import Beam.Feedback
 import Beam.Feedback.Broker
 import Beam.Daemon.Debug
 import Beam.Lean.Workspace
-import Beam.Mcp.Options
 import Beam.Mcp.Protocol
-import Beam.Mcp.Runtime
+import Beam.Mcp.SetupError
 import Beam.System
 import Beam.Workspace
 import Beam.Version
@@ -44,21 +43,33 @@ inductive ProtocolState where
   | modern
   deriving Repr
 
+private structure OwnedWorkspace where
+  root : System.FilePath
+  description : Beam.Runtime.Description
+  serial : Nat
+
+private structure OwnedRuntime where
+  broker : Beam.Broker.ServerRuntime
+  workspaces : Std.HashMap Beam.Broker.WorkspaceId OwnedWorkspace := {}
+
 structure ServerState where
   protocol : Std.Mutex ProtocolState
-  private runtime : Std.Mutex (Option Beam.Broker.ServerRuntime)
+  private runtime : Std.Mutex (Option OwnedRuntime)
+  /-- Allocated under `runtime`; never reset when a workspace/runtime is dropped. -/
+  private nextWorkspaceInstance : IO.Ref Nat
 
 def ServerState.create : IO ServerState := do
   pure {
     protocol := ← Std.Mutex.new .undecided
     runtime := ← Std.Mutex.new none
+    nextWorkspaceInstance := ← IO.mkRef 0
   }
 
 def ServerState.protocolState (state : ServerState) : IO ProtocolState :=
   state.protocol.atomically get
 
 private def ServerState.runtime? (state : ServerState) : IO (Option Beam.Broker.ServerRuntime) :=
-  state.runtime.atomically get
+  state.runtime.atomically do return (← get).map (·.broker)
 
 /-- Close and forget the in-process broker runtime owned by this MCP server state. -/
 def ServerState.closeRuntime (state : ServerState) : IO Unit :=
@@ -68,8 +79,8 @@ def ServerState.closeRuntime (state : ServerState) : IO Unit :=
     | some runtime =>
         -- Transfer ownership out of the state before waiting for broker teardown. A concurrent
         -- creator remains excluded by the same mutex, and repeated close calls are idempotent.
-        set (none : Option Beam.Broker.ServerRuntime)
-        runtime.close
+        set (none : Option OwnedRuntime)
+        runtime.broker.close
 
 structure NotificationSink where
   send : Json → IO Unit := fun _ => pure ()
@@ -95,7 +106,18 @@ private def notifierFor
 private def Notifier.send (notifier : Notifier) (json : Json) : IO Unit :=
   notifier.sink.send json
 
-abbrev Options := Beam.Mcp.Options
+/-- Application effects supplied at the process boundary; no installation discovery lives here. -/
+structure Options where
+  resolveRuntime : Beam.Runtime.Admission → System.FilePath → IO (Except RpcError Beam.Runtime.Description) :=
+    fun _ _ => pure <| .error <| runtimeSetupError runtimeSetupGuidance
+  /-- Read-only reuse admission against the workspace's retained installation member. -/
+  admitRuntime : Beam.Runtime.Admission → System.FilePath → Beam.Runtime.Description →
+      IO (Except RpcError Unit) :=
+    fun _ _ _ => pure <| .error <| runtimeSetupError "runtime reuse policy is not configured"
+  identity : IO Beam.Version.Identity := pure {
+    name := Beam.Version.mcpServerName
+    mcpProtocol? := some Beam.Version.mcpProtocolVersion
+  }
 
 def Internal.traceEnabled (envName : String) : IO Bool := do
   match ← IO.getEnv envName with
@@ -456,57 +478,73 @@ private def createRuntimeWithConfig
   catch e =>
     pure <| .error <| runtimeSetupError e.toString
 
-private def createRuntimeForRoot
-    (opts : Options)
-    (workspaceId : Beam.Broker.WorkspaceId)
-    (root : System.FilePath) :
-    IO (Except RpcError (Beam.Broker.ServerRuntime × System.FilePath)) := do
-  match ← Runtime.mkBrokerConfig opts.toLaunchOptions root with
-  | .error err =>
-      pure <| .error err
-  | .ok config =>
-      match ← createRuntimeWithConfig workspaceId config with
-      | .ok runtime => pure <| .ok (runtime, config.root)
-      | .error err => pure <| .error err
+private def freshWorkspace (state : ServerState) (root : System.FilePath)
+    (description : Beam.Runtime.Description) : IO OwnedWorkspace := do
+  let serial ← state.nextWorkspaceInstance.get
+  state.nextWorkspaceInstance.set (serial + 1)
+  pure { root, description, serial }
 
-private def ensureBrokerWorkspace
-    (opts : Options)
-    (runtime : Beam.Broker.ServerRuntime)
-    (workspaceId : Beam.Broker.WorkspaceId)
-    (root : System.FilePath) : IO (Except RpcError System.FilePath) := do
-  match ← runtime.workspaceRoot? workspaceId with
-  | some trackedRoot =>
-      if trackedRoot == root then
-        pure <| .ok root
-      else
-        pure <| .error <| RpcError.invalidRequest
-          s!"workspace '{workspaceId}' is already initialized for {trackedRoot}, not {root}"
-  | none =>
-      match ← Runtime.mkBrokerConfig opts.toLaunchOptions root with
-      | .error err => pure <| .error err
-      | .ok config =>
-          match ← runtime.initWorkspaceWithConfig workspaceId config (some .set) with
-          | .ok initialized => pure <| .ok initialized.root
-          | .error failure =>
-              pure <| .error <| RpcError.invalidRequest failure.error.message
+private def cancelledBeforeDispatch : RpcError :=
+  RpcError.invalidRequest "request was cancelled before broker dispatch"
 
 private def ensureRuntimeForWorkspace
     (state : ServerState)
     (opts : Options)
     (workspaceId : Beam.Broker.WorkspaceId)
-    (root : System.FilePath) : IO (Except RpcError (Beam.Broker.ServerRuntime × System.FilePath)) := do
+    (root : System.FilePath)
+    (isCancelled : IO Bool) : IO (Except RpcError (Beam.Broker.ServerRuntime × System.FilePath × Nat)) := do
+  -- Only creation mutates the owned runtime. Reuse captures an immutable admission candidate.
+  let candidate : Except RpcError (Beam.Broker.ServerRuntime × OwnedWorkspace × Bool) ←
+      state.runtime.atomically do
+      if ← isCancelled then return .error cancelledBeforeDispatch
+      match ← get with
+      | some runtime =>
+          if let some workspace := runtime.workspaces[workspaceId]? then
+            unless workspace.root == root do
+              return .error <| RpcError.invalidRequest
+                s!"workspace '{workspaceId}' is already initialized for {workspace.root}, not {root}"
+            return .ok (runtime.broker, workspace, true)
+          let context : Beam.Runtime.Admission := { isCancelled }
+          let description ← match ← opts.resolveRuntime context root with
+            | .ok description => pure description
+            | .error error => return .error error
+          if ← isCancelled then return .error cancelledBeforeDispatch
+          match ← runtime.broker.initWorkspaceWithConfig workspaceId (.ofRuntime root description) (some .set) with
+          | .error failure => return .error <| RpcError.invalidRequest failure.error.message
+          | .ok _ =>
+              let workspace ← freshWorkspace state root description
+              set (some { runtime with workspaces := runtime.workspaces.insert workspaceId workspace })
+              return .ok (runtime.broker, workspace, false)
+      | none =>
+          let context : Beam.Runtime.Admission := { isCancelled }
+          let description ← match ← opts.resolveRuntime context root with
+            | .ok description => pure description
+            | .error error => return .error error
+          if ← isCancelled then return .error cancelledBeforeDispatch
+          match ← createRuntimeWithConfig workspaceId (.ofRuntime root description) with
+          | .error error => return .error error
+          | .ok broker =>
+              let workspace ← freshWorkspace state root description
+              set (some ({ broker, workspaces := ({} : Std.HashMap _ _).insert workspaceId workspace } : OwnedRuntime))
+              return .ok (broker, workspace, false)
+  let (broker, captured, reused) ← match candidate with
+    | .error error => return .error error
+    | .ok candidate => pure candidate
+  if reused then
+    let context : Beam.Runtime.Admission := { isCancelled }
+    match ← opts.admitRuntime context root captured.description with
+    | .error error => return .error error
+    | .ok () => pure ()
+  if ← isCancelled then return .error cancelledBeforeDispatch
+  -- A direct server caller may drop/recreate while local admission is in progress.
+  -- Stdio additionally orders control operations using its existing stream fences.
   state.runtime.atomically do
-    match ← get with
-    | some runtime =>
-        match ← ensureBrokerWorkspace opts runtime workspaceId root with
-        | .ok canonicalRoot => pure <| .ok (runtime, canonicalRoot)
-        | .error err => pure <| .error err
-    | none =>
-        match ← createRuntimeForRoot opts workspaceId root with
-        | .error err => pure <| .error err
-        | .ok (runtime, canonicalRoot) =>
-            set (some runtime)
-            pure <| .ok (runtime, canonicalRoot)
+    let some current := (← get) | return .error <| RpcError.invalidRequest "workspace was dropped during runtime admission; retry"
+    let some workspace := current.workspaces[workspaceId]?
+      | return .error <| RpcError.invalidRequest "workspace was dropped during runtime admission; retry"
+    unless workspace.serial == captured.serial do
+      return .error <| RpcError.invalidRequest "workspace was replaced during runtime admission; retry"
+    pure <| .ok (broker, root, captured.serial)
 
 private def workspaceErrorToToolError (err : Beam.Workspace.RootError) : ToolError :=
   ToolError.invalidInput err.message
@@ -587,8 +625,8 @@ private def handleBeamStats
           pure <| callToolResult result
 
 private def handleDropWorkspace
-    (runtime? : Option Beam.Broker.ServerRuntime)
-    (workspace : ResolvedWorkspace) : IO Json := do
+    (runtime? : Option OwnedRuntime)
+    (workspace : ResolvedWorkspace) : IO (Json × Option OwnedRuntime) := do
   let resultJson (dropped invalidatedHandles : Bool) (reason? : Option String := none) : Json :=
     Json.mkObj <| [
       ("workspace", toJson workspace.descriptor),
@@ -599,38 +637,23 @@ private def handleDropWorkspace
       | none => []
   match runtime? with
   | none =>
-      pure <| callToolResult <| resultJson false false (some "notFound")
+      pure (callToolResult <| resultJson false false (some "notFound"), none)
   | some runtime =>
-      match ← runtime.dropWorkspace workspace.workspaceId with
+      match ← runtime.broker.dropWorkspace workspace.workspaceId with
       | .ok dropped =>
-          pure <| callToolResult <|
-            resultJson dropped.dropped dropped.invalidatedHandles dropped.reason?
+          pure (callToolResult <| resultJson dropped.dropped dropped.invalidatedHandles dropped.reason?,
+            some { runtime with workspaces := runtime.workspaces.erase workspace.workspaceId })
       | .error failure =>
-          pure <| callToolErrorResult <| ToolError.fromBrokerError failure.error
-
-private def resolvedBeamHome? : IO (Option System.FilePath) := do
-  match ← IO.getEnv "BEAM_HOME" with
-  | some home =>
-      try
-        pure <| some (← IO.FS.realPath <| System.FilePath.mk home)
-      catch _ =>
-        pure <| some (System.FilePath.mk home)
-  | none => pure none
+          pure (callToolErrorResult <| ToolError.fromBrokerError failure.error, some runtime)
 
 private def serverIdentity
     (opts : Options)
     (activeRoot? : Option System.FilePath := none)
     (runtimeActive? : Option Bool := none) : IO Beam.Version.Identity := do
-  let home? ← resolvedBeamHome?
-  let appPath ← IO.appPath
-  let wrapper? ← IO.getEnv "BEAM_WRAPPER_PATH"
-  Beam.Version.mcpServerIdentity
-    home?
-    opts.beamCli?
-    (some appPath.toString)
-    activeRoot?
+  pure { (← opts.identity) with
+    activeRoot? := activeRoot?.map (·.toString)
     runtimeActive?
-    (wrapper? := wrapper?)
+  }
 
 def Internal.serverVersionText (opts : Options) : IO String := do
   pure (← serverIdentity opts).text
@@ -774,7 +797,8 @@ def Internal.handleToolCall
     (admitted : AdmittedRequestContext)
     (parsedParams : Except String CallToolParams)
     (notifications : NotificationSink)
-    (initialProgress : Nat := 0) : IO (Except RpcError Json) := do
+    (initialProgress : Nat := 0)
+    (isCancelled : IO Bool := pure false) : IO (Except RpcError Json) := do
   let notifier := notifierFor state admitted notifications
   let params ←
     match parsedParams with
@@ -795,7 +819,9 @@ def Internal.handleToolCall
     if initialProgress == 0 then
       emitProgress? progress? s!"{params.name.key}: preparing workspace eviction"
     let result ← state.runtime.atomically do
-      handleDropWorkspace (← get) workspace
+      let (result, runtime) ← handleDropWorkspace (← get) workspace
+      set runtime
+      pure result
     Internal.traceMcp
       s!"tools/call workspace drop complete id={req.id.label} tool={params.name.key}"
     return .ok result
@@ -840,8 +866,8 @@ def Internal.handleToolCall
   let reporter ← CallReporter.create notifier req.id params progress?
   try
     reporter.emitPreparing
-    let (runtime, root) ←
-      match ← ensureRuntimeForWorkspace state opts workspace.workspaceId workspace.root with
+    let (runtime, root, workspaceSerial) ←
+      match ← ensureRuntimeForWorkspace state opts workspace.workspaceId workspace.root isCancelled with
       | .ok runtimeAndRoot =>
           Internal.traceMcp s!"tools/call runtime ready id={req.id.label} tool={params.name.key}"
           pure runtimeAndRoot
@@ -855,7 +881,13 @@ def Internal.handleToolCall
     let emitBrokerProgress? : Option (Beam.Broker.SyncFileProgress → IO Unit) :=
       reporter.progress?.map fun _ => reporter.emitFileProgress
     Internal.traceMcp s!"tools/call dispatch broker id={req.id.label} tool={params.name.key}"
-    let brokerResp ← runtime.dispatchRequestWithHandle brokerReq beforeDispatch
+    let bindCurrentWorkspace : Beam.Broker.RequestHandle → IO Bool := fun handle => do
+      -- Check again after broker admission. A subsequent drop cancels that exact broker handle.
+      let current ← state.runtime.atomically do
+        pure <| (← get).any fun runtime =>
+          runtime.workspaces[workspace.workspaceId]?.any (·.serial == workspaceSerial)
+      if current then beforeDispatch handle else pure false
+    let brokerResp ← runtime.dispatchRequestWithHandle brokerReq bindCurrentWorkspace
       (emitProgress? := emitBrokerProgress?)
       (emitDiagnostic? := some emitDiagnostic)
     Internal.traceMcp

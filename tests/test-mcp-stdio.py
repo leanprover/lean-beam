@@ -197,7 +197,6 @@ class McpClient:
         server_trace=False,
         drain_stdout=True,
         extra_env=None,
-        resolve_with_beam_cli=False,
         server_command=None,
         shutdown_timeout=5,
     ):
@@ -225,25 +224,10 @@ class McpClient:
         if server_command is not None:
             cmd = [str(part) for part in server_command]
         else:
-            exe = repo_root / ".lake" / "build" / "bin" / "lean-beam-mcp"
-            require(exe.exists(), f"missing lean-beam-mcp executable at {exe}")
+            installation = Path(os.environ["BEAM_TEST_INSTALLATION"])
+            exe = installation / "bin/lean-beam-mcp"
+            require(exe.is_file(), f"missing constructed MCP companion: {exe}")
             cmd = [str(exe)]
-            if resolve_with_beam_cli:
-                beam_cli = repo_root / ".lake" / "build" / "bin" / "beam-cli"
-                require(beam_cli.exists(), f"missing beam-cli executable at {beam_cli}")
-                cmd.extend(["--beam-cli", str(beam_cli)])
-            else:
-                plugin = repo_root / ".lake" / "build" / "lib" / shared_lib_name()
-                lean_cmd = shutil.which("lean") or "lean"
-                require(plugin.exists(), f"missing Beam LSP plugin shared library at {plugin}")
-                cmd.extend(
-                    [
-                        "--lean-cmd",
-                        lean_cmd,
-                        "--lean-plugin",
-                        str(plugin),
-                    ]
-                )
         env = os.environ.copy()
         if extra_env is not None:
             env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -806,28 +790,14 @@ def workspace_cache_key(root):
     return f"local:{Path(root).resolve()}"
 
 
-def beam_cli_mcp_config(repo_root, root, timeout):
-    beam_cli = repo_root / ".lake" / "build" / "bin" / "beam-cli"
-    completed = subprocess.run(
-        [str(beam_cli), "--root", str(root), "mcp-config"],
-        cwd=str(repo_root),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        timeout=timeout,
-        check=False,
-    )
-    require(
-        completed.returncode == 0,
-        f"beam-cli mcp-config failed for {root}:\n{completed.stdout}\n{completed.stderr}",
-    )
-    try:
-        config = json.loads(completed.stdout)
-    except json.JSONDecodeError as err:
-        fail(f"beam-cli mcp-config returned invalid JSON for {root}: {err}: {completed.stdout!r}")
-    require(isinstance(config, dict), f"beam-cli mcp-config returned no object for {root}: {config}")
-    return config
+def recorded_test_runtime(selector):
+    """Read the test's constructed set; this does not implement production selection policy."""
+    installation = Path(os.environ["BEAM_TEST_INSTALLATION"])
+    manifest = json.loads((installation / "manifest.json").read_text())
+    target, = [target for target in manifest["components"]["targets"] if target["toolchain"] == selector]
+    return {"toolchain": selector, "lean_cmd": target["lean"],
+            "lean_plugin": str(installation / target["plugin"]),
+            "lean_lake_helper": str(installation / target["daemon"])}
 
 
 def require_version_mismatch_data(error, expected_version, accepted_version, label, *, expected_uri_suffix=None):
@@ -2431,22 +2401,24 @@ def run_multi_toolchain_workspaces(repo_root, fixture_root, timeout, server_trac
             )
         (roots[1] / "lean-toolchain").write_text(current_toolchain + "\n", encoding="utf-8")
         expected_toolchains = [fixture_toolchain, current_toolchain]
-        configs = [beam_cli_mcp_config(repo_root, root, timeout) for root in roots]
+        configs = [recorded_test_runtime(selector) for selector in expected_toolchains]
         for root, expected_toolchain, config in zip(roots, expected_toolchains, configs):
             require(
                 config.get("toolchain") == expected_toolchain,
                 f"beam-cli selected the wrong toolchain for {root}: {config}",
             )
             lean_cmd = config.get("lean_cmd")
-            require(isinstance(lean_cmd, str) and lean_cmd, f"mcp-config omitted lean_cmd for {root}: {config}")
+            require(isinstance(lean_cmd, str) and lean_cmd, f"construction record omitted lean_cmd for {root}: {config}")
             lake_helper = config.get("lean_lake_helper")
             require(
                 isinstance(lake_helper, str) and Path(lake_helper).is_file(),
-                f"mcp-config omitted the target Lake helper for {root}: {config}",
+                f"construction record omitted the target Lake helper for {root}: {config}",
             )
             helper_env = subprocess.run(
-                [lake_helper, "lake-helper", "server-env"],
-                input=json.dumps({"root": str(root), "leanCmd": lean_cmd}),
+                [str(repo_root / ".lake/build/bin" / ("beam-lake-helper-client-fixture" +
+                                                      (".exe" if os.name == "nt" else ""))),
+                 lake_helper, "server-env"],
+                input=json.dumps({"root": str(root)}),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -2497,7 +2469,6 @@ def run_multi_toolchain_workspaces(repo_root, fixture_root, timeout, server_trac
             timeout,
             label="multi-toolchain-workspaces",
             server_trace=server_trace,
-            resolve_with_beam_cli=True,
         )
         try:
             client.initialize()
@@ -3346,6 +3317,45 @@ def run_closed_stdout_regression(repo_root, fixture_root, timeout):
                 control_client.proc.wait(timeout=5)
 
 
+def run_process_identity_snapshot(repo_root, timeout):
+    """A process remains bound to its manifest and rejects replacement metadata."""
+    with tempfile.TemporaryDirectory(prefix="beam-mcp-process-identity-") as directory:
+        home = Path(directory).resolve()
+        installation = home / "installation"
+        shutil.copytree(Path(os.environ["BEAM_TEST_INSTALLATION"]), installation)
+        manifest = installation / "manifest.json"
+        original = manifest.read_text()
+        expected_source = json.loads(original)["sourceCommit"]
+        server = installation / "bin/lean-beam-mcp"
+        client = McpClient(repo_root, home, timeout, label="process identity",
+                           server_command=[str(server)], extra_env={"BEAM_HOME": str(home / "foreign")})
+        try:
+            client.initialize()
+            identity = client.request("tools/call", {"name": "beam_version", "arguments": {}}, request_id=2)
+            require(identity["result"]["structuredContent"].get("source_commit") == expected_source,
+                    f"missing recorded process identity: {identity}")
+            replacement = json.loads(original)
+            replacement["sourceCommit"] = "replacement-generation"
+            manifest.write_text(json.dumps(replacement))
+            denied = client.request("tools/call", {"name": "beam_version", "arguments": {}}, request_id=3)
+            require("generation changed" in json.dumps(denied),
+                    f"changed installation did not reject identity reporting: {denied}")
+            require("result" in client.request("tools/list", {}, request_id=4),
+                    "changed installation blocked protocol discovery")
+            require(not (home / ".beam").exists(), "version reporting provisioned project state")
+        finally:
+            client.close()
+        manifest.unlink()
+        client = McpClient(repo_root, home, timeout, label="unavailable process metadata",
+                           server_command=[str(server)])
+        try:
+            client.initialize()
+            require("result" in client.request("tools/list", {}, request_id=2),
+                    "unavailable process metadata blocked protocol discovery")
+        finally:
+            client.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Exercise lean-beam-mcp over stdio.")
     parser.add_argument("--iterations", type=int, default=1)
@@ -3442,6 +3452,7 @@ def main():
         run_stateless_workspace_matrix(repo_root, fixture_root, args.timeout)
         return
     run_modern_protocol_smoke(repo_root, fixture_root, args.timeout)
+    run_process_identity_snapshot(repo_root, args.timeout)
     for cycle in range(args.restart_cycles):
         run_cycle(repo_root, fixture_root, cycle, args.iterations, args.timeout)
     run_diagnostic_logging(repo_root, fixture_root, args.timeout)

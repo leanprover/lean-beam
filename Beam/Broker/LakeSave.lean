@@ -62,7 +62,7 @@ elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServe
 
 inductive LeanSaveTracePlan where
   | inProcess (depTrace : BuildTrace)
-  | targetProcess (helper : FilePath) (traceMetadata : Json)
+  | targetProcess (helper root : FilePath) (traceMetadata : Json)
 
 structure LeanSaveSpec where
   relPath : String
@@ -223,22 +223,21 @@ private def leanSaveSpecOfHelperSpec
     cPath := FilePath.mk spec.cPath
     bcPath? := spec.bcPath?.map FilePath.mk
     tracePath := FilePath.mk spec.tracePath
-    tracePlan := .targetProcess helper spec.traceMetadata
+    tracePlan := .targetProcess helper (FilePath.mk spec.root) spec.traceMetadata
   }
 
 private def mkLeanSaveSpecWithHelper
     (helper root path : FilePath)
     (snapshot : SourceSnapshot)
-    (leanCmd : String) : IO (Except BrokerFailure LeanSaveSpec) := do
+    (control : LakeHelperControl) : IO (Except BrokerFailure LeanSaveSpec) := do
   let request : LakeHelperSaveRequest := {
     root := root.toString
     path := path.toString
-    leanCmd
     sourceHash := snapshot.hash.toString
     sourceMTimeSec := snapshot.mtime.sec
     sourceMTimeNsec := snapshot.mtime.nsec.toNat
   }
-  match ← runLakeHelperPrepareSave helper request with
+  match ← runLakeHelperPrepareSave helper request control with
   | .error failure => pure <| .error failure
   | .ok spec => pure <| .ok (leanSaveSpecOfHelperSpec helper spec)
 
@@ -246,10 +245,11 @@ def mkLeanSaveSpec
     (root path : FilePath)
     (snapshot : SourceSnapshot)
     (leanCmd? : Option String := none)
-    (lakeHelper? : Option FilePath := none) : IO (Except BrokerFailure LeanSaveSpec) := do
+    (lakeHelper? : Option FilePath := none)
+    (control : LakeHelperControl := {}) : IO (Except BrokerFailure LeanSaveSpec) := do
   match lakeHelper?, leanCmd? with
-  | some helper, some leanCmd =>
-      mkLeanSaveSpecWithHelper helper root path snapshot leanCmd
+  | some helper, some _ =>
+      mkLeanSaveSpecWithHelper helper root path snapshot control
   | _, _ =>
       mkLeanSaveSpecInProcess root path snapshot leanCmd?
 
@@ -318,7 +318,8 @@ private def writeLeanSaveTraceWithMetadata
   writeTraceAtomically tracePath fun stagedTrace =>
     BuildMetadata.writeFile stagedTrace metadata
 
-def writeLeanSaveTrace (spec : LeanSaveSpec) : IO (Except BrokerFailure Unit) := do
+def writeLeanSaveTrace (spec : LeanSaveSpec) (control : LakeHelperControl := {}) :
+    IO (Except BrokerFailure Unit) := do
   try
     match spec.tracePlan with
     | .inProcess depTrace =>
@@ -327,8 +328,9 @@ def writeLeanSaveTrace (spec : LeanSaveSpec) : IO (Except BrokerFailure Unit) :=
         writeTraceAtomically spec.tracePath fun stagedTrace =>
           writeBuildTrace stagedTrace depTrace outputs {}
         pure (.ok ())
-    | .targetProcess helper traceMetadata =>
+    | .targetProcess helper root traceMetadata =>
         let request : LakeHelperWriteTraceRequest := {
+          root := root.toString
           oleanPath := spec.oleanPath.toString
           oleanServerPath? := spec.oleanServerPath?.map (·.toString)
           oleanPrivatePath? := spec.oleanPrivatePath?.map (·.toString)
@@ -340,7 +342,7 @@ def writeLeanSaveTrace (spec : LeanSaveSpec) : IO (Except BrokerFailure Unit) :=
           tracePath := spec.tracePath.toString
           traceMetadata
         }
-        match ← runLakeHelperWriteSaveTrace helper request with
+        match ← runLakeHelperWriteSaveTrace helper request control with
         | .ok _ => pure (.ok ())
         | .error failure => pure (.error failure)
   catch e =>
@@ -350,7 +352,7 @@ def writeLeanSaveTrace (spec : LeanSaveSpec) : IO (Except BrokerFailure Unit) :=
     }
 
 def lakeHelperSaveSpec
-    (request : LakeHelperSaveRequest) : IO (Except BrokerFailure LakeHelperSaveSpec) := do
+    (request : LakeHelperSaveRequest) (leanCmd : String) : IO (Except BrokerFailure LakeHelperSaveSpec) := do
   let some sourceHash := Hash.ofString? request.sourceHash
     | return .error {
         code := .invalidParams
@@ -366,7 +368,7 @@ def lakeHelperSaveSpec
     mtime := { sec := request.sourceMTimeSec, nsec := request.sourceMTimeNsec.toUInt32 }
   }
   match ← mkLeanSaveSpecInProcess
-      (FilePath.mk request.root) (FilePath.mk request.path) snapshot (some request.leanCmd) with
+      (FilePath.mk request.root) (FilePath.mk request.path) snapshot (some leanCmd) with
   | .error failure => pure <| .error failure
   | .ok spec =>
       let traceMetadata ←
@@ -378,6 +380,7 @@ def lakeHelperSaveSpec
               message := "target Lake helper unexpectedly produced a delegated save trace"
             }
       pure <| .ok {
+        root := request.root
         relPath := spec.relPath
         moduleName := spec.moduleName
         unsupportedSetupReason? := spec.unsupportedSetupReason?

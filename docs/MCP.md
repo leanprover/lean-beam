@@ -110,19 +110,29 @@ local descriptor as a sandbox.
 
 ## Runtime Setup
 
-The installed `bin/lean-beam-mcp` wrapper is the public setup path. It pairs the MCP executable with
-the matching installed `beam-cli` and passes `--beam-cli`. On first use of a canonical root,
-[Beam/Mcp/Runtime.lean](../Beam/Mcp/Runtime.lean) asks
-`beam-cli --root <root> mcp-config` for the project-specific Lean command, runAt plugin, and
-target-built Lake helper. The helper exchanges only JSON metadata with the MCP broker, so workspace
-configuration and zero-build save traces remain owned by the selected Lean/Lake build even when the
-MCP executable itself was built with a different Lean commit.
+The installed `bin/lean-beam-mcp` wrapper starts the MCP executable from its concrete installation.
+Both standalone and bundled MCP use
+[Beam/Cli/Installation/Lookup.lean](../Beam/Cli/Installation/Lookup.lean) to select a complete runtime
+from the installation's published component set. A standalone set may contain several targets;
+a bundled Lean toolchain contains one. Installation constructs and qualifies those targets before
+publication. Normal MCP execution never builds a missing target, searches another Beam provider,
+or executes a candidate compiler to decide whether to reject it.
 
-Keep bundle resolution in this CLI/runtime boundary. Normal MCP clients should pass the workspace
-descriptor, not raw Lean commands or plugin paths. Source-tree tests and direct developer runs may
-instead pass `--lean-cmd` and `--lean-plugin` together when the plugin has a sibling `beam-daemon` in
-the standard build or install layout. MCP rejects either explicit flag alone, combining
-`--beam-cli` with explicit runtime flags, and an explicit plugin without that sibling helper.
+Project selectors resolve through local paths, locally linked Elan aliases, or exact installed
+Elan descriptors. Floating selectors require an explicit local link or exact pin; they do not
+trigger network resolution. An unavailable target produces installer guidance. Raw `--beam-cli`,
+`--lean-cmd`, and `--lean-plugin` composition options are rejected by the shipped executable.
+
+A workspace retains its accepted runtime description. Read-only admission before reuse rejects
+selector or installation-generation changes without retargeting live documents and handles.
+Dropping a workspace and protocol discovery remain available when admission fails. Process identity
+retains the startup installation record: replacing that record requires a restart, while switching
+a launcher's `current` pointer affects future processes only.
+
+The recorded target-built helper exchanges JSON metadata with the broker. Project configuration
+and zero-build save traces remain owned by that selected Lean/Lake build even when a standalone
+MCP frontend was built with another compiler. Each daemon and helper validates its own recorded
+role before using components; wire requests cannot supply an alternative compiler or plugin.
 
 `lean_drop_workspace` is optional cache management, not context selection. It evicts the runtime
 for its descriptor and invalidates proof handles owned by that runtime. Drop is idempotent and
@@ -131,9 +141,11 @@ with the same descriptor recreates the runtime lazily. Retain the canonical desc
 operation, non-confidential feedback result, or drop result echoes it: cache eviction accepts that
 absolute descriptor even if the project directory or its Lean/Lake markers have since disappeared.
 
-After editing a lakefile, manifest, package override, `lean-toolchain`, Lean options, plugins, or
+After editing a lakefile, manifest, package override, Lean options, plugins, or
 dynamic libraries, drop that workspace or restart the MCP server before the next request. Re-syncing
 inside the old Lean process is not sufficient to reload workspace configuration.
+Bundled selector changes to another alias of the same installation preserve documents and handles.
+Selecting another installation is rejected; use its matching MCP server for that workspace.
 
 ## Transport Lifetime
 
@@ -143,6 +155,14 @@ first Lean operation that needs broker execution creates the runtime lazily; lat
 that runtime while the broker remains authoritative for workspace membership. Feedback and cache
 eviction can inspect or update an absent runtime without creating one. `lean_drop_workspace` evicts
 one cached workspace but does not end the stdio session.
+
+Reuse admission observes the selected installation outside the server-wide runtime mutex. The
+server checks the retained workspace instance again before dispatch and when binding the broker
+handle, so a concurrent drop/recreate cannot apply an old admission to a new workspace. Stdio
+workspace control operations retain their stream-order fence: they await earlier requests before
+dropping a workspace. Installation admission reads local metadata and paths, without launching
+selector or compiler probes. Cancellation is checked around admission; rejected or cancelled reuse
+does not replace the retained runtime.
 
 Closing stdin or reaching EOF closes MCP request admission. The server cooperatively cancels active
 cancellable requests, waits for every admitted request and non-cancellable workspace eviction to
@@ -172,13 +192,16 @@ request dispatcher and runtime teardown boundary.
 - [Beam/Mcp/Projection.lean](../Beam/Mcp/Projection.lean) owns MCP tool names, descriptors, schemas,
   and normalized output.
 - [Beam/Mcp/Protocol.lean](../Beam/Mcp/Protocol.lean) owns the current MCP JSON-RPC helpers.
-- [Beam/Mcp/Runtime.lean](../Beam/Mcp/Runtime.lean) owns root-to-runtime configuration.
-- [Beam/Mcp/Options.lean](../Beam/Mcp/Options.lean) defines runtime launch options shared by server
-  setup and self-check. CLI controls extend that record and are excluded from child launches.
+- [Beam/Mcp/Application.lean](../Beam/Mcp/Application.lean) composes executable startup, installation
+  identity, exact membership lookup for workspace creation, and admission against the retained
+  runtime description on reuse. It uses the installation adapter directly.
+- [Beam/Version.lean](../Beam/Version.lean) holds pure identity data and rendering; installation
+  discovery belongs to the application adapters.
 - [Beam/Mcp/SelfCheck.lean](../Beam/Mcp/SelfCheck.lean) owns the installed-wrapper self-check.
 - [Beam/Mcp/Server.lean](../Beam/Mcp/Server.lean) owns descriptor resolution, lazy broker-runtime
-  access, the typed protocol-family state machine, and the synchronous protocol-test seam. The
-  broker runtime is authoritative for workspace state.
+  access, the typed protocol-family state machine, and the synchronous protocol-test seam. Runtime
+  resolution and process identity are supplied as explicit application effects. The broker runtime
+  is authoritative for workspace state.
 - [Beam/Mcp/StdioServer.lean](../Beam/Mcp/StdioServer.lean) owns the permanent stdin reader,
   concurrent coordination, cancellation, cache-control barriers, and serialized output.
 
@@ -232,14 +255,12 @@ files subject to the concurrent-writer limitation in the [feedback output contra
 
 `beam_version` returns the running server identity in `structuredContent`. Its `mcp_protocol` field
 is the server's preferred revision, not mutable negotiated state for the current request. Installed
-runtime identities include the optional Boolean `runtime_current`: `true` means the process belongs
-to the runtime selected by the install root's `current` link, while `false` means it is stale or
-that the link is missing. Source-checkout identities omit this field. Invalid installed state also
-includes the optional string `runtime_error`; the tool call still succeeds so clients can report
-the broken identity. Restart an agent or MCP client for `runtime_current: false`. For
-`runtime_error`, stop Beam clients and follow the error-specific
-[installed-runtime recovery guidance](SETUP.md#prune-old-installed-state) before resuming normal
-work.
+identities retain the concrete installation generation and source revision accepted by the process.
+Changing a launcher's `current` link affects future launches, without retargeting existing servers.
+Replacing or corrupting a running server's own installation makes identity reporting fail; the
+server cannot adopt the replacement generation. Protocol discovery and workspace drop remain
+available. Restart clients after selecting a new installation, and stop clients before pruning
+their original installation. See the [installed-runtime recovery guidance](SETUP.md#prune-old-installed-state).
 
 Direct MCP clients should call `lean_update` or `lean_sync` before snapshot-bound operations and
 pass the returned `version` for the same descriptor and path. `lean_workspace_symbols` is

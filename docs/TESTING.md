@@ -144,22 +144,46 @@ Current Beam coverage includes:
 - zero-build save replay, structured-setup support, batch-only-argument rejection, and stale-save
   race coverage in
   [tests/test-beam-save-olean.sh](../tests/test-beam-save-olean.sh)
-- install flow, installed runtime layout, manifest metadata, exact/compatible toolchain selection,
+- install flow, installed runtime layout, manifest metadata, exact/compatible construction targets,
   shell/Lean owned-root marker parity, required artifact and executable-mode validation,
-  content-addressed runtime reuse, reused-runtime source-commit refresh and clearing, schema-2 reuse
-  rejection and cleanup compatibility,
-  `validated-toolchains`,
-  `compatible-release-lines`, `doctor`, installed-state pruning, and installed MCP wrapper coverage
+  complete immutable installation reuse, incomplete-manifest rejection,
+  `doctor`, installed-state pruning, and installed MCP wrapper coverage
   in [tests/test-beam-install.sh](../tests/test-beam-install.sh), with focused prune safety and
   invalid-runtime identity cases in [tests/test-beam-prune.sh](../tests/test-beam-prune.sh)
 - MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, self-check, released
   official-client interoperability, and external legacy/modern conformance coverage
 
-Run the Beam surface when the change touches broker protocol or transport, request/progress/diagnostics streams, daemon session or restart logic, wrapper CLI behavior, bundle resolution, install layout, `doctor`, `validated-toolchains`, save replay, save barriers, and MCP.
+Run the Beam surface when the change touches broker protocol or transport, request/progress/diagnostics streams, daemon session or restart logic, wrapper CLI behavior, installation lookup or construction, install layout, `doctor`, save replay, save barriers, and MCP.
 
 For save-only work, use [tests/test-beam-save-olean.sh](../tests/test-beam-save-olean.sh) as the
 local development loop. The slow and aggregate Beam suites remain useful CI or pre-release signals,
 but save replay by itself does not require running them locally.
+
+Focused stdio, wrapper, and save scripts consume a complete installation through
+`BEAM_TEST_INSTALLATION`. It must include both the repository-pinned toolchain and the toolchain
+in `tests/save_olean_project/lean-toolchain` when a scenario uses both. For an existing standalone
+installation constructed with those targets:
+
+```bash
+export BEAM_TEST_INSTALLATION="$(cd -P "$HOME/.local/share/beam/current" && pwd)"
+python3 tests/test-mcp-stdio.py --iterations 1 --restart-cycles 1 --timeout 60
+```
+
+`tests/test-beam-slow.sh` constructs its own complete installation before invoking these scripts.
+The fast and MCP interoperability suites instead use a non-shipped staging fixture for their
+same-compiler transport tests; this is not cross-compiler construction qualification. Test launchers
+do not restore removed component-selection flags or allow runtime provisioning.
+
+The fast suite also runs [tests/test-lake-helper-lifetime.py](../tests/test-lake-helper-lifetime.py)
+against the actual staged daemon and a non-shipped helper client. It checks completed requests,
+abrupt helper exit with a live descendant, deadlines, cancellation, and parent death, then cancellation/drop and
+EOF shutdown through both legacy and modern MCP. Save preparation is also cancelled with a
+retained document/backend after its Lake configuration changes. A stalled configuration records helper and
+descendant PIDs before cancellation, so an unrelated early error cannot satisfy the test. The
+external watchdog remains independent of the production helper deadline. Run this fixture on
+Windows and macOS as well as Linux when changing the native process-job implementation. Native
+toolchain qualification invokes the same fixture with `--native-prefix` against the relocated SDK
+and checks both native C objects when switching compilers through the isolated native build cache.
 
 The user-facing installer behavior, write locations, MCP registration paths, and toolchain options
 are documented in [SETUP.md](SETUP.md). The notes below cover maintainer test fixtures and
@@ -339,6 +363,22 @@ checks successful logging, nonzero exit, bounded returned output, and timeout wi
 a partial response, and actual descendant termination. Windows execution still needs qualification
 on a Windows runner.
 
+`python3 tests/test-runtime-boundary.py` checks the transitive imports of shared identity,
+configuration, session, and MCP execution modules. It rejects dependencies on installation layout,
+SDK discovery, managed bundle resolution, or application startup. The fast suite runs this guard.
+`python3 tests/test-mcp-application.py` starts the MCP executable with a missing `BEAM_HOME` and
+unused runtime overrides, verifying that protocol discovery does not require runtime resolution.
+The CLI daemon test also exercises pure SDK admission: selector aliases, exact installation identity,
+compiler/provenance mismatches, and payload changes. The native installation regression checks that
+an existing owner remains stoppable with malformed provenance.
+
+`bash tests/test-beam-wrapper-toolchain.sh` compares managed runtime configuration with and without
+an inherited elan override, then starts an owner and runs an actual probe under that override.
+It also checks that `doctor` names the same compiler as the bundle. The slow suite runs this slice.
+`python3 tests/test-native-provenance.py` exercises the CMake installer with fixture artifacts and
+version strings containing quotes, backslashes, Unicode, and control characters. It requires
+CMake 3.21 or later and runs as part of native toolchain qualification.
+
 The focused CLI daemon test also checks that a failed stderr evidence sink does not stop pipe
 draining, that sink failure observation is synchronized, and that a pipe held open past leader exit
 produces a bounded `pipeStillOpen` outcome rather than an unbounded task join.
@@ -376,7 +416,8 @@ macOS matrix is desired. Repository names and actors do not select the policy.
 
 The combined `macos-platform` job covers every test family.
 It runs shell lint, fast broker tests, LSP tests, MCP conformance and SDK tests, the slow suite,
-pinned-toolchain qualification, and installer tests as separate steps in one checkout.
+pinned-toolchain qualification, native installation/relocation, and installer tests as separate
+steps in one checkout.
 The job shares Lean setup and incremental build outputs; each suite keeps its own temporary
 projects and homes. Independent test steps continue after another test fails, while a failed step
 still fails the job. The job has a 120-minute timeout.
@@ -391,6 +432,8 @@ Linux retains the separate parallel jobs and the exact toolchain compatibility m
 modes. The combined macOS job runs toolchain qualification once at the repository-pinned Lean
 version. Full mode runs the complete per-version macOS compatibility matrix.
 Installer tests still prebuild every toolchain in `validated-lean-toolchains`.
+Native toolchain jobs retain Linux x86_64/aarch64 and Windows coverage in both modes. Full mode
+also runs native macOS x86_64/aarch64 jobs.
 
 The Linux `toolchains` job runs [scripts/ci-toolchains.py](../scripts/ci-toolchains.py) to validate
 the registries and publish the JSON array consumed by `beam-toolchain-compat`. Invalid, empty,
@@ -416,6 +459,7 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
 
 - `toolchains`: registry validation and compatibility-matrix generation as described above
 - `macos-platform`: the combined macOS job described above
+- `native-toolchain`: [tests/test-native-toolchain.py](../tests/test-native-toolchain.py)
 - `lsp`: [tests/test-lsp.sh](../tests/test-lsp.sh)
 - `beam-fast`: [tests/test-beam-fast.sh](../tests/test-beam-fast.sh)
 - `mcp-conformance`: [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh)

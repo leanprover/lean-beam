@@ -176,8 +176,8 @@ EOF
   assert_json_field_absent "symlinked helper mint" "$portable_helper_root" result.handle.backend
 
   wrapper_shadow_root="$beam_wrapper_tmp_root/wrapper-shadow-root"
-  mkdir -p "$wrapper_shadow_root/scripts" "$wrapper_shadow_root/.lake/build/bin" "$wrapper_shadow_root/libexec"
-  cp "$beam_script" "$wrapper_shadow_root/scripts/lean-beam"
+  mkdir -p "$wrapper_shadow_root/bin" "$wrapper_shadow_root/.lake/build/bin" "$wrapper_shadow_root/libexec"
+  cp "$beam_script" "$wrapper_shadow_root/bin/lean-beam"
   cat > "$wrapper_shadow_root/.lake/build/bin/beam-cli" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -190,16 +190,16 @@ printf 'installed\n'
 EOF
   chmod +x "$wrapper_shadow_root/.lake/build/bin/beam-cli" "$wrapper_shadow_root/libexec/beam-cli"
 
-  wrapper_shadow_out="$("$wrapper_shadow_root/scripts/lean-beam" stats)"
-  if [ "$wrapper_shadow_out" != "checkout" ]; then
-    echo "expected checkout wrapper to prefer .lake/build over sibling libexec when BEAM_HOME is unset" >&2
+  wrapper_shadow_out="$("$wrapper_shadow_root/bin/lean-beam" stats)"
+  if [ "$wrapper_shadow_out" != "installed" ]; then
+    echo "expected the wrapper to use its fixed installation companion" >&2
     printf '%s\n' "$wrapper_shadow_out" >&2
     exit 1
   fi
 
-  wrapper_override_out="$(BEAM_HOME="$wrapper_shadow_root" "$wrapper_shadow_root/scripts/lean-beam" stats)"
+  wrapper_override_out="$(BEAM_HOME="$wrapper_shadow_root/.lake/build" "$wrapper_shadow_root/bin/lean-beam" stats)"
   if [ "$wrapper_override_out" != "installed" ]; then
-    echo "expected explicit BEAM_HOME to prefer libexec in the overridden runtime" >&2
+    echo "expected ambient BEAM_HOME to leave the installation companion unchanged" >&2
     printf '%s\n' "$wrapper_override_out" >&2
     exit 1
   fi

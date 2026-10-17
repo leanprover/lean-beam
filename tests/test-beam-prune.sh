@@ -20,14 +20,8 @@ cd "$(dirname "$0")/.."
 tmp_root="$(mktemp -d /tmp/beam-prune-XXXXXX)"
 install_root="$tmp_root/install-root"
 versions_root="$install_root/versions"
-current_runtime="$versions_root/current-payload"
-old_runtime="$versions_root/old-payload"
-install_bundle_root="$install_root/state/install-bundles"
-bundle_root="$install_bundle_root/linux-test"
-current_bundle="$bundle_root/100"
-stale_bundle="$bundle_root/200"
-incomplete_bundle="$bundle_root/300"
-malformed_bundle="$bundle_root/350"
+current_runtime="$versions_root/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+old_runtime="$versions_root/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 beam_cli="$PWD/.lake/build/bin/beam-cli"
 race_pid=""
 lock_writer_pid=""
@@ -53,7 +47,16 @@ fi
 write_runtime_manifest() {
   local payload="$1"
   local path="$2"
-  "$beam_cli" install-manifest "$payload" - fixture-toolchain >"$path"
+  python3 - "$payload" "$path" <<'PYFIXTURE'
+import json,sys
+payload,path=sys.argv[1:]
+paths=['libexec/beam-cli','libexec/lean-beam-mcp','runtimes/0/daemon','runtimes/0/plugin','LICENSE']
+json.dump({'schemaVersion':4,'payloadHash':payload,'sourceCommit':None,
+ 'components':{'frontends':{'cli':paths[0],'mcp':paths[1],'compilerRevision':'a'*40},'license':'LICENSE','targets':[
+ {'lean':'/fixture/lean/bin/lean','daemon':paths[2],'plugin':paths[3], 'toolchain':'fixture-toolchain',
+ 'compilerRevision':'a'*40,'leanVersion':'fixture-lean','lakeVersion':'fixture-lake'}]},
+ 'artifacts':[{'source':p,'destination':p,'hash':'0'*64} for p in paths]},open(path,'w'))
+PYFIXTURE
 }
 
 write_lock_owner() {
@@ -72,91 +75,46 @@ assert_lock_timeout() {
 mkdir -p \
   "$current_runtime/bin" \
   "$current_runtime/libexec" \
-  "$old_runtime" \
-  "$current_bundle" \
-  "$stale_bundle" \
-  "$incomplete_bundle" \
-  "$malformed_bundle"
+  "$old_runtime/libexec"
 
 printf '%s\n' \
   'schema=1' \
   'owner=lean-beam' \
   "root=$install_root" >"$install_root/.lean-beam-install-root"
-write_runtime_manifest current-payload "$current_runtime/manifest.json"
-write_runtime_manifest old-payload "$old_runtime/manifest.json"
+write_runtime_manifest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$current_runtime/manifest.json"
+write_runtime_manifest bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$old_runtime/manifest.json"
 cp scripts/lean-beam "$current_runtime/bin/lean-beam"
 cp "$beam_cli" "$current_runtime/libexec/beam-cli"
+cp "$beam_cli" "$old_runtime/libexec/beam-cli"
+python3 - "$PWD" "$current_runtime" "$old_runtime" <<'PYLIBRARIES'
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+source = Path(sys.argv[1])
+libraries = json.loads(subprocess.check_output(
+    ['lake', 'script', 'run', 'beamSharedRuntimeFiles'], cwd=source, text=True))
+for directory in map(Path, sys.argv[2:]):
+    for library in libraries:
+        relative = Path('libexec') / Path(library).name if os.name == 'nt' else Path(library)
+        destination = directory / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / '.lake/build' / library, destination)
+PYLIBRARIES
 ln -s "$current_runtime" "$install_root/current"
 
 resolved_current_runtime="$(beam_test_realpath "$current_runtime")"
 resolved_old_runtime="$(beam_test_realpath "$old_runtime")"
-resolved_stale_bundle="$(beam_test_realpath "$stale_bundle")"
-resolved_incomplete_bundle="$(beam_test_realpath "$incomplete_bundle")"
-resolved_malformed_bundle="$(beam_test_realpath "$malformed_bundle")"
-
-current_version_out="$("$install_root/current/bin/lean-beam" --version)"
-assert_output_contains "current installed runtime identity" "$current_version_out" \
-  'runtime current: true'
-current_link_version_out="$(BEAM_HOME="$install_root/current" "$beam_cli" version)"
-assert_output_contains "current installed runtime identity through current link" \
-  "$current_link_version_out" 'runtime current: true'
-old_version_out="$(BEAM_HOME="$old_runtime" "$beam_cli" version)"
-assert_output_contains "old installed runtime identity" "$old_version_out" \
-  'runtime current: false'
-
-source_like_runtime="$tmp_root/source-like/versions/checkout"
-mkdir -p "$source_like_runtime"
-printf '%s\n' '{"payloadHash":"checkout"}' >"$source_like_runtime/manifest.json"
-source_like_version_out="$(BEAM_HOME="$source_like_runtime" "$beam_cli" version)"
-assert_output_not_contains "source-like runtime identity" "$source_like_version_out" \
-  'runtime current:'
-assert_output_contains "source-like runtime identity" "$source_like_version_out" \
-  'runtime payload: (source tree)'
-assert_output_contains "source-like runtime identity" "$source_like_version_out" \
-  'manifest: (none)'
-
-# An otherwise empty runtime source tree hashes to the FNV-1a offset basis.
-bundle_plugin_name="$(beam_shared_lib_name beam_Beam_LSP)"
-write_bundle_artifacts() {
-  local bundle_dir="$1"
-  local workspace="$bundle_dir/workspace"
-  mkdir -p "$workspace/.lake/build/bin" "$workspace/.lake/build/lib"
-  : >"$workspace/.lake/build/bin/beam-daemon"
-  : >"$workspace/.lake/build/lib/$bundle_plugin_name"
-}
-write_complete_bundle() {
-  local bundle_dir="$1"
-  local source_hash="$2"
-  local workspace="$bundle_dir/workspace"
-  write_bundle_artifacts "$bundle_dir"
-  printf '%s\n' \
-    '{' \
-    '  "schemaVersion": 2,' \
-    '  "toolchain": "fixture-toolchain",' \
-    '  "toolchainFingerprint": {' \
-    '    "leanVersion": "fixture-lean",' \
-    '    "leanPrefix": "/fixture/lean",' \
-    '    "leanLibDir": "/fixture/lean/lib",' \
-    '    "lakeVersion": "fixture-lake"' \
-    '  },' \
-    "  \"sourceHash\": \"$source_hash\"," \
-    "  \"workspace\": \"$workspace\"," \
-    '  "builtAt": "2026-08-05T00:00:00Z"' \
-    '}' >"$bundle_dir/metadata.json"
-}
-write_complete_bundle "$current_bundle" '14695981039346656037'
-write_complete_bundle "$stale_bundle" 'stale-source'
-write_bundle_artifacts "$malformed_bundle"
-printf '%s\n' '{"sourceHash":"14695981039346656037"}' >"$malformed_bundle/metadata.json"
-
-help_out="$(./scripts/lean-beam prune --help)"
-assert_output_contains "prune help" "$help_out" 'usage: lean-beam prune [--apply] [--bundles]'
+help_out="$("$beam_cli" prune --help)"
+assert_output_contains "prune help" "$help_out" 'usage: lean-beam prune [--apply]'
 assert_output_contains "prune help" "$help_out" 'remove the displayed paths'
 assert_output_contains "prune help" "$help_out" \
   'Apply removes one validated path at a time and reports each successful removal immediately.'
 
 source_wrapper_err="$tmp_root/source-wrapper.err"
-if ./scripts/lean-beam prune > /dev/null 2>"$source_wrapper_err"; then
+if "$beam_cli" prune > /dev/null 2>"$source_wrapper_err"; then
   echo "expected source-checkout prune to fail" >&2
   exit 1
 fi
@@ -167,11 +125,11 @@ if "$install_root/current/bin/lean-beam" prune --unknown > /dev/null 2>"$unknown
   echo "expected unknown prune option to fail" >&2
   exit 1
 fi
-assert_contains_literal "$unknown_err" 'usage: lean-beam prune [--apply] [--bundles]'
+assert_contains_literal "$unknown_err" 'usage: lean-beam prune [--apply]'
 assert_contains_literal "$unknown_err" 'unknown prune option: --unknown'
 
 noncurrent_err="$tmp_root/noncurrent.err"
-if BEAM_HOME="$old_runtime" "$beam_cli" prune > /dev/null 2>"$noncurrent_err"; then
+if "$old_runtime/libexec/beam-cli" prune > /dev/null 2>"$noncurrent_err"; then
   echo "expected prune from a non-current runtime to fail" >&2
   exit 1
 fi
@@ -186,28 +144,22 @@ fi
 assert_contains_literal "$current_alias_err" 'refusing to prune symlinked runtime path'
 rm -f "$versions_root/current-alias"
 
-dry_run_out="$("$install_root/current/bin/lean-beam" prune --bundles)"
+dry_run_out="$("$install_root/current/bin/lean-beam" prune)"
 assert_output_contains "prune dry run" "$dry_run_out" 'Beam install prune (dry run)'
 assert_output_contains "prune dry run" "$dry_run_out" "current runtime: $resolved_current_runtime"
 assert_output_contains "prune dry run" "$dry_run_out" "old runtime: $resolved_old_runtime"
 assert_output_contains "prune dry run" "$dry_run_out" 'old runtimes: 1'
-assert_output_contains "prune dry run" "$dry_run_out" "stale bundle: $resolved_stale_bundle"
-assert_output_contains "prune dry run" "$dry_run_out" "stale bundle: $resolved_incomplete_bundle"
-assert_output_contains "prune dry run" "$dry_run_out" "stale bundle: $resolved_malformed_bundle"
-assert_output_contains "prune dry run" "$dry_run_out" 'stale bundles: 3'
 assert_output_contains "prune dry run" "$dry_run_out" \
   'restart active agents and MCP clients before applying this cleanup'
 # shellcheck disable=SC2016
 assert_output_contains "prune dry run" "$dry_run_out" \
-  'dry run only; rerun `lean-beam prune --apply --bundles` to remove these paths'
+  'dry run only; rerun `lean-beam prune --apply` to remove these paths'
 assert_file "$old_runtime/manifest.json"
-assert_file "$current_bundle/metadata.json"
-assert_file "$stale_bundle/metadata.json"
 
 permission_lock_err="$tmp_root/permission-lock.err"
 chmod u-w "$install_root"
 set +e
-BEAM_HOME="$current_runtime" "$beam_cli" prune \
+"$current_runtime/libexec/beam-cli" prune \
   > /dev/null 2>"$permission_lock_err"
 permission_lock_status="$?"
 set -e
@@ -235,7 +187,7 @@ race_err="$tmp_root/race.err"
 lock_writer_pid="$!"
 wait_for_file "$race_lock_held" "prune install-lock holder" 10
 write_lock_owner "$race_lock" "$lock_writer_pid"
-BEAM_HOME="$current_runtime" "$beam_cli" prune --apply > /dev/null 2>"$race_err" &
+"$current_runtime/libexec/beam-cli" prune --apply > /dev/null 2>"$race_err" &
 race_pid="$!"
 sleep 0.3
 rm -f "$install_root/current"
@@ -273,103 +225,6 @@ apply_runtime_out="$("$install_root/current/bin/lean-beam" prune --apply)"
 assert_output_contains "runtime prune apply" "$apply_runtime_out" 'removed runtimes: 1'
 assert_not_exists "$old_runtime"
 assert_file "$current_runtime/manifest.json"
-assert_file "$current_bundle/metadata.json"
-assert_file "$stale_bundle/metadata.json"
-
-partial_runtime="$versions_root/partial-payload"
-mkdir "$partial_runtime"
-write_runtime_manifest partial-payload "$partial_runtime/manifest.json"
-python3 - "$partial_runtime/manifest.json" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path, encoding="utf-8") as stream:
-    manifest = json.load(stream)
-manifest["schemaVersion"] = 2
-manifest["toolchains"] = manifest.pop("createdWithToolchains")
-# Recreate the final layout that Beam actually emitted under schema 2.
-artifacts = manifest["artifacts"]
-artifacts["rootFiles"].insert(2, "lakefile.toml")
-artifacts["runtimePaths"].append(".lake/packages")
-artifacts["sourceHashInputs"] = artifacts["rootFiles"] + ["Beam/**"]
-with open(path, "w", encoding="utf-8") as stream:
-    json.dump(manifest, stream)
-    stream.write("\n")
-PY
-resolved_partial_runtime="$(beam_test_realpath "$partial_runtime")"
-
-stale_bundle_lock="$bundle_root/.locks/200"
-bundle_lock_held="$tmp_root/bundle-lock-held"
-bundle_lock_release="$tmp_root/bundle-lock-release"
-mkdir -p "$(dirname "$stale_bundle_lock")"
-python3 - "$stale_bundle_lock" "$bundle_lock_held" "$bundle_lock_release" <<'PY' &
-import fcntl
-import pathlib
-import sys
-import time
-
-lock_path, held_path, release_path = map(pathlib.Path, sys.argv[1:])
-with lock_path.open("a", encoding="utf-8") as lock_file:
-    fcntl.flock(lock_file, fcntl.LOCK_EX)
-    held_path.touch()
-    while not release_path.exists():
-        time.sleep(0.05)
-PY
-lock_writer_pid="$!"
-wait_for_file "$bundle_lock_held" "prune bundle-lock holder" 10
-bundle_lock_out="$tmp_root/bundle-lock.out"
-bundle_lock_err="$tmp_root/bundle-lock.err"
-if "$install_root/current/bin/lean-beam" prune --apply --bundles \
-    >"$bundle_lock_out" 2>"$bundle_lock_err"; then
-  echo "expected prune to respect an active bundle lock" >&2
-  exit 1
-fi
-assert_contains_literal "$bundle_lock_out" "removed runtime: $resolved_partial_runtime"
-assert_lock_timeout "$bundle_lock_err"
-assert_contains_literal "$bundle_lock_err" \
-  'prune stopped before completing the displayed plan; any removals reported above were applied'
-# shellcheck disable=SC2016
-assert_contains_literal "$bundle_lock_err" \
-  'rerun `lean-beam prune --bundles` to preview the remaining paths'
-assert_not_exists "$partial_runtime"
-touch "$bundle_lock_release"
-wait "$lock_writer_pid"
-lock_writer_pid=""
-assert_file "$stale_bundle/metadata.json"
-
-apply_bundle_out="$("$install_root/current/bin/lean-beam" prune --apply --bundles)"
-assert_output_contains "bundle prune apply" "$apply_bundle_out" 'removed runtimes: 0'
-assert_output_contains "bundle prune apply" "$apply_bundle_out" \
-  "removed stale bundle: $resolved_stale_bundle"
-assert_output_contains "bundle prune apply" "$apply_bundle_out" \
-  "removed stale bundle: $resolved_incomplete_bundle"
-assert_output_contains "bundle prune apply" "$apply_bundle_out" \
-  "removed stale bundle: $resolved_malformed_bundle"
-assert_output_contains "bundle prune apply" "$apply_bundle_out" 'removed stale bundles: 3'
-assert_file "$current_bundle/metadata.json"
-assert_not_exists "$stale_bundle"
-assert_not_exists "$incomplete_bundle"
-assert_not_exists "$malformed_bundle"
-
-owned_bundle_root="$install_root/state/owned-install-bundles"
-external_bundle_root="$tmp_root/external-install-bundles"
-external_stale_bundle="$external_bundle_root/linux-test/500"
-mkdir -p "$external_stale_bundle"
-printf '%s\n' '{"sourceHash":"stale-source"}' >"$external_stale_bundle/metadata.json"
-mv "$install_bundle_root" "$owned_bundle_root"
-ln -s "$external_bundle_root" "$install_bundle_root"
-symlinked_bundle_root_err="$tmp_root/symlinked-bundle-root.err"
-if "$install_root/current/bin/lean-beam" prune --apply --bundles \
-    > /dev/null 2>"$symlinked_bundle_root_err"; then
-  echo "expected prune to reject a symlinked installed bundle cache root" >&2
-  exit 1
-fi
-assert_contains_literal "$symlinked_bundle_root_err" \
-  'refusing to prune symlinked installed bundle cache root'
-assert_file "$external_stale_bundle/metadata.json"
-rm -f "$install_bundle_root"
-mv "$owned_bundle_root" "$install_bundle_root"
 
 mkdir "$versions_root/unmarked"
 unmarked_err="$tmp_root/unmarked.err"
@@ -399,15 +254,6 @@ with open(path, "w", encoding="utf-8") as stream:
     json.dump(manifest, stream)
     stream.write("\n")
 PY
-invalid_manifest_version_out="$(BEAM_HOME="$invalid_manifest_runtime" "$beam_cli" version)"
-assert_output_contains "invalid installed runtime identity" "$invalid_manifest_version_out" \
-  'runtime payload: invalid-payload'
-assert_output_contains "invalid installed runtime identity" "$invalid_manifest_version_out" \
-  'runtime current: false'
-assert_output_contains "invalid installed runtime identity" "$invalid_manifest_version_out" \
-  'runtime error: invalid install manifest:'
-assert_output_not_contains "invalid installed runtime identity" "$invalid_manifest_version_out" \
-  'runtime payload: (source tree)'
 invalid_manifest_err="$tmp_root/invalid-manifest.err"
 if "$install_root/current/bin/lean-beam" prune --apply > /dev/null 2>"$invalid_manifest_err"; then
   echo "expected prune to reject a runtime with an invalid manifest schema" >&2
@@ -449,34 +295,25 @@ assert_contains_literal "$symlink_runtime_err" 'refusing to prune symlinked runt
 assert_file "$external_runtime/manifest.json"
 rm -f "$versions_root/symlink-payload"
 
-external_bundle="$tmp_root/external-bundle"
-mkdir "$external_bundle"
-printf '%s\n' '{"sourceHash":"stale-source"}' >"$external_bundle/metadata.json"
-ln -s "$external_bundle" "$bundle_root/400"
-
-final_out="$("$install_root/current/bin/lean-beam" prune --bundles)"
+final_out="$("$install_root/current/bin/lean-beam" prune)"
 assert_output_contains "final prune dry run" "$final_out" 'old runtimes: 0'
-assert_output_contains "final prune dry run" "$final_out" 'stale bundles: 0'
-if [ ! -L "$bundle_root/400" ]; then
-  echo "expected symlinked bundle directory to remain untouched" >&2
+
+removed_bundles_err="$tmp_root/removed-bundles.err"
+if "$install_root/current/bin/lean-beam" prune --apply --bundles > /dev/null 2>"$removed_bundles_err"; then
+  echo "expected removed bundle-cache pruning option to fail" >&2
   exit 1
 fi
-assert_file "$external_bundle/metadata.json"
+assert_contains_literal "$removed_bundles_err" 'unknown prune option: --bundles'
+assert_file "$current_runtime/manifest.json"
 
 printf '%s\n' \
   'schema=1' \
   'owner=lean-beam' \
   'root=.' >"$install_root/.lean-beam-install-root"
-relative_marker_version_out="$(
-  cd "$install_root"
-  BEAM_HOME="$current_runtime" "$beam_cli" version
-)"
-assert_output_contains "relative install marker identity" "$relative_marker_version_out" \
-  'runtime error: invalid Beam install root marker'
 relative_marker_err="$tmp_root/relative-marker.err"
 if (
   cd "$install_root"
-  BEAM_HOME="$current_runtime" "$beam_cli" prune
+  "$current_runtime/libexec/beam-cli" prune
 ) > /dev/null 2>"$relative_marker_err"; then
   echo "expected prune to reject a relative install root marker" >&2
   exit 1

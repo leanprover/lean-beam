@@ -21,6 +21,7 @@ run_wrapper_slice() {
 
 run_wrapper_slice "probe" tests/test-beam-wrapper-probe.sh
 run_wrapper_slice "runtime" tests/test-beam-wrapper-runtime.sh
+run_wrapper_slice "toolchain selection" tests/test-beam-wrapper-toolchain.sh
 run_wrapper_slice "sync/save" tests/test-beam-wrapper-sync-save.sh
 run_wrapper_slice "handles" tests/test-beam-wrapper-handle.sh
 run_wrapper_slice "diagnostics" tests/test-beam-wrapper-diagnostics.sh

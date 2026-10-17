@@ -573,6 +573,7 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
       tracePlan := .inProcess depTrace
     }
     let request : LakeHelperWriteTraceRequest := {
+      root := "/fixture"
       oleanPath := olean.toString
       ileanPath := ilean.toString
       cPath := c.toString
@@ -617,6 +618,7 @@ private def checkTypedLakeSaveTraceFailure : IO Unit := do
     System.FilePath.mk s!"/tmp/beam-missing-lake-helper-{← IO.monoNanosNow}"
   let unusedPath := System.FilePath.mk "/tmp/beam-unused-save-artifact"
   let request : LakeHelperWriteTraceRequest := {
+    root := "/fixture"
     oleanPath := unusedPath.toString
     ileanPath := unusedPath.toString
     cPath := unusedPath.toString
@@ -630,7 +632,7 @@ private def checkTypedLakeSaveTraceFailure : IO Unit := do
     ileanPath := unusedPath
     cPath := unusedPath
     tracePath := unusedPath
-    tracePlan := .targetProcess missingHelper request.traceMetadata
+    tracePlan := .targetProcess missingHelper "/fixture" request.traceMetadata
   }
   let expected ← runLakeHelperWriteSaveTrace missingHelper request
   let actual ← writeLeanSaveTrace spec
@@ -905,33 +907,12 @@ private def checkWorkspaceRoutingFields : IO Unit := do
       !#[Op.cancel, .initWorkspace, .dropWorkspace].contains op
     require s!"{op.key} has the wrong session policy" (op.usesSession == expectedSession)
 
-  let initWithLean : Request := {
-    payload := .initWorkspace {
-      root := "/workspace"
-      lean? := some { command := "lean", plugin := "/beam/libbeam.so" }
-    }
-  }
-  let initWithLeanJson := toJson initWithLean
-  requireJsonString "typed workspace init" "leanCmd" "lean" initWithLeanJson
-  requireJsonString "typed workspace init" "leanPlugin" "/beam/libbeam.so" initWithLeanJson
-  let decodedInitWithLean ← expectOk "typed workspace init round trip" <|
-    fromJson? (α := Request) initWithLeanJson
-  require "typed workspace init should preserve its flat wire shape"
-    (toJson decodedInitWithLean == initWithLeanJson)
-
-  for (label, field, value) in #[
-      ("command-only workspace init", "leanCmd", "lean"),
-      ("plugin-only workspace init", "leanPlugin", "/beam/libbeam.so")
-    ] do
+  for (field, value) in [("leanCmd", "lean"), ("leanPlugin", "/beam/libbeam.so")] do
     match fromJson? (α := Request) <| Json.mkObj [
-        ("op", toJson "init_workspace"),
-        ("root", toJson "/workspace"),
-        (field, toJson value)
-      ] with
-    | .ok _ => throw <| IO.userError s!"{label}: partial Lean configuration decoded"
-    | .error err =>
-        require s!"{label}: error should name both coupled fields"
-          (err.contains "leanCmd" && err.contains "leanPlugin")
+        ("op", toJson "init_workspace"), ("workspaceId", toJson "fixture"),
+        ("root", toJson "/workspace"), (field, toJson value)] with
+    | .ok _ => throw <| IO.userError "wire workspace initialization accepted component selection"
+    | .error err => require "rejected component field must be named" (err.contains field)
 
   let unscopedReq := Request.stats
   require "missing workspace id remains unscoped" unscopedReq.resolvedWorkspaceId?.isNone

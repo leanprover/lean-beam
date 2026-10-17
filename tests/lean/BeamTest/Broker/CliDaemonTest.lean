@@ -9,6 +9,7 @@ import Beam.Broker.Errors
 import Beam.Cli.Args
 import Beam.Cli.Broker
 import Beam.Cli.Info
+import Beam.Cli.Installation
 import Beam.Cli.LeanOperation
 import Beam.Cli.Lock
 import Beam.Cli.RuntimeBundle
@@ -98,17 +99,15 @@ private def ensureTestControlDir (root : System.FilePath) : IO System.FilePath :
 private def checkLeanConfigLowering : IO Unit := do
   let root := System.FilePath.mk "/tmp/beam-backend-config-project"
   let daemonBin := System.FilePath.mk "/bundle/bin/beam-daemon"
-  let lean : Beam.Cli.LeanBackendConfig := {
+  let lean : Beam.Runtime.Description := {
     command := "/toolchain/bin/lean"
     plugin := "/bundle/lib/libbeam_LSP.so"
     toolchain := "leanprover/lean4:v4.33.0"
-    bundleId := "lean-bundle"
+    identity := ⟨"lean-bundle"⟩
+    daemonBin
   }
-  require "Lean-only daemon arguments should contain exactly one complete Lean backend"
-    (lean.daemonArgs ==
-      #["--lean-cmd", lean.command, "--lean-plugin", lean.plugin.toString])
   let leanOnly :=
-    lean.toWorkspaceBinding
+    Beam.Cli.RuntimeDescription.toWorkspaceBinding lean
       Beam.Cli.projectDaemonWorkspaceId root
   require "Lean-only lowering should retain the complete Lean command"
     (leanOnly.leanCmd == lean.command)
@@ -117,15 +116,20 @@ private def checkLeanConfigLowering : IO Unit := do
   require "Lean-only lowering should retain the complete Lean toolchain"
     (leanOnly.toolchain == lean.toolchain)
   require "Lean-only lowering should retain its bundle identity"
-    (leanOnly.bundleId == lean.bundleId)
+    (leanOnly.bundleId == lean.identity.generation)
   let leanOnlyDesired : Beam.Cli.DesiredConfig := {
-    root, lean, daemonBin
+    root, runtime := lean
   }
   let differentPlugin : Beam.Cli.DesiredConfig := {
-    leanOnlyDesired with lean := { lean with plugin := "/other/plugin.so" }
+    leanOnlyDesired with runtime := { lean with plugin := "/other/plugin.so" }
   }
   require "configuration hashes should distinguish backend plugins"
     (leanOnlyDesired.configHash != differentPlugin.configHash)
+  let replacement := { leanOnlyDesired with runtime := { lean with identity := ⟨"replacement"⟩ } }
+  require "generation changes at the same execution paths must invalidate session identity"
+    (replacement.configHash != leanOnlyDesired.configHash)
+  require "selector aliases do not change execution identity"
+    (lean.sameRuntime { lean with toolchain := "alias" })
 
 private def requireJsonNat (label field : String) (expected : Nat) (json : Json) : IO Unit := do
   let actual ← IO.ofExcept <| json.getObjValAs? Nat field
@@ -1355,9 +1359,12 @@ private def checkLockLifecycle : IO Unit := do
     catch _ =>
       pure ()
 
+private def sampleSharedRuntimePath : String :=
+  if System.Platform.isWindows then "bin/libfixture.dll" else "lib/lean/libfixture.so"
+
 private def writeFakeBundleArtifacts (workspace : System.FilePath) : IO Unit := do
   let paths := Beam.Cli.leanBundlePathsFor workspace
-  for path in #[paths.daemon, paths.plugin] do
+  for path in #[paths.daemon, paths.plugin, workspace / ".lake/build" / sampleSharedRuntimePath] do
     if let some parent := path.parent then
       IO.FS.createDirAll parent
     IO.FS.writeFile path "fake artifact\n"
@@ -1367,6 +1374,7 @@ private def sampleFingerprint : Beam.Cli.ToolchainFingerprint := {
   leanPrefix := "/toolchains/a"
   leanLibDir := "/toolchains/a/lib/lean"
   lakeVersion := "Lake version 5.0.0-src (Lean version 4.33.0)"
+  compilerRevision := String.ofList (List.replicate 40 'a')
 }
 
 private def sampleFingerprintB : Beam.Cli.ToolchainFingerprint := {
@@ -1508,7 +1516,8 @@ private def writeBundleMetadataFile
     (workspace : System.FilePath) : IO Unit := do
   IO.FS.writeFile
     (Beam.Cli.bundleMetadataPath bundleDir)
-    ((Beam.Cli.bundleMetadataJson toolchain sourceHash fingerprint workspace "2026-06-05T00:00:00Z").pretty ++ "\n")
+    ((Beam.Cli.bundleMetadataJson toolchain sourceHash fingerprint workspace "2026-06-05T00:00:00Z"
+      #[sampleSharedRuntimePath]).pretty ++ "\n")
 
 private def checkRuntimeBundleHelpers : IO Unit := do
   let id := Beam.Cli.bundleIdFor "leanprover/lean4:v4.33.0" sampleFingerprint "source-a" "linux-x86_64"
@@ -1542,6 +1551,7 @@ private def checkRuntimeBundleHelpers : IO Unit := do
     sampleFingerprint
     workspace
     "2026-06-05T00:00:00Z"
+    #[sampleSharedRuntimePath]
   let schemaVersion ← IO.ofExcept <| metadata.getObjValAs? Nat "schemaVersion"
   let toolchain ← IO.ofExcept <| metadata.getObjValAs? String "toolchain"
   let toolchainFingerprint ← IO.ofExcept <| metadata.getObjValAs? Beam.Cli.ToolchainFingerprint "toolchainFingerprint"
@@ -1597,6 +1607,14 @@ private def checkRuntimeBundleMetadataAcceptance : IO Unit := do
     require "bundle should accept matching artifacts and metadata"
       (← Beam.Cli.bundleReady bundleDir toolchain sourceHash sampleFingerprint)
 
+    let library := workspace / ".lake/build" / sampleSharedRuntimePath
+    IO.FS.removeFile library
+    require "bundle must reject a missing declared SDK library"
+      (!(← Beam.Cli.bundleReady bundleDir toolchain sourceHash sampleFingerprint))
+    IO.FS.writeFile library "fake artifact\n"
+    require "restoring the recorded SDK library restores cache completeness"
+      (← Beam.Cli.bundleReady bundleDir toolchain sourceHash sampleFingerprint)
+
     writeBundleMetadataFile bundleDir toolchain sourceHash sampleFingerprint (workspace / ".")
     require "bundle should accept metadata with equivalent diagnostic workspace spelling"
       (← Beam.Cli.bundleReady bundleDir toolchain sourceHash sampleFingerprint)
@@ -1645,7 +1663,44 @@ private def checkRuntimeBundleMetadataAcceptance : IO Unit := do
     catch _ =>
       pure ()
 
+private def checkSdkRuntimeAdmission : IO Unit := do
+  let layout : Beam.Cli.Toolchain.Layout := { root := "/sdk" }
+  let p : Beam.Cli.Toolchain.Provenance := {
+    schemaVersion := 3
+    sourceCommit := "beam-source"
+    buildId := "build-one"
+    payloadHash := "payload-one"
+    components := {
+      frontends := {
+        cli := "bin/lean-beam"
+        mcp := "bin/lean-beam-mcp"
+        compilerRevision := Lean.githash
+      }
+      license := "LICENSE"
+      targets := #[{
+        lean := "bin/lean", daemon := "bin/beam-daemon", plugin := "lib/beam-plugin"
+        toolchain := "SDK compiler version", compilerRevision := Lean.githash
+        leanVersion := "SDK compiler version", lakeVersion := "Lake version"
+      }]
+    }
+    artifacts := #["bin/lean-beam", "bin/lean-beam-mcp", "bin/beam-daemon", "lib/beam-plugin", "LICENSE"].map
+      fun path => { source := path, destination := path, hash := String.ofList (List.replicate 64 'a') }
+  }
+  let compiled : Beam.BuildInfo.Identity := {
+    compilerRevision := Lean.githash, sourceRevision := p.sourceCommit, buildId := p.buildId
+  }
+  let validate := Beam.Cli.Toolchain.validateProvenance (layout.home / "provenance.json") compiled Lean.githash
+  discard <| IO.ofExcept <| (validate p).mapError (·.message)
+  for invalid in [{ p with schemaVersion := 0 }, { p with payloadHash := "" },
+      { p with buildId := "replacement-build" }] do
+    require "invalid native construction record must fail" (!(validate invalid).isOk)
+  for revision in ["stale-compiler", ""] do
+    require "compiled compiler identity must be independently checked"
+      (!(Beam.Cli.Toolchain.validateProvenance (layout.home / "provenance.json")
+        { compiled with compilerRevision := revision } Lean.githash p).isOk)
+
 def main : IO Unit := do
+  checkSdkRuntimeAdmission
   checkLeanConfigLowering
   checkProjectDaemonRequestSealing
   checkClientResponsePresentation

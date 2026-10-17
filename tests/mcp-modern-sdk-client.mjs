@@ -46,8 +46,6 @@ const sdkRoot = resolve(option("--sdk-root"));
 const server = resolve(option("--server"));
 const serverCwd = resolve(option("--server-cwd"));
 const root = resolve(option("--root"));
-const leanCmd = resolve(option("--lean-cmd"));
-const leanPlugin = resolve(option("--lean-plugin"));
 const modeName = option("--mode");
 require(modeName === "auto" || modeName === "pin", `unknown negotiation mode ${modeName}`);
 
@@ -56,7 +54,7 @@ const { StdioClientTransport } = await import(sdkModule(sdkRoot, "stdio"));
 
 const transport = new StdioClientTransport({
   command: server,
-  args: ["--lean-cmd", leanCmd, "--lean-plugin", leanPlugin],
+  args: [],
   cwd: serverCwd,
   stderr: "pipe",
 });

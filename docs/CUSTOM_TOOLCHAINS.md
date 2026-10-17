@@ -1,96 +1,69 @@
-# Custom Toolchains And Runtime Bundles
+# Custom Lean targets
 
-Custom toolchains are for local Lean development workflows, especially using Beam against a Lean
-source checkout through an elan-linked toolchain such as `lean4-stage0` or `lean4-dev`.
-
-They are explicit opt-ins, not validated release targets. Canonical official RC and patch
-toolchains from lines in `compatible-lean-release-lines` do not need this opt-in. Custom admission
-accepts an explicitly named toolchain outside those policy registries, typically a linked name,
-nightly, other vendor, or other noncanonical toolchain.
+Use a custom target when developing Lean locally through an Elan link such as `lean4-stage0`
+or `lean4-dev`. Custom targets are explicit installer inputs rather than validated release targets.
+Canonical official RC and patch releases from `compatible-lean-release-lines` can use `--toolchain`.
 
 ## Install
 
-Link the local Lean build with elan, then install Beam with the same toolchain name:
+Link the complete local Lean installation, then construct Beam for it:
 
 ```bash
 elan toolchain link lean4-dev /path/to/lean/build/release/stage1
 ./scripts/install-beam.sh --custom-toolchain lean4-dev
 ```
 
-The installer records the name in the installed runtime's `custom-lean-toolchains` registry and
-prebuilds an installed bundle for it. Runtime requests accept exact validated toolchains from
-`validated-lean-toolchains`, canonical RC/patch variants from `compatible-lean-release-lines`, or
-explicit custom names from the installed custom registry. General installer locations and
-toolchain prebuild options are documented in
-[SETUP.md](SETUP.md).
+Repeat `--toolchain` or `--custom-toolchain` to construct several targets in one standalone Beam
+installation. The installer resolves each compiler installation once, builds its matching daemon
+and plugin, qualifies the plugin, and copies the complete runtime into the staged installation.
+The published manifest records the target relationships and the hashes of the installed files.
+The target set and source provenance participate in the installation generation.
+See [SETUP.md](SETUP.md) for installer locations and agent registration.
 
-## Bundle Resolution
+## Project selection
 
-When a project requests a Lean toolchain, Beam resolves helpers in this order:
+Set the project's `lean-toolchain` to the local link or an exact installed descriptor. Beam resolves
+that local context and looks for the canonical Lean executable in its own installation's recorded
+target set. An inherited `ELAN_TOOLCHAIN` does not retarget the project. A bundled Beam executable
+has only its containing Lean installation as a target; see [TOOLCHAIN_BUNDLING.md](TOOLCHAIN_BUNDLING.md).
 
-1. an installed bundle cache under the Beam install state
-2. a project-local runtime fallback under `.beam/bundles/`
-3. failure for toolchains that are neither validated, release-line-compatible, nor explicitly custom
+Normal execution never builds a missing target, searches another Beam installation, or invokes a
+candidate compiler to decide whether to reject it. Missing targets require another installer run.
+Floating channel names require an explicit local link or an exact project pin; Beam does not
+resolve them over the network or reinterpret them as the newest locally installed release.
 
-The installed bundle path avoids rebuilding inside each project. The fallback path exists so an
-accepted toolchain can still run when no matching installed bundle is available, but it may need a
-full `lake build` and network access on a cold machine.
+A workspace retains the runtime it accepted. Changing its selector to another installation rejects
+further runtime use until that workspace is dropped and recreated. Another alias for the same
+canonical Lean installation preserves the binding and its documents and handles.
 
-## Bundle Identity
+## Updating a local Lean build
 
-Bundle keys include all of these inputs:
+Treat the selected Lean installation and its matching Beam runtime as immutable during use. After
+rebuilding Lean or relinking a target, rerun the installer and restart Beam owners and MCP clients.
+Construction records the exact compiler revision and Lean/Lake descriptions, but a Git revision does
+not distinguish every local modification or compiler configuration. Runtime admission trusts the
+published installation record; it does not rehash arbitrary in-place changes on every request.
 
-- the requested toolchain name
-- the resolved Lean/Lake fingerprint for that name
-- the current platform
-- the Beam runtime source hash
+A changed target set produces another Beam generation. Switching the launcher's `current` link
+affects future processes; an existing process remains bound to its concrete installation. Replacing
+that process's own record requires a restart. The installer retains prior generations until explicit
+pruning; stop their owners and clients before removing them.
 
-The resolved fingerprint records:
+## Diagnose selection
 
-- `lean --version`
-- `lean --print-prefix`
-- `lean --print-libdir`
-- `lake --version`
+Run `lean-beam doctor` from the project. A present target reports its installation root, recorded
+target, Lean executable, daemon, plugin, and generation. An unavailable target fails with setup
+guidance without executing Elan or the candidate compiler. Session and recovery information is
+printed before installation inspection, so a broken runtime does not hide recorded owner state.
 
-This is what makes custom toolchains safe enough for local Lean development: relinking the same elan
-name to a different local build, or changing the reported Lean/Lake identity, produces a different
-bundle key instead of silently reusing stale helpers.
+## Stage0 smoke
 
-The Beam source hash includes the runtime source tree plus `lean-toolchain`, `lake-manifest.json`,
-`validated-lean-toolchains`, `compatible-lean-release-lines`, and `custom-lean-toolchains`. It
-intentionally excludes the full `.lake/packages` checkout tree.
-
-## Doctor Output
-
-Use `lean-beam doctor` from the target project when bundle resolution is unclear. For a custom
-toolchain installed correctly, the Lean doctor output should show:
-
-```text
-project toolchain admission: custom
-project toolchain validated: false
-project toolchain release line: (not applicable)
-project toolchain accepted: true
-bundle source: installed
-bundle toolchain fingerprint: ...
-```
-
-For a rejected toolchain, doctor reports the rejection without resolving the toolchain fingerprint.
-That keeps unsupported names from triggering arbitrary local elan resolution during diagnostics.
-
-## Stage0 Smoke
-
-Run the optional local stage0 check when a `lean4-stage0` elan toolchain is available:
+With an existing `lean4-stage0` link, run:
 
 ```bash
 bash tests/test-stage0-toolchain.sh
 ```
 
-Set `BEAM_STAGE0_TOOLCHAIN` to use another local toolchain name:
-
-```bash
-BEAM_STAGE0_TOOLCHAIN=lean4-dev bash tests/test-stage0-toolchain.sh
-```
-
-The smoke skips when the requested elan toolchain is unavailable. When it runs, it installs Beam
-with `--custom-toolchain`, checks that `doctor` resolves the installed bundle and reports a
-fingerprint, then starts and closes an explicit `serve` wrapper session.
+Set `BEAM_STAGE0_TOOLCHAIN=lean4-dev` to select another explicit construction target. The smoke
+skips an unavailable link. Otherwise it constructs the custom runtime, checks recorded membership,
+and starts and stops a foreground owner in an isolated installation.

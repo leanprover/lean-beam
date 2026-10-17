@@ -20,7 +20,7 @@ abbrev nullBrokerStdio : IO.Process.StdioConfig where
   stderr := .null
 
 def daemonExe : IO System.FilePath := do
-  pure <| (← IO.appPath).parent.getD (System.FilePath.mk ".") / "beam-daemon"
+  pure <| (← IO.appPath).parent.getD (System.FilePath.mk ".") / (if System.Platform.isWindows then "beam-daemon-fixture.exe" else "beam-daemon-fixture")
 
 private def testPortBase : Nat :=
   49152

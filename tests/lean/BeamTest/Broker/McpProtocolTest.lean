@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Mcp.Server
+import Beam.Mcp.Options
 import Beam.Mcp.SelfCheck
 import Beam.Mcp.Stdio
 import BeamTest.Broker.JsonAssert
@@ -523,86 +524,10 @@ private def checkWorkspaceRootValidation : IO Unit := do
     catch _ =>
       pure ()
 
-private def checkRuntimeSetupErrors : IO Unit := do
-  let missingRoot := System.FilePath.mk s!"/tmp/lean-beam-missing-mcp-root-{← IO.monoNanosNow}"
-  match ← Beam.Mcp.Runtime.mkBrokerConfig {} missingRoot with
-  | .ok _ =>
-      throw <| IO.userError "missing MCP root resolved unexpectedly"
-  | .error err =>
-      require "missing MCP root should be an invalidRequest error" (err.code == -32600)
-      require "missing MCP root setup error should name the setup boundary"
-        (err.message.startsWith s!"{Beam.Mcp.runtimeSetupErrorPrefix}:")
-      require "missing MCP root setup error should mention project root"
-        (err.message.contains "project root does not resolve")
-
-  let root := System.FilePath.mk s!"/tmp/lean-beam-mcp-runtime-test-{← IO.monoNanosNow}"
-  try
-    IO.FS.createDirAll root
-    match ← Beam.Mcp.Runtime.mkBrokerConfig {} root with
-    | .ok _ =>
-        throw <| IO.userError "MCP runtime resolved without runtime flags or beam-cli"
-    | .error err =>
-        require "missing MCP runtime should be an invalidRequest error" (err.code == -32600)
-        require "missing MCP runtime setup error should explain usable setup paths"
-          (err.message.contains Beam.Mcp.runtimeSetupGuidance)
-  finally
-    try
-      if ← root.pathExists then
-        IO.FS.removeDirAll root
-    catch _ =>
-      pure ()
-
-  let projectRoot ← Beam.resolveExistingPath (← IO.currentDir)
-  let plugin ← BeamTest.TestHarness.pluginPath
-  match ← Beam.Mcp.Runtime.mkBrokerConfig {
-      leanCmd? := some "lean"
-      leanPlugin? := some plugin.toString
-    } projectRoot with
-  | .error err =>
-      throw <| IO.userError s!"explicit MCP runtime setup failed: {err.message}"
-  | .ok config =>
-      require "explicit MCP runtime should infer its sibling target Lake helper"
-        (config.lean?.bind (·.lakeHelper?)).isSome
-
-  for (label, options) in #[
-      ("Lean command only", ({ beamCli? := some "unused", leanCmd? := some "lean" } : Beam.Mcp.LaunchOptions)),
-      ("Lean plugin only", ({ beamCli? := some "unused", leanPlugin? := some plugin.toString } : Beam.Mcp.LaunchOptions)),
-      ("beam-cli with explicit runtime", ({
-        beamCli? := some "unused"
-        leanCmd? := some "lean"
-        leanPlugin? := some plugin.toString
-      } : Beam.Mcp.LaunchOptions))
-    ] do
-    match ← Beam.Mcp.Runtime.mkBrokerConfig options projectRoot with
-    | .ok _ =>
-        throw <| IO.userError s!"{label} MCP runtime setup succeeded unexpectedly"
-    | .error err =>
-        require s!"{label} should be an invalidRequest error" (err.code == -32600)
-        require s!"{label} should reject mixed or partial runtime sources"
-          (err.message.contains "choose exactly one Lean runtime source")
-
-  let isolatedPluginDir :=
-    System.FilePath.mk s!"/tmp/lean-beam-mcp-plugin-without-helper-{← IO.monoNanosNow}"
-  try
-    IO.FS.createDirAll isolatedPluginDir
-    let isolatedPlugin := isolatedPluginDir / plugin.fileName.getD "beam-lsp-plugin"
-    IO.FS.writeFile isolatedPlugin "not loaded by this setup check\n"
-    match ← Beam.Mcp.Runtime.mkBrokerConfig {
-        leanCmd? := some "lean"
-        leanPlugin? := some isolatedPlugin.toString
-      } projectRoot with
-    | .ok _ =>
-        throw <| IO.userError "helperless explicit MCP runtime setup succeeded unexpectedly"
-    | .error err =>
-        require "helperless explicit MCP runtime should be an invalidRequest error" (err.code == -32600)
-        require "helperless explicit MCP runtime should name the target Lake helper"
-          (err.message.contains "could not locate the target Lake helper")
-  finally
-    try
-      if ← isolatedPluginDir.pathExists then
-        IO.FS.removeDirAll isolatedPluginDir
-    catch _ =>
-      pure ()
+private def checkRuntimeSelectionRejected : IO Unit := do
+  for flag in ["--beam-cli", "--lean-cmd", "--lean-plugin"] do
+    require s!"{flag} must not select components in a shipped MCP process"
+      (!(Beam.Mcp.parseOptions {} [flag, "/foreign/component"]).isOk)
 
 private def expectResponse (label : String) (value : Option Json) : IO Json := do
   match value with
@@ -1459,9 +1384,15 @@ private def requireDiagnosticSeverityForPath
       s!"expected {label} {severity} diagnostic for {path}, got {(toJson diagnostics).compress}"
 
 private def mcpOptionsWithPlugin : IO Beam.Mcp.Server.Options := do
+  let plugin ← BeamTest.TestHarness.pluginPath
   pure {
-    leanCmd? := some "lean"
-    leanPlugin? := some (← BeamTest.TestHarness.pluginPath).toString
+    resolveRuntime := fun _ _ => do return .ok {
+      command := "lean", plugin
+      daemonBin := (← IO.appPath).parent.getD "." /
+        (if System.Platform.isWindows then "beam-daemon-fixture.exe" else "beam-daemon-fixture")
+      toolchain := "library fixture", identity := ⟨"library fixture"⟩
+    }
+    admitRuntime := fun _ _ _ => pure (.ok ())
   }
 
 private def initMcpSession
@@ -1494,6 +1425,104 @@ private def callLeanSync
       []
   handleRpcRequestWithNotifications state opts notifications s!"lean_sync {path}" id "tools/call" <|
     some <| toolCallParams "lean_sync" arguments
+
+private def checkRuntimeAdmissionPolicy : IO Unit := do
+  let parent ← mkTempProjectRoot "lean-beam-mcp-admission-policy"
+  let state ← Beam.Mcp.Server.ServerState.create
+  try
+    copySaveProjectFixture (parent / "A")
+    copySaveProjectFixture (parent / "B")
+    let rootA ← Beam.resolveExistingPath (parent / "A")
+    let rootB ← Beam.resolveExistingPath (parent / "B")
+    let base ← mcpOptionsWithPlugin
+    let counts : Std.Mutex (Nat × Nat) ← Std.Mutex.new (0, 0)
+    let rejectA ← Std.Mutex.new false
+    let gate ← Std.Mutex.new (none : Option (IO.Promise Unit × IO.Promise Unit))
+    let opts : Beam.Mcp.Server.Options := { base with
+      resolveRuntime := fun context root => do
+        counts.atomically do modify fun (created, admitted) => (created + 1, admitted)
+        base.resolveRuntime context root
+      admitRuntime := fun _ root recorded => do
+        counts.atomically do modify fun (created, admitted) => (created, admitted + 1)
+        require "reuse must retain the originally accepted description"
+          (recorded.identity.generation == "library fixture")
+        if root == rootA then
+          let selected ← gate.atomically do
+            let selected : Option (IO.Promise Unit × IO.Promise Unit) ← get
+            set (none : Option (IO.Promise Unit × IO.Promise Unit))
+            pure selected
+          if let some (entered, release) := selected then
+            entered.resolve ()
+            discard <| IO.wait release.result?
+          if ← rejectA.atomically get then
+            return .error <| Beam.Mcp.RpcError.invalidRequest "fixture admission rejection"
+        pure (.ok ())
+    }
+    let notifications : Beam.Mcp.Server.NotificationSink := {}
+    initMcpSession state opts notifications
+    discard <| handleRpcRequest state opts "discovery" 2 "tools/list"
+    require "discovery must neither create nor admit a runtime" ((← counts.atomically get) == (0, 0))
+    let syncOk := fun root id => do
+      let response ← callLeanSync state opts notifications root id "SaveSmoke/B.lean"
+      let result ← requireObjVal "admission sync" "result" response
+      requireJsonBool "admission sync" "isError" false result
+    syncOk rootA 3
+    syncOk rootB 4
+    require "each new workspace resolves once" ((← counts.atomically get) == (2, 0))
+    let missingPolicy : Beam.Mcp.Server.Options := {
+      opts with admitRuntime := ({} : Beam.Mcp.Server.Options).admitRuntime
+    }
+    let missing ← callLeanSync state missingPolicy notifications rootA 13 "SaveSmoke/B.lean"
+    let missingError ← expectRpcErrorCode "reuse requires an explicit policy" (-32600) missing
+    let missingMessage ← IO.ofExcept <| (missingError.getObjValAs? String "message").mapError IO.userError
+    require "omitting admission must fail closed" (missingMessage.contains "policy is not configured")
+    rejectA.atomically <| set true
+    let rejected ← callLeanSync state opts notifications rootA 5 "SaveSmoke/B.lean"
+    discard <| expectRpcErrorCode "rejected A" (-32600) rejected
+    syncOk rootB 6
+    rejectA.atomically <| set false
+    syncOk rootA 7
+    require "reuse admits without constructing another runtime" ((← counts.atomically get) == (2, 3))
+
+    let entered : IO.Promise Unit ← IO.Promise.new
+    let release : IO.Promise Unit ← IO.Promise.new
+    gate.atomically <| set (some (entered, release))
+    let stalled ← IO.asTask (prio := Task.Priority.dedicated) <|
+      callLeanSync state opts notifications rootA 8 "SaveSmoke/B.lean"
+    let staleResponse ← try
+      let ready ← Beam.waitTaskWithTimeout entered.result? 10000
+      require "admission did not rendezvous" ready.isSome
+      let dropTask ← IO.asTask (prio := Task.Priority.dedicated) <|
+        handleRpcRequest state opts "drop during admission" 9 "tools/call" <|
+          some <| toolCallParams "lean_drop_workspace" <| withWorkspace rootA (Json.mkObj [])
+      let dropped? ← Beam.waitTaskWithTimeout dropTask 5000
+      if dropped?.isNone then
+        release.resolve ()
+        discard <| IO.wait stalled
+        discard <| IO.wait dropTask
+        throw <| IO.userError "external admission held the server-wide runtime mutex"
+      let dropped ← IO.ofExcept dropTask.get
+      let result ← requireObjVal "drop during admission" "result" dropped
+      let structured ← requireObjVal "drop during admission result" "structuredContent" result
+      requireJsonBool "drop during admission" "dropped" true structured
+      syncOk rootA 10
+      release.resolve ()
+      IO.ofExcept stalled.get
+    finally
+      release.resolve ()
+      discard <| IO.wait stalled
+    let error ← expectRpcErrorCode "recreated workspace rejects old admission" (-32600) staleResponse
+    let message ← IO.ofExcept <| (error.getObjValAs? String "message").mapError IO.userError
+    require "stale admission must explain replacement" (message.contains "replaced")
+    require "drop/recreate resolves once and never admits the old instance"
+      ((← counts.atomically get) == (3, 4))
+    discard <| handleRpcRequest state opts "discovery after recreate" 11 "tools/list"
+    discard <| handleRpcRequest state opts "drop B" 12 "tools/call" <|
+      some <| toolCallParams "lean_drop_workspace" <| withWorkspace rootB (Json.mkObj [])
+    require "drop and discovery must not resolve or admit" ((← counts.atomically get) == (3, 4))
+  finally
+    state.closeRuntime
+    if ← parent.pathExists then IO.FS.removeDirAll parent
 
 private def checkIdempotentLifecycleTools : IO Unit := do
   let root ← mkTempProjectRoot "lean-beam-mcp-idempotent-lifecycle"
@@ -1795,7 +1824,8 @@ private def runSelfCheckFixture (scenario : SelfCheckScenario) : IO IO.Process.O
   IO.Process.output {
     cmd := (← IO.appPath).toString
     args := #["--self-check-parent", scenario.cliName]
-    env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some "2000")]
+    env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some "2000"),
+      ("BEAM_TEST_SELF_CHECK_SCENARIO", some scenario.cliName)]
   }
 
 private def checkSelfCheckStderrDrain : IO Unit := do
@@ -1856,10 +1886,11 @@ private def checkSelfCheck : IO Unit := do
 def main (args : List String) : IO Unit := do
   match args with
   | ["--self-check-tests"] => return ← checkSelfCheck
-  | ["--beam-cli", scenario] => return ← selfCheckChild (← SelfCheckScenario.parse scenario)
-  | ["--self-check-parent", scenario] =>
-      let scenario ← SelfCheckScenario.parse scenario
-      return ← Beam.Mcp.SelfCheck.run { beamCli? := some scenario.cliName } "lakefile.lean"
+  | ["--runtime-admission-tests"] => return ← checkRuntimeAdmissionPolicy
+  | ["--self-check-parent", _] => return ← Beam.Mcp.SelfCheck.run "lakefile.lean"
+  | [] =>
+      if let some scenario ← IO.getEnv "BEAM_TEST_SELF_CHECK_SCENARIO" then
+        return ← selfCheckChild (← SelfCheckScenario.parse scenario)
   | _ => pure ()
   checkSelfCheck
   checkJsonHelpers
@@ -1869,9 +1900,10 @@ def main (args : List String) : IO Unit := do
   checkWorkspaceDescriptor
   checkWorkspaceRootValidation
   checkProgressProtocol
-  checkRuntimeSetupErrors
+  checkRuntimeSelectionRejected
   checkModernProtocol
   checkServerBasics
+  checkRuntimeAdmissionPolicy
   checkIdempotentLifecycleTools
   checkDiagnosticLogForwarding
 

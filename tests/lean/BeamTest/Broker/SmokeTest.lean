@@ -841,13 +841,12 @@ private def requireWorkspaceArrayListed (payload : Json) (workspaceId : String) 
 
 private def runWorkspaceLifecycleSmoke
     (endpoint : Beam.Broker.Endpoint)
-    (otherRoot plugin : System.FilePath)
-    (leanCmd : String) : IO Unit := do
+    (otherRoot _plugin : System.FilePath)
+    (_leanCmd : String) : IO Unit := do
   let workspaceId := "fixture"
   let initResp ← runClient endpoint {
     payload := .initWorkspace {
       root := otherRoot.toString
-      lean? := some { command := leanCmd, plugin := plugin.toString }
     }
     workspaceId? := some workspaceId
   }
@@ -858,7 +857,6 @@ private def runWorkspaceLifecycleSmoke
   let duplicateRoot ← runClient endpoint {
     payload := .initWorkspace {
       root := otherRoot.toString
-      lean? := some { command := leanCmd, plugin := plugin.toString }
     }
     workspaceId? := some "duplicate"
   }
@@ -895,7 +893,6 @@ private def runWorkspaceLifecycleSmoke
     payload := .initWorkspace {
       root := otherRoot.toString
       workspaceMode? := some .reset
-      lean? := some { command := leanCmd, plugin := plugin.toString }
     }
     workspaceId? := some workspaceId
   }

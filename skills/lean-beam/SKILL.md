@@ -34,14 +34,13 @@ custom toolchain prebuilds.
 
 Use `lean-beam --version` for CLI bug reports and installed runtime identity checks. Use
 `lean-beam-mcp --version` to verify which installed MCP server wrapper, server binary, runtime
-payload hash, manifest, and source commit a client command resolves. Source checkout runs also
-report git commit/branch/dirty state when available. From a live MCP session, call `beam_version`
-to report the running server process identity as structured content. Installed identities include
-`runtime_current`; if a live session reports `false` after reinstalling, restart the agent or MCP
-client so it launches the current runtime. If a newly resolved installed wrapper still reports
-`false`, the install root's `current` link is missing or broken; stop normal Beam work and reinstall.
-If an installed identity reports `runtime_error`, do not treat it as a source checkout or try to
-clean it with `lean-beam prune`. After stopping active Beam agents and MCP clients, move an invalid
+payload hash, manifest, and source commit a client command resolves. From a live MCP session, call
+`beam_version` to report the running server's retained installation identity as structured content.
+After reinstalling, restart the agent or MCP client to launch the newly selected installation.
+Changing the launcher's `current` link does not retarget a running process. If its own manifest is
+corrupted or replaced, identity reporting fails; stop normal Beam work and preserve that installation
+for inspection. Do not try to repair its manifest with `lean-beam prune`. After stopping active
+Beam agents and MCP clients, move an invalid
 manifest runtime out of `BEAM_INSTALL_ROOT/versions`, preserve it for inspection, and rerun the
 installer. For an invalid install-root marker, preserve and rename the exact `BEAM_INSTALL_ROOT` as
 a unit before reinstalling; do not recreate its ownership marker in place or delete the preserved
@@ -293,20 +292,17 @@ Use `lean-beam`, not raw JSON and not raw LSP.
   - for an exact stable alternate session location, pass the same absolute path with
     `--session-dir DIR` to the owner and every attaching command; Beam does not search alternate
     session directories
-- resolves a toolchain-keyed Lean bundle, preferring the installed beam bundle cache and
-  falling back to a project-local runtime bundle under `<root>/.beam/bundles` or `BEAM_BUNDLE_DIR`
-- fully validates exact Lean toolchains listed in `validated-lean-toolchains`, locally qualifies
-  canonical RC/patch variants from `compatible-lean-release-lines`, and accepts exact custom names
-  recorded by the installer in `custom-lean-toolchains`
+- resolves the project's exact locally available Lean target, then looks it up in the complete
+  component set recorded by the running installation; local aliases of the same installation work
+- uses only that entry's recorded compiler, daemon, and plugin; missing targets require rerunning
+  the installer with the target selected explicitly
 - gives daemon startup authority only to `lean-beam serve`; ordinary wrapper commands attach
   to its registry generation and never start a daemon implicitly
 - owns stopping and descriptor handling
-- resolves Lean with `elan which lean`
-- builds and plugin-qualifies a local fallback bundle only when no matching installed bundle exists
-  for the exact accepted toolchain fingerprint
-- fails early on toolchains that are neither validated, canonical members of a compatible release
-  line, nor explicitly custom; use `lean-beam validated-toolchains`,
-  `lean-beam compatible-release-lines`, and `lean-beam doctor` to inspect the decision
+- never invokes a foreign candidate, downloads or builds a runtime, searches providers, or borrows
+  components from another installation during normal execution
+- requires an exact local target or explicit local link for floating selectors; use `lean-beam doctor`
+  to inspect the selected installation and target membership
 - after effective Lean startup configuration changes, requires shutting down the old session and
   starting a new `lean-beam serve` owner
 - after abnormal owner/broker exit, preserves the session fence until explicit
@@ -314,7 +310,7 @@ Use `lean-beam`, not raw JSON and not raw LSP.
 - `lean-beam --root ROOT stop` requires an explicit root; `lean-beam status` and `lean-beam stats`
   may infer a unique root
 - `lean-beam prune` previews old installed runtimes; restart active agents and MCP clients before
-  any `--apply`, and add `--bundles` when stale installed bundle caches should also be removed
+  any `--apply`; construction caches are outside this runtime-maintenance command
 - wrapper commands talk to the per-project Beam daemon over localhost TCP; they are not direct in-process Lean calls
 - `lean-beam serve` prints a running-session JSON response after backend readiness and keeps the wrapper
   process alive as the session owner; an inherited pipe ties daemon lifetime to that process without

@@ -8,7 +8,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-. scripts/shared-lib.sh
 # shellcheck source=tests/lib/ci-steps.sh
 . tests/lib/ci-steps.sh
 
@@ -28,6 +27,7 @@ fi
 tmp_dir="$(mktemp -d /tmp/lean-beam-mcp-modern-sdk-XXXXXX)"
 sdk_root="$tmp_dir/sdk"
 project_root="$tmp_dir/project"
+installation_root="$tmp_dir/installation"
 npm_cache="${MCP_SDK_NPM_CACHE:-$tmp_dir/npm-cache}"
 sdk_package="${MCP_SDK_PACKAGE:-@modelcontextprotocol/client@2.0.0}"
 
@@ -53,17 +53,14 @@ run_sdk_mode() {
   local mode="$1"
   node tests/mcp-modern-sdk-client.mjs \
     --sdk-root "$sdk_root" \
-    --server "$(pwd)/.lake/build/bin/lean-beam-mcp" \
-    --server-cwd "$(pwd)" \
+    --server "$installation_root/bin/lean-beam-mcp" \
+    --server-cwd "$project_root" \
     --root "$project_root" \
-    --lean-cmd "$(command -v lean)" \
-    --lean-plugin "$(pwd)/.lake/build/lib/$(beam_shared_lib_name beam_Beam_LSP)" \
     --mode "$mode"
 }
 
-run_step "build MCP server" lake build Beam.LSP:shared beam-daemon lean-beam-mcp
+run_step "build MCP installation fixture" lake build Beam.LSP:shared beam-cli beam-daemon lean-beam-mcp beam-installation-stage-fixture
+run_step "stage MCP installation and project" python3 tests/installation_fixture.py "$installation_root" --project "$project_root"
 run_step "install official MCP TypeScript client" install_sdk
-mkdir -p "$project_root"
-rsync -a --exclude='.beam/' tests/save_olean_project/ "$project_root"/
 run_step "official SDK automatic negotiation" run_sdk_mode auto
 run_step "official SDK pinned modern negotiation" run_sdk_mode pin

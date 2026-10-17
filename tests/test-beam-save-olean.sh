@@ -10,7 +10,8 @@ cd "$(dirname "$0")/.."
 # shellcheck source=tests/lib/wait.sh
 . tests/lib/wait.sh
 
-beam_script="$PWD/scripts/lean-beam"
+: "${BEAM_TEST_INSTALLATION:?run tests/test-beam-slow.sh to construct the test installation}"
+beam_script="$BEAM_TEST_INSTALLATION/bin/lean-beam"
 lake_cmd="$(command -v lake)"
 ci_timeout_tracker="https://github.com/leanprover/lean-beam/issues/110"
 

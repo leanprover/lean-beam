@@ -8,6 +8,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Changed
 
+- Publish standalone installations with complete, qualified target runtimes and a hashed membership
+  record. Reinstallation preserves existing generation manifests instead of rewriting their provenance
+  ([#262](https://github.com/leanprover/lean-beam/pull/262), @ejgallego).
 - Workspace statistics expose `session` and `metrics` directly, and `open-files` exposes
   `session.files`. Remove the former `sessions.lean` and `byBackend.lean` wrappers.
   Stats session details no longer repeat the enclosing workspace identity and root.
@@ -29,6 +32,13 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 - Support Lean `v4.36.0-rc1` and use it as the repository's default toolchain. The pinned release
   candidate joins the exact CI and installer targets alongside stable 4.33.1, 4.34.1, and 4.35.0.
+- Build and install `lean-beam` for an explicitly selected native Lean installation, with a
+  relocatable bundled runtime, installed provenance, and session invalidation on payload changes.
+  The native distribution includes the CLI, MCP server, daemon, and LSP plugin. MCP runtime
+  observations have cancellable subprocess ownership and bounded deadlines; stalled workspace
+  admission does not hold the server-wide runtime lock
+  ([#262](https://github.com/leanprover/lean-beam/pull/262), @ejgallego).
+
 - Validated Lean `v4.35.0` final support and made it the repository's default Lean toolchain
   ([#263](https://github.com/leanprover/lean-beam/pull/263), @ejgallego).
 - Validated Lean `v4.35.0-rc4` support and made it the repository's default Lean toolchain.

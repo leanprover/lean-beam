@@ -8,8 +8,8 @@ import Lean
 import Beam.Broker.Client
 import Beam.Broker.Transport
 import Beam.Cli.DaemonConfig
+import Beam.Cli.Args
 import Beam.Cli.Lock
-import Beam.Cli.Project
 import Beam.Daemon.Debug
 import Beam.Daemon.Paths
 import Beam.Daemon.Registry
@@ -181,6 +181,15 @@ private def writePrivateFileAtomically
 private def openPrivateFileAtomically
     (dir : System.FilePath)
     (leaf stem : String) : IO IO.FS.Handle := do
+  if System.Platform.isWindows then
+    -- CRT handles cannot be renamed while open. Owner admission holds the control lock and the
+    -- parent has a private DACL; replace the old log, then create its new inode exclusively.
+    -- Retain that exact handle so later writes never reopen or follow a replaced path.
+    let path := dir / leaf
+    if ← path.pathExists then IO.FS.removeFile path
+    let handle ← IO.FS.Handle.mk path .writeNew
+    IO.setAccessRights path { user := { read := true, write := true } }
+    return handle
   let (tmp, handle) ← createPrivateTempFile dir stem
   try
     IO.FS.rename tmp (dir / leaf)
@@ -536,7 +545,7 @@ private def startDaemon
     "--config-hash", identity.configHash,
     "--session-owner-stdin",
     "--port", "0"
-  ] ++ desired.lean.daemonArgs
+  ]
   let some logDir := logPath.parent
     | throw <| IO.userError s!"Beam daemon startup log has no parent directory: {logPath}"
   let some logLeaf := logPath.fileName
@@ -545,7 +554,7 @@ private def startDaemon
   let logHandle ← openPrivateFileAtomically logDir logLeaf "beam-daemon-startup"
   let child ← IO.Process.spawn {
     toStdioConfig := daemonStdio
-    cmd := desired.daemonBin.toString
+    cmd := desired.runtime.daemonBin.toString
     args
     cwd := some desired.root
     setsid := true
@@ -657,9 +666,9 @@ private def registryEntryFor
     pid
     ownerPid := ownerPid.toNat
     port
-    workspace := desired.lean.toWorkspaceBinding projectDaemonWorkspaceId desired.root
+    workspace := RuntimeDescription.toWorkspaceBinding desired.runtime projectDaemonWorkspaceId desired.root
     configHash := identity.configHash
-    daemonBin := desired.daemonBin.toString
+    daemonBin := desired.runtime.daemonBin.toString
     startedAt := ← Beam.utcTimestamp
   }
 
@@ -677,11 +686,11 @@ private def startDaemonEntry
       match ← waitForDaemonReady started identity with
       | .ok endpoint =>
           if (← started.child.tryWait).isSome then
-            pure <| .error "Beam daemon exited immediately after reporting readiness"
+            pure <| Except.error "Beam daemon exited immediately after reporting readiness"
           else
             let entry ← registryEntryFor desired identity capability started.child.pid.toNat endpoint
-            pure (.ok entry)
-      | .error detail => pure (.error detail)
+            pure (Except.ok entry)
+      | .error detail => pure (Except.error detail)
     catch err =>
       terminateStartedDaemon started
       throw err
@@ -691,20 +700,6 @@ private def startDaemonEntry
   | .error detail =>
       terminateStartedDaemon started
       throw <| IO.userError (← daemonStartupFailure logPath detail)
-
-def desiredConfig (home root : System.FilePath) : IO DesiredConfig := do
-  unless ← hasLeanProject root do
-    throw <| IO.userError s!"could not resolve Lean Beam daemon config for {root}"
-  let toolchain ← leanToolchain root
-  let (bundle, bundleId) ← ensureToolchainBundle root home toolchain
-  ensureLeanBundleExists bundle
-  let lean : LeanBackendConfig := {
-    command := ← leanBin root
-    plugin := bundle.plugin
-    toolchain
-    bundleId
-  }
-  pure { root, lean, daemonBin := bundle.daemon }
 
 structure ProjectDaemonClient where
   endpoint : Transport.Endpoint
@@ -1185,14 +1180,15 @@ private def finishOwnedProjectDaemon
             pure ()
 
 def withProjectDaemonOwner
-    (home root : System.FilePath)
+    (resolve : System.FilePath → IO DesiredConfig)
+    (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none)
     (act : ProjectDaemonOwner → IO α) : IO α := do
   let controlDir ← controlDirFor root explicitControlDir?
   -- Establish or validate the control boundary before bundle resolution can create project-local
   -- `.beam` state for a previously unseen toolchain.
   preparePrivateControlDir controlDir
-  let desired ← desiredConfig home root
+  let desired ← resolve root
   -- Allocate all fallible owner bookkeeping before the child and registry generation exist.
   let exitCodeRef ← IO.mkRef (none : Option UInt32)
   let owned ← withProjectControl root (explicitControlDir? := some controlDir) fun control =>
@@ -1209,11 +1205,15 @@ def withProjectDaemonOwner
     finishOwnedProjectDaemon root controlDir owned exitCodeRef
 
 private def lookupProjectDaemon
+    (requirement : System.FilePath → IO String)
     (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none) : IO ProjectDaemonClient := do
   let control ← projectControl root explicitControlDir?
   match ← selectProjectControl root control with
   | .selected entry =>
+      let expected ← requirement root
+      unless entry.configHash == expected do
+        throw <| IO.userError <| configMismatchMessage root control.dir entry expected
       pure <| .ofSessionDescriptor entry control.dir
   | .absent =>
       throw <| IO.userError (missingOwnerMessage root control.dir)
@@ -1224,8 +1224,9 @@ private def lookupProjectDaemon
       throw <| IO.userError <| (RegistryBlocker.invalid problem).message root control.dir
 
 def withProjectDaemon
+    (requirement : System.FilePath → IO String)
     (root : System.FilePath)
     (act : ProjectDaemonClient → IO α)
     (explicitControlDir? : Option System.FilePath := none) : IO α := do
-  act (← lookupProjectDaemon root explicitControlDir?)
+  act (← lookupProjectDaemon requirement root explicitControlDir?)
 end Beam.Cli

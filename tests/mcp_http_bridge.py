@@ -379,8 +379,6 @@ class McpBridgeHandler(BaseHTTPRequestHandler):
 def parse_args():
     parser = argparse.ArgumentParser(description="Bridge lean-beam-mcp stdio to a local MCP Streamable HTTP endpoint.")
     parser.add_argument("--server", required=True, help="Path to lean-beam-mcp executable.")
-    parser.add_argument("--lean-cmd", default="lean")
-    parser.add_argument("--lean-plugin", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--endpoint", default="/mcp")
@@ -396,13 +394,7 @@ def parse_args():
 def main():
     args = parse_args()
     repo_root = Path.cwd()
-    command = [
-        str(Path(args.server)),
-        "--lean-cmd",
-        args.lean_cmd,
-        "--lean-plugin",
-        args.lean_plugin,
-    ]
+    command = [str(Path(args.server))]
     mcp = StdioMcpServer(
         command,
         repo_root,

@@ -15,7 +15,7 @@ usage:
 
 Runs the experimental Lean Beam MCP stdio server.
 
-The installed wrapper resolves the matching beam-cli automatically. Every
+The server uses only its installation's recorded runtimes. Every
 workspace-bound tool request supplies an explicit local workspace descriptor.
 
 --self-check starts a child MCP server and calls lean_sync on <lean-file> in the
@@ -50,84 +50,11 @@ resolve_script_path() {
 
 script_path="$(resolve_script_path)"
 script_dir="$(cd -P "$(dirname "$script_path")" && pwd)"
-beam_home_explicit=0
-if [ -n "${BEAM_HOME:-}" ]; then
-  beam_home="$BEAM_HOME"
-  beam_home_explicit=1
-else
-  beam_home="$(cd -P "$script_dir/.." && pwd)"
-fi
-
-case "${1:-}" in
-  -h|--help|help)
-    usage
-    exit 0
-    ;;
-esac
-
-show_version=0
-for arg in "$@"; do
-  if [ "$arg" = "--version" ]; then
-    show_version=1
-  fi
-done
-
-beam_cli=""
-mcp_bin=""
-if [ "$beam_home_explicit" -eq 1 ]; then
-  if [ -x "$beam_home/libexec/beam-cli" ]; then
-    beam_cli="$beam_home/libexec/beam-cli"
-  elif [ -x "$beam_home/.lake/build/bin/beam-cli" ]; then
-    beam_cli="$beam_home/.lake/build/bin/beam-cli"
-  fi
-  if [ -x "$beam_home/libexec/lean-beam-mcp" ]; then
-    mcp_bin="$beam_home/libexec/lean-beam-mcp"
-  elif [ -x "$beam_home/.lake/build/bin/lean-beam-mcp" ]; then
-    mcp_bin="$beam_home/.lake/build/bin/lean-beam-mcp"
-  fi
-else
-  if [ -x "$beam_home/.lake/build/bin/beam-cli" ]; then
-    beam_cli="$beam_home/.lake/build/bin/beam-cli"
-  elif [ -x "$beam_home/libexec/beam-cli" ]; then
-    beam_cli="$beam_home/libexec/beam-cli"
-  fi
-  if [ -x "$beam_home/.lake/build/bin/lean-beam-mcp" ]; then
-    mcp_bin="$beam_home/.lake/build/bin/lean-beam-mcp"
-  elif [ -x "$beam_home/libexec/lean-beam-mcp" ]; then
-    mcp_bin="$beam_home/libexec/lean-beam-mcp"
-  fi
-fi
-
-if [ -z "$mcp_bin" ] || [ ! -x "$mcp_bin" ]; then
-  echo "missing lean-beam-mcp executable under $beam_home" >&2
+beam_home="$(cd -P "$script_dir/.." && pwd)"
+beam_bin="$beam_home/libexec/lean-beam-mcp"
+if [ ! -x "$beam_bin" ]; then
+  echo "missing installed lean-beam-mcp at $beam_bin; run scripts/install-beam.sh" >&2
   exit 1
 fi
-
-if [ -z "${BEAM_INSTALL_BUNDLE_DIR:-}" ]; then
-  case "$beam_home" in
-    */versions/*)
-      install_root="$(cd -P "$beam_home/../.." && pwd)"
-      default_install_bundle_dir="$install_root/state/install-bundles"
-      if [ -d "$default_install_bundle_dir" ]; then
-        export BEAM_INSTALL_BUNDLE_DIR="$default_install_bundle_dir"
-      fi
-      ;;
-  esac
-fi
-export BEAM_HOME="$beam_home"
 export BEAM_WRAPPER_PATH="$script_path"
-
-if [ "$show_version" -eq 1 ]; then
-  if [ -n "$beam_cli" ] && [ -x "$beam_cli" ]; then
-    exec "$mcp_bin" --beam-cli "$beam_cli" --version
-  else
-    exec "$mcp_bin" --version
-  fi
-fi
-
-if [ -z "$beam_cli" ] || [ ! -x "$beam_cli" ]; then
-  echo "missing beam-cli executable under $beam_home" >&2
-  exit 1
-fi
-
-exec "$mcp_bin" --beam-cli "$beam_cli" "$@"
+exec "$beam_bin" "$@"

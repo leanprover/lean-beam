@@ -14,7 +14,10 @@ import tempfile
 import time
 
 REPO = Path(__file__).resolve().parent.parent
-WRAPPER = REPO / "scripts/lean-beam"
+try:
+    WRAPPER = Path(os.environ["BEAM_TEST_INSTALLATION"]) / "bin/lean-beam"
+except KeyError:
+    raise SystemExit("run tests/test-beam-slow.sh to construct the test installation") from None
 
 
 def run(root, *args, check=True):

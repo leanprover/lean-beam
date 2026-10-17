@@ -26,7 +26,7 @@ resolve_script_path() {
 
 script_path="$(resolve_script_path)"
 script_dir="$(cd -P "$(dirname "$script_path")" && pwd)"
-beam_home="${BEAM_HOME:-$(cd -P "$script_dir/.." && pwd)}"
+beam_home="$(cd -P "$script_dir/.." && pwd)"
 if [ -x "$beam_home/bin/lean-beam" ]; then
   cli_script="$beam_home/bin/lean-beam"
 else

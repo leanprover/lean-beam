@@ -12,13 +12,7 @@ def runtimeSetupErrorPrefix : String :=
   "could not set up Lean Beam MCP runtime"
 
 def runtimeSetupGuidance : String :=
-  "use the installed lean-beam-mcp wrapper, pass --beam-cli PATH, or pass both --lean-cmd CMD and --lean-plugin PATH"
-
-def projectRootSetupError (detail : String) : String :=
-  s!"project root does not resolve: {detail}"
-
-def leanPluginSetupError (detail : String) : String :=
-  s!"--lean-plugin does not resolve to a file: {detail}"
+  "install Beam for the project's exact Lean target, then start lean-beam-mcp from that installation"
 
 def runtimeSetupError (message : String) : RpcError :=
   RpcError.invalidRequest s!"{runtimeSetupErrorPrefix}: {message}"

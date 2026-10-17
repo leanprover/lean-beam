@@ -8,7 +8,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-. scripts/shared-lib.sh
 # shellcheck source=tests/lib/ci-steps.sh
 . tests/lib/ci-steps.sh
 
@@ -20,6 +19,7 @@ if ! command -v npx >/dev/null 2>&1; then
 fi
 
 tmp_dir="$(mktemp -d /tmp/lean-beam-mcp-conformance-XXXXXX)"
+installation_root="$tmp_dir/installation"
 npm_cache="${MCP_CONFORMANCE_NPM_CACHE:-$tmp_dir/npm-cache}"
 conformance_package="${MCP_CONFORMANCE_PACKAGE:-@modelcontextprotocol/conformance@0.1.16}"
 protocol_version="${MCP_CONFORMANCE_PROTOCOL_VERSION:-2025-11-25}"
@@ -74,17 +74,12 @@ stop_bridge() {
 
 start_bridge() {
   local scenario="$1"
-  local scenario_dir project_root ready_file
+  local scenario_dir ready_file
   scenario_dir="$tmp_dir/$scenario"
-  project_root="$scenario_dir/project"
   ready_file="$scenario_dir/ready.json"
   mkdir -p "$scenario_dir" || return
-  mkdir -p "$project_root"
-  rsync -a --exclude='.beam/' tests/save_olean_project/ "$project_root"/ || return
   python3 tests/mcp_http_bridge.py \
-    --server .lake/build/bin/lean-beam-mcp \
-    --lean-cmd "$(command -v lean)" \
-    --lean-plugin ".lake/build/lib/$(beam_shared_lib_name beam_Beam_LSP)" \
+    --server "$installation_root/bin/lean-beam-mcp" \
     --protocol-era "$bridge_era" \
     --ready-file "$ready_file" \
     > "$scenario_dir/bridge.stdout" \
@@ -93,7 +88,8 @@ start_bridge() {
   bridge_url="$(wait_for_ready_url "$ready_file")" || return
 }
 
-run_step "build MCP server" lake build Beam.LSP:shared beam-daemon lean-beam-mcp
+run_step "build MCP installation fixture" lake build Beam.LSP:shared beam-cli beam-daemon lean-beam-mcp beam-installation-stage-fixture
+run_step "stage MCP installation" python3 tests/installation_fixture.py "$installation_root"
 mkdir -p "$npm_cache"
 
 scenarios="${MCP_CONFORMANCE_SCENARIOS:-server-initialize ping tools-list}"

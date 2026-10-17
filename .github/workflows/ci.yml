@@ -98,9 +98,94 @@ jobs:
         if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' }}
         run: bash tests/test-beam-toolchain-compat.sh "$(head -n 1 lean-toolchain)"
 
+      - name: Native Toolchain Installation and Relocation Test
+        if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' }}
+        run: |
+          lean_prefix="$(lean --print-prefix)"
+          python3 tests/test-native-toolchain.py "$lean_prefix" --crlf
+
       - name: Beam Install Test
         if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' }}
         run: bash tests/test-beam-install.sh
+
+  native-toolchain:
+    name: native-toolchain (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(vars.BEAM_FULL_MACOS_CI == 'true' && '["ubuntu-latest","ubuntu-24.04-arm","macos-15-intel","macos-latest","windows-latest"]' || '["ubuntu-latest","ubuntu-24.04-arm","windows-latest"]') }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+
+      - name: Install elan
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Install Windows elan
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-pc-windows-msvc.zip -OutFile "$env:RUNNER_TEMP/elan.zip"
+          Expand-Archive "$env:RUNNER_TEMP/elan.zip" "$env:RUNNER_TEMP/elan"
+          & "$env:RUNNER_TEMP/elan/elan-init.exe" -y --default-toolchain none
+          "$env:USERPROFILE/.elan/bin" >> $env:GITHUB_PATH
+
+      - uses: msys2/setup-msys2@v2
+        id: native-msys2
+        if: runner.os == 'Windows'
+        with:
+          msystem: CLANG64
+          update: true
+          install: mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-lld mingw-w64-clang-x86_64-gmp mingw-w64-clang-x86_64-libuv
+
+      - name: Select Windows compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.native-msys2.outputs.msys2-location }}
+        run: '"$env:MSYS2_LOCATION/clang64/bin" >> $env:GITHUB_PATH'
+
+      - name: Qualify Windows process watchdog
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python tests/test-process-watchdog.py
+
+      - name: Build, relocate, and exercise native toolchain
+        shell: bash
+        run: |
+          lean --version
+          lean_prefix="$(python -c 'from pathlib import Path; import subprocess; print(Path(subprocess.check_output(["elan", "which", "lean"], text=True).strip()).parent.parent)')"
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            elan toolchain install leanprover/lean4:v4.33.1
+            previous_prefix="$(elan run leanprover/lean4:v4.33.1 lean --print-prefix)"
+            python tests/test-native-toolchain.py "$lean_prefix" --crlf --previous-lean-prefix "$previous_prefix"
+          else
+            python tests/test-native-toolchain.py "$lean_prefix" --crlf
+          fi
+
+      - name: Retain native runtime diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-runtime-diagnostics-${{ matrix.os }}
+          include-hidden-files: true
+          path: |
+            .native-test/**/owner.log
+            .native-test/**/postponed-owner.log
+            .native-test/**/.beam/*.log
+            .native-test/**/.beam/*.json
 
   shell-lint:
     name: shell-lint (${{ matrix.os }})

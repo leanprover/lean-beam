@@ -21,19 +21,17 @@ open Lake
 
 private def computeLakeEnv (leanCmd? : Option String) : IO Lake.Env := do
   let elan? ← Lake.findElanInstall?
-  let lean? ←
-    match leanCmd? with
-    | some leanCmd =>
-        if leanCmd.trimAscii.isEmpty then
-          pure none
-        else
-          Lake.findLeanCmdInstall? leanCmd
-    | none =>
-        pure none
   let (lean?, lake?) ←
-    match lean? with
-    | some lean => pure (some lean, some (Lake.LakeInstall.ofLean lean))
+    match leanCmd? with
+    | some command =>
+        if command.trimAscii.isEmpty then
+          throw <| IO.userError "empty selected Lean command"
+        let some lean ← Lake.findLeanCmdInstall? command
+          | throw <| IO.userError s!"could not load the selected Lean installation: {command}"
+        pure (some lean, some (Lake.LakeInstall.ofLean lean))
     | none =>
+        -- Trusted in-process library callers may use Lake's own context. Shipped applications
+        -- always provide their admitted installation command and never enter this branch.
         let (_, lean?, lake?) ← Lake.findInstall?
         pure (lean?, lake?)
   let some lean := lean?
@@ -132,16 +130,18 @@ private def leanServerLakeEnvInProcess
 def leanServerLakeEnv
     (root : FilePath)
     (leanCmd? : Option String)
-    (lakeHelper? : Option FilePath := none) : IO LeanServerLakeEnv := do
-  match lakeHelper?, leanCmd? with
-  | some helper, some leanCmd =>
-      match ← runLakeHelperServerEnv helper ({
+    (lakeHelper? : Option FilePath := none)
+    (control : LakeHelperControl := {}) : IO (Except BrokerFailure LeanServerLakeEnv) := do
+  try
+    match lakeHelper?, leanCmd? with
+    | some helper, some _ =>
+        runLakeHelperServerEnv helper ({
           root := root.toString
-          leanCmd
-        } : LakeHelperEnvRequest) with
-      | .ok serverEnv => pure serverEnv
-      | .error failure => throw <| IO.userError failure.message
-  | _, _ =>
-      leanServerLakeEnvInProcess root leanCmd?
+        } : LakeHelperEnvRequest) control
+    | _, _ =>
+        return .ok (← leanServerLakeEnvInProcess root leanCmd?)
+  catch error => pure <| .error {
+    code := .internalError, message := error.toString
+  }
 
 end Beam.Broker

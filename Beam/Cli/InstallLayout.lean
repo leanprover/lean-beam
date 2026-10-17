@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Lean
 import Beam.LSP.Lib.NativeLib
 import Beam.Path
+import Beam.Installation.Components
 
 open Lean
 
@@ -21,23 +22,15 @@ structure InstallLayout where
   deriving BEq, FromJson, ToJson
 
 def installManifestSchemaVersion : Nat :=
-  3
+  4
 
 structure InstallManifest where
   schemaVersion : Nat
   payloadHash : String
-  createdWithToolchains : List String
   sourceCommit : Option String
-  artifacts : InstallLayout
-  deriving FromJson, ToJson
-
-private structure InstallManifestV2 where
-  schemaVersion : Nat
-  payloadHash : String
-  toolchains : List String
-  sourceCommit : Option String
-  artifacts : InstallLayout
-  deriving FromJson
+  components : Beam.Installation.Components
+  artifacts : Array Beam.Installation.Artifact
+  deriving BEq, FromJson, ToJson
 
 structure InstalledRuntimeLocation where
   installRoot : System.FilePath
@@ -74,7 +67,7 @@ inductive RuntimeHomeResolution where
   | invalidInstalled (runtime : InvalidInstalledRuntime)
 
 def bundleRootFiles : List String :=
-  ["Beam.lean", "lakefile.lean", "lake-manifest.json", "lean-toolchain",
+  ["LICENSE", "Beam.lean", "lakefile.lean", "lake-manifest.json", "lean-toolchain",
     "validated-lean-toolchains", "compatible-lean-release-lines", "custom-lean-toolchains"]
 
 def bundleSourceDirs : List String :=
@@ -84,16 +77,15 @@ def bundleSourceHashInputLabels : List String :=
   bundleRootFiles ++ bundleSourceDirs.map (· ++ "/**")
 
 def installRuntimePaths : List String :=
-  ["libexec/beam-cli", "libexec/beam-daemon",
-    "libexec/lean-beam-mcp", s!"libexec/{Beam.LSP.Lib.pluginSharedLibName}"]
+  ["libexec/beam-cli", "libexec/lean-beam-mcp"]
 
 def installWrapperPaths : List String :=
   ["bin/lean-beam", "bin/lean-beam-search", "bin/lean-beam-mcp"]
 
 def installLayout : InstallLayout :=
   {
-    rootFiles := bundleRootFiles
-    sourceDirs := bundleSourceDirs
+    rootFiles := ["LICENSE"]
+    sourceDirs := []
     runtimePaths := installRuntimePaths
     wrapperPaths := installWrapperPaths
     sourceHashInputs := bundleSourceHashInputLabels
@@ -149,39 +141,15 @@ def checkInstallRootMarker
   catch _ =>
     pure <| .error .invalid
 
-private def checkInstallManifest (manifest : InstallManifest) : Except String InstallManifest := do
-  if manifest.payloadHash.isEmpty then
-    throw "install manifest payloadHash must not be empty"
-  if manifest.createdWithToolchains.isEmpty then
-    throw "install manifest createdWithToolchains must not be empty"
-  if manifest.createdWithToolchains.any (·.isEmpty) then
-    throw "install manifest createdWithToolchains entries must not be empty"
-  if manifest.artifacts != installLayout then
-    throw "install manifest artifacts do not match the current install layout"
-  pure manifest
-
 def parseInstallManifest (json : Json) : Except String InstallManifest := do
-  let schemaVersion ← json.getObjValAs? Nat "schemaVersion"
-  if schemaVersion == 2 then
-    -- Schema 2 remained unchanged while its artifact list evolved. Decode that list structurally
-    -- instead of comparing it with one historical layout: cleanup removes only the validated
-    -- direct runtime directory and never uses manifest artifact paths as deletion targets.
-    let legacy : InstallManifestV2 ← fromJson? json
-    if legacy.payloadHash.isEmpty then
-      throw "install manifest payloadHash must not be empty"
-    if legacy.toolchains.isEmpty || legacy.toolchains.any (·.isEmpty) then
-      throw "install manifest toolchains must not be empty"
-    pure {
-      schemaVersion := legacy.schemaVersion
-      payloadHash := legacy.payloadHash
-      createdWithToolchains := legacy.toolchains
-      sourceCommit := legacy.sourceCommit
-      artifacts := legacy.artifacts
-    }
-  else if schemaVersion == installManifestSchemaVersion then
-    checkInstallManifest (← fromJson? json)
-  else
-    throw s!"unsupported install manifest schemaVersion {schemaVersion}"
+  let schema ← json.getObjValAs? Nat "schemaVersion"
+  unless schema == installManifestSchemaVersion do
+    throw s!"unsupported install manifest schemaVersion {schema}"
+  let manifest : InstallManifest ← fromJson? json
+  unless Beam.Installation.hexDigest 64 manifest.payloadHash do
+    throw "install manifest payloadHash must be a SHA-256 digest"
+  manifest.components.validate manifest.artifacts
+  pure manifest
 
 def readInstallManifest (path : System.FilePath) : IO InstallManifest := do
   let json ← IO.ofExcept <| Json.parse (← IO.FS.readFile path)
@@ -264,15 +232,5 @@ def validateInstalledRuntimeForReuse (home : System.FilePath) : IO Unit := do
         s!"refusing to reuse invalid installed Beam runtime at {runtime.home}: " ++
           describeInstalledRuntimeError runtime
 
-def installManifestJson (payloadHash : String) (sourceCommit? : Option String)
-    (createdWithToolchains : List String) :
-    Json :=
-  toJson ({
-    schemaVersion := installManifestSchemaVersion
-    payloadHash
-    createdWithToolchains
-    sourceCommit := sourceCommit?
-    artifacts := installLayout
-  } : InstallManifest)
 
 end Beam.Cli

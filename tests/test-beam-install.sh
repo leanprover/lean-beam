@@ -103,18 +103,15 @@ assert_symlink_target() {
 
 assert_runtime_layout() {
   local runtime_root="$1"
-  assert_file "$runtime_root/Beam.lean"
-  assert_file "$runtime_root/Beam/Broker/Server.lean"
-  assert_file "$runtime_root/Beam/LSP/Save.lean"
-  assert_file "$runtime_root/Beam/LSP/DiagnosticsBarrier.lean"
-  assert_file "$runtime_root/validated-lean-toolchains"
-  assert_file "$runtime_root/compatible-lean-release-lines"
-  assert_file "$runtime_root/custom-lean-toolchains"
+  assert_file "$runtime_root/LICENSE"
+  for source in Beam.lean Beam lakefile.lean lake-manifest.json lean-toolchain \
+      validated-lean-toolchains compatible-lean-release-lines custom-lean-toolchains; do
+    assert_not_exists "$runtime_root/$source"
+  done
   assert_file "$runtime_root/libexec/beam-cli"
-  assert_file "$runtime_root/libexec/beam-daemon"
+  assert_not_exists "$runtime_root/libexec/beam-daemon"
   assert_not_exists "$runtime_root/libexec/beam-client"
   assert_file "$runtime_root/libexec/lean-beam-mcp"
-  assert_file "$runtime_root/libexec/$beam_lsp_plugin_shared_lib"
   assert_not_exists "$runtime_root/.lake/build"
   assert_file "$runtime_root/bin/lean-beam"
   assert_file "$runtime_root/bin/lean-beam-search"
@@ -138,60 +135,42 @@ with open(manifest_path, "r", encoding="utf-8") as f:
     manifest = json.load(f)
 layout = json.loads(os.environ["BEAM_INSTALL_LAYOUT_JSON"])
 
-if manifest.get("schemaVersion") != 3:
+if manifest.get("schemaVersion") != 4:
     raise SystemExit(f"unexpected manifest schemaVersion: {manifest.get('schemaVersion')}")
 if manifest.get("payloadHash") != expected_payload:
-    raise SystemExit(f"unexpected manifest payloadHash: {manifest.get('payloadHash')}")
-if manifest.get("createdWithToolchains") != expected_toolchains:
-    raise SystemExit(
-        f"unexpected manifest createdWithToolchains: {manifest.get('createdWithToolchains')}"
-    )
-if "toolchain" in manifest or "toolchains" in manifest:
-    raise SystemExit("manifest contains an obsolete toolchain field")
-actual_source_commit = manifest.get("sourceCommit", None)
-if expected_source_commit:
-    if actual_source_commit != expected_source_commit:
-        raise SystemExit(f"unexpected manifest sourceCommit: {actual_source_commit}")
-else:
-    if actual_source_commit is not None:
-        raise SystemExit(f"expected manifest sourceCommit to be null or absent in non-git install copy: {actual_source_commit}")
-
-artifacts = manifest.get("artifacts")
-if not isinstance(artifacts, dict):
-    raise SystemExit("manifest artifacts payload is missing")
-
-root_files = artifacts.get("rootFiles")
-source_dirs = artifacts.get("sourceDirs")
-runtime_paths = artifacts.get("runtimePaths")
-wrapper_paths = artifacts.get("wrapperPaths")
-
-expected_root_files = set(layout.get("rootFiles") or [])
-expected_source_dirs = set(layout.get("sourceDirs") or [])
-expected_runtime_paths = set(layout.get("runtimePaths") or [])
-expected_wrapper_paths = set(layout.get("wrapperPaths") or [])
-
-if set(root_files or []) != expected_root_files:
-    raise SystemExit(f"unexpected manifest rootFiles: {root_files}")
-if set(source_dirs or []) != expected_source_dirs:
-    raise SystemExit(f"unexpected manifest sourceDirs: {source_dirs}")
-if set(runtime_paths or []) != expected_runtime_paths:
-    raise SystemExit(f"unexpected manifest runtimePaths: {runtime_paths}")
-if set(wrapper_paths or []) != expected_wrapper_paths:
-    raise SystemExit(f"unexpected manifest wrapperPaths: {wrapper_paths}")
-
+    raise SystemExit("unexpected installation generation")
+if manifest.get("sourceCommit") != (expected_source_commit or None):
+    raise SystemExit("unexpected source revision")
+if any(key in manifest for key in ['createdWithToolchains','toolchains','toolchain']):
+    raise SystemExit("manifest contains an obsolete selection/provenance list")
+components = manifest['components']
+if [target['toolchain'] for target in components['targets']] != expected_toolchains:
+    raise SystemExit("manifest does not name the constructed target set")
+artifacts = manifest['artifacts']
+if not isinstance(artifacts, list):
+    raise SystemExit("missing artifact inventory")
+by_path = {entry['destination']:entry for entry in artifacts}
+if len(by_path) != len(artifacts):
+    raise SystemExit("duplicate artifact paths")
+import hashlib
 runtime_root = os.path.dirname(manifest_path)
-for rel in root_files or []:
-    path = os.path.join(runtime_root, rel)
-    if not os.path.isfile(path) or os.path.islink(path):
-        raise SystemExit(f"manifest rootFiles entry is not a regular runtime file: {path}")
-for rel in source_dirs or []:
-    path = os.path.join(runtime_root, rel)
-    if not os.path.isdir(path) or os.path.islink(path):
-        raise SystemExit(f"manifest sourceDirs entry is not a runtime directory: {path}")
-for rel in (runtime_paths or []) + (wrapper_paths or []):
-    path = os.path.join(runtime_root, rel)
-    if not os.path.isfile(path) or os.path.islink(path):
-        raise SystemExit(f"manifest executable/file entry is not a regular runtime file: {path}")
+for relative, entry in by_path.items():
+    path = os.path.join(runtime_root, relative)
+    if os.path.islink(path) or not os.path.isfile(path):
+        raise SystemExit(f"inventory file is missing or symlinked: {path}")
+    with open(path,'rb') as stream:
+        if hashlib.sha256(stream.read()).hexdigest() != entry['hash']:
+            raise SystemExit(f"wrong published file hash: {path}")
+for relative in (layout['rootFiles'] + layout['runtimePaths'] + layout['wrapperPaths']):
+    if relative not in by_path:
+        raise SystemExit(f"required artifact missing from inventory: {relative}")
+for target in components['targets']:
+    if not os.path.isabs(target['lean']):
+        raise SystemExit("standalone target compiler is not a fixed installation path")
+    for role in ['daemon','plugin']:
+        if target[role] not in by_path or not target[role].startswith('runtimes/'):
+            raise SystemExit(f"unowned target component: {target}")
+
 PY
 }
 
@@ -256,14 +235,20 @@ assert_bundle_layout() {
       echo "bundle metadata does not mention expected toolchain $expected_toolchain under $bundle_root" >&2
       exit 1
     fi
-    if ! grep -F '"schemaVersion": 2' "$found" > /dev/null; then
-      echo "bundle metadata does not include schemaVersion 2 in $found" >&2
-      exit 1
-    fi
-    if ! grep -F '"toolchainFingerprint"' "$found" > /dev/null; then
-      echo "bundle metadata does not include toolchainFingerprint in $found" >&2
-      exit 1
-    fi
+    python3 - "$found" <<'PYCACHE'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+record = json.loads(path.read_text())
+assert record['schemaVersion'] == 4, (path, record['schemaVersion'])
+assert isinstance(record['toolchainFingerprint'], dict), path
+libraries = record['sharedLibraries']
+assert isinstance(libraries, list) and libraries and len(libraries) == len(set(libraries)), path
+for library in libraries:
+    artifact = path.parent / 'workspace/.lake/build' / library
+    assert artifact.is_file() and not artifact.is_symlink(), artifact
+PYCACHE
     local workspace
     workspace="$(dirname "$found")/workspace"
     assert_file "$workspace/.lean-beam-bundle-workspace"
@@ -728,7 +713,7 @@ remove_tmp_file "$interactive_vibe_transcript"
 
 run_step "install default runtime" run_install_from_source
 expected_source_commit="$(git -C "$source_checkout" rev-parse HEAD 2>/dev/null || true)"
-install_layout_json="$(cd "$source_checkout" && ./.lake/build/bin/beam-cli install-layout)"
+install_layout_json="$(cd "$source_checkout" && ./.lake/build/bin/beam-install-runtime layout)"
 
 installed_lean_beam="$HOME/.local/bin/lean-beam"
 installed_helper="$HOME/.local/bin/lean-beam-search"
@@ -787,7 +772,6 @@ assert_output_contains "installed lean-beam --version" "$installed_lean_beam_ver
 assert_output_contains "installed lean-beam --version" "$installed_lean_beam_version" "beam cli: $installed_version_root/libexec/beam-cli"
 assert_output_contains "installed lean-beam --version" "$installed_lean_beam_version" "runtime payload: $installed_payload_id"
 assert_output_contains "installed lean-beam --version" "$installed_lean_beam_version" "manifest: $installed_version_root/manifest.json"
-assert_output_contains "installed lean-beam --version" "$installed_lean_beam_version" "runtime current: true"
 if [ -n "$expected_source_commit" ]; then
   assert_output_contains "installed lean-beam --version" "$installed_lean_beam_version" "source commit: $expected_source_commit"
 fi
@@ -799,72 +783,30 @@ assert_output_contains "installed lean-beam-mcp --version" "$installed_mcp_versi
 assert_output_contains "installed lean-beam-mcp --version" "$installed_mcp_version" "beam cli: $installed_version_root/libexec/beam-cli"
 assert_output_contains "installed lean-beam-mcp --version" "$installed_mcp_version" "runtime payload: $installed_payload_id"
 assert_output_contains "installed lean-beam-mcp --version" "$installed_mcp_version" "manifest: $installed_version_root/manifest.json"
-assert_output_contains "installed lean-beam-mcp --version" "$installed_mcp_version" "runtime current: true"
 if [ -n "$expected_source_commit" ]; then
   assert_output_contains "installed lean-beam-mcp --version" "$installed_mcp_version" "source commit: $expected_source_commit"
 fi
 
-git -C "$source_checkout" init -q
-git -C "$source_checkout" config user.name "Beam Install Test"
-git -C "$source_checkout" config user.email "beam-install-test@example.invalid"
-git -C "$source_checkout" commit --allow-empty --no-gpg-sign -q -m "test source provenance refresh"
-expected_source_commit="$(git -C "$source_checkout" rev-parse HEAD)"
-stale_source_commit="0000000000000000000000000000000000000000"
-python3 - "$installed_version_root/manifest.json" "$stale_source_commit" <<'PY'
-import json
-import sys
-
-path, stale_source_commit = sys.argv[1:]
-with open(path, encoding="utf-8") as stream:
-    manifest = json.load(stream)
-manifest["sourceCommit"] = stale_source_commit
-with open(path, "w", encoding="utf-8") as stream:
-    json.dump(manifest, stream)
-    stream.write("\n")
-PY
-run_step "refresh reused runtime provenance" run_install_from_source --toolchain "$toolchain"
+immutable_manifest="$tmp_root/immutable-manifest.json"
+cp "$installed_version_root/manifest.json" "$immutable_manifest"
+run_step "reuse complete immutable installation" run_install_from_source --toolchain "$toolchain"
+cmp "$immutable_manifest" "$installed_version_root/manifest.json"
+remove_tmp_file "$immutable_manifest"
 assert_symlink_target "$installed_runtime_root" "$installed_version_root"
 assert_version_count "$BEAM_INSTALL_ROOT/versions" 1
-BEAM_INSTALL_LAYOUT_JSON="$install_layout_json" assert_manifest_metadata \
-  "$installed_runtime_root/manifest.json" "$installed_payload_id" "$expected_source_commit" "$toolchain"
-refreshed_mcp_version="$("$installed_mcp" --version)"
-if [ -n "$expected_source_commit" ]; then
-  assert_output_contains "refreshed lean-beam-mcp --version" "$refreshed_mcp_version" \
-    "source commit: $expected_source_commit"
-fi
-assert_output_not_contains "refreshed lean-beam-mcp --version" "$refreshed_mcp_version" \
-  "source commit: $stale_source_commit"
 
-cleared_source_manifest="$tmp_root/runtime-reuse-cleared-source-manifest.json"
-"$installed_version_root/libexec/beam-cli" install-manifest-with-source-commit \
-  "$installed_version_root/manifest.json" - >"$cleared_source_manifest"
-python3 - "$installed_version_root/manifest.json" "$cleared_source_manifest" <<'PY'
-import json
-import sys
-
-installed_path, cleared_path = sys.argv[1:]
-with open(installed_path, encoding="utf-8") as stream:
-    expected = json.load(stream)
-with open(cleared_path, encoding="utf-8") as stream:
-    actual = json.load(stream)
-expected["sourceCommit"] = None
-if actual != expected:
-    raise SystemExit(f"clearing sourceCommit changed other manifest data: {actual}")
-PY
-remove_tmp_file "$cleared_source_manifest"
-
-reuse_guard_backup="$tmp_root/runtime-reuse-Beam.lean"
+reuse_guard_backup="$tmp_root/runtime-reuse-LICENSE"
 reuse_guard_err="$tmp_root/runtime-reuse.err"
-cp "$installed_version_root/Beam.lean" "$reuse_guard_backup"
-printf '\n-- corrupt installed runtime reuse fixture\n' >>"$installed_version_root/Beam.lean"
+cp "$installed_version_root/LICENSE" "$reuse_guard_backup"
+printf '\n-- corrupt installed runtime reuse fixture\n' >>"$installed_version_root/LICENSE"
 if run_install_from_source --toolchain "$toolchain" 2>"$reuse_guard_err"; then
-  mv "$reuse_guard_backup" "$installed_version_root/Beam.lean"
+  mv "$reuse_guard_backup" "$installed_version_root/LICENSE"
   echo "expected reinstall to reject a corrupted content-addressed runtime" >&2
   exit 1
 fi
-mv "$reuse_guard_backup" "$installed_version_root/Beam.lean"
+mv "$reuse_guard_backup" "$installed_version_root/LICENSE"
 assert_contains_literal "$reuse_guard_err" \
-  'refusing to reuse installed Beam runtime whose contents do not match its payload hash'
+  'installation files differ from the published inventory'
 assert_symlink_target "$installed_runtime_root" "$installed_version_root"
 assert_version_count "$BEAM_INSTALL_ROOT/versions" 1
 assert_not_exists "$BEAM_INSTALL_ROOT/.install-lock"
@@ -896,12 +838,6 @@ path = sys.argv[1]
 with open(path, encoding="utf-8") as stream:
     manifest = json.load(stream)
 manifest["schemaVersion"] = 2
-manifest["toolchains"] = manifest.pop("createdWithToolchains")
-# Recreate the final layout that Beam actually emitted under schema 2.
-artifacts = manifest["artifacts"]
-artifacts["rootFiles"].insert(2, "lakefile.toml")
-artifacts["runtimePaths"].append(".lake/packages")
-artifacts["sourceHashInputs"] = artifacts["rootFiles"] + ["Beam/**"]
 with open(path, "w", encoding="utf-8") as stream:
     json.dump(manifest, stream)
     stream.write("\n")
@@ -913,7 +849,7 @@ if run_install_from_source --toolchain "$toolchain" 2>"$reuse_legacy_manifest_er
 fi
 mv "$reuse_legacy_manifest_backup" "$installed_version_root/manifest.json"
 assert_contains_literal "$reuse_legacy_manifest_err" \
-  'refusing to reuse legacy Beam install manifest schemaVersion 2'
+  'unsupported install manifest schemaVersion 2'
 assert_symlink_target "$installed_runtime_root" "$installed_version_root"
 assert_version_count "$BEAM_INSTALL_ROOT/versions" 1
 assert_not_exists "$BEAM_INSTALL_ROOT/.install-lock"
@@ -953,12 +889,13 @@ assert_not_exists "$PI_CODING_AGENT_DIR"
 assert_not_exists "$OPENCODE_CONFIG_DIR"
 assert_bundle_layout "$BEAM_INSTALL_ROOT/state/install-bundles" "$toolchain"
 
+# Construction still protects an unmarked build workspace. Shipped execution has no
+# bundle-install command and cannot repair or extend its published component set.
 blocked_bundle_root="$tmp_root/blocked-bundles"
-BEAM_HOME="$installed_runtime_root" BEAM_INSTALL_BUNDLE_DIR="$blocked_bundle_root" \
-  "$installed_runtime_root/libexec/beam-cli" bundle-install "$toolchain" > /dev/null
+rsync -a "$BEAM_INSTALL_ROOT/state/install-bundles/" "$blocked_bundle_root/"
 blocked_bundle_metadata="$(find "$blocked_bundle_root" -name metadata.json | sort | head -n 1)"
 if [ -z "$blocked_bundle_metadata" ]; then
-  echo "expected blocked bundle setup to create metadata" >&2
+  echo "expected construction cache fixture metadata" >&2
   exit 1
 fi
 blocked_bundle_workspace="$(dirname "$blocked_bundle_metadata")/workspace"
@@ -966,16 +903,19 @@ printf 'sentinel\n' >"$blocked_bundle_workspace/user-file.txt"
 remove_tmp_file "$blocked_bundle_workspace/.lean-beam-bundle-workspace"
 remove_tmp_file "$blocked_bundle_workspace/.lake/build/lib/$beam_lsp_plugin_shared_lib"
 blocked_bundle_err="$(mktemp "$tmp_root/bundle-unmarked-workspace-XXXXXX")"
-if BEAM_HOME="$installed_runtime_root" BEAM_INSTALL_BUNDLE_DIR="$blocked_bundle_root" \
-  "$installed_runtime_root/libexec/beam-cli" bundle-install "$toolchain" > /dev/null 2>"$blocked_bundle_err"; then
-  echo "expected bundle rebuild to fail for an unmarked existing workspace" >&2
-  cat "$blocked_bundle_err" >&2
-  remove_tmp_file "$blocked_bundle_err"
+blocked_staging="$tmp_root/blocked-staging"
+mkdir "$blocked_staging"
+frontend_sdk="$(elan run "$toolchain" lean --print-prefix)"
+if "$source_checkout/.lake/build/bin/beam-install-runtime" construct "$source_checkout" \
+    "$frontend_sdk" "$blocked_staging" "$blocked_bundle_root" "${expected_source_commit:--}" "$toolchain" \
+    > /dev/null 2>"$blocked_bundle_err"; then
+  echo "expected construction to reject an unmarked existing workspace" >&2
   exit 1
 fi
 assert_contains "$blocked_bundle_err" 'refusing to remove unmarked existing bundle workspace'
 remove_tmp_file "$blocked_bundle_err"
 assert_file "$blocked_bundle_workspace/user-file.txt"
+assert_not_exists "$blocked_staging/manifest.json"
 
 run_custom_toolchain_install_test() (
   set -e
@@ -1010,7 +950,6 @@ run_custom_toolchain_install_test() (
   custom_installed_lean_beam="$custom_install_home/.local/bin/lean-beam"
   custom_installed_runtime_root="$custom_install_root/current"
   assert_runtime_layout "$custom_installed_runtime_root"
-  assert_contains_literal "$custom_installed_runtime_root/custom-lean-toolchains" "$custom_toolchain"
   assert_version_count "$custom_install_root/versions" 1
   custom_installed_version_root="$(beam_test_realpath "$custom_installed_runtime_root")"
   custom_installed_payload_id="$(basename "$custom_installed_version_root")"
@@ -1025,12 +964,9 @@ run_custom_toolchain_install_test() (
   rsync -a --exclude='.beam/' tests/save_olean_project/ "$custom_project_root"/
   printf '%s\n' "$custom_toolchain" > "$custom_project_root/lean-toolchain"
   custom_doctor_out="$(ELAN_HOME="$custom_elan_home" "$custom_installed_lean_beam" --root "$custom_project_root" doctor)"
-  assert_doctor_contains "custom toolchain" "$custom_doctor_out" 'project toolchain admission: custom'
-  assert_doctor_contains "custom toolchain" "$custom_doctor_out" 'project toolchain validated: false'
-  assert_doctor_contains "custom toolchain" "$custom_doctor_out" 'project toolchain release line: (not applicable)'
-  assert_doctor_contains "custom toolchain" "$custom_doctor_out" 'project toolchain accepted: true'
-  assert_doctor_contains "custom toolchain" "$custom_doctor_out" 'bundle source: installed'
-  assert_doctor_contains "custom toolchain" "$custom_doctor_out" 'bundle toolchain fingerprint: '
+  assert_doctor_contains "custom toolchain" "$custom_doctor_out" "project target: $custom_toolchain"
+  assert_doctor_contains "custom toolchain" "$custom_doctor_out" 'target membership: present'
+  assert_doctor_contains "custom toolchain" "$custom_doctor_out" "installation root: $custom_installed_version_root"
   custom_owner_err="$custom_project_root/custom-owner.err"
   ELAN_HOME="$custom_elan_home" "$custom_installed_lean_beam" --root "$custom_project_root" serve \
     > /dev/null 2>"$custom_owner_err" &
@@ -1057,8 +993,14 @@ run_step "release install temp trees before all-validated" release_pre_all_valid
 
 run_step "prebuild all validated bundles" run_install_from_source --all-validated
 
-assert_version_count "$BEAM_INSTALL_ROOT/versions" 1
-BEAM_INSTALL_LAYOUT_JSON="$install_layout_json" assert_manifest_metadata "$installed_runtime_root/manifest.json" "$installed_payload_id" "$expected_source_commit" "$toolchain"
+assert_version_count "$BEAM_INSTALL_ROOT/versions" 2
+all_targets_root="$(beam_test_realpath "$installed_runtime_root")"
+all_targets_payload="$(basename "$all_targets_root")"
+if [ "$all_targets_root" = "$installed_version_root" ]; then
+  echo "expected a changed target set to publish another generation" >&2
+  exit 1
+fi
+BEAM_INSTALL_LAYOUT_JSON="$install_layout_json" assert_manifest_metadata "$installed_runtime_root/manifest.json" "$all_targets_payload" "$expected_source_commit" ${validated_toolchains[@]+"${validated_toolchains[@]}"}
 assert_bundle_layout "$BEAM_INSTALL_ROOT/state/install-bundles" ${validated_toolchains[@]+"${validated_toolchains[@]}"}
 
 rocq_no_target_err="$(mktemp "$tmp_root/rocq-skill-no-target-XXXXXX")"
@@ -1085,7 +1027,7 @@ for skills_home in "$CODEX_HOME/skills" "$CLAUDE_HOME/skills" "$PI_CODING_AGENT_
   assert_file "$skills_home/lean-beam/.lean-beam-skill"
   assert_not_exists "$skills_home/rocq-beam"
 done
-assert_version_count "$BEAM_INSTALL_ROOT/versions" 1
+assert_version_count "$BEAM_INSTALL_ROOT/versions" 2
 BEAM_INSTALL_LAYOUT_JSON="$install_layout_json" assert_manifest_metadata "$installed_runtime_root/manifest.json" "$installed_payload_id" "$expected_source_commit" "$toolchain"
 
 mcp_stub_bin="$tmp_root/mcp-stubs"
@@ -1411,6 +1353,10 @@ remove_tmp_file "$blocked_skill_err"
 assert_file "$blocked_codex_home/skills/lean-beam/custom.txt"
 assert_not_exists "$blocked_codex_home/skills/rocq-beam"
 
+run_step "select complete installation for external project" run_install_from_source --all-validated
+assert_symlink_target "$installed_runtime_root" "$all_targets_root"
+assert_file "$installed_version_root/manifest.json"
+
 remove_tmp_tree "$source_checkout"
 
 project_root="$tmp_root/external-project"
@@ -1421,64 +1367,20 @@ if [ -z "$project_toolchain" ]; then
   exit 1
 fi
 
-validated_out="$("$installed_lean_beam" validated-toolchains)"
-if ! printf '%s\n' "$validated_out" | grep -qx "$toolchain"; then
-  echo "expected validated-toolchains to include the pinned repo toolchain" >&2
-  printf '%s\n' "$validated_out" >&2
-  exit 1
-fi
-
-compatible_lines_out="$("$installed_lean_beam" compatible-release-lines)"
-if ! printf '%s\n' "$compatible_lines_out" | grep -qx 'leanprover/lean4:v4.33'; then
-  echo "expected compatible-release-lines to include Lean 4.33" >&2
-  printf '%s\n' "$compatible_lines_out" >&2
-  exit 1
-fi
-
 doctor_out="$("$installed_lean_beam" --root "$project_root" doctor)"
-assert_doctor_contains "installed wrapper" "$doctor_out" 'project toolchain admission: validated'
-assert_doctor_contains "installed wrapper" "$doctor_out" 'project toolchain validated: true'
-assert_doctor_contains "installed wrapper" "$doctor_out" 'project toolchain release line: (not applicable)'
-assert_doctor_contains "installed wrapper" "$doctor_out" 'validated toolchains registry: '
-assert_doctor_contains "installed wrapper" "$doctor_out" 'compatible release lines registry: '
-assert_doctor_contains "installed wrapper" "$doctor_out" 'bundle source inputs: '
-assert_doctor_contains "installed wrapper" "$doctor_out" 'bundle key inputs: toolchain, toolchain fingerprint, platform, source hash'
-assert_doctor_contains "installed wrapper" "$doctor_out" 'bundle toolchain fingerprint: '
-assert_doctor_contains "installed wrapper" "$doctor_out" 'validated-lean-toolchains'
-assert_doctor_contains "installed wrapper" "$doctor_out" 'compatible-lean-release-lines'
-assert_doctor_contains "installed wrapper" "$doctor_out" 'custom-lean-toolchains'
+assert_doctor_contains "installed wrapper" "$doctor_out" "project target: $project_toolchain"
+assert_doctor_contains "installed wrapper" "$doctor_out" 'target membership: present'
+assert_doctor_contains "installed wrapper" "$doctor_out" "installation root: $all_targets_root"
 assert_doctor_not_contains "installed wrapper" "$doctor_out" '.lake/packages'
-assert_doctor_contains "installed wrapper" "$doctor_out" 'bundle source: installed'
-assert_doctor_contains "installed wrapper" "$doctor_out" 'bundle ready: true'
-
-mcp_config_json="$(BEAM_HOME="$installed_runtime_root" "$installed_runtime_root/libexec/beam-cli" --root "$project_root" mcp-config)"
-MCP_CONFIG_JSON="$mcp_config_json" EXPECTED_TOOLCHAIN="$project_toolchain" python3 - <<'PY'
-import json
-import os
-import sys
-from pathlib import Path
-
-payload = json.loads(os.environ["MCP_CONFIG_JSON"])
-expected_toolchain = os.environ["EXPECTED_TOOLCHAIN"]
-lean_cmd = payload.get("lean_cmd")
-lean_plugin = payload.get("lean_plugin")
-lean_lake_helper = payload.get("lean_lake_helper")
-if not isinstance(lean_cmd, str) or not lean_cmd:
-    print(f"mcp-config did not return a lean_cmd: {payload}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(lean_plugin, str) or not Path(lean_plugin).is_file():
-    print(f"mcp-config did not return an existing lean_plugin: {payload}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(lean_lake_helper, str) or not Path(lean_lake_helper).is_file():
-    print(f"mcp-config did not return an existing lean_lake_helper: {payload}", file=sys.stderr)
-    sys.exit(1)
-if payload.get("toolchain") != expected_toolchain:
-    print(f"mcp-config returned unexpected toolchain: {payload}", file=sys.stderr)
-    sys.exit(1)
-if not isinstance(payload.get("bundle_id"), str) or not payload["bundle_id"]:
-    print(f"mcp-config did not return a bundle_id: {payload}", file=sys.stderr)
-    sys.exit(1)
-PY
+for removed_command in bundle-install mcp-config validated-toolchains compatible-release-lines; do
+  removed_command_err="$tmp_root/removed-$removed_command.err"
+  if "$installed_lean_beam" --root "$project_root" "$removed_command" \
+      > /dev/null 2>"$removed_command_err"; then
+    echo "expected shipped $removed_command construction/provider command to be absent" >&2
+    exit 1
+  fi
+  remove_tmp_file "$removed_command_err"
+done
 
 mcp_smoke_out="$(mktemp "$tmp_root/install-mcp-smoke-out-XXXXXX")"
 mcp_smoke_err="$(mktemp "$tmp_root/install-mcp-smoke-err-XXXXXX")"
@@ -1516,58 +1418,64 @@ if [ -d "$project_root/.beam" ]; then
   fi
 fi
 
-unsupported_project_root="$tmp_root/external-project-unsupported"
-rsync -a --exclude='.beam/' tests/save_olean_project/ "$unsupported_project_root"/
-printf 'leanprover/lean4:v4.32.0-rc1\n' > "$unsupported_project_root/lean-toolchain"
+unavailable_project_root="$tmp_root/external-project-unavailable"
+rsync -a --exclude='.beam/' tests/save_olean_project/ "$unavailable_project_root"/
+unavailable_target="beam-test-unavailable-$(basename "$tmp_root")"
+printf '%s\n' "$unavailable_target" > "$unavailable_project_root/lean-toolchain"
+unavailable_shim="$tmp_root/unavailable-selector-bin"
+unavailable_probe_log="$tmp_root/unavailable-selector-probes"
+mkdir "$unavailable_shim"
+cat > "$unavailable_shim/elan" <<'SHPROBE'
+#!/bin/sh
+printf 'invoked\n' >> "$BEAM_TEST_ELAN_LOG"
+exit 99
+SHPROBE
+chmod +x "$unavailable_shim/elan"
 
-unsupported_doctor_out="$("$installed_lean_beam" --root "$unsupported_project_root" doctor)"
-if ! printf '%s\n' "$unsupported_doctor_out" | grep -q 'project toolchain admission: unsupported'; then
-  echo "expected doctor to report unsupported toolchains explicitly" >&2
-  printf '%s\n' "$unsupported_doctor_out" >&2
+unavailable_doctor_err="$tmp_root/unavailable-target-doctor.err"
+if env PATH="$unavailable_shim:$PATH" BEAM_TEST_ELAN_LOG="$unavailable_probe_log" \
+    "$installed_lean_beam" --root "$unavailable_project_root" doctor \
+    > /dev/null 2>"$unavailable_doctor_err"; then
+  echo "expected unavailable target lookup to fail" >&2
   exit 1
 fi
-if ! printf '%s\n' "$unsupported_doctor_out" | grep -q 'project toolchain accepted: false'; then
-  echo "expected doctor to reject unsupported toolchains explicitly" >&2
-  printf '%s\n' "$unsupported_doctor_out" >&2
-  exit 1
-fi
-if ! printf '%s\n' "$unsupported_doctor_out" | grep -q 'bundle toolchain fingerprint: (not resolved for rejected toolchain)'; then
-  echo "expected doctor not to fingerprint unsupported toolchains" >&2
-  printf '%s\n' "$unsupported_doctor_out" >&2
-  exit 1
-fi
+assert_contains_literal "$unavailable_doctor_err" "$unavailable_target"
+assert_contains_literal "$unavailable_doctor_err" 'unavailable locally'
+remove_tmp_file "$unavailable_doctor_err"
 
-unsupported_err="$(mktemp "$tmp_root/install-unsupported-toolchain-XXXXXX")"
-"$installed_lean_beam" --root "$unsupported_project_root" serve >"$unsupported_err" 2>&1 &
-unsupported_owner_pid="$!"
-if ! wait_for_exit "$unsupported_owner_pid" "unsupported-toolchain session owner" 120 0.1; then
-  kill -INT "$unsupported_owner_pid" 2>/dev/null || true
-  wait "$unsupported_owner_pid" 2>/dev/null || true
-  echo "expected installed wrapper owner admission to reject an unsupported toolchain promptly" >&2
-  cat "$unsupported_err" >&2
-  remove_tmp_file "$unsupported_err"
+unavailable_err="$(mktemp "$tmp_root/install-unavailable-target-XXXXXX")"
+env PATH="$unavailable_shim:$PATH" BEAM_TEST_ELAN_LOG="$unavailable_probe_log" \
+  "$installed_lean_beam" --root "$unavailable_project_root" serve >"$unavailable_err" 2>&1 &
+unavailable_owner_pid="$!"
+if ! wait_for_exit "$unavailable_owner_pid" "unavailable-target session owner" 120 0.1; then
+  kill -INT "$unavailable_owner_pid" 2>/dev/null || true
+  wait "$unavailable_owner_pid" 2>/dev/null || true
+  echo "expected installed wrapper owner admission to reject an unavailable target promptly" >&2
+  cat "$unavailable_err" >&2
+  remove_tmp_file "$unavailable_err"
   exit 1
 fi
-if wait "$unsupported_owner_pid"; then
-  echo "expected installed wrapper owner admission to reject an unsupported toolchain" >&2
-  cat "$unsupported_err" >&2
-  remove_tmp_file "$unsupported_err"
+if wait "$unavailable_owner_pid"; then
+  echo "expected installed wrapper owner admission to reject an unavailable target" >&2
+  cat "$unavailable_err" >&2
+  remove_tmp_file "$unavailable_err"
   exit 1
 fi
-if ! grep -q 'unsupported Lean toolchain: leanprover/lean4:v4.32.0-rc1' "$unsupported_err"; then
-  echo "expected unsupported toolchain failure to name the rejected toolchain" >&2
-  cat "$unsupported_err" >&2
-  remove_tmp_file "$unsupported_err"
+if ! grep -q "$unavailable_target" "$unavailable_err"; then
+  echo "expected unavailable target failure to name the rejected toolchain" >&2
+  cat "$unavailable_err" >&2
+  remove_tmp_file "$unavailable_err"
   exit 1
 fi
 # shellcheck disable=SC2016
-if ! grep -q 'run `lean-beam validated-toolchains` to list the validated toolchains' "$unsupported_err"; then
-  echo "expected unsupported toolchain failure to advertise the support registry command" >&2
-  cat "$unsupported_err" >&2
-  remove_tmp_file "$unsupported_err"
+if ! grep -q 'install or link its exact Lean installation' "$unavailable_err"; then
+  echo "expected unavailable target failure to explain explicit target setup" >&2
+  cat "$unavailable_err" >&2
+  remove_tmp_file "$unavailable_err"
   exit 1
 fi
-remove_tmp_file "$unsupported_err"
+remove_tmp_file "$unavailable_err"
+assert_not_exists "$unavailable_probe_log"
 
 (
   cd "$project_root"

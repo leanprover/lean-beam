@@ -6,14 +6,14 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Cli.Args
 import Beam.Cli.Commands
-import Beam.Cli.Project
+import Beam.Cli.Installation
 
 namespace Beam.Cli
 
 def main (args : List String) : IO Unit := do
-  let home ← beamHome
+  let installation ← Installation.current
   let opts ← parseCliOptions {} args
-  runCommand home opts
+  runCommand installation opts
 
 end Beam.Cli
 

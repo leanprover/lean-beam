@@ -44,9 +44,11 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 - compact `fileProgress` reporting on slow Lean wrapper calls when matching LSP progress
   notifications were observed while the request was pending
 - explicit support for installed custom elan-linked Lean toolchains through
-  `--custom-toolchain <toolchain>`, recorded in the runtime's `custom-lean-toolchains` registry
+  `--custom-toolchain <toolchain>`, recorded as constructed members of the installation
 - conservative installed-state maintenance through `lean-beam prune`, with a dry run by default,
-  ownership and manifest validation, and optional stale installed bundle-cache cleanup
+  ownership and manifest validation
+- a [native build/install interface for Lean distributors](TOOLCHAIN_BUNDLING.md), using one selected
+  Lean installation and its bundled Beam artifacts without standalone runtime caches
 
 ### MCP And Agent Integration
 
@@ -56,9 +58,8 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 - MCP implementation backed directly by the broker runtime rather than by a second daemon/client
   connection
 - bug-report identity surfaces: `lean-beam --version`, `lean-beam-mcp --version`, and MCP
-  `beam_version` for the running server process, including manifest commit or source checkout
-  commit/branch/dirty data, installed `runtime_current` status, and structural `runtime_error`
-  reporting for invalid owned markers or manifests
+  `beam_version` for the running server process, including its manifest source revision and retained generation; malformed or replaced records
+  fail identity reporting while discovery and cleanup remain available
 - feedback report-card surfaces: `lean-beam feedback-report` and MCP `beam_feedback_report` return
   structured JSON containing pasteable Markdown, metadata, collection warnings, and optional
   evidence bundle paths without uploading or submitting feedback; CLI output and MCP
@@ -170,19 +171,16 @@ client protocol.
 - The installer prebuilds the pinned validated toolchain by default and can prebuild additional
   validated, release-line-compatible, or explicitly custom toolchains; setup flags and offline notes live in
   [SETUP.md](SETUP.md).
-- Runtime requests first try that installed bundle cache, then fall back to a project-local
-  runtime bundle under `.beam/bundles/` for validated, release-line-compatible, or explicitly custom
-  toolchains.
-- Toolchains outside the validated exact list and compatible canonical release lines that are not
-  explicitly custom fail early instead of attempting an opportunistic build.
-- Bundle rebuild keys intentionally exclude the full `.lake/packages` checkout tree and instead use
-  the resolved toolchain fingerprint, the runtime source tree, `lean-toolchain`,
-  `lake-manifest.json`, `validated-lean-toolchains`, `compatible-lean-release-lines`, and
-  `custom-lean-toolchains`. See
-  [CUSTOM_TOOLCHAINS.md](CUSTOM_TOOLCHAINS.md) for the custom toolchain and runtime-bundle model.
-- The first use of an accepted but not-yet-prebuilt toolchain must still build and qualify a matching
-  local fallback bundle.
-- On a cold machine, that local fallback build may need network access to fetch dependencies.
+- Runtime requests select only complete entries in their concrete installation's recorded target
+  set. Missing targets fail with installer guidance, without candidate execution, runtime builds,
+  downloads, or provider search.
+- Local aliases normalize to canonical Lean executables. Unlinked floating selectors require an
+  exact project pin or explicit local link; admission performs no remote resolution.
+- Construction caches remain separate from the copied installed runtimes. Normal execution does
+  not read them. Reinstalling a changed target set publishes another immutable generation.
+- Workspace reuse readmits local selection and compares its retained runtime. A change requires
+  dropping and recreating the workspace; an old process cannot adopt a replacement installation
+  record. See [CUSTOM_TOOLCHAINS.md](CUSTOM_TOOLCHAINS.md).
 
 ### Runtime And Sandbox Behavior
 

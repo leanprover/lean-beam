@@ -1,5 +1,7 @@
 # Setup
 
+Lean release builders can use the separate [native toolchain build/install interface](TOOLCHAIN_BUNDLING.md).
+
 Use this document as the single path from a Lean Beam checkout to a working `lean-beam` command.
 It covers installation, validated and compatible Lean toolchains, first CLI use, MCP registration,
 installer locations, and offline setup notes.
@@ -72,24 +74,15 @@ macOS matrix. Installer tests prebuild every validated toolchain in either mode.
 That list contains the latest stable point release in each stable line (4.33.1, 4.34.1, and
 4.35.0), plus the pinned 4.36.0-rc1 until 4.36 has a stable release. Other RCs and superseded
 stable points use local qualification.
-The wrapper reports that validated allowlist with:
-
-```bash
-lean-beam validated-toolchains
-```
+The repository file is the installer's validated allowlist, rather than a runtime-selection policy.
 
 [`compatible-lean-release-lines`](../compatible-lean-release-lines) lists canonical Lean release
-lines whose other patch and release-candidate toolchains Beam may build and qualify locally. Inspect
-those lines after install with:
-
-```bash
-lean-beam compatible-release-lines
-```
+lines whose other patch and release-candidate toolchains the installer may build and qualify locally.
 
 For example, a `leanprover/lean4:v4.33` entry admits canonical immutable names such as
 `leanprover/lean4:v4.33.0-rc1` and `leanprover/lean4:v4.33.2`. It does not admit nightlies, mutable
 aliases, linked toolchains, other vendors, or malformed version spellings. Release-line admission is
-not the same claim as exact CI validation: Beam builds a bundle for the exact resolved toolchain
+not the same claim as exact CI validation: the installer builds a bundle for the exact resolved toolchain
 fingerprint and loads the resulting plugin in a small Lean elaboration probe before marking that
 bundle ready.
 
@@ -115,14 +108,14 @@ elan toolchain link lean4-dev /path/to/lean/build/release/stage1
 ./scripts/install-beam.sh --custom-toolchain lean4-dev
 ```
 
-Custom toolchains are not validated release targets. Beam records exact custom names in the
-installed runtime's `custom-lean-toolchains` registry and includes the resolved Lean/Lake identity
-in bundle keys, so relinking a local toolchain creates a different bundle rather than reusing stale
-helpers. See [CUSTOM_TOOLCHAINS.md](CUSTOM_TOOLCHAINS.md) for the full model.
+Custom toolchains are not validated release targets. The installer records each selected Lean
+installation and its qualified matching runtime in the published component set. After rebuilding
+Lean or relinking a local toolchain, rerun the installer and restart its Beam clients.
+See [CUSTOM_TOOLCHAINS.md](CUSTOM_TOOLCHAINS.md) for the full model.
 
-If a validated, release-line-compatible, or explicitly custom target toolchain was not prebuilt,
-first use can still build and qualify a project-local fallback bundle under that project's Beam
-state. On a cold machine, that fallback may need network access to fetch dependencies.
+Normal execution can use only those constructed targets. If a project's target is unavailable,
+rerun the installer with that target explicitly selected. Beam does not build missing runtimes in
+projects, search other providers, or download a target during admission.
 
 If you are unsure which runtime bundle is active or why a toolchain is rejected, use:
 
@@ -135,13 +128,12 @@ lean-beam doctor
 The installer publishes each distinct content payload as an immutable runtime payload under
 `BEAM_INSTALL_ROOT/versions`. Reinstalling an identical payload reuses its existing runtime only
 after validating its ownership marker, manifest, required files, executable commands, and payload
-contents. The schema-3 manifest field `createdWithToolchains` records the toolchain selection that
-first created that immutable payload. On reuse, the installer refreshes only the manifest's
-`sourceCommit` to the current source checkout commit, or clears it when no commit is available;
-`createdWithToolchains` remains unchanged. Later prebuilds add mutable bundle-cache entries without
-changing the runtime payload. Beam keeps prior distinct runtimes so publishing `current` stays
-atomic, but those snapshots are not removed automatically. Schema-2 manifests are readable only
-for identity and cleanup; reinstalling never republishes a schema-2 runtime. Preview old state with:
+contents. The schema-4 manifest records fixed companions and the complete constructed target set.
+Its generation includes that membership and source provenance. Reuse preserves the manifest byte
+for byte; a different target set or provenance produces another generation. Qualified target
+executables and plugins live inside that version under `runtimes/`. Prior distinct versions remain
+available when `current` changes and are not removed automatically. Earlier installation manifests
+require reinstallation before they can establish current component membership. Preview old state with:
 
 ```bash
 lean-beam prune
@@ -155,46 +147,28 @@ Apply the displayed runtime cleanup with:
 lean-beam prune --apply
 ```
 
-Installed bundle-cache keys include the toolchain name and resolved fingerprint, runtime source
-hash, and platform. To also preview stale-source or incomplete entries while preserving bundles
-that match the current runtime source, add `--bundles`:
-
-```bash
-lean-beam prune --bundles
-lean-beam prune --apply --bundles
-```
-
-This only scans the installer-owned cache under `BEAM_INSTALL_ROOT/state/install-bundles`; it does
-not remove project-local fallback bundles under `<project>/.beam/bundles`. A complete installed
-bundle is preserved when its runtime source still matches, even when that toolchain fingerprint is
-not currently in use.
-
-Restart active agent and MCP client sessions before any `prune --apply`; otherwise a process may
-still be running from a runtime selected for removal. A later request rebuilds any needed bundle
-that was pruned. Pruning uses the same atomic-directory install lock as the shell installer and a
-kernel-backed file lock for each selected bundle. Bundle lock files remain as stable coordination
-inodes after release; kernel ownership disappears automatically when the holder exits. The install
-lock is never stale-reaped, so a crashed installer fails closed and requires explicit recovery.
-Pruning also refuses symlinked installed bundle-cache roots or symlinked and unmarked runtime
-directories.
+Restart active owners, agents, and MCP clients before `prune --apply`; a process can remain bound
+to an old generation after the launcher's `current` link changes. Pruning coordinates with the
+installer's atomic-directory lock and refuses symlinked or unmarked runtime directories. A crashed
+installer fails closed and requires explicit recovery rather than automatic stale-lock removal.
+Construction caches are installer inputs and are not selected or pruned by runtime commands.
 
 Apply is incremental rather than transactional: Beam validates and removes one displayed path at a
 time and reports each successful removal immediately. If a later path fails validation or its lock
 cannot be acquired, earlier reported removals remain applied. Resolve the reported error and rerun
-`lean-beam prune` (with `--bundles` when applicable) to preview what remains.
+`lean-beam prune` to preview what remains.
 
 If reinstalling reports that an existing runtime does not match its payload hash, stop active Beam
 agents and MCP clients first. Move only the exact reported runtime directory out of
 `BEAM_INSTALL_ROOT/versions` and preserve it for inspection, then rerun the installer. Do not remove
 the whole `versions` directory. `lean-beam prune` deliberately refuses invalid state and the current
 runtime, so it is not the repair path for this case. Use the same recovery when reinstalling refuses
-to reuse a cleanup-only schema-2 runtime.
+to reuse a older runtime manifest schema.
 
-If `runtime_error` instead reports an invalid install-root marker, do not recreate that ownership
-marker in place or move only one runtime: the marker protects the boundary of the whole managed
-root. Stop active Beam clients, rename the exact `BEAM_INSTALL_ROOT` as a unit and preserve it for
-inspection, then rerun the installer so it creates a fresh owned root. Do not delete the preserved
-root until its contents are understood.
+If pruning reports an invalid install-root marker, preserve the whole install root for inspection.
+Do not recreate that ownership marker in place. Stop active Beam clients, rename the exact
+`BEAM_INSTALL_ROOT` as a unit, then rerun the installer to create a fresh owned root. Do not delete
+the preserved root until its contents are understood.
 
 The command is intentionally unavailable from a source checkout because there is no owned
 immutable install root to prune there.
@@ -539,18 +513,17 @@ cached state after the project path or its Lean/Lake markers become unavailable.
 `beam_stats` are process-wide and accept no descriptor. Exact tool and version semantics live in the
 [MCP protocol notes](MCP.md#public-tools).
 
-The wrapper resolves the matching installed Beam runtime for each project.
+The executable remains bound to its concrete installation and recorded target set.
 
-Use `lean-beam --version` for bug reports and CLI refresh checks. Use `lean-beam-mcp --version` to
-check which MCP server command a client registration resolves. From a live MCP session, call the
-`beam_version` tool to report the running server process identity as structured content. Installed
-identities include `runtime_current`: `false` means that process is not selected by the install
-root's `current` link, usually because it belongs to a superseded runtime but also when that link is
-missing. Restart the agent or MCP client after reinstalling. A newly resolved installed wrapper
-should report `runtime current: true`; if it does not, treat the missing or broken `current` link as
-an installation-integrity failure. An owned runtime with an invalid marker or manifest reports
-`runtime_error` instead of being presented as a source checkout. Follow the error-specific recovery
-guidance in [Prune Old Installed State](#prune-old-installed-state).
+Use `lean-beam --version` for bug reports and CLI refresh checks, and `lean-beam-mcp --version` to
+check the registered server's recorded identity. The MCP `beam_version` tool reports the running
+process's installation generation and source revision as structured content. Installed identity
+comes from its manifest rather than a surrounding Git checkout. Malformed or replaced records make
+identity reporting fail; protocol discovery and recorded-owner cleanup remain available.
+
+After reinstalling, restart owners and MCP clients to use the newly selected generation. Changing
+the launcher's `current` link does not retarget a running process. Prior immutable installations
+remain usable while intact; explicitly stop their clients before pruning them.
 
 Use `lean-beam feedback-report --stdin` to create a local report when reporting setup or runtime
 issues; Beam does not upload or submit it. See [FEEDBACK.md](FEEDBACK.md).
@@ -564,8 +537,8 @@ lean-beam-mcp --self-check MyPkg/Sub/Module.lean
 ```
 
 The self-check starts a child MCP server, calls `lean_sync` with an explicit descriptor for the
-current project, and shuts the child server down. On first use for a project/toolchain, this
-may also build the matching local Beam runtime bundle. Success requires valid discovery and sync
+current project, and shuts the child server down. The project target must already be a member of
+the installed component set; the self-check does not construct missing runtimes. Success requires valid discovery and sync
 responses and a zero server exit status. It verifies that sync can run, without requiring completed
 elaboration, a file without Lean diagnostics, or readiness to save artifacts. Server stderr is
 diagnostic: logging does not fail an otherwise successful check, and failures include the final
@@ -585,7 +558,7 @@ Default install locations are:
 | --- | --- | --- |
 | Command wrappers | `$HOME/.local/bin` | interactive `change`, or `BEAM_BIN_HOME` |
 | Runtime root | `$HOME/.local/share/beam` | interactive `change`, or `BEAM_INSTALL_ROOT` |
-| Install bundle cache | `$HOME/.local/share/beam/state/install-bundles` | derived from the runtime root |
+| Construction cache | `$HOME/.local/share/beam/state/install-bundles` | derived from the runtime root |
 | Source build output | `<repo>/.lake` | fixed by Lake for this checkout |
 | Codex skill and MCP home | `$HOME/.codex` | interactive `change`, `CODEX_HOME`, or `--codex-home` |
 | Codex MCP config | `$HOME/.codex/config.toml` | derived from the Codex home |

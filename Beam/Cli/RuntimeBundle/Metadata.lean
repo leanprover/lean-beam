@@ -14,7 +14,19 @@ open Lean
 
 namespace Beam.Cli
 
-def bundleMetadataSchemaVersion : Nat := 2
+def bundleMetadataSchemaVersion : Nat := 4
+
+/-- The build reports SDK dependencies explicitly; cache admission never infers them from files. -/
+def validSharedRuntimePaths (paths : Array String) : Bool := Id.run do
+  if paths.isEmpty then return false
+  let directory := if System.Platform.isWindows then "bin" else "lib/lean"
+  let mut seen : Std.HashSet String := {}
+  for path in paths do
+    if !Beam.Installation.relativePath path ||
+        (System.FilePath.mk path).parent != some (System.FilePath.mk directory) || seen.contains path then
+      return false
+    seen := seen.insert path
+  return true
 
 private structure BundleMetadata where
   schemaVersion : Nat
@@ -23,6 +35,7 @@ private structure BundleMetadata where
   sourceHash : String
   workspace : String
   builtAt : String
+  sharedLibraries : Array String
   deriving FromJson, ToJson
 
 private def checkBundleMetadataShape (metadata : BundleMetadata) : Except String Unit := do
@@ -33,7 +46,8 @@ private def checkBundleMetadataShape (metadata : BundleMetadata) : Except String
   if metadata.toolchainFingerprint.leanVersion.isEmpty ||
       metadata.toolchainFingerprint.leanPrefix.isEmpty ||
       metadata.toolchainFingerprint.leanLibDir.isEmpty ||
-      metadata.toolchainFingerprint.lakeVersion.isEmpty then
+      metadata.toolchainFingerprint.lakeVersion.isEmpty ||
+      !Beam.Installation.hexDigest 40 metadata.toolchainFingerprint.compilerRevision then
     throw "bundle metadata toolchain fingerprint fields must not be empty"
   if metadata.sourceHash.isEmpty then
     throw "bundle metadata sourceHash must not be empty"
@@ -41,6 +55,8 @@ private def checkBundleMetadataShape (metadata : BundleMetadata) : Except String
     throw "bundle metadata workspace must not be empty"
   if metadata.builtAt.isEmpty then
     throw "bundle metadata builtAt must not be empty"
+  unless validSharedRuntimePaths metadata.sharedLibraries do
+    throw "bundle metadata must name complete relative shared-library inputs"
 
 private def checkBundleMetadataMatches
     (toolchain srcHash : String)
@@ -57,10 +73,13 @@ private def bundleMetadataWorkspaceMatches
     (metadata : BundleMetadata) (workspace : System.FilePath) : IO Bool :=
   Beam.sameFilePath (System.FilePath.mk metadata.workspace) workspace
 
-private def bundleArtifactsReady (workspace : System.FilePath) : IO Bool := do
+private def bundleArtifactsReady (workspace : System.FilePath) (metadata : BundleMetadata) : IO Bool := do
   let paths := leanBundlePathsFor workspace
-  return (← Beam.regularNonSymlinkFile paths.daemon) &&
-    (← Beam.regularNonSymlinkFile paths.plugin)
+  unless (← Beam.regularNonSymlinkFile paths.daemon) &&
+      (← Beam.regularNonSymlinkFile paths.plugin) do return false
+  for path in metadata.sharedLibraries do
+    unless ← Beam.regularNonSymlinkFile (workspace / ".lake/build" / path) do return false
+  return true
 
 def bundleMetadataPath (bundleDir : System.FilePath) : System.FilePath :=
   bundleDir / "metadata.json"
@@ -80,7 +99,7 @@ def bundleMetadataJson
     (toolchain srcHash : String)
     (fingerprint : ToolchainFingerprint)
     (workspace : System.FilePath)
-    (builtAt : String) : Json :=
+    (builtAt : String) (sharedLibraries : Array String) : Json :=
   toJson ({
     schemaVersion := bundleMetadataSchemaVersion
     toolchain
@@ -88,17 +107,17 @@ def bundleMetadataJson
     sourceHash := srcHash
     workspace := workspace.toString
     builtAt
+    sharedLibraries
   } : BundleMetadata)
 
 private def completeBundleMetadata? (bundleDir : System.FilePath) : IO (Option BundleMetadata) := do
   let workspace := bundleWorkspaceFor bundleDir
-  unless ← bundleArtifactsReady workspace do
-    return none
   let some metadata ← readBundleMetadata? bundleDir
     | return none
   match checkBundleMetadataShape metadata with
   | .error _ => return none
   | .ok () => pure ()
+  unless ← bundleArtifactsReady workspace metadata do return none
   unless ← bundleMetadataWorkspaceMatches metadata workspace do
     return none
   pure (some metadata)
@@ -116,11 +135,18 @@ def bundleReady (bundleDir : System.FilePath) (toolchain srcHash : String)
   | .error _ => pure false
 
 def writeBundleMetadata (bundleDir : System.FilePath) (toolchain srcHash : String)
-    (fingerprint : ToolchainFingerprint) (workspace : System.FilePath) : IO Unit := do
+    (fingerprint : ToolchainFingerprint) (workspace : System.FilePath)
+    (sharedLibraries : Array String) : IO Unit := do
   let path := bundleMetadataPath bundleDir
   if let some parent := path.parent then
     IO.FS.createDirAll parent
   IO.FS.writeFile path
-    ((bundleMetadataJson toolchain srcHash fingerprint workspace (← Beam.utcTimestamp)).pretty ++ "\n")
+    ((bundleMetadataJson toolchain srcHash fingerprint workspace (← Beam.utcTimestamp) sharedLibraries).pretty ++ "\n")
+
+/-- Construction consumes the same dependency list that qualified this cached target build. -/
+def bundleSharedRuntimePaths (bundleDir : System.FilePath) : IO (Array String) := do
+  let some metadata ← completeBundleMetadata? bundleDir
+    | throw <| IO.userError "constructed target metadata is incomplete"
+  pure metadata.sharedLibraries
 
 end Beam.Cli

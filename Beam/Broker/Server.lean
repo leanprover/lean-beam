@@ -612,9 +612,12 @@ private def acquireBackendSession
     (workspaceId : WorkspaceId)
     (workspaceGeneration : Nat)
     (config : BrokerConfig)
-    (epoch : Nat) : IO Session := do
+    (epoch : Nat)
+    (cancelRef? : Option (IO.Ref Bool)) : IO (Except BrokerFailure Session) := do
   let root := config.root
-  let (cmd, args, env) ← leanCommand config
+  let (cmd, args, env) ← match ← leanCommand config { cancelRef? } with
+    | .error failure => return .error failure
+    | .ok command => pure command
   let proc ← IO.Process.spawn {
     toStdioConfig := brokerStdio
     cmd := cmd
@@ -664,7 +667,7 @@ private def acquireBackendSession
         sessionReaderLoop session
       catch e =>
         IO.eprintln s!"broker session reader task failed: {e.toString}"
-    pure session
+    pure <| .ok session
   catch err =>
     IO.cancel initializeTask
     let message ←
@@ -672,7 +675,8 @@ private def acquireBackendSession
     discard <| Beam.waitTaskWithTimeout initializeTask sessionShutdownReplyTimeoutMs
     throw <| IO.userError message
 
-private def ensureSession (workspaceId : WorkspaceId) : M Session := do
+private def ensureSession (workspaceId : WorkspaceId)
+    (cancelRef? : Option (IO.Ref Bool) := none) : M (Except ResponseFailure Session) := do
   let state ← get
   let workspace ←
     match getWorkspace? state workspaceId with
@@ -681,17 +685,21 @@ private def ensureSession (workspaceId : WorkspaceId) : M Session := do
   let config := workspace.config
   let sessionState := workspace.lean
   match sessionState.session? with
-  | some session => pure session
+  | some session => pure (.ok session)
   | none =>
-      let session ←
-        acquireBackendSession workspaceId workspace.generation config sessionState.nextEpoch
+      let acquired ← try
+        acquireBackendSession workspaceId workspace.generation config sessionState.nextEpoch cancelRef?
+      catch error => pure <| .error { code := .internalError, message := error.toString }
+      let session ← match acquired with
+        | .error failure => return .error failure.toResponseFailure
+        | .ok session => pure session
       recordSessionSpawn workspaceId (sessionState.nextEpoch > 1)
       let sessionState := { sessionState with session? := some session }
       modify fun st =>
         match getWorkspace? st workspaceId with
         | some workspace => setWorkspace st workspaceId { workspace with lean := sessionState }
         | none => st
-      pure session
+      pure (.ok session)
 
 private def sendNotificationJson (session : Session) (method : String) (param : Json) : IO Session := do
   writeLspNotification session.stdin ({ method, param : Lean.JsonRpc.Notification Json })
@@ -772,11 +780,13 @@ private def withWorkspaceForSnapshot
 private def withSessionForSnapshot
     (workspaceId : WorkspaceId)
     (snapshot : FileSyncSnapshot)
-    (act : Session → M (Except ResponseFailure α)) :
+    (act : Session → M (Except ResponseFailure α))
+    (cancelRef? : Option (IO.Ref Bool) := none) :
     M (Except ResponseFailure α) :=
   withWorkspaceForSnapshot workspaceId snapshot fun _ => do
-    let session ← ensureSession workspaceId
-    act session
+    match ← ensureSession workspaceId cancelRef? with
+    | .error failure => pure (.error failure)
+    | .ok session => act session
 
 private def syncFileSnapshotDetailed
     (session : Session)
@@ -987,9 +997,13 @@ private def ServerMode.validate : ServerMode → Except String Unit
       unless !capability.isEmpty do
         throw "wrapper-owned daemon capability must be non-empty"
 
+/-- Application-owned local workspace admission; execution code does not interpret installations. -/
+abbrev WorkspaceAdmission := System.FilePath → IO (Except ResponseFailure BrokerConfig)
+
 structure ServerRuntime where
   state : Std.Mutex State
   private mode : ServerMode
+  private admission? : Option WorkspaceAdmission
   activeRequests : ActiveRequestRegistry
   private closeMutex : Std.Mutex Bool
   private closeDone : IO.Promise (Except IO.Error Unit)
@@ -1077,7 +1091,8 @@ private def ServerRuntime.statsResponse
 def ServerRuntime.create
     (config : BrokerConfig)
     (workspaceId : WorkspaceId)
-    (mode : ServerMode := .standalone none) : IO ServerRuntime := do
+    (mode : ServerMode := .standalone none)
+    (admission? : Option WorkspaceAdmission := none) : IO ServerRuntime := do
   unless validWorkspaceId workspaceId do
     throw <| IO.userError "workspace id must be non-empty"
   match mode.validate with
@@ -1088,6 +1103,7 @@ def ServerRuntime.create
   pure {
     state := ← Std.Mutex.new state
     mode
+    admission?
     activeRequests := ← ActiveRequestRegistry.create
     closeMutex := ← Std.Mutex.new false
     closeDone := ← IO.Promise.new
@@ -1573,7 +1589,7 @@ private def startSyncedWorkspaceRequest
     (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none)
     (cancelRef? : Option (IO.Ref Bool) := none) :
     M (Except ResponseFailure StartedSyncedRequest) :=
-  withSessionForSnapshot workspaceId snapshot fun session =>
+  withSessionForSnapshot workspaceId snapshot (cancelRef? := cancelRef?) fun session =>
     startSyncedDocumentRequest session snapshot method mkParams expectedVersion?
       clientRequestId? emitProgress? diagnosticScope emitDiagnostic? cancelRef?
 
@@ -1641,7 +1657,9 @@ private def startTrackedDiagnosticsBarrierIO
     | .error failure => return .error failure
   server.withRequestSessionState req do
     withWorkspaceForSnapshot req.workspaceId snapshot fun workspace => do
-      let session ← ensureSession req.workspaceId
+      let session ← match ← ensureSession req.workspaceId cancelRef? with
+        | .error failure => return .error failure
+        | .ok session => pure session
       let synced ← syncFileSnapshotDetailed session snapshot
       let session := synced.session
       let uri := synced.uri
@@ -1855,7 +1873,7 @@ private def saveOleanCore
   let spec ← withFailureProgress barrierProgress? <| liftBrokerFailureIO <|
     mkLeanSaveSpec started.session.root path
       { hash := started.lakeTraceHash, mtime := started.textMTime }
-      (some leanConfig.command) leanConfig.lakeHelper?
+      (some leanConfig.command) leanConfig.lakeHelper? { cancelRef? }
   let syncResult :=
     mkSyncFileResult spec.relPath started.version currentDiagnostics saveReadiness
   withFailureProgress barrierProgress? <|
@@ -1934,7 +1952,8 @@ private def saveOleanCore
     throw <| (responseFailureFor .internalError
       s!"save_olean saved text hash {saveResult.textHash}, expected synced hash {started.documentHash}")
       |>.withOptionalFileProgress barrierProgress?
-  withFailureProgress barrierProgress? <| liftBrokerFailureIO <| writeLeanSaveTrace spec
+  withFailureProgress barrierProgress? <| liftBrokerFailureIO <|
+    writeLeanSaveTrace spec { cancelRef? }
   pure {
     session
     uri := started.uri
@@ -2050,7 +2069,7 @@ private def handleUpdateFileOp
   liftFailureIO <| ensureRequestNotCancelled cancelRef?
   let snapshot ← liftFailureIO <| readRequestSyncSnapshot server req path
   let updated ← liftFailureIO <| server.withRequestSessionState req do
-    withSessionForSnapshot req.workspaceId snapshot fun session => do
+    withSessionForSnapshot req.workspaceId snapshot (cancelRef? := cancelRef?) fun session => do
       let synced ← syncFileSnapshotDetailed session snapshot
       updateSession synced.session
       pure (.ok synced)
@@ -2236,7 +2255,9 @@ private def handleWorkspaceSymbolsOp
   liftFailureIO <| ensureRequestNotCancelled cancelRef?
   let (session, pending) ← liftFailureIO <|
     server.withRequestSessionState req do
-      let session ← ensureSession req.workspaceId
+      let session ← match ← ensureSession req.workspaceId cancelRef? with
+        | .error failure => return .error failure
+        | .ok session => pure session
       let params := toJson ({ query := request.query : WorkspaceSymbolParams })
       let (session, pending) ← startRequestJsonTrackedDetailed session method params
         (clientRequestId? := req.clientRequestId?)
@@ -2434,26 +2455,24 @@ private def initWorkspaceConfigFromRequest
       resolveRoot (System.FilePath.mk request.root)
     catch e =>
       return .error (responseFailureFor .invalidParams e.toString)
-  let lean? ←
-    match request.lean? with
-    | none => pure none
-    | some lean =>
-        let plugin ←
-          try
-            Beam.resolveExistingPath <| System.FilePath.mk lean.plugin
-          catch e =>
-            return .error (responseFailureFor .invalidParams e.toString)
-        pure <| some ({ command := lean.command, plugin } : LeanBackendConfig)
-  if lean?.isNone then
-    let bootstrapConfig ← server.withState do
-      let state ← get
-      pure state.bootstrapConfig
-    if root == bootstrapConfig.root then
-      return .ok bootstrapConfig
-  pure <| .ok {
-    root
-    lean?
-  }
+  if let some admit := server.admission? then return ← admit root
+  let bootstrap ← server.withState do pure (← get).bootstrapConfig
+  if root == bootstrap.root then return .ok bootstrap
+  pure <| .error <| responseFailureFor .invalidParams
+    "workspace creation is not configured for this root"
+
+private def admitWorkspaceUse (server : ServerRuntime) (req : WorkspaceRequest) :
+    IO (Except ResponseFailure Unit) := do
+  let some admit := server.admission? | return .ok ()
+  let config? ← server.withState do pure <| (getWorkspace? (← get) req.workspaceId).map (·.config)
+  let some retained := config? | return .error <| responseFailureFor .invalidParams "workspace was dropped"
+  match ← admit retained.root with
+  | .error failure => return .error failure
+  | .ok current =>
+      unless current == retained do
+        return .error <| responseFailureFor .invalidParams
+          "workspace target changed; drop and recreate the workspace before retrying"
+      return .ok ()
 
 private def handleRequestIO
     (server : ServerRuntime)
@@ -2509,12 +2528,18 @@ private def handleRequestIO
       match ← validateRequestWorkspace server req with
       | .error failure => pure failure.toResponse
       | .ok workspaceReq =>
+          if payload.op.usesSession then
+            match ← admitWorkspaceUse server workspaceReq with
+            | .error failure => return failure.toResponse
+            | .ok () => pure ()
           match payload with
           | .ensure =>
               let resp ←
                 try
                   let result ← server.withRequestSessionState workspaceReq do
-                    let session ← ensureSession workspaceReq.workspaceId
+                    let session ← match ← ensureSession workspaceReq.workspaceId cancelRef? with
+                      | .error failure => return .error failure
+                      | .ok session => pure session
                     let payload := Json.mkObj [
                       ("workspace_id", toJson workspaceReq.workspaceId),
                       ("root", toJson session.root.toString),
@@ -2832,8 +2857,6 @@ private structure CliOptions where
   daemonId? : Option String := none
   configHash? : Option String := none
   sessionOwnerStdin : Bool := false
-  leanCmd? : Option String := none
-  leanPlugin? : Option String := none
 
 private def parseNatArg (name value : String) : Except String Nat := do
   let some n := value.toNat?
@@ -2862,10 +2885,6 @@ private partial def parseCliOptions (opts : CliOptions) : List String → Except
       parseCliOptions { opts with configHash? := some configHash } rest
   | "--session-owner-stdin" :: rest =>
       parseCliOptions { opts with sessionOwnerStdin := true } rest
-  | "--lean-cmd" :: leanCmd :: rest =>
-      parseCliOptions { opts with leanCmd? := some leanCmd } rest
-  | "--lean-plugin" :: leanPlugin :: rest =>
-      parseCliOptions { opts with leanPlugin? := some leanPlugin } rest
   | arg :: _ =>
       throw s!"unexpected Beam daemon argument '{arg}'"
 
@@ -2918,11 +2937,12 @@ private def throwAfterBestEffortCleanup
 
 private def acquireDaemonResources
     (opts : CliOptions)
+    (admission : WorkspaceAdmission)
     (config : BrokerConfig)
     (workspaceId : WorkspaceId)
     (mode : ServerMode)
     (root : System.FilePath) : IO DaemonResources := do
-  let runtime ← ServerRuntime.create config workspaceId mode
+  let runtime ← ServerRuntime.create config workspaceId mode (some admission)
   let transport ←
     try
       DaemonTransport.create opts.endpoint
@@ -2948,12 +2968,13 @@ private def acquireDaemonResources
 /-- Acquire the daemon runtime, listener, and watcher tasks for exactly the dynamic extent of `act`. -/
 private def withDaemonResources
     (opts : CliOptions)
+    (admission : WorkspaceAdmission)
     (config : BrokerConfig)
     (workspaceId : WorkspaceId)
     (mode : ServerMode)
     (root : System.FilePath)
     (act : DaemonResources → IO α) : IO α := do
-  let resources ← acquireDaemonResources opts config workspaceId mode root
+  let resources ← acquireDaemonResources opts admission config workspaceId mode root
   try
     act resources
   finally
@@ -2967,7 +2988,9 @@ private def emitWrapperReady
   stdout.putStrLn ready.encodeLine
   stdout.flush
 
-def main (args : List String) : IO Unit := do
+/-- Shipped applications must supply installation admission; argv cannot select components. -/
+def runDaemon (resolve : System.FilePath → IO (BrokerConfig × String))
+    (args : List String) : IO Unit := do
   let opts ← IO.ofExcept <| parseCliOptions {} args
   let some root := opts.root?
     | throw <| IO.userError "missing Beam daemon --root PATH"
@@ -2975,6 +2998,14 @@ def main (args : List String) : IO Unit := do
     | throw <| IO.userError "missing Beam daemon --workspace-id ID"
   unless validWorkspaceId workspaceId do
     throw <| IO.userError "workspace id must be non-empty"
+  let root ← Beam.resolveExistingPath <| System.FilePath.mk root
+  let (config, expectedHash) ← resolve root
+  if let some suppliedHash := opts.configHash? then
+    unless suppliedHash == expectedHash do
+      throw <| IO.userError "daemon configuration does not belong to this installation and target"
+  let admission : WorkspaceAdmission := fun selectedRoot => do
+    try return .ok (← resolve selectedRoot).1
+    catch error => return .error <| responseFailureFor .invalidParams error.toString
   let daemonIdentity? ←
     match opts.daemonId?, opts.configHash? with
     | none, none => pure none
@@ -2997,11 +3028,7 @@ def main (args : List String) : IO Unit := do
       pure <| .wrapper identity capability
     else
       pure <| .standalone daemonIdentity?
-  let root ← Beam.resolveExistingPath <| System.FilePath.mk root
-  let leanPlugin? ← opts.leanPlugin?.mapM fun path =>
-    Beam.resolveExistingPath <| System.FilePath.mk path
-  let config ← IO.ofExcept <| BrokerConfig.ofOptions root opts.leanCmd? leanPlugin?
-  withDaemonResources opts config workspaceId mode root fun resources => do
+  withDaemonResources opts admission config workspaceId mode root fun resources => do
     match mode with
     | .wrapper identity _ => emitWrapperReady resources.transport identity
     | .standalone _ => pure ()

@@ -6,21 +6,14 @@ Author: Emilio J. Gallego Arias
 
 namespace Beam.Mcp
 
-/-- Runtime selection shared by server setup and child self-check launches. -/
-structure LaunchOptions where
-  leanCmd? : Option String := none
-  leanPlugin? : Option String := none
-  beamCli? : Option String := none
-
-/-- CLI controls stay outside the options forwarded to a child server. -/
-structure Options extends LaunchOptions where
+structure Options where
   selfCheckPath? : Option String := none
   showVersion : Bool := false
 
 def usage : String :=
   String.intercalate "\n" [
-    "usage: lean-beam-mcp [--beam-cli PATH | --lean-cmd CMD --lean-plugin PATH]",
-    "       lean-beam-mcp [--beam-cli PATH | --lean-cmd CMD --lean-plugin PATH] --self-check <lean-file>",
+    "usage: lean-beam-mcp",
+    "       lean-beam-mcp --self-check <lean-file>",
     "       lean-beam-mcp --version",
     "",
     "Runs the experimental Lean Beam MCP server over newline-delimited JSON-RPC on stdio.",
@@ -29,18 +22,12 @@ def usage : String :=
     "Self-check uses one best-effort probe timeout of 120000 ms; override with LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS.",
     "This setting does not bound total command duration; blocking I/O and cleanup may outlast it.",
     "--version prints the MCP server version, protocol revision, and available resolved identity paths.",
-    "The installed wrapper passes --beam-cli automatically so project-specific Lean bundles resolve on demand.",
+    "Runtime components come exclusively from this installation's recorded target set.",
     "Only curated Lean tools are exposed; raw LSP and broker escape hatches are intentionally absent."
   ]
 
 partial def parseOptions (opts : Options) : List String → Except String Options
   | [] => pure opts
-  | "--lean-cmd" :: leanCmd :: rest =>
-      parseOptions { opts with leanCmd? := some leanCmd } rest
-  | "--lean-plugin" :: leanPlugin :: rest =>
-      parseOptions { opts with leanPlugin? := some leanPlugin } rest
-  | "--beam-cli" :: beamCli :: rest =>
-      parseOptions { opts with beamCli? := some beamCli } rest
   | "--self-check" :: path :: rest =>
       parseOptions { opts with selfCheckPath? := some path } rest
   | "--version" :: rest =>

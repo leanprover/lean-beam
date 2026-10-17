@@ -267,14 +267,9 @@ structure ReleaseRequest where
   path : String
   handle : Handle
 
-structure InitLeanBackendConfig where
-  command : String
-  plugin : String
-
 structure InitWorkspaceRequest where
   workspaceMode? : Option Beam.Workspace.InitMode := none
   root : String
-  lean? : Option InitLeanBackendConfig := none
 
 /-- The fields owned by exactly one broker operation. -/
 inductive RequestPayload where
@@ -425,7 +420,7 @@ private def Op.requestFields (op : Op) : Array String :=
       #["path", "text", "storeHandle", "linear", "handle"]
   | .release => #["path", "handle"]
   | .initWorkspace =>
-      #["workspaceMode", "root", "leanCmd", "leanPlugin"]
+      #["workspaceMode", "root"]
   | .dropWorkspace => #[]
   | .listWorkspaces | .shutdown => #[]
 
@@ -495,13 +490,7 @@ private def RequestPayload.jsonFields : RequestPayload → List (String × Json)
       [("path", toJson request.path), ("handle", toJson request.handle)]
   | .initWorkspace request =>
       optionalJsonField "workspaceMode" request.workspaceMode? ++
-      [("root", toJson request.root)] ++
-      (match request.lean? with
-      | some lean => [
-          ("leanCmd", toJson lean.command),
-          ("leanPlugin", toJson lean.plugin)
-        ]
-      | none => [])
+      [("root", toJson request.root)]
   | .stats | .listWorkspaces | .dropWorkspace | .shutdown => []
 
 def Request.handle? (request : Request) : Option Handle :=
@@ -660,18 +649,9 @@ instance : FromJson Request where
             handle
           }
       | .initWorkspace =>
-          let leanCmd? ← optionalField? (α := String) j "leanCmd"
-          let leanPlugin? ← optionalField? (α := String) j "leanPlugin"
-          let lean? ←
-            match leanCmd?, leanPlugin? with
-            | none, none => pure none
-            | some command, some plugin => pure <| some { command, plugin }
-            | some _, none => throw "'leanCmd' requires 'leanPlugin'"
-            | none, some _ => throw "'leanPlugin' requires 'leanCmd'"
           pure <| .initWorkspace {
             workspaceMode? := ← optionalField? (α := Beam.Workspace.InitMode) j "workspaceMode"
             root := ← requiredField j "root"
-            lean?
           }
       | .listWorkspaces => pure .listWorkspaces
       | .dropWorkspace => pure .dropWorkspace

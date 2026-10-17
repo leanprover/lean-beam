@@ -10,9 +10,12 @@ cd "$(dirname "$0")/.."
 
 # shellcheck source=tests/lib/beam-wrapper-common.sh
 . tests/lib/beam-wrapper-common.sh
+# shellcheck source=tests/lib/assertions.sh
+. tests/lib/assertions.sh
 
-beam_script="$PWD/scripts/lean-beam"
-beam_cli="$PWD/.lake/build/bin/beam-cli"
+: "${BEAM_TEST_INSTALLATION:?run tests/test-beam-slow.sh to construct the test installation}"
+beam_script="$BEAM_TEST_INSTALLATION/bin/lean-beam"
+beam_cli="$BEAM_TEST_INSTALLATION/libexec/beam-cli"
 
 if [ ! -x "$beam_script" ]; then
   echo "missing lean-beam wrapper at $beam_script" >&2
@@ -203,8 +206,6 @@ done
 resolved_tmp1="$(beam_test_realpath "$tmp1")"
 resolved_tmp2="$(beam_test_realpath "$tmp2")"
 
-fixture_toolchain="$(awk 'NR==1 {print $1}' tests/save_olean_project/lean-toolchain)"
-"$beam_cli" bundle-install "$fixture_toolchain"
 
 removed_selector_out="$tmp1/removed-selector.out"
 removed_selector_err="$tmp1/removed-selector.err"
@@ -850,18 +851,13 @@ assert_json_field_equals \
 
 start_slow_request "$tmp1" "shutdown-active" "shutdown-active"
 
-# The desired owner configuration includes installed bundle paths. An ordinary attaching command
-# must use the descriptor's frozen configuration without rebuilding a local desired hash. A second
-# owner still computes its proposed configuration and reports the mismatch without disturbing the
-# running generation.
-drift_bundle_dir="$tmp2/config-drift-bundles"
-mkdir -p "$drift_bundle_dir"
-rsync -a "$BEAM_INSTALL_BUNDLE_DIR/" "$drift_bundle_dir/"
+# Ambient cache variables cannot change this installation's fixed components or its live owner.
+drift_bundle_dir="$tmp2/ignored-bundle-cache"
 drift_out="$tmp1/config-drift.out"
 drift_err="$tmp1/config-drift.err"
 if ! BEAM_INSTALL_BUNDLE_DIR="$drift_bundle_dir" \
     "$beam_script" --root "$tmp1" stats > "$drift_out" 2> "$drift_err"; then
-  echo "expected ordinary attachment to use the owner's frozen configuration" >&2
+  echo "expected ordinary attachment to ignore the ambient cache path" >&2
   cat "$drift_err" >&2
   exit 1
 fi
@@ -872,15 +868,33 @@ drift_owner_err="$tmp1/config-drift-owner.err"
 if BEAM_INSTALL_BUNDLE_DIR="$drift_bundle_dir" \
     "$beam_script" --root "$tmp1" serve \
       > "$drift_owner_out" 2> "$drift_owner_err"; then
-  echo "expected a mismatched replacement owner to be rejected" >&2
+  echo "expected a duplicate owner to be rejected" >&2
   cat "$drift_owner_out" >&2
   exit 1
 fi
-if ! grep -Fq "current owner was preserved" "$drift_owner_err"; then
-  echo "expected replacement-owner drift diagnostics to preserve the current owner" >&2
+if ! grep -Fq "already owned by a foreground process" "$drift_owner_err"; then
+  echo "expected duplicate-owner diagnostics with the ambient cache override" >&2
   cat "$drift_owner_err" >&2
   exit 1
 fi
+assert_not_exists "$drift_bundle_dir"
+
+# A real target change must reject attachment while preserving the existing session and request.
+original_selector="$(cat "$tmp1/lean-toolchain")"
+alternate_selector="$(python3 - "$BEAM_TEST_INSTALLATION/manifest.json" "$original_selector" <<'PYTARGET'
+import json,sys
+targets=json.load(open(sys.argv[1]))['components']['targets']
+original=sys.argv[2].splitlines()[0].strip()
+print(next(target['toolchain'] for target in targets if target['toolchain'] != original))
+PYTARGET
+)"
+printf '%s\n' "$alternate_selector" > "$tmp1/lean-toolchain"
+if "$beam_script" --root "$tmp1" stats > /dev/null 2> "$drift_owner_err"; then
+  echo "expected attachment to reject a changed project target" >&2
+  exit 1
+fi
+assert_contains_literal "$drift_owner_err" 'current owner was preserved'
+printf '%s\n' "$original_selector" > "$tmp1/lean-toolchain"
 if [ -s "$drift_err" ]; then
   echo "ordinary frozen-configuration attachment produced unexpected diagnostics" >&2
   cat "$drift_out" >&2

@@ -6,6 +6,10 @@ hypothetical clients.
 
 ## Current Targets
 
+The [native toolchain build/install interface](TOOLCHAIN_BUNDLING.md) also targets an explicitly
+supplied native Lean installation, including development compilers, when its build and runtime
+regression passes. The standalone toolchain registries below govern the standalone install path.
+
 A Lean release line is the canonical `major.minor` family recorded in
 `compatible-lean-release-lines`. An exact toolchain variant is a canonical immutable
 `major.minor.patch` or `major.minor.patch-rcN` name within that family.
@@ -33,9 +37,9 @@ A Lean release line is the canonical `major.minor` family recorded in
   use Lake's full `ModulePreSetup.trace` directly. Lake 4.33–4.35 require the C output descriptor;
   4.36 and the pinned nightly use optional `ModuleOutputDescrs.c?`. Beam supplies the generated C
   descriptor on both shapes.
-- Runtime bundle metadata schema 2 and install manifest schema 3. Install manifest schema 2 is
-  cleanup-only compatibility during the 0.2 release line: identity and `lean-beam prune` may read it,
-  but the installer does not reuse it. Remove the schema-2 decoder when 0.3 development opens.
+- Construction-cache metadata schema 4, standalone installation manifest schema 4, and native
+  installation manifest schema 3. Earlier installation records do not establish a complete component
+  set and must be reinstalled; they are not accepted as current installation inventories.
 - CLI session descriptor schema 4. It freezes one workspace binding plus one
   generation identity, lifecycle, endpoint, and capability. Workspace bindings require a Lean
   command, plugin, toolchain, and bundle identity. Descriptors and their workspace bindings reject

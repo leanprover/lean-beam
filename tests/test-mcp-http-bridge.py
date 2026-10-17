@@ -14,6 +14,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from installation_fixture import prepare_project, stage
+
 from mcp_test_util import (
     MCP_LEGACY_PROTOCOL_VERSION,
     MCP_MODERN_PROTOCOL_VERSION,
@@ -204,8 +206,6 @@ def bridge_failure_context(bridge, child_stderr_file):
 def start_bridge(
     repo_root,
     exe,
-    lean_cmd,
-    plugin,
     ready_file,
     child_stderr_file,
     timeout,
@@ -218,10 +218,6 @@ def start_bridge(
         str(repo_root / "tests" / "mcp_http_bridge.py"),
         "--server",
         str(exe),
-        "--lean-cmd",
-        lean_cmd,
-        "--lean-plugin",
-        str(plugin),
         "--protocol-era",
         protocol_era,
         "--ready-file",
@@ -250,20 +246,13 @@ def main():
     repo_root = Path(__file__).resolve().parents[1]
     assert_bridge_bind_skips_reverse_lookup(repo_root)
 
-    exe = repo_root / ".lake" / "build" / "bin" / "lean-beam-mcp"
-    plugin = repo_root / ".lake" / "build" / "lib" / shared_lib_name()
-    lean_cmd = shutil.which("lean") or "lean"
-    require(exe.exists(), f"missing lean-beam-mcp executable at {exe}")
-    require(plugin.exists(), f"missing Beam LSP plugin shared library at {plugin}")
-
     with tempfile.TemporaryDirectory(prefix="lean-beam-mcp-http-") as tmp:
         tmp_path = Path(tmp)
+        installation = tmp_path / "installation"
+        compiler = stage(installation)
+        exe = installation / "bin/lean-beam-mcp"
         project_root = tmp_path / "project"
-        shutil.copytree(
-            repo_root / "tests" / "save_olean_project",
-            project_root,
-            ignore=shutil.ignore_patterns(".beam"),
-        )
+        prepare_project(project_root, compiler)
         ready_file = tmp_path / "ready.json"
         child_stderr_file = tmp_path / "lean-beam-mcp.stderr"
         workspace = {"root": str(project_root.resolve())}
@@ -273,8 +262,6 @@ def main():
         bridge = start_bridge(
             repo_root,
             exe,
-            lean_cmd,
-            plugin,
             ready_file,
             child_stderr_file,
             args.timeout,
@@ -463,8 +450,6 @@ def main():
         modern_bridge = start_bridge(
             repo_root,
             exe,
-            lean_cmd,
-            plugin,
             modern_ready_file,
             modern_child_stderr_file,
             args.timeout,

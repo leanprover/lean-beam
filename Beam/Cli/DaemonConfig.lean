@@ -5,8 +5,9 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
-import Beam.Cli.RuntimeBundle.Source
+import Beam.Cli.Hash
 import Beam.Daemon.Protocol
+import Beam.Runtime
 
 open Lean
 
@@ -14,45 +15,38 @@ namespace Beam.Cli
 
 open Beam.Broker
 
-/-- The complete resolved configuration of a Lean backend in a wrapper-owned session. -/
-structure LeanBackendConfig where
-  command : String
-  plugin : System.FilePath
-  toolchain : String
-  bundleId : String
-  deriving Repr
+namespace RuntimeDescription
 
-namespace LeanBackendConfig
-
-def toWorkspaceBinding (config : LeanBackendConfig) (workspaceId : WorkspaceId)
+def toWorkspaceBinding (config : Beam.Runtime.Description) (workspaceId : WorkspaceId)
     (root : System.FilePath) : Beam.Daemon.WorkspaceBinding := {
   workspaceId
   root := root.toString
-  bundleId := config.bundleId
+  bundleId := config.identity.generation
   leanCmd := config.command
   plugin := config.plugin.toString
   toolchain := config.toolchain
 }
 
-def daemonArgs (config : LeanBackendConfig) : Array String :=
-  #["--lean-cmd", config.command, "--lean-plugin", config.plugin.toString]
+private def hashFields (config : Beam.Runtime.Description) : List String :=
+  [config.command, config.plugin.toString, config.daemonBin.toString, config.identity.generation]
 
-private def hashFields (config : LeanBackendConfig) (daemonBin : System.FilePath) : List String :=
-  [config.command, config.plugin.toString, daemonBin.toString, config.bundleId]
-
-end LeanBackendConfig
+end RuntimeDescription
 
 /-- Source configuration for one wrapper-owned daemon generation. -/
 structure DesiredConfig where
   root : System.FilePath
-  lean : LeanBackendConfig
-  daemonBin : System.FilePath
+  runtime : Beam.Runtime.Description
   deriving Repr
 
 /-- Hash the project root and complete runtime configuration. -/
 def DesiredConfig.configHash (config : DesiredConfig) : String :=
-  let fields := config.root.toString :: config.lean.hashFields config.daemonBin
+  let fields := config.root.toString :: RuntimeDescription.hashFields config.runtime
   let hash := fields.foldl mixField 14695981039346656037
   s!"{hash.toNat}"
+
+/-- Runtime effects selected by the application; callers retain control of when they run. -/
+structure RuntimeAccess where
+  resolve : System.FilePath → IO DesiredConfig
+  attachment : System.FilePath → IO String
 
 end Beam.Cli
