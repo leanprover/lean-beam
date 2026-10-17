@@ -1228,23 +1228,29 @@ private partial def waitForTaskBefore
     IO.sleep 10
     waitForTaskBefore task blockedBy (tries - 1)
 
+private inductive ShutdownBehavior where
+  | exit
+  | stall
+
 private def shutdownObservedSession
     (workspaceId : WorkspaceId)
     (root sentinel : System.FilePath)
-    (delaySeconds : Nat := 30) : IO Session := do
+    (behavior : ShutdownBehavior := .stall) : IO Session := do
   let proc ← IO.Process.spawn {
     toStdioConfig := brokerStdio
     cmd := "python3"
     args := #[
       "-c",
-      "import sys, time\n" ++
+      "import signal, sys, time\n" ++
+      "if sys.argv[3] == 'stall': signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" ++
       "sys.stdin.buffer.readline()\n" ++
       "with open(sys.argv[1], 'a') as stream:\n" ++
       " stream.write(sys.argv[2] + '\\n')\n" ++
-      "time.sleep(int(sys.argv[3]))\n",
+      "if sys.argv[3] == 'stall':\n" ++
+      " while True: time.sleep(1)\n",
       sentinel.toString,
       workspaceId,
-      toString delaySeconds
+      (match behavior with | .exit => "exit" | .stall => "stall")
     ]
   }
   let pending ← Std.Mutex.new ({} : Std.TreeMap Lean.JsonRpc.RequestID PendingRequest)
@@ -1395,7 +1401,9 @@ private def failedStderrCapture
     | .sourceFailed err => pure (capture, err)
     | .drained | .pipeStillOpen => throw <| IO.userError "stderr source failure fixture did not fail"
 
-private def checkLifecycleCleanupFailureCommits (kind : LifecycleTeardown) : IO Unit := do
+private def checkLifecycleCleanupFailureCommits
+    (kind : LifecycleTeardown)
+    (behavior : ShutdownBehavior := .exit) : IO Unit := do
   let base := System.FilePath.mk s!"/tmp/beam-{kind.label}-cleanup-failure-{← IO.monoNanosNow}"
   let workspaceId := "cleanup-failure"
   let oldRoot := base / "old"
@@ -1404,7 +1412,7 @@ private def checkLifecycleCleanupFailureCommits (kind : LifecycleTeardown) : IO 
   let runtime ← ServerRuntime.create { root := oldRoot } workspaceId
   try
     let (capture, sourceFailure) ← failedStderrCapture (base / "write-only-source") .write
-    let session ← shutdownObservedSession workspaceId oldRoot (base / "shutdown") 0
+    let session ← shutdownObservedSession workspaceId oldRoot (base / "shutdown") behavior
     runtime.state.atomically do
       let state ← get
       let some workspace := state.workspaces.get? workspaceId
@@ -1422,6 +1430,14 @@ private def checkLifecycleCleanupFailureCommits (kind : LifecycleTeardown) : IO 
         require s!"{kind.label}: cleanup preserves its typed I/O failure"
           (message == s!"backend stderr source failed while draining: {sourceFailure}")
     | _ => throw <| IO.userError s!"{kind.label}: expected the cleanup I/O failure"
+    match behavior with
+    | .exit => pure ()
+    | .stall =>
+        let status ← IO.Process.output {
+          cmd := "ps"
+          args := #["-p", toString session.proc.pid, "-o", "stat="]
+        }
+        require "forced cleanup kills and reaps a backend that ignores SIGTERM" (status.exitCode != 0)
     runtime.state.atomically do
       let workspace? := (← get).workspaces.get? workspaceId
       match kind, workspace? with
@@ -1451,7 +1467,7 @@ private def checkRuntimeCloseDetachesAllSessions (failShutdown : Bool) : IO Unit
       | .error failure => throw <| IO.userError failure.error.message
     let mut firstFailure? : Option IO.Error := none
     for workspaceId in ["first", "last"] do
-      let mut session ← shutdownObservedSession workspaceId (base / workspaceId) shutdownLog 0
+      let mut session ← shutdownObservedSession workspaceId (base / workspaceId) shutdownLog .exit
       if failShutdown then
         -- A write-only file and a directory fail differently on read, without platform-specific
         -- errno assertions. Both captures finish before close so this test has no timing race.
@@ -1594,7 +1610,8 @@ private def checkDeadSessionCleanupReleasesStateMutex : IO Unit := do
 
 /-- Observe exit without consuming the child's wait status. -/
 private partial def waitForUnreapedExit
-    (child : IO.Process.Child {})
+    {cfg : IO.Process.StdioConfig}
+    (child : IO.Process.Child cfg)
     (tries : Nat := 200) : IO Unit := do
   let status ← IO.Process.output {
     cmd := "ps"
@@ -1603,10 +1620,61 @@ private partial def waitForUnreapedExit
   if status.exitCode == 0 && status.stdout.trimAscii.toString.startsWith "Z" then
     pure ()
   else if tries == 0 then
-    throw <| IO.userError "snapshot-reset writer did not exit before cleanup"
+    throw <| IO.userError "owned fixture process did not exit before cleanup"
   else
     IO.sleep 10
     waitForUnreapedExit child (tries - 1)
+
+private def checkExitedSessionCleanupFailure (alreadyReaped : Bool) : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-exited-cleanup-{← IO.monoNanosNow}"
+  let workspaceId := "exited-cleanup"
+  IO.FS.createDirAll base
+  let runtime ← ServerRuntime.create { root := base } workspaceId
+  try
+    let (capture, sourceFailure) ← failedStderrCapture (base / "write-only-source") .write
+    let proc ← IO.Process.spawn {
+      toStdioConfig := brokerStdio
+      cmd := "python3"
+      args := #["-c", "import sys; sys.exit(23)"]
+    }
+    waitForUnreapedExit proc
+    if alreadyReaped then
+      require "fixture exits with its distinct status" ((← proc.wait) == 23)
+    let session : Session := {
+      workspaceId
+      workspaceGeneration := 1
+      root := base
+      epoch := 1
+      sessionToken := "exited-cleanup"
+      proc
+      stdin := IO.FS.Stream.ofHandle proc.stdin
+      stdout := IO.FS.Stream.ofHandle proc.stdout
+      stderrCapture := capture
+      pending := ← PendingRequestStore.create
+    }
+    runtime.state.atomically do
+      let state ← get
+      let some workspace := state.workspaces.get? workspaceId
+        | throw <| IO.userError "exited cleanup fixture workspace is missing"
+      let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
+      set { state with workspaces := state.workspaces.insert workspaceId workspace }
+    let response ← runtime.dispatchRequest {
+      workspaceId? := some workspaceId
+      payload := .close { path := "Dead.lean" }
+    }
+    require "exited-session cleanup retains stderr source failures, including after an earlier reap"
+      (response.error?.any fun error => error.code == "internalError" &&
+        error.message.contains s!"backend stderr source failed while draining: {sourceFailure}")
+    runtime.state.atomically do
+      let some workspace := (← get).workspaces.get? workspaceId
+        | throw <| IO.userError "exited cleanup removed its workspace"
+      require "exited-session cleanup detaches exactly once"
+        (workspace.lean.session?.isNone && workspace.lean.nextEpoch == 3)
+  finally
+    try
+      runtime.close
+    finally
+      IO.FS.removeDirAll base
 
 private def checkWorkspaceSnapshotResetIsolation : IO Unit := do
   let nonce ← IO.monoNanosNow
@@ -1943,9 +2011,12 @@ def main : IO Unit := do
   checkLifecycleTeardownConcurrency
   checkLifecycleCleanupFailureCommits .reset
   checkLifecycleCleanupFailureCommits .drop
+  checkLifecycleCleanupFailureCommits .drop .stall
   checkRuntimeCloseDetachesAllSessions false
   checkRuntimeCloseDetachesAllSessions true
   checkDeadSessionCleanupReleasesStateMutex
+  checkExitedSessionCleanupFailure false
+  checkExitedSessionCleanupFailure true
   checkWorkspaceSnapshotResetIsolation
   checkCompletedRequestResetIsolation
   checkSessionCloseAdmission

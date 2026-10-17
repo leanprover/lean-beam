@@ -166,65 +166,46 @@ private def backendFailureMessage
 private def sessionShutdownReplyTimeoutMs : Nat :=
   1000
 
-private def killCommand? : IO (Option System.FilePath) := do
-  for candidate in [System.FilePath.mk "/bin/kill", System.FilePath.mk "/usr/bin/kill"] do
-    if ← candidate.pathExists then
-      return some candidate
-  pure none
+/-- A retained wait observation. Only `none` means the child was observed still running. -/
+private inductive BackendExit where
+  | exited (code : UInt32)
+  | waitFailed (error : IO.Error)
+
+private def observeBackendExit
+    (proc : IO.Process.Child brokerStdio) : IO (Option BackendExit) := do
+  try
+    pure <| (← proc.tryWait).map BackendExit.exited
+  catch err =>
+    pure <| some (.waitFailed err)
 
 private partial def waitForProcessExitWithTimeout
     (proc : IO.Process.Child brokerStdio)
     (timeoutMs : Nat)
-    (pollMs : Nat := 50) : IO Bool := do
-  let rec loop (remainingMs : Nat) : IO Bool := do
-    match ← (try
-      proc.tryWait
-    catch _ =>
-      pure none) with
-    | some _ => pure true
+    (pollMs : Nat := 50) : IO (Option BackendExit) := do
+  let rec loop (remainingMs : Nat) : IO (Option BackendExit) := do
+    match ← observeBackendExit proc with
+    | some exit => pure (some exit)
     | none =>
         if remainingMs == 0 then
-          pure false
+          pure none
         else
           let sleepMs := min (max pollMs 1) remainingMs
           IO.sleep sleepMs.toUInt32
           loop (remainingMs - sleepMs)
   loop timeoutMs
 
-private def terminateBackendProcess (proc : IO.Process.Child brokerStdio) : IO Bool := do
-  let running ←
-    try
-      pure (← proc.tryWait).isNone
-    catch _ =>
-      pure true
-  if running then
-    try
-      proc.kill
-    catch _ =>
-      pure ()
-    unless ← waitForProcessExitWithTimeout proc sessionShutdownReplyTimeoutMs do
-      try
-        if let some kill := ← killCommand? then
-          let _ ← IO.Process.output {
-            cmd := kill.toString
-            args := #["-9", toString proc.pid.toNat]
-          }
-          pure ()
-      catch _ =>
-        pure ()
-      discard <| waitForProcessExitWithTimeout proc sessionShutdownReplyTimeoutMs
+private def terminateBackendProcess
+    (proc : IO.Process.Child brokerStdio) : IO (Option BackendExit) := do
+  -- A successful POSIX wait consumes the exit status. Neither re-wait nor signal after observing it;
+  -- a failed wait likewise does not establish that this PID still belongs to a running child.
+  if let some exit ← observeBackendExit proc then
+    return some exit
   try
-    pure (← proc.tryWait).isSome
+    proc.kill
   catch _ =>
-    pure false
-
-private def finishBackendStderrCapture
-    (capture : BackendStderrCapture)
-    (leaderReaped : Bool) : IO Beam.StderrCaptureOutcome := do
-  if leaderReaped then
-    capture.finishAfterWriterExit
-  else
-    pure .pipeStillOpen
+    pure ()
+  -- Child.kill already forces termination on supported Lean runtimes; only the bounded wait remains.
+  waitForProcessExitWithTimeout proc sessionShutdownReplyTimeoutMs
 
 private def startBackendStderrCaptureOrTerminate
     (proc : IO.Process.Child brokerStdio) : IO BackendStderrCapture := do
@@ -239,21 +220,18 @@ private def terminateBackendFailure
     (phase cause : String)
     (proc : IO.Process.Child brokerStdio)
     (capture : BackendStderrCapture) : IO String := do
-  let leaderReaped ← terminateBackendProcess proc
-  let captureOutcome ← finishBackendStderrCapture capture leaderReaped
+  let exit? ← terminateBackendProcess proc
+  let captureOutcome ← capture.finishAfterWriterExit
   let message ← backendFailureMessage phase cause capture
+  let message := match exit? with
+    | some (.waitFailed err) => message ++ s!"\nbackend process exit observation failed: {err}"
+    | _ => message
   pure <| match captureOutcome with
     | .drained => message
     | .sourceFailed err =>
         message ++ s!"\nbackend stderr source also failed while draining: {err}"
     | .pipeStillOpen =>
         message ++ "\nbackend stderr pipe remained open; its bounded capture remains active"
-
-private def sessionExited (session : Session) : IO Bool := do
-  try
-    pure (← session.proc.tryWait).isSome
-  catch _ =>
-    pure true
 
 private def mkWorkspaceState
     (config : BrokerConfig)
@@ -528,7 +506,9 @@ private def startRequestJsonTrackedDetailed
       pure ()
     throw e
 
-private def shutdownSession (session : Session) : IO Unit := do
+private def shutdownSession
+    (session : Session)
+    (observedExit? : Option BackendExit := none) : IO Unit := do
   let session ←
     try
       let (session, pending) ←
@@ -548,19 +528,22 @@ private def shutdownSession (session : Session) : IO Unit := do
       ({ method := "exit", param := Json.null : Lean.JsonRpc.Notification Json })
   catch _ =>
     pure ()
-  let leaderReaped ←
-    if ← waitForProcessExitWithTimeout session.proc sessionShutdownReplyTimeoutMs then
-      pure true
-    else
-      terminateBackendProcess session.proc
-  match ← finishBackendStderrCapture session.stderrCapture leaderReaped with
+  let exit? ← match observedExit? with
+    | some exit => pure (some exit)
+    | none => do
+        match ← waitForProcessExitWithTimeout session.proc sessionShutdownReplyTimeoutMs with
+        | some exit => pure (some exit)
+        | none => terminateBackendProcess session.proc
+  if let some (.waitFailed err) := exit? then
+    traceBroker s!"backend process exit observation failed: {err}"
+  match ← session.stderrCapture.finishAfterWriterExit with
   | .drained => pure ()
   | .sourceFailed err =>
       throw <| IO.userError s!"backend stderr source failed while draining: {err}"
   | .pipeStillOpen =>
       -- A descendant can retain the pipe after the backend leader is reaped. This is an explicit
       -- bounded resource outcome, not a reason to make an otherwise completed shutdown fail.
-      traceBroker "backend stderr remained open after its leader exited"
+      traceBroker "backend stderr drain did not finish within its shutdown bound"
 
 def sendRequestJsonTrackedDetailed
     (session : Session)
@@ -1013,21 +996,21 @@ def ServerRuntime.withState (server : ServerRuntime) (act : M α) : IO α := do
 
 private inductive LiveSessionStateResult (α : Type) where
   | done (result : Except ResponseFailure α)
-  | detached (session : Session)
+  | detached (session : Session) (exit : BackendExit)
 
 private def detachExitedSession?
-    (workspaceId : WorkspaceId) : M (Option Session) := do
+    (workspaceId : WorkspaceId) : M (Option (Session × BackendExit)) := do
   let state ← get
   let some workspace := getWorkspace? state workspaceId
     | pure none
   let sessionState := workspace.lean
   let some session := sessionState.session?
     | pure none
-  unless ← sessionExited session do
-    return none
+  let some exit ← observeBackendExit session.proc
+    | return none
   let (sessionState, detached?) := detachBackendSession sessionState
   set <| setWorkspace state workspaceId { workspace with lean := sessionState }
-  pure detached?
+  pure <| detached?.map (·, exit)
 
 /--
 Run a session state action only while the caller's workspace generation remains current. Any
@@ -1049,12 +1032,12 @@ private partial def ServerRuntime.withLiveSessionState
           pure <| .done (.error workspaceChangedFailure)
         else
           match ← detachExitedSession? workspaceId with
-          | some session => pure <| .detached session
+          | some (session, exit) => pure <| .detached session exit
           | none => .done <$> act
   match result with
   | .done result => pure result
-  | .detached session =>
-      shutdownSession session
+  | .detached session exit =>
+      shutdownSession session (some exit)
       server.withLiveSessionState workspaceId workspaceGeneration workspaceChangedFailure act
 
 /-- Return the canonical root currently owned by `workspaceId`, if that workspace exists. -/
