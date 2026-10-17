@@ -16,13 +16,13 @@ progress so it can report a stable failure state.
 -/
 abbrev StderrSink := ByteArray → IO Bool
 
-/-- The bounded result of releasing an owned stderr capture. -/
+/-- The bounded result of waiting for an owned stderr drain. -/
 inductive StderrCaptureOutcome where
-  /-- The writer exited and the source reached EOF. -/
+  /-- The source reached EOF. This does not establish that its writer exited. -/
   | drained
-  /-- The source stopped with an I/O error after the writer exited. -/
+  /-- The drain stopped with a source I/O error. -/
   | sourceFailed (error : IO.Error)
-  /-- EOF was not observed within the bound because some process may still hold the pipe open. -/
+  /-- The drain did not finish within the bound; some process may still hold the pipe open. -/
   | pipeStillOpen
 
 private structure StderrSinkState where
@@ -113,12 +113,12 @@ def StderrCapture.disableSinkAndAwaitCurrentWrite
     pure state.failure?
 
 /--
-Finish a capture after its writer has been reaped. This operation never tries to cancel the blocking
-pipe read: Lean task cancellation cannot interrupt the synchronous `Handle.read`. If EOF is not
-observed within the bound, a descendant still owns the pipe (or writer exit was misclassified), so
-the caller receives `pipeStillOpen` instead of waiting indefinitely.
+Wait within a bound for the drain task to finish, independently of any process wait. Completion
+observes EOF or a source error; it does not establish that the writer exited. This operation never
+tries to cancel the blocking pipe read: Lean task cancellation cannot interrupt synchronous
+`Handle.read`. An unfinished drain returns `pipeStillOpen` and remains active.
 -/
-def StderrCapture.finishAfterWriterExit
+def StderrCapture.awaitCompletion
     (capture : StderrCapture)
     (timeoutMs : Nat := 1000) : IO StderrCaptureOutcome := do
   match ← Beam.waitTaskWithTimeout capture.drainTask timeoutMs with

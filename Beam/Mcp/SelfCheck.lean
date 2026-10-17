@@ -206,14 +206,14 @@ def run (opts : LaunchOptions) (pathText : String) : IO Unit := do
     let exitCode ← await exitTask
     if exitCode != 0 then
       throw <| IO.userError s!"lean-beam-mcp self-check child exited with code {exitCode}"
-    match ← stderr.finishAfterWriterExit (← remaining) with
+    match ← stderr.awaitCompletion (← remaining) with
     | .drained => pure ()
     | .sourceFailed err => throw err
     | .pipeStillOpen => throw timedOut
   catch e =>
     terminateChild child
     -- Cleanup has a separate bounded drain wait. Blocking I/O still needs CI's watchdog.
-    discard <| stderr.finishAfterWriterExit
+    discard <| stderr.awaitCompletion
     let tail ← stderr.snapshot
     if !tail.trimAscii.isEmpty then
       throw <| IO.userError s!"{e}\n{tail}"

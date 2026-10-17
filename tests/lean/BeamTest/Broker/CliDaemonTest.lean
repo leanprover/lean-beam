@@ -396,7 +396,7 @@ private def checkStderrCaptureSurvivesSinkFailure : IO Unit := do
       let sink : Beam.StderrSink := fun _ =>
         throw <| IO.userError "intentional stderr sink failure"
       let capture ← Beam.StderrCapture.start source 1024 (some sink)
-      match ← capture.finishAfterWriterExit with
+      match ← capture.awaitCompletion with
       | .drained => pure ()
       | .sourceFailed err => throw err
       | .pipeStillOpen => throw <| IO.userError "stderr capture did not finish"
@@ -447,7 +447,7 @@ private def checkStderrSinkDisableIsSynchronized : IO Unit := do
       | .ok none => pure ()
       | .ok (some err) => throw err
       | .error err => throw err
-      match ← capture.finishAfterWriterExit with
+      match ← capture.awaitCompletion with
       | .drained => pure ()
       | .sourceFailed err => throw err
       | .pipeStillOpen => throw <| IO.userError "synchronized stderr capture did not finish"
@@ -466,7 +466,7 @@ private def checkStderrCaptureDoesNotJoinInheritedPipe : IO Unit := do
   let capture ← Beam.StderrCapture.start proc.stderr 1024
   discard <| proc.wait
   let started ← IO.monoNanosNow
-  match ← capture.finishAfterWriterExit 50 with
+  match ← capture.awaitCompletion 50 with
   | .pipeStillOpen => pure ()
   | .drained | .sourceFailed _ =>
       throw <| IO.userError "an inherited stderr pipe should remain unreaped before its writer exits"
@@ -474,7 +474,7 @@ private def checkStderrCaptureDoesNotJoinInheritedPipe : IO Unit := do
   require "stderr finalization must remain bounded while a descendant owns the pipe"
     (elapsedMs < 500)
   IO.sleep 1100
-  match ← capture.finishAfterWriterExit with
+  match ← capture.awaitCompletion with
   | .drained => pure ()
   | .sourceFailed err => throw err
   | .pipeStillOpen =>
