@@ -16,6 +16,8 @@ cd "$(dirname "$0")/.."
 . tests/lib/install-fixtures.sh
 # shellcheck source=tests/lib/wait.sh
 . tests/lib/wait.sh
+# shellcheck source=tests/lib/toolchain-registry.sh
+. tests/lib/toolchain-registry.sh
 
 BEAM_TEST_SUITE="${BEAM_TEST_SUITE:-install}"
 BEAM_INSTALL_TEST_PRESEED_ELAN="${BEAM_INSTALL_TEST_PRESEED_ELAN:-auto}"
@@ -62,7 +64,7 @@ validated_toolchains=()
 while IFS= read -r line; do
   [ -n "$line" ] || continue
   validated_toolchains+=("$line")
-done < <(grep -v '^[[:space:]]*#' validated-lean-toolchains | sed '/^[[:space:]]*$/d')
+done < <(beam_test_read_registry_entries validated-lean-toolchains)
 toolchain="$(awk 'NR==1 {print $1}' lean-toolchain)"
 if [ -z "$toolchain" ]; then
   echo "missing pinned Lean toolchain in lean-toolchain" >&2

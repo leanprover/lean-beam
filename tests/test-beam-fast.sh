@@ -21,6 +21,7 @@ bash scripts/check-task-priority.sh
 bash scripts/check-markdown-links.sh
 python3 scripts/ci-toolchains.py > /dev/null
 python3 tests/test-toolchain-ci-matrix.py
+python3 tests/test-toolchain-registry.py
 python3 tests/test-toolchain-compat-owner.py
 python3 tests/test-installed-mcp-smoke.py
 python3 tests/test-extended-ci.py
