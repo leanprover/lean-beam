@@ -364,6 +364,15 @@ retaining the first typed `IO.Error` as that shared result. Transport owners dec
 closure and how their listener or stdio connection stops; they must not duplicate broker draining
 or backend teardown.
 
+A successful POSIX child wait consumes its exit status. Carry that observation into detached-session
+cleanup instead of polling or signalling the same child again; retain wait failures separately from
+a still-running child. Stderr completion comes from its drain task, including when a process wait
+fails. Report an open pipe only when that bounded drain has not completed.
+Use `IO.Process.Child.kill` followed by a bounded exit wait for forced termination. On supported
+Lean toolchains, the [runtime implementation](https://github.com/leanprover/lean4/blob/v4.35.0/src/runtime/process.cpp#L392-L399)
+already uses `SIGKILL` on POSIX and `TerminateProcess` on Windows; a separate kill subprocess adds
+no stronger termination guarantee.
+
 A newly spawned backend remains a provisional resource until its initialization response arrives
 within the 30-second startup deadline and the broker sends `initialized`. Any initialization error,
 timeout, or notification-write failure terminates and reaps that child before the acquisition fails;
