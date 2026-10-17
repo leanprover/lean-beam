@@ -495,7 +495,7 @@ private def finishDaemonLogDrain
     (capture : Beam.StderrCapture)
     (leaderReaped : Bool) : IO Beam.StderrCaptureOutcome := do
   if leaderReaped then
-    capture.finishAfterWriterExit
+    capture.awaitCompletion
   else
     pure .pipeStillOpen
 

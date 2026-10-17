@@ -364,6 +364,17 @@ retaining the first typed `IO.Error` as that shared result. Transport owners dec
 closure and how their listener or stdio connection stops; they must not duplicate broker draining
 or backend teardown.
 
+A successful POSIX child wait consumes its exit status. Carry that observation into detached-session
+cleanup instead of polling or signalling the same child again; retain wait failures separately from
+a still-running child. Stderr completion comes from its drain task, including when a process wait
+fails. Use `StderrCapture.awaitCompletion` to observe EOF, a source error, or an unfinished drain
+within a bound; none of these outcomes alone proves that the writer exited. Report an open pipe
+only when that bounded drain has not completed.
+Use `IO.Process.Child.kill` followed by a bounded exit wait for forced termination. On supported
+Lean toolchains, the [runtime implementation](https://github.com/leanprover/lean4/blob/v4.35.0/src/runtime/process.cpp#L392-L399)
+already uses `SIGKILL` on POSIX and `TerminateProcess` on Windows; a separate kill subprocess adds
+no stronger termination guarantee.
+
 A newly spawned backend remains a provisional resource until its initialization response arrives
 within the 30-second startup deadline and the broker sends `initialized`. Any initialization error,
 timeout, or notification-write failure terminates and reaps that child before the acquisition fails;
@@ -462,9 +473,9 @@ and configuration before publishing the session descriptor. Daemon stderr is dra
 private startup-log inode opened by the owner until readiness or a 64-KiB bound. The shared stderr
 capture continues draining into a bounded in-memory tail if that file sink fails, records the first
 sink failure, and prevents that failure from stopping subsequent daemon-pipe draining. Sink shutdown
-is synchronized with the current write. Capture finalization never assumes task cancellation
-interrupts a synchronous pipe read: it joins only after writer exit and otherwise returns a bounded
-`pipeStillOpen` outcome.
+is synchronized with the current write. `StderrCapture.awaitCompletion` waits within a bound for
+the drain task independently of process exit. It never assumes task cancellation interrupts a
+synchronous pipe read; an unfinished drain returns `pipeStillOpen` and remains active.
 `StderrSink` callbacks must complete within a caller-appropriate bound because disabling a sink
 waits for any callback already in progress before reporting its stable failure state.
 Owner cleanup retains process exit and stderr capture as independent outcomes, so a capture failure
