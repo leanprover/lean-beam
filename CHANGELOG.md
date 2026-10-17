@@ -146,6 +146,11 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   only required staged artifacts; schema-2 runtimes remain readable for identity and safe cleanup but
   are not reused by reinstall.
 
+### Documentation
+
+- Added a descriptive related-tools comparison for `lean-lsp-mcp`, Pantograph, and Beam's
+  saved-file probe layer.
+
 ### Fixed
 
 - Sync and save accept Lean's normalized CRLF document text while preserving saved-byte versions
