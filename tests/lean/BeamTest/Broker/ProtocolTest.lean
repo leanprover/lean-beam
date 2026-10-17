@@ -1395,6 +1395,50 @@ private def failedStderrCapture
     | .sourceFailed err => pure (capture, err)
     | .drained | .pipeStillOpen => throw <| IO.userError "stderr source failure fixture did not fail"
 
+private def checkLifecycleCleanupFailureCommits (kind : LifecycleTeardown) : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-{kind.label}-cleanup-failure-{← IO.monoNanosNow}"
+  let workspaceId := "cleanup-failure"
+  let oldRoot := base / "old"
+  let replacement : BrokerConfig := { root := base / "replacement" }
+  IO.FS.createDirAll base
+  let runtime ← ServerRuntime.create { root := oldRoot } workspaceId
+  try
+    let (capture, sourceFailure) ← failedStderrCapture (base / "write-only-source") .write
+    let session ← shutdownObservedSession workspaceId oldRoot (base / "shutdown") 0
+    runtime.state.atomically do
+      let state ← get
+      let some workspace := state.workspaces.get? workspaceId
+        | throw <| IO.userError "cleanup failure fixture workspace is missing"
+      let session := { session with stderrCapture := capture }
+      let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
+      set { state with workspaces := state.workspaces.insert workspaceId workspace }
+    let outcome ←
+      try
+        pure (.ok (← runLifecycleTeardown kind runtime workspaceId replacement) :
+          Except IO.Error (Except ResponseFailure Bool))
+      catch err => pure (.error err)
+    match outcome with
+    | .error (.userError message) =>
+        require s!"{kind.label}: cleanup preserves its typed I/O failure"
+          (message == s!"backend stderr source failed while draining: {sourceFailure}")
+    | _ => throw <| IO.userError s!"{kind.label}: expected the cleanup I/O failure"
+    runtime.state.atomically do
+      let workspace? := (← get).workspaces.get? workspaceId
+      match kind, workspace? with
+      | .reset, some workspace =>
+          require "failed reset cleanup retains the replacement root"
+            (workspace.config.root == replacement.root)
+          require "failed reset cleanup retains the fresh generation" (workspace.generation != 1)
+          require "failed reset cleanup never restores the detached session"
+            (workspace.lean.session?.isNone && workspace.lean.nextEpoch == 1)
+      | .drop, none => pure ()
+      | _, _ => throw <| IO.userError s!"{kind.label}: cleanup failure rolled back workspace state"
+  finally
+    try
+      runtime.close
+    finally
+      IO.FS.removeDirAll base
+
 private def checkRuntimeCloseDetachesAllSessions (failShutdown : Bool) : IO Unit := do
   let base := System.FilePath.mk s!"/tmp/beam-close-sessions-{← IO.monoNanosNow}"
   let shutdownLog := base / "shutdown-order"
@@ -1897,6 +1941,8 @@ def main : IO Unit := do
   checkWorkspaceRoutingFields
   checkWorkspaceLifecycleProtocol
   checkLifecycleTeardownConcurrency
+  checkLifecycleCleanupFailureCommits .reset
+  checkLifecycleCleanupFailureCommits .drop
   checkRuntimeCloseDetachesAllSessions false
   checkRuntimeCloseDetachesAllSessions true
   checkDeadSessionCleanupReleasesStateMutex

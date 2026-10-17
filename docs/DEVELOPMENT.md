@@ -166,8 +166,7 @@ to the request's workspace generation. Starting a replacement backend session ma
 process I/O while holding the mutex.
 
 Each workspace owns at most one Lean session. A reset or drop carries an optional detached session;
-broker-wide close collects the sessions across all workspaces and attempts every shutdown while
-retaining the first typed `IO.Error`. Concurrent and repeated close calls observe that same outcome.
+broker-wide close follows the [shared runtime teardown contract](#broker-server-boundaries).
 Cancellation collects only present sessions selected by the request's workspace scope and matches
 pending work by its exact admission identity.
 
@@ -360,9 +359,10 @@ replies use the same pending-request store and reader loop; do not add a second 
 admitted request for cancellation, shuts down backend sessions to unblock pending work, waits for
 all admitted dispatch scopes to unregister, and performs a final backend sweep so a request that
 was between admission and session creation cannot leave a late process behind. Concurrent and
-repeated callers wait for the same result. Transport owners decide what triggers closure and how
-their listener or stdio connection stops; they must not duplicate broker draining or backend
-teardown.
+repeated callers wait for the same result. Every teardown phase and detached session is attempted,
+retaining the first typed `IO.Error` as that shared result. Transport owners decide what triggers
+closure and how their listener or stdio connection stops; they must not duplicate broker draining
+or backend teardown.
 
 A newly spawned backend remains a provisional resource until its initialization response arrives
 within the 30-second startup deadline and the broker sends `initialized`. Any initialization error,

@@ -1280,6 +1280,7 @@ private def ServerRuntime.runWorkspaceTransition
 /--
 Initialize, verify, or reset a workspace through a typed in-process boundary. Reset commits the new
 workspace ownership atomically, then drains its detached session outside the state mutex.
+An I/O exception from cleanup leaves the replacement workspace committed.
 -/
 def ServerRuntime.initWorkspaceWithConfig
     (server : ServerRuntime)
@@ -1306,6 +1307,7 @@ private def responseOfTypedResult [ToJson α] : Except ResponseFailure α → Re
 /--
 Remove a workspace through a typed in-process boundary. The workspace is erased atomically before
 its detached session is drained outside the state mutex.
+An I/O exception from cleanup leaves the workspace removed.
 -/
 def ServerRuntime.dropWorkspace
     (server : ServerRuntime)
