@@ -183,7 +183,10 @@ The installer and compatibility tests read toolchain registries through
 [tests/lib/toolchain-registry.sh](../tests/lib/toolchain-registry.sh). The reader trims surrounding
 whitespace (including CRLF endings) and skips blank lines and whole-line comments, matching the
 installer. It preserves entry order and contents for the existing policy checks.
-Run `python3 tests/test-toolchain-registry.py` to check this normalization without building Lean.
+Both suites check the read status before setup and stop on failure, including reads that emit partial
+output before failing. An unlisted toolchain remains distinct from a registry read failure.
+Run `python3 tests/test-toolchain-registry.py` to check normalization and these failure paths without
+building Lean.
 
 For slow or offline validation, pre-seed the host elan cache before running installer tests. A
 typical setup is:

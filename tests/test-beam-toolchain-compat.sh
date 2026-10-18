@@ -33,6 +33,11 @@ case "$bundle_timeout" in
     ;;
 esac
 
+if ! validated_registry_entries="$(beam_test_read_registry_entries validated-lean-toolchains)"; then
+  echo "failed to read validated Lean toolchain registry" >&2
+  exit 1
+fi
+
 tmp_bundle_dir="$(mktemp -d /tmp/beam-toolchain-bundles-XXXXXX)"
 tmp_env_root="$(mktemp -d /tmp/beam-toolchain-env-XXXXXX)"
 build_stdout="$tmp_env_root/build.stdout"
@@ -187,7 +192,7 @@ run_toolchain_admission_check() {
   local expected_admission="release-line"
   local expected_release_line=""
   prepare_stale_diagnostic_project
-  if beam_test_read_registry_entries validated-lean-toolchains | grep -qxF "$toolchain"; then
+  if grep -qxF -- "$toolchain" <<< "$validated_registry_entries"; then
     expected_admission="validated"
   fi
   if ! run_stale_wrapper doctor > "$admission_stdout" 2> "$admission_stderr"; then

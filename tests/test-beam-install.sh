@@ -22,6 +22,11 @@ cd "$(dirname "$0")/.."
 BEAM_TEST_SUITE="${BEAM_TEST_SUITE:-install}"
 BEAM_INSTALL_TEST_PRESEED_ELAN="${BEAM_INSTALL_TEST_PRESEED_ELAN:-auto}"
 
+if ! validated_registry_entries="$(beam_test_read_registry_entries validated-lean-toolchains)"; then
+  echo "failed to read validated Lean toolchain registry" >&2
+  exit 1
+fi
+
 tmp_root="$(mktemp -d /tmp/beam-install-XXXXXX)"
 declare -a installed_owner_pids=()
 declare -a installed_owner_roots=()
@@ -64,7 +69,7 @@ validated_toolchains=()
 while IFS= read -r line; do
   [ -n "$line" ] || continue
   validated_toolchains+=("$line")
-done < <(beam_test_read_registry_entries validated-lean-toolchains)
+done <<< "$validated_registry_entries"
 toolchain="$(awk 'NR==1 {print $1}' lean-toolchain)"
 if [ -z "$toolchain" ]; then
   echo "missing pinned Lean toolchain in lean-toolchain" >&2
