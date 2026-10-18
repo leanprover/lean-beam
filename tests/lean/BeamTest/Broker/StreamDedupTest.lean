@@ -104,7 +104,7 @@ private def fakeTrackedSession (root transcript : System.FilePath) : IO Beam.Bro
     root
     epoch := 1
     sessionToken := "fake-tracked-session"
-    proc
+    proc := ← Beam.Broker.BackendProcess.create proc.pid proc.tryWait proc.kill
     stdin := IO.FS.Stream.ofHandle proc.stdin
     stdout := IO.FS.Stream.ofHandle proc.stdout
     stderrCapture
@@ -139,7 +139,7 @@ private def fakeSessionWithSyncedDoc
     root
     epoch := 1
     sessionToken := "fake-run-at-session"
-    proc
+    proc := ← Beam.Broker.BackendProcess.create proc.pid proc.tryWait proc.kill
     stdin := IO.FS.Stream.ofHandle proc.stdin
     stdout := IO.FS.Stream.ofHandle proc.stdout
     stderrCapture
@@ -207,11 +207,7 @@ def checkRunAtStreamsSetupDiagnostics : IO Unit := do
         s!"expected run_at setup diagnostics to stay informational and relative, got {(toJson streamed).compress}"
   finally
     try
-      session.proc.kill
-    catch _ =>
-      pure ()
-    try
-      discard <| session.proc.tryWait
+      discard <| session.proc.terminate 1000
     catch _ =>
       pure ()
     try
@@ -265,11 +261,7 @@ def check : IO Unit := do
       throw <| IO.userError s!"expected final tracked diagnostics snapshot to keep both warnings, got {(toJson diagnostics).compress}"
   finally
     try
-      session.proc.kill
-    catch _ =>
-      pure ()
-    try
-      discard <| session.proc.tryWait
+      discard <| session.proc.terminate 1000
     catch _ =>
       pure ()
 

@@ -392,10 +392,22 @@ retaining the first typed `IO.Error` as that shared result. Transport owners dec
 closure and how their listener or stdio connection stops; they must not duplicate broker draining
 or backend teardown.
 
-A successful POSIX child wait consumes its exit status. Carry that observation into detached-session
-cleanup instead of polling or signalling the same child again; retain wait failures separately from
-a still-running child. Stderr completion comes from its drain task, including when a process wait
-fails. Use `StderrCapture.awaitCompletion` to observe EOF, a source error, or an unfinished drain
+A successful POSIX child wait consumes its exit status. Each backend has one shared
+`BackendProcess` owner that serializes child observation and termination and retains the first exit
+or wait failure. Reader failure, request-time cleanup, and runtime close must use that owner;
+session copies must never independently wait on or signal the raw child. Observe and signal in one
+critical section so another cleanup path cannot reap the child between them. Release this lock
+between exit polls, and never hold it across pipe I/O or reply waits.
+
+Cleanup observes the owner before the graceful LSP `shutdown`/`exit` handshake; a retained exit or
+wait failure skips its writes and response wait. The handshake waits directly on its pending
+promise within a bound. Only a successful reply permits the `exit` notification and graceful exit
+wait; a timeout, failed reply, or failed write proceeds directly to process termination.
+Final cleanup explicitly settles remaining requests with `workerExited`
+and the retained process outcome, even when an inherited stdout pipe prevents reader EOF.
+The reply bound does not bound a blocking stdin write. Stderr completion comes from its drain task,
+including when a process wait fails.
+Use `StderrCapture.awaitCompletion` to observe EOF, a source error, or an unfinished drain
 within a bound; none of these outcomes alone proves that the writer exited. Report an open pipe
 only when that bounded drain has not completed.
 Use `IO.Process.Child.kill` followed by a bounded exit wait for forced termination. On supported

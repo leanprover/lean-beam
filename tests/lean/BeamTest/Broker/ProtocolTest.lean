@@ -1240,30 +1240,34 @@ private inductive ShutdownBehavior where
 
 /-- Reap an owned fixture if it is still running, without waiting indefinitely or re-signalling it. -/
 private def cleanupFixtureChild
-    {cfg : IO.Process.StdioConfig}
-    (child : IO.Process.Child cfg) : IO Unit := do
-  let running ←
-    try pure (← child.tryWait).isNone
-    catch _ => pure false
-  unless running do return
-  try child.kill catch _ => pure ()
-  for _ in [:100] do
-    let running ←
-      try pure (← child.tryWait).isNone
-      catch _ => pure false
-    unless running do return
-    IO.sleep 10
-  throw <| IO.userError "owned fixture child did not exit within its cleanup bound"
+    (process : BackendProcess) : IO Unit := do
+  match ← process.terminate 1000 with
+  | some (.exited _) => pure ()
+  | some (.waitFailed err) => throw err
+  | none => throw <| IO.userError "owned fixture child did not exit within its cleanup bound"
 
 private def withFixtureChild
     (args : IO.Process.SpawnArgs)
-    (act : IO.Process.Child args.toStdioConfig → IO α) : IO α := do
+    (act : IO.Process.Child args.toStdioConfig → BackendProcess → IO α) : IO α := do
   let child ← IO.Process.spawn args
-  try act child
-  finally cleanupFixtureChild child
+  let process ← BackendProcess.create child.pid child.tryWait child.kill
+  try act child process
+  finally cleanupFixtureChild process
+
+private def checkFixtureCleanupRejectsWaitFailure : IO Unit := do
+  let process ← BackendProcess.create 0
+    (throw <| IO.userError "controlled fixture wait failure") (pure ())
+  let outcome : Except IO.Error Unit ←
+    try
+      cleanupFixtureChild process
+      pure (.ok ())
+    catch err => pure (.error err)
+  match outcome with
+  | .error (.userError "controlled fixture wait failure") => pure ()
+  | _ => throw <| IO.userError "fixture cleanup accepted an unverified process reap"
 
 private def checkFixtureChildCleanupOnFailure : IO Unit := do
-  let childRef ← IO.mkRef (none : Option (IO.Process.Child brokerStdio))
+  let childRef ← IO.mkRef (none : Option BackendProcess)
   try
     let outcome : Except IO.Error Unit ←
       try
@@ -1271,8 +1275,8 @@ private def checkFixtureChildCleanupOnFailure : IO Unit := do
           toStdioConfig := brokerStdio
           cmd := "python3"
           args := #["-c", "import time\nwhile True: time.sleep(1)\n"]
-        } fun child => do
-          childRef.set (some child)
+        } fun _ process => do
+          childRef.set (some process)
           -- Fail before constructing a Session or adopting the child into broker state.
           throw <| IO.userError "fixture setup failed"
         pure (.ok ())
@@ -1312,9 +1316,9 @@ private def withShutdownObservedSession
       workspaceId,
       (match behavior with | .exit => "exit" | .stall => "stall")
     ]
-  } fun proc => do
+  } fun child proc => do
     let pending ← Std.Mutex.new ({} : Std.TreeMap Lean.JsonRpc.RequestID PendingRequest)
-    let stderrCapture ← startBackendStderrCapture proc.stderr
+    let stderrCapture ← startBackendStderrCapture child.stderr
     act {
       workspaceId
       workspaceGeneration := 1
@@ -1322,40 +1326,231 @@ private def withShutdownObservedSession
       epoch := 1
       sessionToken := s!"shutdown-observed-{workspaceId}"
       proc
-      stdin := IO.FS.Stream.ofHandle proc.stdin
-      stdout := IO.FS.Stream.ofHandle proc.stdout
+      stdin := IO.FS.Stream.ofHandle child.stdin
+      stdout := IO.FS.Stream.ofHandle child.stdout
       stderrCapture
       pending
     }
 
+private def awaitFixtureSignal (label : String) (signal : IO.Promise Unit) : IO Unit := do
+  let some (some ()) ← Beam.waitTaskWithTimeout signal.result? 5000
+    | throw <| IO.userError s!"{label}: fixture signal did not arrive"
+
+private def awaitFixtureTask
+    (label : String) (task : Task (Except IO.Error Unit)) : IO Unit := do
+  match ← Beam.waitTaskWithTimeout task 5000 with
+  | some (.ok ()) => pure ()
+  | some (.error err) => throw err
+  | none => throw <| IO.userError s!"{label}: fixture task did not finish"
+
+private inductive ShutdownReply where
+  | success
+  | error
+  | timeout
+  | writeFailure
+  deriving BEq
+
+/-- A failed graceful attempt must reach mandatory cleanup without another synchronous write. -/
+private def checkShutdownReplyCleanup (reply : ShutdownReply) : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-shutdown-reply-{← IO.monoNanosNow}"
+  let workspaceId := "shutdown-reply"
+  IO.FS.createDirAll base
+  let runtime ← ServerRuntime.create { root := base } workspaceId
+  try
+    withShutdownObservedSession workspaceId base (base / "shutdown") .stall fun initial => do
+      let releaseExit ← IO.Promise.new
+      let shutdownWrites ← IO.mkRef (0 : Nat)
+      let exitWrites ← IO.mkRef (0 : Nat)
+      let ordinary : PendingRequest := {
+        promise := ← IO.Promise.new
+        progressRef := ← IO.mkRef none
+        diagnosticsRef := ← IO.mkRef #[]
+        diagnosticsSeenRef := ← IO.mkRef false
+        seenDiagnosticKeysRef := ← IO.mkRef {}
+      }
+      PendingRequestStore.insert initial.pending 0 ordinary
+      let session := { initial with
+        stdin := { initial.stdin with
+          putStr := fun text => do
+            if text.contains "\"method\":\"shutdown\"" then
+              shutdownWrites.modify (· + 1)
+              if reply == .writeFailure then
+                throw <| IO.userError "controlled shutdown write failure"
+              initial.stdin.putStr text
+              if reply == .success || reply == .error then
+                let id : Lean.JsonRpc.RequestID := initial.nextId
+                let some pending ← PendingRequestStore.remove initial.pending id
+                  | throw <| IO.userError "controlled shutdown request was not registered"
+                if reply == .success then
+                  PendingRequest.resolveResponse pending Json.null
+                else
+                  pending.promise.resolve (.error <|
+                    responseFailureFor .internalError "controlled shutdown reply failure")
+            else if text.contains "\"method\":\"exit\"" then
+              -- Count before blocking: an assertion thrown here could be swallowed by cleanup.
+              exitWrites.modify (· + 1)
+              if reply != .success then
+                discard <| IO.wait releaseExit.result?
+              initial.stdin.putStr text
+            else initial.stdin.putStr text
+        }
+      }
+      runtime.state.atomically do
+        let state ← get
+        let some workspace := state.workspaces.get? workspaceId
+          | throw <| IO.userError "shutdown-reply fixture workspace is missing"
+        let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
+        set { state with workspaces := state.workspaces.insert workspaceId workspace }
+      let closeTask ← IO.asTask (prio := Task.Priority.dedicated) runtime.close
+      try
+        let some (some (.error failure)) ← Beam.waitTaskWithTimeout ordinary.promise.result? 4000
+          | throw <| IO.userError "shutdown cleanup left ordinary pending work behind an exit write"
+        require "shutdown cleanup settles ordinary pending work with a typed worker exit"
+          (failure.error.code == "workerExited")
+        awaitFixtureTask "shutdown-reply runtime close" closeTask
+        require "shutdown cleanup attempts exactly one shutdown request" ((← shutdownWrites.get) == 1)
+        require "only a successful shutdown reply permits an exit notification"
+          ((← exitWrites.get) == if reply == .success then 1 else 0)
+        require "shutdown cleanup settles every pending request"
+          ((← PendingRequestStore.snapshot session.pending).isEmpty)
+        let some (.exited _) ← session.proc.observe
+          | throw <| IO.userError "shutdown cleanup did not confirm termination of its stalled child"
+      finally
+        -- A broken implementation may be held inside the forbidden notification write.
+        releaseExit.resolve ()
+        discard <| Beam.waitTaskWithTimeout closeTask 5000
+  finally
+    try runtime.close finally IO.FS.removeDirAll base
+
+private inductive CleanupOrder where
+  | readerFirst
+  | closeFirst
+
+/-- Hold both callers inside their I/O boundaries, then release each completion order explicitly. -/
+private def checkReaderFailureOverlapsClose (order : CleanupOrder) : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-reader-close-{← IO.monoNanosNow}"
+  let workspaceId := "reader-close"
+  IO.FS.createDirAll base
+  let runtime ← ServerRuntime.create { root := base } workspaceId
+  try
+    withShutdownObservedSession workspaceId base (base / "shutdown") .stall fun initial => do
+      let readerStarted ← IO.Promise.new
+      let failReader ← IO.Promise.new
+      let shutdownStarted ← IO.Promise.new
+      let releaseShutdown ← IO.Promise.new
+      let writes ← IO.mkRef (0 : Nat)
+      let session := { initial with
+        stdin := { initial.stdin with
+          putStr := fun text => do
+            let count ← writes.get
+            writes.set (count + 1)
+            if count == 0 then
+              shutdownStarted.resolve ()
+              discard <| IO.wait releaseShutdown.result?
+            initial.stdin.putStr text
+        }
+        stdout := { initial.stdout with
+          getLine := do
+            readerStarted.resolve ()
+            discard <| IO.wait failReader.result?
+            throw <| IO.userError "controlled reader failure"
+        }
+      }
+      runtime.state.atomically do
+        let state ← get
+        let some workspace := state.workspaces.get? workspaceId
+          | throw <| IO.userError "reader-close fixture workspace is missing"
+        let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
+        set { state with workspaces := state.workspaces.insert workspaceId workspace }
+      let readerTask ← IO.asTask (prio := Task.Priority.dedicated) <| sessionReaderLoop session
+      let closeTask ← IO.asTask (prio := Task.Priority.dedicated) runtime.close
+      try
+        awaitFixtureSignal "reader-close reader" readerStarted
+        awaitFixtureSignal "reader-close shutdown" shutdownStarted
+        let entries ← PendingRequestStore.snapshotEntries session.pending
+        require "overlapping close has exactly one pending shutdown" (entries.size == 1)
+        let some (id, pending) := entries[0]?
+          | throw <| IO.userError "overlapping close did not publish its shutdown request"
+        match order with
+        | .readerFirst =>
+            failReader.resolve ()
+            awaitFixtureTask "reader cleanup before close" readerTask
+            require "close remains inside its controlled write until reader cleanup completes"
+              (!(← IO.hasFinished closeTask))
+            releaseShutdown.resolve ()
+        | .closeFirst =>
+            discard <| PendingRequestStore.remove session.pending id
+            PendingRequest.resolveResponse pending Json.null
+            releaseShutdown.resolve ()
+            awaitFixtureTask "close cleanup before reader" closeTask
+            require "reader remains inside its controlled read until close cleanup completes"
+              (!(← IO.hasFinished readerTask))
+            failReader.resolve ()
+        awaitFixtureTask "overlapping reader cleanup" readerTask
+        awaitFixtureTask "overlapping runtime close" closeTask
+        match order, ← pending.awaitOutcome with
+        | .readerFirst, .error failure =>
+            require "reader failure resolves the overlapping shutdown with its worker-exit cause"
+              (failure.error.code == "workerExited" &&
+                failure.error.message.contains "controlled reader failure")
+        | .closeFirst, .ok _ => pure ()
+        | _, _ => throw <| IO.userError "overlapping cleanup changed the pending shutdown outcome"
+        require "overlapping cleanup leaves no pending requests"
+          ((← PendingRequestStore.snapshot session.pending).isEmpty)
+        runtime.state.atomically do
+          let some workspace := (← get).workspaces.get? workspaceId
+            | throw <| IO.userError "overlapping close removed its workspace"
+          require "overlapping cleanup detaches its session exactly once"
+            (workspace.lean.session?.isNone && workspace.lean.nextEpoch == 3)
+        let status ← IO.Process.output {
+          cmd := "ps"
+          args := #["-p", toString session.proc.pid, "-o", "stat="]
+        }
+        require "overlapping cleanup kills and reaps its child" (status.exitCode != 0)
+        let writesBefore ← writes.get
+        runtime.close
+        require "repeated close after reader cleanup sends no additional messages"
+          ((← writes.get) == writesBefore)
+      finally
+        failReader.resolve ()
+        releaseShutdown.resolve ()
+        discard <| Beam.waitTaskWithTimeout readerTask 5000
+        discard <| Beam.waitTaskWithTimeout closeTask 5000
+  finally
+    try
+      runtime.close
+    finally
+      IO.FS.removeDirAll base
+
 /-- Model an exited worker whose descendant keeps the session pipes open during bounded cleanup. -/
 private def exitedSessionWithInheritedStdio
     (workspaceId : WorkspaceId)
-    (root cleanupStarted release done : System.FilePath) : IO Session := do
+    (root pipesReady release done : System.FilePath) : IO Session := do
   let childScript :=
     "import pathlib, sys, time\n" ++
-    "sys.stdin.buffer.readline()\n" ++
-    "pathlib.Path(sys.argv[1]).write_text('cleanup')\n" ++
+    "pathlib.Path(sys.argv[1]).write_text('pipes-open')\n" ++
     "deadline = time.monotonic() + 30\n" ++
     "while not pathlib.Path(sys.argv[2]).exists() and time.monotonic() < deadline:\n" ++
     " time.sleep(0.01)\n" ++
     "pathlib.Path(sys.argv[2]).unlink(missing_ok=True)\n" ++
     "pathlib.Path(sys.argv[3]).write_text('done')\n"
-  let proc ← IO.Process.spawn {
+  let child ← IO.Process.spawn {
     toStdioConfig := brokerStdio
     cmd := "python3"
     args := #[
       "-c",
       "import subprocess, sys\nsubprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]])",
       childScript,
-      cleanupStarted.toString,
+      pipesReady.toString,
       release.toString,
       done.toString
     ]
   }
   let pending ← Std.Mutex.new ({} : Std.TreeMap Lean.JsonRpc.RequestID PendingRequest)
-  let stderrCapture ← startBackendStderrCapture proc.stderr
-  discard <| proc.wait
+  let stderrCapture ← startBackendStderrCapture child.stderr
+  let proc ← BackendProcess.create child.pid child.tryWait child.kill
+  let some (.exited _) ← proc.waitForExit 1000
+    | throw <| IO.userError "inherited-stdio fixture leader did not exit"
   pure {
     workspaceId
     workspaceGeneration := 1
@@ -1363,8 +1558,8 @@ private def exitedSessionWithInheritedStdio
     epoch := 1
     sessionToken := s!"exited-{workspaceId}"
     proc
-    stdin := IO.FS.Stream.ofHandle proc.stdin
-    stdout := IO.FS.Stream.ofHandle proc.stdout
+    stdin := IO.FS.Stream.ofHandle child.stdin
+    stdout := IO.FS.Stream.ofHandle child.stdout
     stderrCapture
     pending
   }
@@ -1586,14 +1781,24 @@ private def checkDeadSessionCleanupReleasesStateMutex : IO Unit := do
   let targetRoot := System.FilePath.mk s!"/tmp/beam-dead-session-target-{nonce}"
   let replacementRoot := System.FilePath.mk s!"/tmp/beam-dead-session-replacement-{nonce}"
   let observerRoot := System.FilePath.mk s!"/tmp/beam-dead-session-observer-{nonce}"
-  let cleanupStarted := System.FilePath.mk s!"/tmp/beam-dead-session-cleanup-{nonce}"
+  let pipesReady := System.FilePath.mk s!"/tmp/beam-dead-session-pipes-{nonce}"
   let release := System.FilePath.mk s!"/tmp/beam-dead-session-release-{nonce}"
   let done := System.FilePath.mk s!"/tmp/beam-dead-session-done-{nonce}"
   let targetConfig : BrokerConfig := { root := targetRoot }
   let replacementConfig : BrokerConfig := { root := replacementRoot }
   let observerConfig : BrokerConfig := { root := observerRoot }
   let runtime ← ServerRuntime.create targetConfig targetId
-  let session ← exitedSessionWithInheritedStdio targetId targetRoot cleanupStarted release done
+  let session ← exitedSessionWithInheritedStdio targetId targetRoot pipesReady release done
+  unless ← waitForPath pipesReady do
+    throw <| IO.userError "dead-session fixture did not retain its inherited pipes"
+  let cleanupPending : PendingRequest := {
+    promise := ← IO.Promise.new
+    progressRef := ← IO.mkRef none
+    diagnosticsRef := ← IO.mkRef #[]
+    diagnosticsSeenRef := ← IO.mkRef false
+    seenDiagnosticKeysRef := ← IO.mkRef {}
+  }
+  PendingRequestStore.insert session.pending 0 cleanupPending
   runtime.state.atomically do
     let state ← get
     let targetWorkspace : WorkspaceState := {
@@ -1610,8 +1815,12 @@ private def checkDeadSessionCleanupReleasesStateMutex : IO Unit := do
     workspaceId? := some targetId
   }
   try
-    unless ← waitForPath cleanupStarted do
-      throw <| IO.userError "dead-session cleanup did not start"
+    -- Pending settlement precedes stderr draining; no shutdown write is needed for an exited child.
+    let some (some (.error failure)) ←
+        Beam.waitTaskWithTimeout cleanupPending.promise.result? 5000
+      | throw <| IO.userError "dead-session cleanup did not settle its pending request"
+    require "dead-session cleanup settles pending work before waiting on inherited pipes"
+      (failure.error.code == "workerExited")
     require "dead-session cleanup fixture should retain the inherited pipes"
       (!(← IO.hasFinished closeTask))
 
@@ -1662,7 +1871,7 @@ private def checkDeadSessionCleanupReleasesStateMutex : IO Unit := do
       runtime.close
     catch _ =>
       pure ()
-    for path in [cleanupStarted, done] do
+    for path in [pipesReady, done] do
       if ← path.pathExists then
         IO.FS.removeFile path
 
@@ -1683,7 +1892,13 @@ private partial def waitForUnreapedExit
     IO.sleep 10
     waitForUnreapedExit child (tries - 1)
 
-private def checkExitedSessionCleanupFailure (alreadyReaped : Bool) : IO Unit := do
+private inductive ExitedSessionCleanup where
+  | request
+  | runtimeClose
+
+private def checkExitedSessionCleanupFailure
+    (alreadyObserved : Bool)
+    (cleanup : ExitedSessionCleanup := .request) : IO Unit := do
   let base := System.FilePath.mk s!"/tmp/beam-exited-cleanup-{← IO.monoNanosNow}"
   let workspaceId := "exited-cleanup"
   IO.FS.createDirAll base
@@ -1694,10 +1909,17 @@ private def checkExitedSessionCleanupFailure (alreadyReaped : Bool) : IO Unit :=
       toStdioConfig := brokerStdio
       cmd := "python3"
       args := #["-c", "import sys; sys.exit(23)"]
-    } fun proc => do
-      waitForUnreapedExit proc
-      if alreadyReaped then
-        require "fixture exits with its distinct status" ((← proc.wait) == 23)
+    } fun child proc => do
+      waitForUnreapedExit child
+      if alreadyObserved then
+        let some (.exited 23) ← proc.observe
+          | throw <| IO.userError "fixture did not retain its distinct exit status"
+      let writes ← IO.mkRef (0 : Nat)
+      let stdin : IO.FS.Stream := { IO.FS.Stream.ofHandle child.stdin with
+        putStr := fun _ => do
+          writes.modify (· + 1)
+          throw <| IO.userError "cannot write to an exited fixture"
+      }
       let session : Session := {
         workspaceId
         workspaceGeneration := 1
@@ -1705,24 +1927,54 @@ private def checkExitedSessionCleanupFailure (alreadyReaped : Bool) : IO Unit :=
         epoch := 1
         sessionToken := "exited-cleanup"
         proc
-        stdin := IO.FS.Stream.ofHandle proc.stdin
-        stdout := IO.FS.Stream.ofHandle proc.stdout
+        stdin
+        stdout := IO.FS.Stream.ofHandle child.stdout
         stderrCapture := capture
         pending := ← PendingRequestStore.create
       }
+      let pending : PendingRequest := {
+        promise := ← IO.Promise.new
+        progressRef := ← IO.mkRef none
+        diagnosticsRef := ← IO.mkRef #[]
+        diagnosticsSeenRef := ← IO.mkRef false
+        seenDiagnosticKeysRef := ← IO.mkRef {}
+      }
+      PendingRequestStore.insert session.pending 0 pending
       runtime.state.atomically do
         let state ← get
         let some workspace := state.workspaces.get? workspaceId
           | throw <| IO.userError "exited cleanup fixture workspace is missing"
         let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
         set { state with workspaces := state.workspaces.insert workspaceId workspace }
-      let response ← runtime.dispatchRequest {
-        workspaceId? := some workspaceId
-        payload := .close { path := "Dead.lean" }
-      }
-      require "exited-session cleanup retains stderr source failures, including after an earlier reap"
-        (response.error?.any fun error => error.code == "internalError" &&
-          error.message.contains s!"backend stderr source failed while draining: {sourceFailure}")
+      let expected := s!"backend stderr source failed while draining: {sourceFailure}"
+      match cleanup with
+      | .request =>
+          let response ← runtime.dispatchRequest {
+            workspaceId? := some workspaceId
+            payload := .close { path := "Dead.lean" }
+          }
+          require "exited-session cleanup retains stderr source failures, including after an earlier reap"
+            (response.error?.any fun error => error.code == "internalError" &&
+              error.message.contains expected)
+      | .runtimeClose =>
+          let outcome : Except IO.Error Unit ←
+            try
+              runtime.close
+              pure (.ok ())
+            catch err => pure (.error err)
+          match outcome with
+          | .error (.userError actual) =>
+              require "runtime close preserves an exited worker's stderr source failure" (actual == expected)
+          | _ => throw <| IO.userError "exited-worker runtime close lost its stderr source failure"
+      require "exited-session cleanup never writes shutdown or exit messages" ((← writes.get) == 0)
+      require "exited-session cleanup leaves no pending requests without a reader"
+        ((← PendingRequestStore.snapshot session.pending).isEmpty)
+      let some (some (.error failure)) ← Beam.waitTaskWithTimeout pending.promise.result? 5000
+        | throw <| IO.userError "exited-session cleanup did not resolve its pending request"
+      require "exited-session cleanup reports a typed worker exit to its pending request"
+        (failure.error.code == "workerExited")
+      require "exited-session cleanup retains the original exit status after an earlier observation"
+        (failure.error.message == "backend process exited with code 23")
       runtime.state.atomically do
         let some workspace := (← get).workspaces.get? workspaceId
           | throw <| IO.userError "exited cleanup removed its workspace"
@@ -1731,8 +1983,8 @@ private def checkExitedSessionCleanupFailure (alreadyReaped : Bool) : IO Unit :=
   finally
     try
       runtime.close
-    finally
-      IO.FS.removeDirAll base
+    catch _ => pure ()
+    IO.FS.removeDirAll base
 
 private def checkWorkspaceSnapshotResetIsolation : IO Unit := do
   let nonce ← IO.monoNanosNow
@@ -1828,7 +2080,7 @@ private def pendingOnlySession
     root
     epoch := 1
     sessionToken := s!"pending-only-{workspaceId}"
-    proc
+    proc := ← BackendProcess.create proc.pid proc.tryWait proc.kill
     stdin := IO.FS.Stream.ofHandle proc.stdin
     stdout := IO.FS.Stream.ofHandle proc.stdout
     stderrCapture
@@ -1923,7 +2175,7 @@ private def checkCompletedRequestResetIsolation : IO Unit := do
     catch _ =>
       pure ()
     try
-      session.proc.kill
+      discard <| session.proc.terminate 1000
     catch _ =>
       pure ()
     if ← oldRoot.pathExists then
@@ -2058,6 +2310,13 @@ def main : IO Unit := do
   checkWorkspaceRoutingFields
   checkWorkspaceLifecycleProtocol
   checkFixtureChildCleanupOnFailure
+  checkFixtureCleanupRejectsWaitFailure
+  checkShutdownReplyCleanup .timeout
+  checkShutdownReplyCleanup .success
+  checkShutdownReplyCleanup .error
+  checkShutdownReplyCleanup .writeFailure
+  checkReaderFailureOverlapsClose .readerFirst
+  checkReaderFailureOverlapsClose .closeFirst
   checkLifecycleTeardownConcurrency
   checkLifecycleCleanupFailureCommits .reset
   checkLifecycleCleanupFailureCommits .drop
@@ -2067,6 +2326,8 @@ def main : IO Unit := do
   checkDeadSessionCleanupReleasesStateMutex
   checkExitedSessionCleanupFailure false
   checkExitedSessionCleanupFailure true
+  checkExitedSessionCleanupFailure false .runtimeClose
+  checkExitedSessionCleanupFailure true .runtimeClose
   checkWorkspaceSnapshotResetIsolation
   checkCompletedRequestResetIsolation
   checkSessionCloseAdmission

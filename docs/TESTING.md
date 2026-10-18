@@ -470,9 +470,13 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
 
 - `toolchains`: registry validation and compatibility-matrix generation as described above
 - `macos-platform`: the combined macOS job described above
-- `native-toolchain`: [tests/test-native-toolchain.py](../tests/test-native-toolchain.py)
+- `native-toolchain`: [tests/test-native-toolchain.py](../tests/test-native-toolchain.py), including
+  execution of the portable `beam-backend-process-test` on every native platform, including Windows
 - `lsp`: [tests/test-lsp.sh](../tests/test-lsp.sh)
 - `beam-fast`: [tests/test-beam-fast.sh](../tests/test-beam-fast.sh)
+  also executes `beam-backend-process-test`. Run it alone with
+  `lake build beam-backend-process-test` followed by `.lake/build/bin/beam-backend-process-test`
+  (`.exe` on Windows). Its controlled process operations require no POSIX commands or real PIDs.
 - `mcp-conformance`: [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh)
 - `mcp-modern`: [tests/test-mcp-modern-sdk.sh](../tests/test-mcp-modern-sdk.sh) followed by
   [tests/test-mcp-modern-conformance.sh](../tests/test-mcp-modern-conformance.sh)

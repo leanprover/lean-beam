@@ -239,6 +239,10 @@ lean_exe "beam-broker-protocol-test" where
   srcDir := "tests/lean"
   root := `BeamTest.Broker.ProtocolTest
 
+lean_exe "beam-backend-process-test" where
+  srcDir := "tests/lean"
+  root := `BeamTest.Broker.BackendProcessTestMain
+
 lean_exe "beam-broker-pending-test" where
   srcDir := "tests/lean"
   root := `BeamTest.Broker.PendingTest

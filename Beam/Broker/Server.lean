@@ -11,6 +11,7 @@ import Lean.Data.Lsp.LanguageFeatures
 import Lean.Data.Lsp.Internal
 import Lean.Parser.Module
 import Lean.Server.CodeActions
+import Beam.Broker.BackendProcess
 import Beam.Broker.Config
 import Beam.Broker.DocumentState
 import Beam.Broker.Errors
@@ -59,7 +60,7 @@ structure Session where
   root : System.FilePath
   epoch : Nat
   sessionToken : String
-  proc : IO.Process.Child brokerStdio
+  proc : BackendProcess
   stdin : IO.FS.Stream
   stdout : IO.FS.Stream
   stderrCapture : BackendStderrCapture
@@ -166,61 +167,20 @@ private def backendFailureMessage
 private def sessionShutdownReplyTimeoutMs : Nat :=
   1000
 
-/-- A retained wait observation. Only `none` means the child was observed still running. -/
-private inductive BackendExit where
-  | exited (code : UInt32)
-  | waitFailed (error : IO.Error)
-
-private def observeBackendExit
-    (proc : IO.Process.Child brokerStdio) : IO (Option BackendExit) := do
-  try
-    pure <| (← proc.tryWait).map BackendExit.exited
-  catch err =>
-    pure <| some (.waitFailed err)
-
-private partial def waitForProcessExitWithTimeout
-    (proc : IO.Process.Child brokerStdio)
-    (timeoutMs : Nat)
-    (pollMs : Nat := 50) : IO (Option BackendExit) := do
-  let rec loop (remainingMs : Nat) : IO (Option BackendExit) := do
-    match ← observeBackendExit proc with
-    | some exit => pure (some exit)
-    | none =>
-        if remainingMs == 0 then
-          pure none
-        else
-          let sleepMs := min (max pollMs 1) remainingMs
-          IO.sleep sleepMs.toUInt32
-          loop (remainingMs - sleepMs)
-  loop timeoutMs
-
-private def terminateBackendProcess
-    (proc : IO.Process.Child brokerStdio) : IO (Option BackendExit) := do
-  -- A successful POSIX wait consumes the exit status. Neither re-wait nor signal after observing it;
-  -- a failed wait likewise does not establish that this PID still belongs to a running child.
-  if let some exit ← observeBackendExit proc then
-    return some exit
-  try
-    proc.kill
-  catch _ =>
-    pure ()
-  -- Child.kill already forces termination on supported Lean runtimes; only the bounded wait remains.
-  waitForProcessExitWithTimeout proc sessionShutdownReplyTimeoutMs
-
 private def startBackendStderrCaptureOrTerminate
-    (proc : IO.Process.Child brokerStdio) : IO BackendStderrCapture := do
+    (proc : BackendProcess) (stderr : IO.FS.Handle) : IO BackendStderrCapture := do
   try
-    startBackendStderrCapture proc.stderr
+    startBackendStderrCapture stderr
   catch err =>
-    discard <| terminateBackendProcess proc
+    discard <| proc.terminate sessionShutdownReplyTimeoutMs
     throw <| IO.userError <|
       s!"Lean backend failed during startup before stderr capture: {err}"
 
 private def terminateBackendFailure
     (phase cause : String)
-    (proc : IO.Process.Child brokerStdio)
+    (proc : BackendProcess)
     (capture : BackendStderrCapture) : IO String := do
-  let exit? ← terminateBackendProcess proc
+  let exit? ← proc.terminate sessionShutdownReplyTimeoutMs
   let captureOutcome ← capture.awaitCompletion
   let message ← backendFailureMessage phase cause capture
   let message := match exit? with
@@ -506,34 +466,41 @@ private def startRequestJsonTrackedDetailed
       pure ()
     throw e
 
-private def shutdownSession
-    (session : Session)
-    (observedExit? : Option BackendExit := none) : IO Unit := do
-  let session ←
-    try
-      let (session, pending) ←
-        startRequestJsonTrackedDetailed session "shutdown" Json.null
-      let task ← IO.asTask (prio := Task.Priority.dedicated) pending.awaitOutcome
-      if (← Beam.waitTaskWithTimeout task sessionShutdownReplyTimeoutMs).isNone then
-        PendingRequestStore.failAll session.pending <| BrokerFailure.toResponseFailure {
-          code := .workerExited
-          message := "backend session shutdown timed out"
-        }
-        discard <| Beam.waitTaskWithTimeout task sessionShutdownReplyTimeoutMs
-      pure session
-    catch _ =>
-      pure session
+/-- Send `exit` only after a successful shutdown reply; failure ends the graceful attempt. -/
+private def requestSessionShutdown (session : Session) : IO Bool := do
   try
-    writeLspNotification session.stdin
-      ({ method := "exit", param := Json.null : Lean.JsonRpc.Notification Json })
+    let (_, pending) ←
+      startRequestJsonTrackedDetailed session "shutdown" Json.null
+    match ← Beam.waitTaskWithTimeout pending.promise.result? sessionShutdownReplyTimeoutMs with
+    | some (some (.ok _)) =>
+        writeLspNotification session.stdin
+          ({ method := "exit", param := Json.null : Lean.JsonRpc.Notification Json })
+        pure true
+    | _ => pure false
   catch _ =>
-    pure ()
-  let exit? ← match observedExit? with
+    pure false
+
+private def shutdownSession (session : Session) : IO Unit := do
+  let exit? ← match ← session.proc.observe with
     | some exit => pure (some exit)
     | none => do
-        match ← waitForProcessExitWithTimeout session.proc sessionShutdownReplyTimeoutMs with
+        let exit? ←
+          if ← requestSessionShutdown session then
+            session.proc.waitForExit sessionShutdownReplyTimeoutMs
+          else pure none
+        match exit? with
         | some exit => pure (some exit)
-        | none => terminateBackendProcess session.proc
+        | none => session.proc.terminate sessionShutdownReplyTimeoutMs
+  -- A reader can remain blocked on an inherited stdout pipe after the leader exits. Settle any
+  -- remaining requests here instead of depending on reader EOF or the graceful-handshake timeout.
+  let message := match exit? with
+    | some (.exited code) => s!"backend process exited with code {code}"
+    | some (.waitFailed err) => s!"backend process exit observation failed: {err}"
+    | none => "backend session closed without observing process exit"
+  PendingRequestStore.failAll session.pending <| BrokerFailure.toResponseFailure {
+    code := .workerExited
+    message
+  }
   if let some (.waitFailed err) := exit? then
     traceBroker s!"backend process exit observation failed: {err}"
   match ← session.stderrCapture.awaitCompletion with
@@ -601,18 +568,19 @@ private def acquireBackendSession
   let (cmd, args, env) ← match ← leanCommand config { cancelRef? } with
     | .error failure => return .error failure
     | .ok command => pure command
-  let proc ← IO.Process.spawn {
+  let child ← IO.Process.spawn {
     toStdioConfig := brokerStdio
     cmd := cmd
     args := args
     env := env
     cwd := root.toString
   }
-  let stderrCapture ← startBackendStderrCaptureOrTerminate proc
+  let proc ← BackendProcess.create child.pid child.tryWait child.kill
+  let stderrCapture ← startBackendStderrCaptureOrTerminate proc child.stderr
   let (session, initializeTask) ←
     try
-      let stdin := IO.FS.Stream.ofHandle proc.stdin
-      let stdout := IO.FS.Stream.ofHandle proc.stdout
+      let stdin := IO.FS.Stream.ofHandle child.stdin
+      let stdout := IO.FS.Stream.ofHandle child.stdout
       let pending ← PendingRequestStore.create
       let sessionToken ← mkSessionToken
       let session : Session := {
@@ -1010,21 +978,21 @@ def ServerRuntime.withState (server : ServerRuntime) (act : M α) : IO α := do
 
 private inductive LiveSessionStateResult (α : Type) where
   | done (result : Except ResponseFailure α)
-  | detached (session : Session) (exit : BackendExit)
+  | detached (session : Session)
 
 private def detachExitedSession?
-    (workspaceId : WorkspaceId) : M (Option (Session × BackendExit)) := do
+    (workspaceId : WorkspaceId) : M (Option Session) := do
   let state ← get
   let some workspace := getWorkspace? state workspaceId
     | pure none
   let sessionState := workspace.lean
   let some session := sessionState.session?
     | pure none
-  let some exit ← observeBackendExit session.proc
+  let some _ ← session.proc.observe
     | return none
   let (sessionState, detached?) := detachBackendSession sessionState
   set <| setWorkspace state workspaceId { workspace with lean := sessionState }
-  pure <| detached?.map (·, exit)
+  pure detached?
 
 /--
 Run a session state action only while the caller's workspace generation remains current. Any
@@ -1046,12 +1014,12 @@ private partial def ServerRuntime.withLiveSessionState
           pure <| .done (.error workspaceChangedFailure)
         else
           match ← detachExitedSession? workspaceId with
-          | some (session, exit) => pure <| .detached session exit
+          | some session => pure <| .detached session
           | none => .done <$> act
   match result with
   | .done result => pure result
-  | .detached session exit =>
-      shutdownSession session (some exit)
+  | .detached session =>
+      shutdownSession session
       server.withLiveSessionState workspaceId workspaceGeneration workspaceChangedFailure act
 
 /-- Return the canonical root currently owned by `workspaceId`, if that workspace exists. -/
