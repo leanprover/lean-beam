@@ -16,8 +16,10 @@ COMMAND = ROOT / ".lake/build/bin" / ("beam-system-contract-test" + EXE)
 
 
 def run(args):
-    return subprocess.run([str(arg) for arg in args], check=True, capture_output=True,
-                          text=True, encoding="utf-8", errors="replace", timeout=30)
+    result = subprocess.run([str(arg) for arg in args], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace", timeout=30)
+    assert result.returncode == 0, f"{args}: {result.returncode}\n{result.stdout}\n{result.stderr}"
+    return result
 
 
 def directory_link(path, target):
@@ -51,7 +53,6 @@ def main():
         blocked = root / "blocked"
         blocked.mkdir()
         (blocked / "child").mkdir()
-        locked_handle = None
         if os.name == "nt":
             import ctypes
             from ctypes import wintypes
@@ -62,13 +63,20 @@ def main():
             owner_denied.mkdir()
             run(["icacls", owner_denied, "/inheritance:r", "/grant:r", f"*{user[1]}:(OI)(CI)F"])
             run(["icacls", owner_denied, "/deny", f"*{user[1]}:(WD)"])
+            # Attribute-only opens do not reliably conflict with a share-mode lock. Deny the
+            # actual requested right and verify this fixture fails before invoking Beam.
+            blocked_child = blocked / "child"
+            run(["icacls", blocked_child, "/deny", f"*{user[1]}:(RA)"])
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
             kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
                                           wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
             kernel.CreateFileW.restype = wintypes.HANDLE
             kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-            locked_handle = kernel.CreateFileW(str(blocked / "child"), 0x80, 0, None, 3, 0x02000000, None)
-            assert locked_handle != wintypes.HANDLE(-1).value, ctypes.get_last_error()
+            handle = kernel.CreateFileW(str(blocked_child), 0x80, 7, None, 3, 0x02200000, None)
+            if handle != wintypes.HANDLE(-1).value:
+                kernel.CloseHandle(handle)
+                raise AssertionError("Windows permission fixture still permits reading attributes")
+            assert ctypes.get_last_error() == 5, ctypes.get_last_error()
         else:
             assert os.geteuid() != 0, "permission regression must run without root privileges"
             non_private.chmod(0o755)
@@ -83,8 +91,8 @@ def main():
             assert not missing_target.exists(), "a dangling link's target was recreated"
         finally:
             if os.name == "nt":
-                kernel.CloseHandle(locked_handle)
                 # Restore the fixture's deletion rights before TemporaryDirectory cleanup.
+                run(["icacls", blocked_child, "/remove:d", f"*{user[1]}"])
                 run(["icacls", owner_denied, "/remove:d", f"*{user[1]}"])
             else:
                 blocked.chmod(0o700)
