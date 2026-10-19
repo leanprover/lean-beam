@@ -1242,9 +1242,12 @@ private inductive ShutdownBehavior where
 private def cleanupFixtureChild
     (process : BackendProcess) : IO Unit := do
   match ← process.terminate 1000 with
-  | some (.exited _) => pure ()
-  | some (.waitFailed err) => throw err
-  | none => throw <| IO.userError "owned fixture child did not exit within its cleanup bound"
+  | .exited _ => pure ()
+  | .unconfirmed (some err) _ => throw err
+  | .unconfirmed none signalError? =>
+      throw <| IO.userError <|
+        "owned fixture child did not exit within its cleanup bound" ++
+          (signalError?.map (fun error => s!": {error}")).getD ""
 
 private def withFixtureChild
     (args : IO.Process.SpawnArgs)
@@ -1651,6 +1654,137 @@ private def failedStderrCapture
     match ← capture.awaitCompletion with
     | .sourceFailed err => pure (capture, err)
     | .drained | .pipeStillOpen => throw <| IO.userError "stderr source failure fixture did not fail"
+
+private inductive UnconfirmedProcess where
+  | signalFailure
+  | exitNotObserved
+  | waitFailure
+  deriving BEq
+
+private inductive CleanupConsumer where
+  | runtimeClose
+  | readerFailure
+  | reset
+  | drop
+  deriving BEq
+
+private def cleanupPending (cancelRef? : Option (IO.Ref Bool) := none) : IO PendingRequest := do
+  pure {
+    cancelRef?
+    promise := ← IO.Promise.new
+    progressRef := ← IO.mkRef none
+    diagnosticsRef := ← IO.mkRef #[]
+    diagnosticsSeenRef := ← IO.mkRef false
+    seenDiagnosticKeysRef := ← IO.mkRef {}
+  }
+
+/-- An unconfirmed process result must not skip pending settlement or independent stderr cleanup. -/
+private def checkUnconfirmedCleanup
+    (consumer : CleanupConsumer)
+    (scenario : UnconfirmedProcess)
+    (stderrFails : Bool := false) : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-unconfirmed-cleanup-{← IO.monoNanosNow}"
+  let workspaceId := "unconfirmed"
+  IO.FS.createDirAll base
+  let runtime ← ServerRuntime.create { root := base } workspaceId
+  try
+    withShutdownObservedSession workspaceId base (base / "shutdown") .stall fun initial => do
+      let polls ← IO.mkRef (0 : Nat)
+      let signals ← IO.mkRef (0 : Nat)
+      let writes ← IO.mkRef (0 : Nat)
+      -- This owner uses controlled operations only. The fixture retains its independent real
+      -- child owner, which always kills and reaps the child when this scope finishes.
+      let process ← BackendProcess.create 0
+        (do
+          polls.modify (· + 1)
+          if scenario == .waitFailure then throw <| IO.userError "controlled cleanup wait failure"
+          pure none)
+        (do
+          signals.modify (· + 1)
+          if scenario == .signalFailure then throw <| IO.userError "controlled cleanup signal failure")
+      let capture ←
+        if stderrFails then
+          Prod.fst <$> failedStderrCapture (base / "write-only-stderr") .write
+        else pure initial.stderrCapture
+      let session := { initial with
+        proc := process
+        stderrCapture := capture
+        stdin := { initial.stdin with putStr := fun _ => do
+          writes.modify (· + 1)
+          throw <| IO.userError "controlled cleanup shutdown write failure"
+        }
+        stdout := { initial.stdout with
+          getLine := throw <| IO.userError "controlled cleanup reader failure"
+        }
+      }
+      let ordinary ← cleanupPending
+      let cancelled ← cleanupPending (some (← IO.mkRef true))
+      PendingRequestStore.insert session.pending 0 ordinary
+      PendingRequestStore.insert session.pending 99 cancelled
+      runtime.state.atomically do
+        let state ← get
+        let some workspace := state.workspaces.get? workspaceId
+          | throw <| IO.userError "unconfirmed cleanup workspace is missing"
+        let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
+        set { state with workspaces := state.workspaces.insert workspaceId workspace }
+      let act := match consumer with
+        | .runtimeClose => runtime.close
+        | .readerFailure => sessionReaderLoop session
+        | .reset => discard <| runtime.initWorkspaceWithConfig workspaceId { root := base / "new" } (some .reset)
+        | .drop => discard <| runtime.dropWorkspace workspaceId
+      let outcome : Except IO.Error Unit ← try act *> pure (.ok ()) catch error => pure (.error error)
+      let some (some (.error pendingFailure)) ← Beam.waitTaskWithTimeout ordinary.promise.result? 1000
+        | throw <| IO.userError "incomplete cleanup skipped ordinary pending settlement"
+      require "unconfirmed cleanup settles pending work with a typed worker failure"
+        (pendingFailure.error.code == "workerExited")
+      require "unconfirmed cleanup empties the pending store"
+        ((← PendingRequestStore.snapshot session.pending).isEmpty)
+      match ← cancelled.awaitOutcome with
+      | .error failure =>
+          require "cleanup preserves cancellation precedence"
+            (failure.error.code == "requestCancelled")
+      | .ok _ => throw <| IO.userError "cleanup changed cancellation into success"
+      let message ← match consumer, outcome with
+        | .readerFailure, .ok () => pure pendingFailure.error.message
+        | .readerFailure, .error error => throw error
+        | _, .error (.userError message) => pure message
+        | _, _ => throw <| IO.userError "unconfirmed process cleanup returned success"
+      require "all teardown paths report unconfirmed process exit"
+        (message.contains "backend process exit was not confirmed")
+      if consumer == .readerFailure then
+        require "cleanup preserves the original reader failure"
+          (message.contains "controlled cleanup reader failure")
+      if scenario == .signalFailure then
+        require "cleanup retains the signalling failure" (message.contains "controlled cleanup signal failure")
+      if scenario == .waitFailure then
+        require "cleanup retains the wait failure" (message.contains "controlled cleanup wait failure")
+      if stderrFails then
+        require "process failure does not hide an independent stderr failure"
+          (message.contains "backend stderr source failed while draining:")
+      let pollCount ← polls.get
+      let signalCount ← signals.get
+      require "a retained wait failure forbids further raw process operations"
+        (if scenario == .waitFailure then pollCount == 1 && signalCount == 0
+         else signalCount == 1)
+      require "failed reader or wait never enters the graceful protocol"
+        ((← writes.get) == if scenario == .waitFailure || consumer == .readerFailure then 0 else 1)
+      match consumer with
+      | .runtimeClose =>
+          let repeated : Except IO.Error Unit ←
+            try runtime.close *> pure (.ok ()) catch error => pure (.error error)
+          match repeated with
+          | .error (.userError actual) => require "repeated close retains incomplete cleanup" (actual == message)
+          | _ => throw <| IO.userError "repeated close lost its cleanup failure"
+      | .reset =>
+          require "failed cleanup retains the committed replacement"
+            ((← runtime.workspaceRoot? workspaceId) == some (base / "new"))
+      | .drop =>
+          require "failed cleanup retains the committed removal"
+            ((← runtime.workspaceRoot? workspaceId).isNone)
+      | .readerFailure => pure ()
+  finally
+    try runtime.close catch _ => pure ()
+    IO.FS.removeDirAll base
 
 private def checkLifecycleCleanupFailureCommits
     (kind : LifecycleTeardown)
@@ -2317,6 +2451,13 @@ def main : IO Unit := do
   checkShutdownReplyCleanup .writeFailure
   checkReaderFailureOverlapsClose .readerFirst
   checkReaderFailureOverlapsClose .closeFirst
+  checkUnconfirmedCleanup .runtimeClose .signalFailure true
+  checkUnconfirmedCleanup .runtimeClose .exitNotObserved
+  checkUnconfirmedCleanup .runtimeClose .waitFailure
+  checkUnconfirmedCleanup .readerFailure .signalFailure true
+  checkUnconfirmedCleanup .readerFailure .waitFailure
+  checkUnconfirmedCleanup .reset .signalFailure
+  checkUnconfirmedCleanup .drop .exitNotObserved
   checkLifecycleTeardownConcurrency
   checkLifecycleCleanupFailureCommits .reset
   checkLifecycleCleanupFailureCommits .drop

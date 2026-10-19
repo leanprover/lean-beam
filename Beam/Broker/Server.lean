@@ -167,29 +167,51 @@ private def backendFailureMessage
 private def sessionShutdownReplyTimeoutMs : Nat :=
   1000
 
+/-- Render process facts only at the session's diagnostic boundary. -/
+private def backendTerminationMessage : BackendTermination → String
+  | .exited code => s!"backend process exited with code {code}"
+  | .unconfirmed waitError? signalError? =>
+      String.intercalate "\n" <|
+        ["backend process exit was not confirmed"] ++
+        (waitError?.toList.map fun error => s!"backend process exit observation failed: {error}") ++
+        (signalError?.toList.map fun error => s!"backend process termination signal failed: {error}")
+
+/-- All teardown callers use the same success policy, independently of their original failure. -/
+private def backendCleanupFailure?
+    (termination : BackendTermination)
+    (stderr? : Option Beam.StderrCaptureOutcome) : Option IO.Error :=
+  let processFailures := match termination with
+    | .exited _ => []
+    | .unconfirmed .. => [backendTerminationMessage termination]
+  let stderrFailures := match stderr? with
+    | some (.sourceFailed error) => [s!"backend stderr source failed while draining: {error}"]
+    | _ => []
+  match processFailures ++ stderrFailures with
+  | [] => none
+  | failures => some <| IO.userError <| String.intercalate "\n" failures
+
 private def startBackendStderrCaptureOrTerminate
     (proc : BackendProcess) (stderr : IO.FS.Handle) : IO BackendStderrCapture := do
   try
     startBackendStderrCapture stderr
   catch err =>
-    discard <| proc.terminate sessionShutdownReplyTimeoutMs
+    let termination ← proc.terminate sessionShutdownReplyTimeoutMs
+    let cleanupFailure? := backendCleanupFailure? termination none
     throw <| IO.userError <|
-      s!"Lean backend failed during startup before stderr capture: {err}"
+      s!"Lean backend failed during startup before stderr capture: {err}" ++
+        (cleanupFailure?.map (fun error => s!"\n{error}")).getD ""
 
 private def terminateBackendFailure
     (phase cause : String)
     (proc : BackendProcess)
     (capture : BackendStderrCapture) : IO String := do
-  let exit? ← proc.terminate sessionShutdownReplyTimeoutMs
+  let termination ← proc.terminate sessionShutdownReplyTimeoutMs
   let captureOutcome ← capture.awaitCompletion
   let message ← backendFailureMessage phase cause capture
-  let message := match exit? with
-    | some (.waitFailed err) => message ++ s!"\nbackend process exit observation failed: {err}"
-    | _ => message
+  let message := message ++
+    ((backendCleanupFailure? termination (some captureOutcome)).map (fun error => s!"\n{error}")).getD ""
   pure <| match captureOutcome with
-    | .drained => message
-    | .sourceFailed err =>
-        message ++ s!"\nbackend stderr source also failed while draining: {err}"
+    | .drained | .sourceFailed _ => message
     | .pipeStillOpen =>
         message ++ "\nbackend stderr pipe remained open; its bounded capture remains active"
 
@@ -481,36 +503,29 @@ private def requestSessionShutdown (session : Session) : IO Bool := do
     pure false
 
 private def shutdownSession (session : Session) : IO Unit := do
-  let exit? ← match ← session.proc.observe with
-    | some exit => pure (some exit)
+  let termination ← match ← session.proc.observe with
+    | some exit => pure exit.toTermination
     | none => do
         let exit? ←
           if ← requestSessionShutdown session then
             session.proc.waitForExit sessionShutdownReplyTimeoutMs
           else pure none
         match exit? with
-        | some exit => pure (some exit)
+        | some exit => pure exit.toTermination
         | none => session.proc.terminate sessionShutdownReplyTimeoutMs
   -- A reader can remain blocked on an inherited stdout pipe after the leader exits. Settle any
   -- remaining requests here instead of depending on reader EOF or the graceful-handshake timeout.
-  let message := match exit? with
-    | some (.exited code) => s!"backend process exited with code {code}"
-    | some (.waitFailed err) => s!"backend process exit observation failed: {err}"
-    | none => "backend session closed without observing process exit"
   PendingRequestStore.failAll session.pending <| BrokerFailure.toResponseFailure {
     code := .workerExited
-    message
+    message := backendTerminationMessage termination
   }
-  if let some (.waitFailed err) := exit? then
-    traceBroker s!"backend process exit observation failed: {err}"
-  match ← session.stderrCapture.awaitCompletion with
-  | .drained => pure ()
-  | .sourceFailed err =>
-      throw <| IO.userError s!"backend stderr source failed while draining: {err}"
-  | .pipeStillOpen =>
-      -- A descendant can retain the pipe after the backend leader is reaped. This is an explicit
-      -- bounded resource outcome, not a reason to make an otherwise completed shutdown fail.
-      traceBroker "backend stderr drain did not finish within its shutdown bound"
+  let captureOutcome ← session.stderrCapture.awaitCompletion
+  if let .pipeStillOpen := captureOutcome then
+    -- A descendant can retain the pipe after the backend leader is reaped. This is an explicit
+    -- bounded resource outcome, not a reason to make an otherwise completed shutdown fail.
+    traceBroker "backend stderr drain did not finish within its shutdown bound"
+  if let some error := backendCleanupFailure? termination (some captureOutcome) then
+    throw error
 
 def sendRequestJsonTrackedDetailed
     (session : Session)
@@ -553,7 +568,8 @@ private def backendInitializeTimeoutMs : Nat :=
   30000
 
 /--
-Acquire a fully initialized backend session or terminate the provisional child before failing.
+Acquire a fully initialized backend session or attempt termination before failing, reporting any
+unconfirmed exit alongside the original startup failure.
 
 The caller adopts the returned session into broker state. No child ownership escapes this function
 until the initialization response and `initialized` notification have both completed.

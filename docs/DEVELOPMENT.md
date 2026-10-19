@@ -399,12 +399,23 @@ session copies must never independently wait on or signal the raw child. Observe
 critical section so another cleanup path cannot reap the child between them. Release this lock
 between exit polls, and never hold it across pipe I/O or reply waits.
 
+Process observation and termination have different result types. `BackendObservation.waitFailed`
+stops further raw operations through the owner but does not confirm exit. `BackendTermination`
+distinguishes confirmed exit from unconfirmed termination and preserves wait and signalling errors
+as typed data. A signalling error followed by confirmed exit is successful process cleanup.
+Startup failure, reader failure, and explicit shutdown apply the same cleanup-success policy:
+unconfirmed exit and stderr source failure must be reported independently. Termination returns
+these outcomes instead of throwing them past mandatory pending-request settlement.
+
 Cleanup observes the owner before the graceful LSP `shutdown`/`exit` handshake; a retained exit or
 wait failure skips its writes and response wait. The handshake waits directly on its pending
 promise within a bound. Only a successful reply permits the `exit` notification and graceful exit
 wait; a timeout, failed reply, or failed write proceeds directly to process termination.
 Final cleanup explicitly settles remaining requests with `workerExited`
 and the retained process outcome, even when an inherited stdout pipe prevents reader EOF.
+After settling pending work and observing stderr completion, unconfirmed process exit is reported
+as a cleanup error. Runtime closure retains that error for concurrent and repeated callers while
+continuing the remaining teardown phases; workspace reset and removal keep their committed state.
 The reply bound does not bound a blocking stdin write. Stderr completion comes from its drain task,
 including when a process wait fails.
 Use `StderrCapture.awaitCompletion` to observe EOF, a source error, or an unfinished drain
@@ -417,9 +428,10 @@ no stronger termination guarantee.
 
 A newly spawned backend remains a provisional resource until its initialization response arrives
 within the 30-second startup deadline and the broker sends `initialized`. Any initialization error,
-timeout, or notification-write failure terminates and reaps that child before the acquisition fails;
-only a fully initialized session enters workspace state. Keep this acquisition bracket intact so
-runtime closure never has to discover an unowned provisional process.
+timeout, or notification-write failure attempts termination before acquisition fails, reporting
+unconfirmed exit alongside the original startup failure. Only a fully initialized session enters
+workspace state. Keep this acquisition bracket intact so runtime closure never has to discover an
+unowned provisional process.
 
 Target-built Lake helpers evaluate project configuration outside the frontend's Lean runtime.
 Each helper request owns one child, a 30-second monotonic deadline, and the broker request's
