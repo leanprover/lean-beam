@@ -50,12 +50,7 @@ def main():
         (root / "file").write_bytes(b"ordinary file")
         non_private = root / "non-private"
         non_private.mkdir()
-        blocked = root / "blocked"
-        blocked.mkdir()
-        (blocked / "child").mkdir()
         if os.name == "nt":
-            import ctypes
-            from ctypes import wintypes
             # An explicit ordinary-account grant must remain rejected, without being repaired.
             run(["icacls", non_private, "/grant", "*S-1-1-0:(OI)(CI)RX"])
             user = next(csv.reader([run(["whoami", "/user", "/fo", "csv", "/nh"]).stdout.strip()]))
@@ -63,22 +58,19 @@ def main():
             owner_denied.mkdir()
             run(["icacls", owner_denied, "/inheritance:r", "/grant:r", f"*{user[1]}:(OI)(CI)F"])
             run(["icacls", owner_denied, "/deny", f"*{user[1]}:(WD)"])
-            # Attribute-only opens do not reliably conflict with a share-mode lock. Deny the
-            # actual requested right and verify this fixture fails before invoking Beam.
-            blocked_child = blocked / "child"
-            run(["icacls", blocked_child, "/deny", f"*{user[1]}:(RA)"])
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                                          wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-            kernel.CreateFileW.restype = wintypes.HANDLE
-            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-            handle = kernel.CreateFileW(str(blocked_child), 0x80, 7, None, 3, 0x02200000, None)
-            if handle != wintypes.HANDLE(-1).value:
-                kernel.CloseHandle(handle)
-                raise AssertionError("Windows permission fixture still permits reading attributes")
-            assert ctypes.get_last_error() == 5, ctypes.get_last_error()
+            # Metadata opens may succeed despite share locks or ACLs on a privileged runner.
+            # Invalid spelling gives an OS failure independent of those access privileges.
+            try:
+                (root / "invalid<leaf").stat()
+            except OSError as error:
+                assert error.winerror == 123, error
+            else:
+                raise AssertionError("Windows invalid-name fixture was accepted")
         else:
             assert os.geteuid() != 0, "permission regression must run without root privileges"
+            blocked = root / "blocked"
+            blocked.mkdir()
+            (blocked / "child").mkdir()
             non_private.chmod(0o755)
             blocked.chmod(0)
         before = {path: permissions(path) for path in [target, non_private]}
@@ -92,7 +84,6 @@ def main():
         finally:
             if os.name == "nt":
                 # Restore the fixture's deletion rights before TemporaryDirectory cleanup.
-                run(["icacls", blocked_child, "/remove:d", f"*{user[1]}"])
                 run(["icacls", owner_denied, "/remove:d", f"*{user[1]}"])
             else:
                 blocked.chmod(0o700)

@@ -35,7 +35,8 @@ private def inspect (root : System.FilePath) : IO Unit := do
     let before ← Beam.observePrivateDir path
     require ((← Beam.preparePrivateDir path) == before) "preparation altered an existing leaf"
     require ((← Beam.preparePrivateDirLeaf path) == before) "leaf creation altered an existing leaf"
-  for path in [root / "blocked/child",
+  let unobservable := root / (if System.Platform.isWindows then "invalid<leaf" else "blocked/child")
+  for path in [unobservable,
       System.FilePath.mk ((root / "link").toString ++ String.singleton (Char.ofNat 0))] do
     rejected (Beam.pathIsLink path) "link observation hid a filesystem or invalid-path error"
     rejected (Beam.observePrivateDir path) "directory observation hid a filesystem or invalid-path error"
