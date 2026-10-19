@@ -15,10 +15,10 @@ theorem ordinaryDecide : 0 + 0 = 0 := by
 theorem closedGoal : 0 + 0 = 0 := by
   simp
 
-theorem nestedGoal : True ∧ True := by
+theorem nestedGoal : (1 : Nat) = 1 ∧ (2 : Nat) = 2 := by
   constructor
-  · trivial
-  · trivial
+  · rfl
+  · rfl
 
 end RunAtAuxiliaryDeclarations
 

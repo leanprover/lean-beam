@@ -34,10 +34,11 @@ def run : ScenarioM Unit := do
     (probePosition 15) "decide +kernel"
 
   -- A stored snapshot must retain the declaration context for its later tactic continuation.
+  -- The two goals have distinct types so the continuation cannot reuse the first auxiliary lemma.
   let partialReq ← sendRunAt doc {
     line := 18
     character := 2
-    text := "first | constructor; decide +kernel | skip"
+    text := "first | constructor; decide +kernel"
     storeHandle := true
   }
   let partialResult : Beam.LSP.RunAt.Result ← awaitResponseAs partialReq
