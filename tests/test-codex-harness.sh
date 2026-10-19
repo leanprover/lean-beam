@@ -23,6 +23,7 @@ trap cleanup EXIT
 
 # The harness runs against a throwaway repository with a local bare origin, so the test never
 # creates worktrees or branches in the checkout under test and does not depend on network access.
+unset BEAM_CODEX_WORKTREE_ROOT BEAM_CODEX_ALLOW_PRIMARY_WORKTREE BEAM_CODEX_TOOL_LOG
 export GIT_CONFIG_GLOBAL="$tmp_root/gitconfig"
 export GIT_CONFIG_NOSYSTEM=1
 git config --global user.name "Beam Harness Test"
@@ -122,6 +123,16 @@ if git -C "$default_root/fresh" rev-parse --abbrev-ref --symbolic-full-name '@{u
   exit 1
 fi
 
+# The fetch refreshes origin/main even when the configured refspec does not cover it, as in a
+# single-branch clone of another branch.
+commit_in "$upstream_clone" "second upstream change"
+git -C "$upstream_clone" push --quiet origin main
+upstream_head="$(git -C "$upstream_clone" rev-parse HEAD)"
+git -C "$repo" config remote.origin.fetch "+refs/heads/other:refs/remotes/origin/other"
+expect_harness_ok narrow-refspec worktree add narrow-refspec
+expect_same_commit "narrow-refspec task" codex/narrow-refspec "$upstream_head"
+git -C "$repo" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+
 # An explicit base ref is used as given and not fetched.
 expect_harness_ok explicit-base worktree add explicit-base main
 expect_same_commit "explicit-base task" codex/explicit-base main
@@ -162,7 +173,7 @@ expect_harness_fails_with plain-dir "is not a registered git worktree" worktree 
 
 # drop refuses to discard commits that are not on any remote, and keeps the worktree intact.
 commit_in "$default_root/fresh" "local task work"
-expect_harness_fails_with drop-unpushed "1 commit(s) not on any remote" worktree drop fresh
+expect_harness_fails_with drop-unpushed "1 commit(s) that are neither on any remote nor merged" worktree drop fresh
 expect_branch codex/fresh
 assert_file "$default_root/fresh/README"
 
@@ -171,6 +182,27 @@ git -C "$default_root/fresh" push --quiet origin codex/fresh
 expect_harness_ok drop-pushed worktree drop fresh
 assert_not_exists "$default_root/fresh"
 expect_no_branch codex/fresh
+
+# A squash-merged task branch can be dropped after its remote branch is deleted and pruned.
+commit_in "$default_root/narrow-refspec" "squashed task work"
+git -C "$default_root/narrow-refspec" push --quiet origin codex/narrow-refspec
+git -C "$upstream_clone" pull --quiet origin main
+git -C "$upstream_clone" fetch --quiet origin codex/narrow-refspec
+git -C "$upstream_clone" merge --quiet --squash FETCH_HEAD >/dev/null
+git -C "$upstream_clone" commit --quiet -m "squash merge narrow-refspec"
+git -C "$upstream_clone" push --quiet origin main
+git -C "$upstream_clone" push --quiet origin --delete codex/narrow-refspec
+git -C "$repo" fetch --quiet --prune origin
+expect_harness_ok drop-squashed worktree drop narrow-refspec
+assert_not_exists "$default_root/narrow-refspec"
+expect_no_branch codex/narrow-refspec
+
+# A tag with the task branch name does not hide the branch's unpushed commits.
+commit_in "$default_root/offline" "work behind a same-name tag"
+git -C "$repo" tag codex/offline "$upstream_head"
+expect_harness_fails_with drop-tag-shadow "1 commit(s) that are neither on any remote nor merged" worktree drop offline
+git -C "$repo" tag -d codex/offline >/dev/null
+git -C "$default_root/offline" reset --quiet --hard HEAD~1
 
 # --force discards unpushed commits.
 commit_in "$default_root/offline" "throwaway work"

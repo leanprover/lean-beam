@@ -43,9 +43,11 @@ Commands:
   New task worktrees start from a freshly fetched origin/main unless base-ref is given. If the
   fetch fails, the last fetched origin/main is used and its age is reported on stderr.
   --resume reuses an existing task worktree or task branch instead of refusing it.
-  drop refuses to delete a task branch whose commits are not on any remote; --force deletes it
-  anyway. Uncommitted changes always block drop.
-  The worktree path is the only output on stdout; diagnostics go to stderr.
+  drop refuses to delete a task branch with commits that are neither on any remote nor already
+  merged into origin/main; --force deletes it anyway. Uncommitted or untracked changes always
+  block drop; ignored files such as .lake and .beam are deleted with the worktree.
+  worktree add prints only the worktree path on stdout; session start prints the session summary
+  followed by the path. Diagnostics go to stderr.
 
 Environment:
   BEAM_CODEX_WORKTREE_ROOT
@@ -144,9 +146,11 @@ resolve_default_base() {
   if [[ -z "${ssh_command}" ]]; then
     ssh_command="$(git -C "${REPO_ROOT}" config --get core.sshCommand || echo "ssh -o BatchMode=yes")"
   fi
-  # Agents run without a terminal: fail fast instead of waiting on a credential prompt.
+  # Agents run without a terminal: fail instead of waiting on a terminal credential prompt. The
+  # explicit refspec updates the remote-tracking ref even when the configured refspec omits it.
   if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${ssh_command}" \
-    git -C "${REPO_ROOT}" fetch --quiet "${DEFAULT_BASE_REMOTE}" "${DEFAULT_BASE_BRANCH}" >&2; then
+    git -C "${REPO_ROOT}" fetch --quiet "${DEFAULT_BASE_REMOTE}" \
+      "+refs/heads/${DEFAULT_BASE_BRANCH}:${remote_ref}" >&2; then
     printf '%s\n' "${remote_ref}"
     return
   fi
@@ -167,11 +171,25 @@ registered_worktree_branch() {
   common_dir="$(git -C "${path}" rev-parse --path-format=absolute --git-common-dir)" || return 1
   repo_common_dir="$(git -C "${REPO_ROOT}" rev-parse --path-format=absolute --git-common-dir)"
   [[ "$(realpath_of "${common_dir}")" == "$(realpath_of "${repo_common_dir}")" ]] || return 1
-  git -C "${path}" symbolic-ref --quiet --short HEAD || true
+  # The full ref avoids --short's disambiguated output, such as heads/<name> next to a same-name tag.
+  local head_ref
+  head_ref="$(git -C "${path}" symbolic-ref --quiet HEAD || true)"
+  printf '%s\n' "${head_ref#refs/heads/}"
 }
 
 unpushed_commit_count() {
-  git -C "${REPO_ROOT}" rev-list --count "$1" --not --remotes
+  git -C "${REPO_ROOT}" rev-list --count "refs/heads/$1" --not --remotes
+}
+
+# Succeeds when merging the branch into the default base would change nothing, which is the case
+# after a squash merge even once the merged remote branch has been deleted and pruned.
+merged_into_default_base() {
+  local branch="$1"
+  local base_ref merged_tree
+  base_ref="$(resolve_default_base)"
+  merged_tree="$(git -C "${REPO_ROOT}" merge-tree --write-tree "${base_ref}" "refs/heads/${branch}" 2>/dev/null)" ||
+    return 1
+  [[ "${merged_tree}" == "$(git -C "${REPO_ROOT}" rev-parse "${base_ref}^{tree}")" ]]
 }
 
 add_worktree() {
@@ -235,8 +253,8 @@ drop_worktree() {
 
   if [[ "${force}" != "1" ]]; then
     unpushed="$(unpushed_commit_count "${branch}")"
-    [[ "${unpushed}" == "0" ]] || die \
-      "branch ${branch} has ${unpushed} commit(s) not on any remote; push them or pass --force to discard them"
+    [[ "${unpushed}" == "0" ]] || merged_into_default_base "${branch}" || die \
+      "branch ${branch} has ${unpushed} commit(s) that are neither on any remote nor merged into ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH}; push them or pass --force to discard them"
   fi
 
   # Without --force, git refuses to remove a worktree with uncommitted or untracked changes.
@@ -317,7 +335,7 @@ main() {
 
   case "$1" in
     session)
-      [[ "${2:-}" == "start" ]] || die "usage: ./scripts/codex-harness.sh session start [--resume] <task-id> [base-ref]"
+      [[ "${2:-}" == "start" ]] || die "usage: ./scripts/codex-harness.sh session start {<task-id> [base-ref]|--resume <task-id>}"
       shift 2
       parse_add_args "$@"
       session_start "${TASK_ID}" "${BASE_REF}" "${RESUME}"

@@ -116,7 +116,7 @@ When working locally:
   based on freshly fetched `origin/main` instead of the primary checkout; use the harness rather than
   an agent's built-in worktree feature, and pass `--resume` to continue an existing task
 - remove finished task worktrees with `./scripts/codex-harness.sh worktree drop <task-id>`; it
-  refuses to discard unpushed commits or uncommitted changes, so surface the refusal instead of
+  refuses to discard unmerged unpushed commits or uncommitted changes, so surface the refusal instead of
   reaching for `--force` or `git worktree remove --force`
 - let the harness keep its default persistent worktree root under
   `<repo>/.codex-worktrees/lean-beam`; do not place long-lived task worktrees under `/tmp`
