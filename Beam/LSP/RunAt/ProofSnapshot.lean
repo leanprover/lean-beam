@@ -66,15 +66,10 @@ def create (ctx : Elab.ContextInfo) (goals : List MVarId) (types : List Expr := 
   ctx.runMetaM {} do
     let goals := goals ++ (← types.mapM fun t => Expr.mvarId! <$> Meta.mkFreshExprMVar (some t))
     -- InfoTree contexts do not save the term elaborator's universe scope. Start with the
-    -- command scope and enclosing signature, then recover parameters from goals and hypotheses.
+    -- command scope, then recover declaration-local parameters from goals and hypotheses.
     let mut levels : CollectLevelParams.State := {}
     for name in levelNames.reverse do
       levels := CollectLevelParams.visitLevel (.param name) levels
-    if let some name := ctx.env.asyncPrefix? <|> ctx.parentDecl? then
-      -- The signature is available once proof info exists; do not force the declaration's body.
-      if let some signature := ctx.env.findConstVal? name (skipRealize := true) then
-        for name in signature.levelParams do
-          levels := CollectLevelParams.visitLevel (.param name) levels
     for goal in goals do
       let decl ← goal.getDecl
       for localDecl in decl.lctx do
