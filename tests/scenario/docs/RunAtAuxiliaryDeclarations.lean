@@ -75,7 +75,7 @@ elab "#guard_aux_document_clean" : command => do
   for (name, _) in ((← getEnv).setExporting false).constants.toList do
     let name := privateToUserName name.eraseMacroScopes
     if roots.any (fun root => name != root && root.isPrefixOf name) ||
-        `commandAuxProbe.isPrefixOf name then
+        (`commandAuxProbe).isPrefixOf name then
       throwError "speculative auxiliary leaked into the document: {name}"
 
 #check Nat -- probe:command
