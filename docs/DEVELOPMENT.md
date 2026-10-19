@@ -55,15 +55,18 @@ Harness behavior that agents and humans can rely on:
   sandbox without network access, the harness uses the last fetched `origin/main` and reports its age
   on stderr. The fetch does not wait on terminal credential prompts, and unless `GIT_SSH_COMMAND`,
   `GIT_SSH`, or `core.sshCommand` is set it uses ssh with `BatchMode` and a 15-second connect timeout.
-  HTTPS remotes get no timeout. Tracked edits in the primary checkout block new tasks.
+  Stalled HTTPS transfers are aborted after 15 seconds, askpass programs are disabled, and Git
+  Credential Manager is told not to prompt. Tracked edits in the primary checkout block new tasks.
 - task branches do not track their base, so a plain `git push` cannot target `main`
 - an existing task worktree or task branch is refused unless `--resume` is passed:
   `./scripts/codex-harness.sh session start --resume <task-id>`. Resuming works with tracked edits
   in the primary checkout and for a task interrupted during a rebase or bisect.
-- `./scripts/codex-harness.sh worktree drop <task-id>` first refreshes `origin`'s branches, pruning
-  deleted ones, and then refuses to delete a task branch with commits that are neither on any remote
-  nor already merged into `origin/main`. A squash merge counts as merged, also after later commits on
-  `main` and after the task's remote branch is deleted. `--force` discards unmerged commits.
+- `./scripts/codex-harness.sh worktree drop <task-id>` deletes a task branch only when one of two
+  exact checks passes: every commit is on a branch that `origin` has right now (asked with
+  `git ls-remote`, so local remote-tracking refs are neither trusted nor changed), or merging the
+  branch into a freshly fetched `origin/main` would change nothing, as after a squash merge. The
+  merge check needs Git 2.38 or newer. When neither check passes, for example once `main` has
+  changed lines next to a squash merge, `drop` refuses and `--force` deletes the branch anyway.
   Uncommitted or untracked changes, a rebase or bisect in progress, and a locked worktree always
   block `drop`; ignored files such as `.lake` and `.beam` are deleted with the worktree. A task whose
   directory was deleted by hand can still be resumed or dropped.

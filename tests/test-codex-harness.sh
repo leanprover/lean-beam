@@ -30,9 +30,11 @@ git config --global user.name "Beam Harness Test"
 git config --global user.email "beam-harness-test@example.invalid"
 git config --global init.defaultBranch main
 
-origin="$tmp_root/origin.git"
-repo="$tmp_root/repo"
-upstream_clone="$tmp_root/upstream-clone"
+# Git records resolved paths, and /tmp is a symlink on macOS, so fixture paths use the resolved root.
+fixture_root="$(cd "$tmp_root" && pwd -P)"
+origin="$fixture_root/origin.git"
+repo="$fixture_root/repo"
+upstream_clone="$fixture_root/upstream-clone"
 git init --quiet --bare "$origin"
 git init --quiet "$repo"
 mkdir -p "$repo/scripts"
@@ -173,13 +175,19 @@ expect_harness_fails_with plain-dir "is not a registered git worktree" worktree 
 
 # drop refuses to discard commits that are not on any remote, and keeps the worktree intact.
 commit_in "$default_root/fresh" "local task work"
-expect_harness_fails_with drop-unpushed "1 commit(s) that are neither on any remote nor merged" worktree drop fresh
+expect_harness_fails_with drop-unpushed "1 commit(s) that are not on any origin branch and not merged" worktree drop fresh
 expect_branch codex/fresh
 assert_file "$default_root/fresh/README"
 
 # Once the task branch is pushed, drop removes the worktree and its branch.
 git -C "$default_root/fresh" push --quiet origin codex/fresh
+# drop changes no remote-tracking refs other than origin/main, such as pull request refs.
+git -C "$repo" update-ref refs/remotes/origin/pr/7 HEAD
 expect_harness_ok drop-pushed worktree drop fresh
+if ! git -C "$repo" show-ref --verify --quiet refs/remotes/origin/pr/7; then
+  echo "expected drop to keep refs/remotes/origin/pr/7" >&2
+  exit 1
+fi
 assert_not_exists "$default_root/fresh"
 expect_no_branch codex/fresh
 
@@ -200,7 +208,7 @@ expect_no_branch codex/narrow-refspec
 # A tag with the task branch name does not hide the branch's unpushed commits.
 commit_in "$default_root/offline" "work behind a same-name tag"
 git -C "$repo" tag codex/offline "$upstream_head"
-expect_harness_fails_with drop-tag-shadow "1 commit(s) that are neither on any remote nor merged" worktree drop offline
+expect_harness_fails_with drop-tag-shadow "1 commit(s) that are not on any origin branch and not merged" worktree drop offline
 git -C "$repo" tag -d codex/offline >/dev/null
 git -C "$default_root/offline" reset --quiet --hard HEAD~1
 
@@ -227,7 +235,7 @@ if [ "$(cat "$tmp_root/removed-dir-resume.out")" != "$default_root/removed-dir" 
 fi
 commit_in "$default_root/removed-dir" "work in a deleted directory"
 rm -rf -- "$default_root/removed-dir"
-expect_harness_fails_with removed-dir-unpushed "neither on any remote nor merged" worktree drop removed-dir
+expect_harness_fails_with removed-dir-unpushed "not on any origin branch and not merged" worktree drop removed-dir
 expect_branch codex/removed-dir
 git -C "$repo" push --quiet origin codex/removed-dir
 expect_harness_ok removed-dir-drop worktree drop removed-dir
@@ -249,13 +257,19 @@ PATH="$fake_bin:$PATH" GIT_SSH="$fake_bin/ssh-wrapper" expect_harness_ok ssh-wra
 assert_contains_literal "$tmp_root/fake-wrapper.log" "wrapper "
 assert_not_exists "$tmp_root/fake-ssh.log"
 
-# A failed fetch during drop is reported, and the merge check falls back to the last fetched copy.
+# When origin cannot be reached, only a merge into the last fetched origin/main confirms that a task
+# branch is safe to delete.
+PATH="$fake_bin:$PATH" expect_harness_ok drop-offline-merged worktree drop ssh-wrapper
+assert_contains_literal "$tmp_root/drop-offline-merged.err" "could not list origin's branches"
+expect_no_branch codex/ssh-wrapper
 commit_in "$default_root/ssh-default" "unmerged work"
-PATH="$fake_bin:$PATH" expect_harness_fails_with drop-offline "neither on any remote nor merged" worktree drop ssh-default
-assert_contains_literal "$tmp_root/drop-offline.err" "checking codex/ssh-default against the last fetched remote branches"
+PATH="$fake_bin:$PATH" expect_harness_fails_with drop-offline \
+  "could not confirm that branch codex/ssh-default is pushed or merged" worktree drop ssh-default
+assert_contains_literal "$tmp_root/drop-offline.err" "checking against the last fetched copy"
 git -C "$repo" update-ref -d refs/remotes/origin/main
-PATH="$fake_bin:$PATH" expect_harness_fails_with drop-no-base "neither on any remote nor merged" worktree drop ssh-default
-assert_contains_literal "$tmp_root/drop-no-base.err" "no fetched origin/main; cannot check whether codex/ssh-default is merged"
+PATH="$fake_bin:$PATH" expect_harness_fails_with drop-no-base \
+  "could not confirm that branch codex/ssh-default is pushed or merged" worktree drop ssh-default
+assert_contains_literal "$tmp_root/drop-no-base.err" "no fetched copy exists"
 git -C "$repo" remote set-url origin "$origin"
 git -C "$repo" fetch --quiet origin
 
@@ -265,11 +279,11 @@ expect_harness_ok remote-deleted worktree add remote-deleted
 commit_in "$default_root/remote-deleted" "work on a deleted remote branch"
 git -C "$default_root/remote-deleted" push --quiet origin codex/remote-deleted
 git -C "$upstream_clone" push --quiet origin --delete codex/remote-deleted
-expect_harness_fails_with drop-remote-deleted "neither on any remote nor merged" worktree drop remote-deleted
+expect_harness_fails_with drop-remote-deleted "not on any origin branch and not merged" worktree drop remote-deleted
 expect_branch codex/remote-deleted
 
-# A squash-merged branch is recognized even after later base commits change nearby lines, which
-# makes a three-way merge of the branch conflict.
+# Once later base commits change lines next to a squash merge, merging the branch would conflict,
+# so drop cannot confirm the merge and asks for --force instead of guessing.
 commit_in "$default_root/remote-deleted" "second line of squashed work"
 git -C "$upstream_clone" pull --quiet origin main
 git -C "$default_root/remote-deleted" diff "$(git -C "$repo" merge-base origin/main codex/remote-deleted)" codex/remote-deleted |
@@ -278,11 +292,13 @@ git -C "$upstream_clone" commit --quiet -am "squash merge remote-deleted"
 printf 'follow-up next to the squashed lines\n' >> "$upstream_clone/README"
 git -C "$upstream_clone" commit --quiet -am "follow-up"
 git -C "$upstream_clone" push --quiet origin main
-expect_harness_ok drop-squashed-moved worktree drop remote-deleted
+expect_harness_fails_with drop-squashed-moved "pass --force to discard them" worktree drop remote-deleted
+expect_branch codex/remote-deleted
+expect_harness_ok drop-squashed-moved-force worktree drop --force remote-deleted
 expect_no_branch codex/remote-deleted
 
 # Cleaning up a deleted task directory leaves unrelated missing worktree registrations alone.
-unrelated="$tmp_root/unrelated-worktree"
+unrelated="$fixture_root/unrelated-worktree"
 git -C "$repo" worktree add --quiet --detach "$unrelated" main
 rm -rf -- "$unrelated"
 expect_harness_ok unrelated-add worktree add unrelated-check
