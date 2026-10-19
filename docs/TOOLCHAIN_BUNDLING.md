@@ -1,15 +1,16 @@
 # Bundling Beam with a native Lean installation
 
-Release builders can compile Beam for one explicitly selected Lean installation without running the
-standalone installer. This mode uses the containing installation's Lean, Lake, daemon, and plugin.
-Standalone construction can publish several explicitly selected target runtimes in one installation.
+This is the release-builder interface for including Beam in a Lean toolchain distribution,
+including distributions installed through elan. Builders compile Beam for one explicitly selected
+Lean installation; the resulting commands use that installation's Lean, Lake, daemon, and plugin.
+Installing from a Beam checkout with `scripts/install-beam.sh` is the other installation path.
+That installer can publish several explicitly selected target runtimes in one installation.
 
-The three installation models have different responsibilities:
+The two Beam installation paths have different responsibilities:
 
 | Installation | Lean selection | Beam runtime artifacts |
 | --- | --- | --- |
-| Regular Lean through elan | Elan's normal selection, including inherited overrides | Beam is provided separately unless the Lean distributor bundles it |
-| Standalone Beam | Local project target, looked up in the recorded set | Qualified runtimes copied into this installation before publication |
+| Beam from a checkout | Local project target, looked up in the recorded set | Qualified runtimes copied into this installation before publication |
 | Beam bundled with Lean | The containing Lean installation; a declared project selector must name that installation | The installed sibling executables and private plugin, with no fallback build |
 
 Both strategies use the same membership lookup. The bundled strategy is also called **SDK**.

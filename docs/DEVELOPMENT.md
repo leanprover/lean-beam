@@ -64,6 +64,29 @@ Preferred maintainer entrypoints:
   process when the probe loop is finished
 - contributor process questions: [CONTRIBUTING.md](../CONTRIBUTING.md)
 
+## Executable Linking And Runtime Libraries
+
+The three product executables, `beam-cli`, `beam-daemon`, and `lean-beam-mcp`, use Lake's
+`moreLinkLibs` and `Dynlib` interfaces. The `beamSharedRuntime` target in
+[lakefile.lean](../lakefile.lean) derives Lake's shared library and its complete dependency graph
+from `LakeInstall.ofLean`, including Lean's split-library stubs. On Windows, `supportInterpreter`
+selects Lake's shared Lean linker flags, so the CLI enables it there too.
+
+The target stages these prebuilt SDK inputs beside its outputs. Each changed library is published
+by atomic rename; unchanged libraries keep their existing files. The `beamSharedRuntimeFiles`
+Lake script supplies the exact staged dependency list to installation construction, avoiding a
+second hard-coded library list or directory scan.
+
+Unix executables use a relative `../lib/lean` loader path; Windows loads DLLs beside each
+executable. Build outputs under `.lake/build` and `.lake/toolchain-build` are staging layouts.
+Published command and plugin locations follow the two
+[installation paths](SETUP.md) and their [runtime layouts](TOOLCHAIN_BUNDLING.md).
+
+Report executable file sizes separately from shared-library and complete installation sizes.
+Bundled Lean distributions reuse the containing SDK's libraries. Checkout installations carry
+libraries for their frontends and each selected target, which may use different Lean compilers;
+include those files when reporting installation size.
+
 ## Human And AI Roles
 
 - README is for humans who want to understand and use the project
