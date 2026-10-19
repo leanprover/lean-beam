@@ -133,6 +133,8 @@ run_quiet_test feedback .lake/build/bin/beam-feedback-test
 run_quiet_test mcp-projection .lake/build/bin/beam-mcp-projection-test
 run_quiet_test installation-manifest python3 tests/test-installation-manifest.py
 run_quiet_test installation-construction python3 tests/test-installation-construction.py
+run_quiet_test nonstandard-toolchain python3 tests/lib/process_watchdog.py \
+  --timeout 180 -- python3 tests/test-nonstandard-toolchain.py
 run_quiet_test installation-lookup python3 tests/test-installation-lookup.py
 run_quiet_test installation-entrypoints python3 tests/test-installation-entrypoints.py
 run_quiet_test lake-helper-lifetime python3 tests/lib/process_watchdog.py \

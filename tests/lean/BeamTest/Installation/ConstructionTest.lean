@@ -114,6 +114,20 @@ private def checkCacheReadFailures (directory : System.FilePath) : IO Unit := do
   IO.println "cache absence, filesystem failure, and input mismatch classifications passed"
 
 def main (args : List String) : IO Unit := do
+  if let ["nonstandard-target", sdk, source, cache, staging] := args then
+    let fingerprint ← fingerprintLeanInstallation sdk
+    require ((← IO.FS.realPath fingerprint.leanLibDir) !=
+      (← IO.FS.realPath (System.FilePath.mk fingerprint.leanPrefix / "lib/lean")))
+      "nonstandard fixture selected a standard library layout"
+    let hashes ← ConstructionHash.select
+    let inputs ← captureConstructionInputs source
+    let bundle ← obtainVerifiedTarget hashes inputs cache source "nonstandard-fixture" fingerprint
+    let paths := bundle.paths
+    for path in #[paths.daemon, paths.plugin] ++ paths.sharedLibraries do
+      let some name := path.fileName | throw <| IO.userError "construction output has no name"
+      bundle.copyFile path (System.FilePath.mk staging / name)
+    IO.println (Lean.toJson fingerprint).compress
+    return
   if let ["lake-environment", sdk, workspace] := args then
     let fingerprint ← fingerprintLeanInstallation sdk
     discard <| buildSharedRuntimePaths (System.FilePath.mk workspace / "cache") workspace fingerprint

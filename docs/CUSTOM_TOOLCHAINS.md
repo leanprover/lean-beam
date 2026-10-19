@@ -60,6 +60,15 @@ target, Lean executable, daemon, plugin, and generation. An unavailable target f
 guidance without executing Elan or the candidate compiler. Session and recovery information is
 printed before installation inspection, so a broken runtime does not hide recorded owner state.
 
+## Layout qualification
+
+The POSIX fast suite runs `tests/test-nonstandard-toolchain.py` with the selected installed SDK.
+It puts Lake modules in a distinct library directory, requires the ordinary Lake invocation to
+fail, then builds and plugin-qualifies a small target through the production construction adapter.
+It also checks verified cache reuse and the staged artifact hashes. This regression qualifies
+the layout adapter; a complete stage0 compiler build still needs the smoke below. Nonstandard
+standalone SDK layouts remain unsupported on Windows.
+
 ## Stage0 smoke
 
 With an existing `lean4-stage0` link, run:
