@@ -1809,11 +1809,11 @@ private def saveOleanCore
     throw <| syncBarrierIncompleteFailure
       started.uri started.version targetPath barrierOutcome.hints
       barrierOutcome.completionDiagnostics barrierProgress?
+  let relPath := Beam.pathRelativeToRootOrSelf started.session.root path
+  let syncResult := mkSyncFileResult relPath started.version currentDiagnostics saveReadiness
   -- Reject unsupported compilation before preparing outputs or invalidating the prior trace.
   if !saveReadiness.saveReady &&
       saveReadiness.saveReadyReason == Beam.LSP.Save.saveReadinessDeferredCompilationReason then
-    let relPath := Beam.pathRelativeToRootOrSelf started.session.root path
-    let syncResult := mkSyncFileResult relPath started.version currentDiagnostics saveReadiness
     withFailureProgress barrierProgress? <| throwBrokerFailure {
       code := .saveUnsupportedSetup
       message := saveReadiness.saveReadyMessage?.getD "Beam cannot save deferred compilation; use lake build instead."
@@ -1821,9 +1821,6 @@ private def saveOleanCore
         |>.setObjVal! "reason" (toJson saveReadiness.saveReadyReason)
         |>.setObjVal! "path" (toJson relPath)
     }
-  let syncResult :=
-    mkSyncFileResult (Beam.pathRelativeToRootOrSelf started.session.root path)
-      started.version currentDiagnostics saveReadiness
   let spec ← withFailureProgress barrierProgress? do
     match ← liftHandlerIO <|
         requestSaveSpecification leanConfig.lakeHelper started.session.root path

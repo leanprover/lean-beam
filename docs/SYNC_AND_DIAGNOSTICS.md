@@ -84,13 +84,20 @@ they established before checkpointing: `save` under `result.sync`, and `close-sa
 `result.saved.sync`. Document-error save failures include the blocking verdict under
 `error.data.sync`.
 
-Zero-build checkpointing supports structured Lake `leanOptions`, dynamic libraries, and plugins
-already applied to the accepted file-worker snapshot. Strong `moreLeanArgs` are batch-only and fail
-with `saveUnsupportedSetup` after the sync verdict is established, before Lake dependency-trace
-preparation. This rejection preserves the sync verdict under `error.data.sync` and leaves prior
-artifacts and the Lake trace unchanged.
-Move shared `-D` settings from `moreLeanArgs` to `leanOptions`, or use `lake build` when the arguments
-are intentionally batch-only. Save target resolution delegates to Lake's workspace loader for the
+Zero-build checkpointing writes artifacts from the accepted Lean server state without rerunning
+batch compilation. It supports structured Lake `leanOptions`, dynamic libraries, and plugins
+already applied to that state. A module with effective `moreLeanArgs`, including arguments
+inherited from its package or library, is unsupported for this operation: Lake applies these
+arguments to batch compilation, so the server snapshot does not establish that they were applied.
+The configuration can still be valid for `lake build`.
+
+Beam returns `saveUnsupportedSetup` after establishing the sync verdict and resolving the module,
+before Lake dependency-trace preparation. This rejection preserves the sync verdict under
+`error.data.sync` and leaves prior artifacts and the Lake trace unchanged. A rejected `close-save`
+also leaves the document open. Move shared `-D` settings from `moreLeanArgs` to `leanOptions`, or use
+`lake build` when the arguments are intentionally batch-only.
+
+Save target resolution delegates to Lake's workspace loader for the
 project's real `lakefile.lean` or `lakefile.toml`; the broker does not synthesize fallback Lake
 configuration from `lakefile.lean` text and never batch-builds as part of `save`.
 

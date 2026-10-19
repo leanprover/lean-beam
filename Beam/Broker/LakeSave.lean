@@ -62,7 +62,6 @@ elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServe
 
 /-- Helper-local preparation retains live Lake values, with no delegated alternative. -/
 structure LocalLeanSaveSpec extends LeanSaveOutputs where
-  relPath : String
   moduleName : String
   depTrace : BuildTrace
 
@@ -189,7 +188,6 @@ def computeSaveSpecification
       | .ok result => pure result
       | .error failure => return .error failure
     pure <| .ok {
-      relPath
       moduleName := mod.name.toString
       oleanPath := mod.oleanFile
       oleanServerPath? := if inputs.isModule then some mod.oleanServerFile else none
@@ -275,12 +273,6 @@ private def writeLeanSaveTraceWithMetadata
   writeTraceAtomically tracePath fun stagedTrace =>
     BuildMetadata.writeFile stagedTrace metadata
 
-/-- Trusted helper-local callers write live traces directly. -/
-def writeLocalLeanSaveTrace (spec : LocalLeanSaveSpec) : IO Unit := do
-  let outputs ← leanSaveOutputs spec.toLeanSaveOutputs
-  writeTraceAtomically spec.tracePath fun stagedTrace =>
-    writeBuildTrace stagedTrace spec.depTrace outputs {}
-
 /-- Broker trace publication always crosses the helper boundary. -/
 def writeLeanSaveTrace (spec : LeanSaveSpec) (control : LakeHelperControl := {}) :
     IO (Except BrokerFailure Unit) := do
@@ -312,7 +304,6 @@ def lakeHelperSaveSpec
       let traceMetadata := toJson (BuildMetadata.ofBuild spec.depTrace Json.null {})
       pure <| .ok {
         root := FilePath.mk request.root
-        relPath := spec.relPath
         moduleName := spec.moduleName
         toLeanSaveOutputs := spec.toLeanSaveOutputs
         traceMetadata

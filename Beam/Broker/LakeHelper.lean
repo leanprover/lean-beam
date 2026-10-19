@@ -49,7 +49,6 @@ structure LakeHelperWriteTraceRequest extends LeanSaveOutputs where
   deriving FromJson, ToJson
 
 structure LakeHelperSaveSpec extends LakeHelperWriteTraceRequest where
-  relPath : String
   moduleName : String
   deriving FromJson, ToJson
 

@@ -556,7 +556,7 @@ private def checkLakeHelperOutputCodec : IO Unit := do
     let fields := required ++ if includeOptional then optional else []
     let wire := Json.mkObj <| fields.map (fun field => (field, toJson (path field))) ++ [
       ("root", toJson pathRoot), ("traceMetadata", Json.mkObj [("depHash", toJson ("retained" : String))]),
-      ("relPath", toJson ("Saved.lean" : String)), ("moduleName", toJson ("Saved" : String))
+      ("moduleName", toJson ("Saved" : String))
     ]
     let decoded ← IO.ofExcept <| fromJson? (α := LakeHelperSaveSpec) wire
     require "helper specification preserves the flat golden wire shape"
@@ -588,17 +588,6 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
       IO.FS.writeFile path s!"artifact {path.fileName.getD ""}\n"
     let depTrace := Lake.BuildTrace.ofHash (Lake.Hash.ofNat 73) "save inputs"
     let trace := root / "Saved.trace"
-    let spec : LocalLeanSaveSpec := {
-      relPath := "Saved.lean"
-      moduleName := "Saved"
-      oleanPath := olean
-      ileanPath := ilean
-      cPath := c
-      irPath? := some ir
-      irSigPath? := some irSig
-      tracePath := trace
-      depTrace
-    }
     let request : LakeHelperWriteTraceRequest := {
       root := "/fixture"
       oleanPath := olean
@@ -609,29 +598,25 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
       tracePath := trace
       traceMetadata := toJson (Lake.BuildMetadata.ofBuild depTrace Json.null {})
     }
-    for delegated in [false, true] do
-      if delegated then
-        lakeHelperWriteLeanSaveTrace request
-      else
-        writeLocalLeanSaveTrace spec
-      let metadata ← IO.ofExcept <| Lake.BuildMetadata.parse (← IO.FS.readFile trace)
-      require "save trace preserves dependency hash" (metadata.depHash == depTrace.hash)
-      let some outputs := metadata.outputs?
-        | throw <| IO.userError "save trace omitted output descriptors"
-      -- Decode with this toolchain's Lake type, then inspect the serialized artifact descriptors.
-      -- In particular, an optional C descriptor must be present because Beam wrote generated C.
-      let decoded ← IO.ofExcept <| fromJson? (α := Lake.ModuleOutputDescrs) outputs
-      let outputs := toJson decoded
-      for (key, path, ext) in [("i", ilean, "ilean"), ("c", c, "c")] do
-        let actual ← IO.ofExcept <| outputs.getObjVal? key
-        let expected := toJson (Lake.artifactWithExt (← Lake.computeHash path) ext)
-        require s!"save trace includes current {ext} output" (actual.compress == expected.compress)
-      let actual ← IO.ofExcept <| outputs.getObjVal? "rs"
-      let expected := toJson (Lake.artifactWithExt (← Lake.computeHash irSig) "ir.sig")
-      require "save trace includes current IR signature" (actual.compress == expected.compress)
-      IO.FS.removeFile trace
+    lakeHelperWriteLeanSaveTrace request
+    let metadata ← IO.ofExcept <| Lake.BuildMetadata.parse (← IO.FS.readFile trace)
+    require "save trace preserves dependency hash" (metadata.depHash == depTrace.hash)
+    let some outputs := metadata.outputs?
+      | throw <| IO.userError "save trace omitted output descriptors"
+    -- Decode with this toolchain's Lake type, then inspect the serialized artifact descriptors.
+    -- In particular, an optional C descriptor must be present because Beam wrote generated C.
+    let decoded ← IO.ofExcept <| fromJson? (α := Lake.ModuleOutputDescrs) outputs
+    let outputs := toJson decoded
+    for (key, path, ext) in [("i", ilean, "ilean"), ("c", c, "c")] do
+      let actual ← IO.ofExcept <| outputs.getObjVal? key
+      let expected := toJson (Lake.artifactWithExt (← Lake.computeHash path) ext)
+      require s!"save trace includes current {ext} output" (actual.compress == expected.compress)
+    let actual ← IO.ofExcept <| outputs.getObjVal? "rs"
+    let expected := toJson (Lake.artifactWithExt (← Lake.computeHash irSig) "ir.sig")
+    require "save trace includes current IR signature" (actual.compress == expected.compress)
+    IO.FS.removeFile trace
     IO.FS.removeFile c
-    let rejected ← try writeLocalLeanSaveTrace spec *> pure false catch _ => pure true
+    let rejected ← try lakeHelperWriteLeanSaveTrace request *> pure false catch _ => pure true
     require "missing C output rejects save trace" rejected
     require "missing C output must not publish trace" (!(← trace.pathExists))
   finally
@@ -650,7 +635,6 @@ private def checkTypedLakeSaveTraceFailure : IO Unit := do
     traceMetadata := Json.null
   }
   let spec : LeanSaveSpec := {
-    relPath := "Unused.lean"
     moduleName := "Unused"
     oleanPath := unusedPath
     ileanPath := unusedPath
