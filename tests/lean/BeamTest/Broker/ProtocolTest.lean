@@ -1321,7 +1321,7 @@ private def withShutdownObservedSession
       (match behavior with | .exit => "exit" | .stall => "stall")
     ]
   } fun child proc => do
-    let pending ← Std.Mutex.new ({} : Std.TreeMap Lean.JsonRpc.RequestID PendingRequest)
+    let pending ← PendingRequestStore.create
     let stderrCapture ← startBackendStderrCapture child.stderr
     act {
       workspaceId
@@ -1372,7 +1372,7 @@ private def checkShutdownReplyCleanup (reply : ShutdownReply) : IO Unit := do
         diagnosticsSeenRef := ← IO.mkRef false
         seenDiagnosticKeysRef := ← IO.mkRef {}
       }
-      PendingRequestStore.insert initial.pending 0 ordinary
+      discard <| PendingRequestStore.register initial.pending 0 ordinary
       let session := { initial with
         stdin := { initial.stdin with
           putStr := fun text => do
@@ -1550,7 +1550,7 @@ private def exitedSessionWithInheritedStdio
       done.toString
     ]
   }
-  let pending ← Std.Mutex.new ({} : Std.TreeMap Lean.JsonRpc.RequestID PendingRequest)
+  let pending ← PendingRequestStore.create
   let stderrCapture ← startBackendStderrCapture child.stderr
   let proc ← BackendProcess.create child.pid child.tryWait child.kill
   let some (.exited _) ← proc.waitForExit 1000
@@ -1720,8 +1720,8 @@ private def checkUnconfirmedCleanup
       }
       let ordinary ← cleanupPending
       let cancelled ← cleanupPending (some (← IO.mkRef true))
-      PendingRequestStore.insert session.pending 0 ordinary
-      PendingRequestStore.insert session.pending 99 cancelled
+      discard <| PendingRequestStore.register session.pending 0 ordinary
+      discard <| PendingRequestStore.register session.pending 99 cancelled
       runtime.state.atomically do
         let state ← get
         let some workspace := state.workspaces.get? workspaceId
@@ -1769,6 +1769,37 @@ private def checkUnconfirmedCleanup
          else signalCount == 1)
       require "failed reader or wait never enters the graceful protocol"
         ((← writes.get) == if scenario == .waitFailure || consumer == .readerFailure then 0 else 1)
+      if consumer == .readerFailure && scenario == .signalFailure then
+        require "reader failure can leave process exit unconfirmed" ((← process.observe).isNone)
+        -- A retained Session copy bypasses runtime lookup. Its accepting stream makes a late
+        -- write hang awaiting the reader that already returned, unless registration rejects it.
+        let captured := { session with
+          stdin := { session.stdin with putStr := fun _ => writes.modify (· + 1) }
+        }
+        let lateTask ← IO.asTask (prio := Task.Priority.dedicated) <|
+          sendRequestJsonTrackedDetailed captured "textDocument/hover" Json.null
+        try
+          let some (.ok (.error failure)) ← Beam.waitTaskWithTimeout lateTask 1000
+            | throw <| IO.userError "failed reader admitted a request without a response consumer"
+          require "captured session retains the typed reader failure"
+            (toJson failure.error == toJson pendingFailure.error)
+          require "rejected request does not write to the failed channel" ((← writes.get) == 0)
+        finally
+          PendingRequestStore.close session.pending pendingFailure
+          discard <| IO.wait lateTask
+        let response ← runtime.dispatchRequest {
+          workspaceId? := some workspaceId
+          payload := .close { path := "Dead.lean" }
+        }
+        require "runtime rejects reuse with the original typed reader failure"
+          (response.error?.any fun error => toJson error == toJson pendingFailure.error)
+        require "failed-session rejection does not write to the failed channel" ((← writes.get) == 0)
+        discard <| runtime.initWorkspaceWithConfig "healthy" { root := base / "healthy" }
+        let healthy ← runtime.dispatchRequest {
+          workspaceId? := some "healthy"
+          payload := .close { path := "Independent.lean" }
+        }
+        require "reader failure leaves unrelated workspaces usable" healthy.ok
       match consumer with
       | .runtimeClose =>
           let repeated : Except IO.Error Unit ←
@@ -1933,7 +1964,7 @@ private def checkDeadSessionCleanupReleasesStateMutex : IO Unit := do
     diagnosticsSeenRef := ← IO.mkRef false
     seenDiagnosticKeysRef := ← IO.mkRef {}
   }
-  PendingRequestStore.insert session.pending 0 cleanupPending
+  discard <| PendingRequestStore.register session.pending 0 cleanupPending
   runtime.state.atomically do
     let state ← get
     let targetWorkspace : WorkspaceState := {
@@ -2074,7 +2105,7 @@ private def checkExitedSessionCleanupFailure
         diagnosticsSeenRef := ← IO.mkRef false
         seenDiagnosticKeysRef := ← IO.mkRef {}
       }
-      PendingRequestStore.insert session.pending 0 pending
+      discard <| PendingRequestStore.register session.pending 0 pending
       runtime.state.atomically do
         let state ← get
         let some workspace := state.workspaces.get? workspaceId
@@ -2207,7 +2238,7 @@ private def pendingOnlySession
       exit.toString
     ]
   }
-  let pending ← Std.Mutex.new ({} : Std.TreeMap Lean.JsonRpc.RequestID PendingRequest)
+  let pending ← PendingRequestStore.create
   let stderrCapture ← startBackendStderrCapture proc.stderr
   pure {
     workspaceId

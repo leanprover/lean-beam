@@ -39,38 +39,14 @@ structure PendingRequest where
   seenDiagnosticKeysRef : IO.Ref (Std.TreeSet String compare)
   emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none
 
-abbrev PendingRequestStore := Std.Mutex (Std.TreeMap RequestID PendingRequest)
+private structure PendingRequestState where
+  requests : Std.TreeMap RequestID PendingRequest := {}
+  failure? : Option ResponseFailure := none
 
-namespace PendingRequestStore
-
-def create : BaseIO PendingRequestStore :=
-  Std.Mutex.new ({} : Std.TreeMap RequestID PendingRequest)
-
-def insert (store : PendingRequestStore) (id : RequestID) (pending : PendingRequest) : IO Unit := do
-  store.atomically do
-    modify (·.insert id pending)
-
-def remove (store : PendingRequestStore) (id : RequestID) : IO (Option PendingRequest) := do
-  store.atomically do
-    let pending? := (← get).get? id
-    modify (·.erase id)
-    pure pending?
-
-def snapshot (store : PendingRequestStore) : IO (Array PendingRequest) := do
-  store.atomically do
-    pure <| (← get).toList.map Prod.snd |>.toArray
-
-def snapshotEntries (store : PendingRequestStore) : IO (Array (RequestID × PendingRequest)) := do
-  store.atomically do
-    pure <| (← get).toList.toArray
-
-def clear (store : PendingRequestStore) : IO (Array PendingRequest) := do
-  store.atomically do
-    let pending := (← get).toList.map Prod.snd |>.toArray
-    set ({} : Std.TreeMap RequestID PendingRequest)
-    pure pending
-
-end PendingRequestStore
+/-- Shared request admission and terminal channel failure for all copies of a session. -/
+structure PendingRequestStore where
+  private mk ::
+  private state : Std.Mutex PendingRequestState
 
 namespace PendingRequest
 
@@ -83,18 +59,19 @@ def resolveResponse (pending : PendingRequest) (result : Json) : IO Unit := do
   catch _ =>
     pure ()
 
+def resolveFailure (pending : PendingRequest) (failure : ResponseFailure) : IO Unit := do
+  let progress? ← pending.progressRef.get
+  try
+    pending.promise.resolve (.error (failure.withOptionalFileProgress progress?))
+  catch _ =>
+    pure ()
+
 def resolveError
     (pending : PendingRequest)
     (code : ErrorCode)
     (message : String)
-    (data? : Option Json := none) : IO Unit := do
-  let progress? ← pending.progressRef.get
-  let failure :=
-    (backendResponseFailure code message data?).withOptionalFileProgress progress?
-  try
-    pending.promise.resolve (.error failure)
-  catch _ =>
-    pure ()
+    (data? : Option Json := none) : IO Unit :=
+  pending.resolveFailure (backendResponseFailure code message data?)
 
 /-- Give an already-marked broker cancellation precedence over a concurrent backend failure. -/
 private def failureRespectingCancellation
@@ -292,15 +269,55 @@ end PendingRequest
 
 namespace PendingRequestStore
 
-def failAll (store : PendingRequestStore) (failure : ResponseFailure) : IO Unit := do
-  let pending ← clear store
+def create : BaseIO PendingRequestStore := do
+  pure { state := ← Std.Mutex.new {} }
+
+/-- Register atomically with closure; rejection settles the promise without admitting a write. -/
+def register (store : PendingRequestStore) (id : RequestID) (pending : PendingRequest) : IO Bool := do
+  let failure? ← store.state.atomically do
+    let state ← get
+    if let some failure := state.failure? then
+      pure (some failure)
+    else
+      set { state with requests := state.requests.insert id pending }
+      pure none
+  match failure? with
+  | none => pure true
+  | some failure =>
+      pending.resolveFailure failure
+      pure false
+
+def failure? (store : PendingRequestStore) : IO (Option ResponseFailure) :=
+  store.state.atomically do pure (← get).failure?
+
+def remove (store : PendingRequestStore) (id : RequestID) : IO (Option PendingRequest) :=
+  store.state.atomically do
+    let state ← get
+    set { state with requests := state.requests.erase id }
+    pure (state.requests.get? id)
+
+def snapshotEntries (store : PendingRequestStore) : IO (Array (RequestID × PendingRequest)) :=
+  store.state.atomically do pure (← get).requests.toList.toArray
+
+def snapshot (store : PendingRequestStore) : IO (Array PendingRequest) := do
+  pure <| (← snapshotEntries store).map Prod.snd
+
+/-- Drain current requests without changing admission or discarding a retained failure. -/
+def clear (store : PendingRequestStore) : IO (Array PendingRequest) :=
+  store.state.atomically do
+    let state ← get
+    set { state with requests := {} }
+    pure <| state.requests.toList.map Prod.snd |>.toArray
+
+/-- Retain the first failure and reject future registration before settling admitted requests. -/
+def close (store : PendingRequestStore) (failure : ResponseFailure) : IO Unit := do
+  let (failure, pending) ← store.state.atomically do
+    let state ← get
+    let failure := state.failure?.getD failure
+    set { state with requests := {}, failure? := some failure }
+    pure (failure, state.requests.toList.map Prod.snd |>.toArray)
   for req in pending do
-    let progress? ← req.progressRef.get
-    let failure := failure.withOptionalFileProgress progress?
-    try
-      req.promise.resolve (.error failure)
-    catch _ =>
-      pure ()
+    req.resolveFailure failure
 
 def sendCancelNotification (stdin : IO.FS.Stream) (id : RequestID) : IO Unit := do
   writeLspNotification stdin ({

@@ -195,7 +195,7 @@ private def checkPendingStoreResolve : IO Unit := do
   let pending ← mkPending
     (progress? := some { updates := 3, done := false })
   let id : RequestID := 7
-  PendingRequestStore.insert store id pending
+  discard <| PendingRequestStore.register store id pending
   let entries ← PendingRequestStore.snapshotEntries store
   require "pending store has inserted request" (entries.size == 1)
   let some pending ← PendingRequestStore.remove store id
@@ -215,7 +215,7 @@ private def checkPendingStoreResolve : IO Unit := do
   require "pending store is empty after remove"
     ((← PendingRequestStore.snapshot store).isEmpty)
 
-private def checkPendingStoreFailAll : IO Unit := do
+private def checkPendingStoreClose : IO Unit := do
   let store ← PendingRequestStore.create
   let firstProgress : SyncFileProgress := { updates := 5, done := false }
   let secondProgress : SyncFileProgress := { updates := 8, done := true }
@@ -223,9 +223,9 @@ private def checkPendingStoreFailAll : IO Unit := do
   let firstPending ← mkPending
     (progress? := some firstProgress) (cancelRef? := some cancelRef)
   let secondPending ← mkPending (progress? := some secondProgress)
-  PendingRequestStore.insert store 11 firstPending
-  PendingRequestStore.insert store 12 secondPending
-  PendingRequestStore.failAll store
+  discard <| PendingRequestStore.register store 11 firstPending
+  discard <| PendingRequestStore.register store 12 secondPending
+  PendingRequestStore.close store
     (responseFailureFor .workerExited "worker exited")
   for (label, pending, expectedCode, expectedProgress) in #[
       ("cancelled", firstPending, "requestCancelled", firstProgress),
@@ -234,15 +234,71 @@ private def checkPendingStoreFailAll : IO Unit := do
     match ← pending.awaitOutcome with
     | .ok _ =>
         throw <| IO.userError
-          s!"failAll resolves {label} pending request as an error: expected error"
+          s!"close resolves {label} pending request as an error: expected error"
     | .error failure =>
         discard <| requireFailureCode
-          s!"failAll resolves {label} pending request as an error"
+          s!"close resolves {label} pending request as an error"
           expectedCode failure
-        require s!"failAll preserves {label} pending request progress"
+        require s!"close preserves {label} pending request progress"
           (failure.fileProgress? == some expectedProgress)
-  require "failAll clears pending store"
+  require "close clears pending store"
     ((← PendingRequestStore.snapshot store).isEmpty)
+
+/-- Closing the channel is permanent, preserves the first cause, and settles late callers. -/
+private def checkPendingStoreClosedAdmission : IO Unit := do
+  let store ← PendingRequestStore.create
+  let failure := responseFailureFor .workerExited "original reader failure"
+  PendingRequestStore.close store failure
+  PendingRequestStore.close store (responseFailureFor .internalError "later cleanup failure")
+  discard <| PendingRequestStore.clear store
+  let retained ← PendingRequestStore.failure? store
+  require "clear and repeated close retain the first terminal failure"
+    (retained.any fun actual => toJson actual.error == toJson failure.error)
+  for cancelled in [false, true] do
+    let progress : SyncFileProgress := { updates := 17, done := false }
+    let pending ← mkPending (cancelRef? := some (← IO.mkRef cancelled)) (progress? := some progress)
+    require "closed channel rejects registration"
+      (!(← PendingRequestStore.register store 21 pending))
+    let some (some (.error _)) ← Beam.waitTaskWithTimeout pending.promise.result? 1000
+      | throw <| IO.userError "rejected registration did not settle its promise"
+    match ← pending.awaitOutcome with
+    | .ok _ => throw <| IO.userError "closed channel admitted a successful request"
+    | .error actual =>
+        discard <| requireFailureCode "rejected registration retains cancellation precedence"
+          (if cancelled then "requestCancelled" else "workerExited") actual
+        unless cancelled do
+          require "rejected registration retains the first failure" (toJson actual.error == toJson failure.error)
+        require "rejected registration retains its own progress" (actual.fileProgress? == some progress)
+  require "rejected registrations leave no pending requests"
+    ((← PendingRequestStore.snapshot store).isEmpty)
+
+/-- Either side may win admission, but closure must settle the request in both orders. -/
+private def checkPendingStoreCloseRace : IO Unit := do
+  for _ in [:8] do
+    let store ← PendingRequestStore.create
+    let pending ← mkPending
+    let start ← IO.Promise.new
+    let failure := responseFailureFor .workerExited "concurrent reader failure"
+    let registerTask ← IO.asTask (prio := Task.Priority.dedicated) do
+      discard <| IO.wait start.result?
+      PendingRequestStore.register store 22 pending
+    let closeTask ← IO.asTask (prio := Task.Priority.dedicated) do
+      discard <| IO.wait start.result?
+      PendingRequestStore.close store failure
+    start.resolve ()
+    try
+      let some (.ok _) ← Beam.waitTaskWithTimeout registerTask 1000
+        | throw <| IO.userError "registration racing closure did not finish"
+      let some (.ok ()) ← Beam.waitTaskWithTimeout closeTask 1000
+        | throw <| IO.userError "closure racing registration did not finish"
+      let some (some (.error actual)) ← Beam.waitTaskWithTimeout pending.promise.result? 1000
+        | throw <| IO.userError "closure racing registration left a pending request unresolved"
+      require "racing closure retains the typed failure" (toJson actual.error == toJson failure.error)
+      require "racing closure drains admitted requests" ((← PendingRequestStore.snapshot store).isEmpty)
+    finally
+      PendingRequestStore.close store failure
+      discard <| IO.wait registerTask
+      discard <| IO.wait closeTask
 
 private def checkPendingOutcomeCancellationPrecedence : IO Unit := do
   let progress : SyncFileProgress := { updates := 13, done := true }
@@ -507,7 +563,9 @@ def main : IO Unit := do
   checkActiveRegistryCloseDrain
   checkPendingCancellationIdentity
   checkPendingStoreResolve
-  checkPendingStoreFailAll
+  checkPendingStoreClose
+  checkPendingStoreClosedAdmission
+  checkPendingStoreCloseRace
   checkPendingOutcomeCancellationPrecedence
   checkPendingResolveError
   checkSyncFileProgressDisplay

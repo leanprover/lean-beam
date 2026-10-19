@@ -411,6 +411,14 @@ Cleanup observes the owner before the graceful LSP `shutdown`/`exit` handshake; 
 wait failure skips its writes and response wait. The handshake waits directly on its pending
 promise within a bound. Only a successful reply permits the `exit` notification and graceful exit
 wait; a timeout, failed reply, or failed write proceeds directly to process termination.
+The pending-request store also owns terminal channel failure. Reader failure closes admission and
+settles all admitted requests after its bounded cleanup attempt, retaining the original typed failure
+and cleanup context. Registration and closure share one mutex: a request racing closure is either
+admitted and settled by it, or rejected with that same failure before writing. Session copies share
+this gate. Repeated closure retains the first failure, and clearing requests does not reopen it.
+A session whose reader has failed cannot serve later requests even if its child is still running;
+workspace reset or removal remains available, and unrelated workspaces remain usable. Confirmed
+process exit still uses the existing detach-and-restart path.
 Final cleanup explicitly settles remaining requests with `workerExited`
 and the retained process outcome, even when an inherited stdout pipe prevents reader EOF.
 After settling pending work and observing stderr completion, unconfirmed process exit is reported

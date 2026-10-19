@@ -436,7 +436,7 @@ partial def sessionReaderLoop (session : Session) : IO Unit := do
     let message ←
       terminateBackendFailure "after startup" e.toString
         session.proc session.stderrCapture
-    PendingRequestStore.failAll session.pending <| BrokerFailure.toResponseFailure {
+    PendingRequestStore.close session.pending <| BrokerFailure.toResponseFailure {
       code := .workerExited
       message
     }
@@ -472,7 +472,8 @@ private def startRequestJsonTrackedDetailed
       emitDiagnostic? := emitDiagnostic?
       : PendingRequest
     }
-  PendingRequestStore.insert session.pending id pending
+  unless ← PendingRequestStore.register session.pending id pending do
+    return (session, pending)
   traceBroker
     s!"lsp request inserted id={id} method={method} clientRequestId={optionLabel clientRequestId?} tracked={tracked.isSome}"
   try
@@ -515,7 +516,7 @@ private def shutdownSession (session : Session) : IO Unit := do
         | none => session.proc.terminate sessionShutdownReplyTimeoutMs
   -- A reader can remain blocked on an inherited stdout pipe after the leader exits. Settle any
   -- remaining requests here instead of depending on reader EOF or the graceful-handshake timeout.
-  PendingRequestStore.failAll session.pending <| BrokerFailure.toResponseFailure {
+  PendingRequestStore.close session.pending <| BrokerFailure.toResponseFailure {
     code := .workerExited
     message := backendTerminationMessage termination
   }
@@ -1011,7 +1012,8 @@ private def detachExitedSession?
 /--
 Run a session state action only while the caller's workspace generation remains current. Any
 already-exited session is atomically detached and cleaned up outside the global broker state mutex
-before retrying against that same generation.
+before retrying against that same generation. A failed reader whose process exit is unconfirmed
+rejects reuse with its retained channel failure.
 -/
 private partial def ServerRuntime.withLiveSessionState
     (server : ServerRuntime)
@@ -1029,7 +1031,11 @@ private partial def ServerRuntime.withLiveSessionState
         else
           match ← detachExitedSession? workspaceId with
           | some session => pure <| .detached session
-          | none => .done <$> act
+          | none =>
+              if let some session := workspace.lean.session? then
+                if let some failure ← PendingRequestStore.failure? session.pending then
+                  return .done (.error failure)
+              .done <$> act
   match result with
   | .done result => pure result
   | .detached session =>
