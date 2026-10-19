@@ -268,10 +268,14 @@ output before failing. An unlisted toolchain remains distinct from a registry re
 The installer's own registry loaders also check read status before consuming entries or planning an
 install. Read failures preserve the underlying diagnostic on stderr and identify the policy file to
 restore from the same Beam revision or make readable. Installation stops before the plan, builds,
-or filesystem changes. Run `python3 tests/test-toolchain-registry.py` to check normalization, read
-failures, and installer policy rejection without building Lean. Its installer fixtures invoke the
-real entrypoint with fake homes and guarded setup commands; valid inputs stop at the
-write-confirmation boundary.
+or filesystem changes.
+
+Run `python3 tests/test-toolchain-registry.py` to check normalization, read failures, and
+installer policy rejection without building Lean. These fast tests own retired-toolchain rejection
+against the checked-in registries, malformed registry entries, release-line install planning, and
+noninteractive write confirmation. Their installer fixtures invoke the real entrypoint with fake
+homes and guarded setup commands; valid inputs stop at the write-confirmation boundary. The
+installer suite retains interactive approvals, filesystem ownership checks, and installation tests.
 
 For slow or offline validation, pre-seed the host elan cache before running installer tests. A
 typical setup is:

@@ -4,7 +4,7 @@
 # Released under Apache 2.0 license as described in the file LICENSE.
 # Author: Emilio J. Gallego Arias
 
-"""Check registry normalization and read-error handling in shell tests and the installer."""
+"""Check toolchain registry handling and installer policy without building Lean."""
 
 from pathlib import Path
 import os
@@ -136,14 +136,15 @@ class ToolchainRegistryTests(unittest.TestCase):
 
 
 class InstallerRegistryTests(unittest.TestCase):
-    def run_installer(self, registries=None, missing=None, partial_failure=None):
+    def run_installer(self, *, registries=None, missing=None, partial_failure=None,
+                      args=("--all-validated",), pinned=PINNED):
         with tempfile.TemporaryDirectory(prefix="beam-installer-registry-") as tmp:
             root = Path(tmp)
             (root / "scripts").mkdir()
             for name in ["install-beam.sh", "install-lib.sh", "install-locations.sh",
                          "install-mcp.sh", "shared-lib.sh"]:
                 shutil.copyfile(ROOT / "scripts" / name, root / "scripts" / name)
-            (root / "lean-toolchain").write_text(PINNED + "\n")
+            (root / "lean-toolchain").write_text(pinned + "\n")
             entries = {
                 "validated-lean-toolchains": PINNED + "\n" + STABLE + "\n",
                 "compatible-lean-release-lines": PINNED_LINE + "\n" + STABLE_LINE + "\n",
@@ -188,7 +189,7 @@ class InstallerRegistryTests(unittest.TestCase):
                 )
                 stub.chmod(0o755)
             result = subprocess.run(
-                ["bash", str(root / "scripts/install-beam.sh"), "--all-validated"],
+                ["bash", str(root / "scripts/install-beam.sh"), *args],
                 cwd=root, env=env, input=b"", capture_output=True, timeout=10, check=False,
             )
             self.assertEqual(result.stdout, b"")
@@ -242,6 +243,8 @@ class InstallerRegistryTests(unittest.TestCase):
     def test_invalid_and_duplicate_entries_still_fail_policy_checks(self):
         for name, contents, expected in [
             ("validated-lean-toolchains", "invalid toolchain\n", "invalid validated Lean toolchain"),
+            ("validated-lean-toolchains", "leanprover/lean4:v4.33.0-rc01\n",
+             "invalid validated Lean toolchain: leanprover/lean4:v4.33.0-rc01"),
             ("validated-lean-toolchains", f"{PINNED}\n{PINNED}\n", "duplicate validated Lean toolchain"),
             ("compatible-lean-release-lines", "invalid line\n", "invalid compatible Lean release line"),
             ("compatible-lean-release-lines", f"{PINNED_LINE}\n{PINNED_LINE}\n",
@@ -253,6 +256,50 @@ class InstallerRegistryTests(unittest.TestCase):
                 self.assertIn(expected.encode(), result.stderr)
                 self.assertNotIn(b"failed to read", result.stderr)
                 self.assertNotIn(b"Install Plan", result.stderr)
+
+    def test_retired_toolchains_are_rejected_by_checked_in_policy(self):
+        registries = {
+            name: (ROOT / name).read_text()
+            for name in ["validated-lean-toolchains", "compatible-lean-release-lines"]
+        }
+        pinned = (ROOT / "lean-toolchain").read_text().strip()
+        retired_toolchains = [
+            "leanprover/lean4:v4.26.0",
+            "leanprover/lean4:v4.28.0", "leanprover/lean4:v4.28.1", "leanprover/lean4:v4.28.0-rc1",
+            "leanprover/lean4:v4.29.0", "leanprover/lean4:v4.29.1", "leanprover/lean4:v4.29.0-rc1",
+            "leanprover/lean4:v4.30.0", "leanprover/lean4:v4.30.1", "leanprover/lean4:v4.30.0-rc2",
+            "leanprover/lean4:v4.31.0", "leanprover/lean4:v4.31.1", "leanprover/lean4:v4.31.0-rc1",
+            "leanprover/lean4:v4.32.0", "leanprover/lean4:v4.32.1", "leanprover/lean4:v4.32.2",
+            "leanprover/lean4:v4.32.0-rc1",
+        ]
+        for toolchain in retired_toolchains:
+            with self.subTest(toolchain=toolchain):
+                result = self.run_installer(
+                    registries=registries, pinned=pinned, args=("--toolchain", toolchain),
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(
+                    f"unsupported Lean toolchain requested for install: {toolchain}".encode(),
+                    result.stderr,
+                )
+                self.assertNotIn(b"Install Plan", result.stderr)
+
+    def test_release_line_variant_reaches_confirmation_without_writing(self):
+        toolchain = STABLE_LINE + ".0-rc1"
+        result = self.run_installer(args=("--toolchain", toolchain))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"Install Plan", result.stderr)
+        self.assertIn(f"{toolchain} (release-line compatible)".encode(), result.stderr)
+        self.assertIn(b"refusing to install without confirmation", result.stderr)
+        self.assertNotIn(b"unsupported Lean toolchain", result.stderr)
+
+    def test_default_install_requires_confirmation_without_writing(self):
+        result = self.run_installer(args=())
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"Install Plan", result.stderr)
+        self.assertIn(PINNED.encode(), result.stderr)
+        self.assertNotIn(STABLE.encode(), result.stderr)
+        self.assertIn(b"refusing to install without confirmation", result.stderr)
 
 
 if __name__ == "__main__":
