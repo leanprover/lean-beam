@@ -216,6 +216,49 @@ expect_harness_fails_with drop-dirty "commit, push, or discard its changes first
 assert_file "$default_root/explicit-base/README"
 expect_branch codex/explicit-base
 
+# A worktree directory deleted by hand can still be resumed, and dropped with the same checks.
+expect_harness_ok removed-dir worktree add removed-dir
+rm -rf -- "$default_root/removed-dir"
+expect_harness_ok removed-dir-resume worktree add --resume removed-dir
+if [ "$(cat "$tmp_root/removed-dir-resume.out")" != "$default_root/removed-dir" ]; then
+  echo "expected --resume of a deleted worktree to print only its path" >&2
+  cat "$tmp_root/removed-dir-resume.out" >&2
+  exit 1
+fi
+commit_in "$default_root/removed-dir" "work in a deleted directory"
+rm -rf -- "$default_root/removed-dir"
+expect_harness_fails_with removed-dir-unpushed "neither on any remote nor merged" worktree drop removed-dir
+expect_branch codex/removed-dir
+git -C "$repo" push --quiet origin codex/removed-dir
+expect_harness_ok removed-dir-drop worktree drop removed-dir
+expect_no_branch codex/removed-dir
+expect_harness_fails_with unknown-task "unknown task removed-dir" worktree drop removed-dir
+
+# Without a user ssh setting, the fetch uses non-interactive ssh with a connect timeout; a user's
+# GIT_SSH wrapper is left alone. Fake ssh programs record their arguments without any network.
+fake_bin="$tmp_root/fake-bin"
+mkdir -p "$fake_bin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/fake-ssh.log"\nexit 1\n' "$tmp_root" > "$fake_bin/ssh"
+printf '#!/bin/sh\nprintf "wrapper %%s\\n" "$*" >> "%s/fake-wrapper.log"\nexit 1\n' "$tmp_root" > "$fake_bin/ssh-wrapper"
+chmod +x "$fake_bin/ssh" "$fake_bin/ssh-wrapper"
+git -C "$repo" remote set-url origin "harness-test.invalid:repo.git"
+PATH="$fake_bin:$PATH" expect_harness_ok ssh-default worktree add ssh-default
+assert_contains_literal "$tmp_root/fake-ssh.log" "BatchMode=yes -o ConnectTimeout=15"
+rm -f -- "$tmp_root/fake-ssh.log"
+PATH="$fake_bin:$PATH" GIT_SSH="$fake_bin/ssh-wrapper" expect_harness_ok ssh-wrapper worktree add ssh-wrapper
+assert_contains_literal "$tmp_root/fake-wrapper.log" "wrapper "
+assert_not_exists "$tmp_root/fake-ssh.log"
+
+# A failed fetch during drop is reported, and the merge check falls back to the last fetched copy.
+commit_in "$default_root/ssh-default" "unmerged work"
+PATH="$fake_bin:$PATH" expect_harness_fails_with drop-offline "neither on any remote nor merged" worktree drop ssh-default
+assert_contains_literal "$tmp_root/drop-offline.err" "checking against the last fetched copy"
+git -C "$repo" update-ref -d refs/remotes/origin/main
+PATH="$fake_bin:$PATH" expect_harness_fails_with drop-no-base "neither on any remote nor merged" worktree drop ssh-default
+assert_contains_literal "$tmp_root/drop-no-base.err" "cannot check whether codex/ssh-default is merged"
+git -C "$repo" remote set-url origin "$origin"
+git -C "$repo" fetch --quiet origin
+
 # BEAM_CODEX_WORKTREE_ROOT overrides the default root inside the repo.
 override_root="$repo/.codex-worktrees/override"
 BEAM_CODEX_WORKTREE_ROOT="$override_root" expect_harness_ok override worktree add override-task
