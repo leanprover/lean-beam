@@ -171,6 +171,9 @@ jobs:
             elan toolchain install leanprover/lean4:v4.33.1
             previous_prefix="$(elan run leanprover/lean4:v4.33.1 lean --print-prefix)"
             python tests/test-native-toolchain.py "$lean_prefix" --crlf --previous-lean-prefix "$previous_prefix"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            native_include="$(python -c 'from pathlib import Path; import shutil; print(Path(shutil.which("clang")).resolve().parent.parent / "include")')"
+            python tests/test-native-toolchain.py "$lean_prefix" --crlf --native-system-include-dir "$native_include"
           else
             python tests/test-native-toolchain.py "$lean_prefix" --crlf
           fi

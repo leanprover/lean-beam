@@ -59,6 +59,18 @@ function(execute_process)
         message(FATAL_ERROR "native Lake invocation inherited ${variable}")
       endif()
     endforeach()
+    list(FIND ARGV "--no-cache" native_build)
+    if(FORCE_WINDOWS_SDK AND NOT native_build EQUAL -1)
+      math(EXPR last "${ARGC}-1")
+      foreach(index RANGE 0 ${last})
+        set(arg "${ARGV${index}}")
+        if(arg MATCHES "^BEAM_NATIVE_SYSTEM_INCLUDE_DIRS=(.*)$")
+          file(WRITE "${SDK_CAPTURE}/includes.json" "${CMAKE_MATCH_1}")
+        elseif(arg MATCHES "^BEAM_NATIVE_CLANG_RESOURCE_DIR=(.*)$")
+          file(WRITE "${SDK_CAPTURE}/resource.txt" "${CMAKE_MATCH_1}")
+        endif()
+      endforeach()
+    endif()
   endif()
   list(FIND ARGV OUTPUT_VARIABLE index)
   if(index EQUAL -1)
@@ -68,6 +80,8 @@ function(execute_process)
   list(GET ARGV ${index} output)
   if(ARGV1 STREQUAL "git")
     set(value "1111111111111111111111111111111111111111")
+  elseif(ARGV2 STREQUAL "--print-resource-dir")
+    message(FATAL_ERROR "explicit SDK construction must not discover another clang")
   elseif(ARGV2 STREQUAL "--version")
     if(output STREQUAL "LAKE_VERSION")
       set(value "${fixture_lake}")
@@ -83,10 +97,14 @@ function(execute_process)
   endif()
   set(${output} "${value}" PARENT_SCOPE)
 endfunction()
+if(FORCE_WINDOWS_SDK)
+  set(CMAKE_HOST_WIN32 TRUE)
+  set(CMAKE_HOST_APPLE FALSE)
+endif()
 include("${SCRIPT}")
 ''', encoding="utf-8")
 
-    def run_script(self, name, destination=None):
+    def run_script(self, name, destination=None, *, system_includes=None, windows_sdk=False):
         fixture = self.root / "fixture.json"
         fixture.write_text(json.dumps(dict(version=self.version, lake=self.lake,
                                           revision=self.revision, compiled=self.compiled,
@@ -96,12 +114,46 @@ include("${SCRIPT}")
                 f"-DSCRIPT={self.source / 'scripts' / name}"]
         if destination is not None:
             args.append(f"-DPREFIX={destination}")
+        if system_includes is not None:
+            args.append("-DNATIVE_SYSTEM_INCLUDE_DIRS=" + ";".join(
+                str(path).replace(";", "\\;") for path in system_includes))
+        if windows_sdk:
+            for artifact in ["bin/beam-cli.exe", "bin/beam-daemon.exe",
+                             "bin/lean-beam-mcp.exe", "lib/beam_Beam_LSP.dll"]:
+                path = self.build / artifact
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture Windows artifact\n")
+            args.extend(["-DFORCE_WINDOWS_SDK=ON", f"-DSDK_CAPTURE={self.root}"])
         return subprocess.run([*args, "-P", str(self.driver)], capture_output=True,
                               text=True, encoding="utf-8", timeout=15)
 
     def build_record(self):
         result = self.run_script("build-toolchain.cmake")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_explicit_windows_sdk_directories_reach_the_native_lake_build(self):
+        directories = [self.root / "native headers λ", self.root / "extra;headers"]
+        for directory in directories:
+            directory.mkdir()
+        result = self.run_script("build-toolchain.cmake", system_includes=directories,
+                                 windows_sdk=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.root / "includes.json").read_text(encoding="utf-8")),
+                         [directory.resolve().as_posix() for directory in directories])
+        self.assertEqual((self.root / "resource.txt").read_text(encoding="utf-8"), str(self.resource))
+
+    def test_windows_sdk_with_no_explicit_system_directories_forwards_an_empty_list(self):
+        result = self.run_script("build-toolchain.cmake", windows_sdk=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.root / "includes.json").read_text(encoding="utf-8")), [])
+
+    def test_missing_windows_system_headers_fail_before_lake_or_manifest_publication(self):
+        result = self.run_script("build-toolchain.cmake",
+                                 system_includes=[self.root / "missing headers λ"], windows_sdk=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native Windows system include directory", result.stderr)
+        self.assertFalse((self.root / "includes.json").exists())
+        self.assertFalse((self.source / ".lake/toolchain-build.json").exists())
 
     def mutate_record(self, mutation):
         script = self.root / "mutate.cmake"

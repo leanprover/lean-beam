@@ -34,12 +34,22 @@ cmake -DLEAN_PREFIX="/path/to/selected/lean/stage" -P scripts/build-toolchain.cm
 cmake -DLEAN_PREFIX="/path/to/selected/lean/stage" -DPREFIX="/path/to/install/prefix" -P scripts/install-toolchain.cmake
 ```
 
-The control-directory helper also needs native SDK headers: the Apple SDK selected by `xcrun` on macOS,
+The native C helpers also need native SDK headers: the Apple SDK selected by `xcrun` on macOS,
 and a full clang SDK on `PATH` on Windows (the native CI uses MSYS2 clang64). Windows builders can
-instead pass `-DNATIVE_CLANG_RESOURCE_DIR=/sdk/lib/clang/VERSION` to the build command. Beam compiles
-with the selected Lean installation's compiler and links against its libraries.
-`control_dir.c` uses this compiler and native header setup; its object-cache identity includes
-the selected Lean toolchain and compiler.
+instead pass `-DNATIVE_CLANG_RESOURCE_DIR=/sdk/lib/clang/VERSION` to the build command. In a Lean stage
+build, take that directory from the full native compiler configured by Lean, using
+`clang --print-resource-dir`. The resource directory supplies compiler headers; the Windows C runtime
+and operating-system headers are a separate input. Supply their directories as a CMake list through
+`-DNATIVE_SYSTEM_INCLUDE_DIRS="/sdk/clang64/include;/sdk/other/include"`. When these directories are
+provided, native helper compilation disables implicit system-header discovery and searches the explicit
+directories after the selected Clang resource headers.
+
+Lean release integration should forward its configured native SDK paths to these arguments. Beam
+continues to compile with the selected Lean installation's compiler and link against its libraries;
+the headers are build inputs and do not enter the installed artifact inventory. Both native helpers'
+object-cache identities include these compiler arguments and the selected Lean toolchain and compiler.
+Direct developer Lake builds can supply the same include directories as a JSON string array in
+`BEAM_NATIVE_SYSTEM_INCLUDE_DIRS`, alongside `BEAM_NATIVE_CLANG_RESOURCE_DIR`.
 
 ### Build Environment
 

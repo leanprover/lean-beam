@@ -52,6 +52,8 @@ def main():
     parser.add_argument("--crlf", action="store_true", help="exercise Windows line endings on any host")
     parser.add_argument("--previous-lean-prefix", type=Path,
                         help="qualify compiler switching through the same native object cache")
+    parser.add_argument("--native-system-include-dir", type=Path, action="append", default=[],
+                        help="Windows native SDK system include directory; repeat for multiple directories")
     args = parser.parse_args()
     # The parent captures UTF-8, including unittest failures with non-ASCII fixture names.
     run([sys.executable, "-X", "utf8", REPO / "tests/test-native-provenance.py"])
@@ -70,10 +72,25 @@ def main():
         build_env.update(LEAN=str(lean_prefix / "bin" / f"lean{EXE}"),
                          LEAN_SYSROOT=str(lean_prefix),
                          LAKE_CACHE_DIR=str(REPO / ".lake" / "toolchain-cache"))
+        native_cmake_args = []
         if os.name == "nt":
             # Resolve the full native SDK before Lake prepends the packaged compiler to PATH.
             build_env["BEAM_NATIVE_CLANG_RESOURCE_DIR"] = run(
                 ["clang", "--print-resource-dir"], env=build_env).stdout.strip()
+            includes = [str(path.resolve()) for path in args.native_system_include_dir]
+            build_env["BEAM_NATIVE_SYSTEM_INCLUDE_DIRS"] = json.dumps(includes)
+            native_cmake_args = [
+                f"-DNATIVE_CLANG_RESOURCE_DIR={build_env['BEAM_NATIVE_CLANG_RESOURCE_DIR']}",
+                "-DNATIVE_SYSTEM_INCLUDE_DIRS=" + ";".join(path.replace(";", "\\;") for path in includes)]
+            for value, message in [
+                    ("not JSON", "invalid BEAM_NATIVE_SYSTEM_INCLUDE_DIRS"),
+                    ("[7]", "invalid BEAM_NATIVE_SYSTEM_INCLUDE_DIRS"),
+                    (json.dumps([str(scratch / "missing native headers λ")]),
+                     "native Windows system include directory does not exist")]:
+                rejected_env = dict(build_env, BEAM_NATIVE_SYSTEM_INCLUDE_DIRS=value)
+                rejected = run([lean_prefix / "bin" / f"lake{EXE}", "--no-cache", "build",
+                                "beamControlDirObj"], env=rejected_env, ok=False)
+                assert rejected.returncode != 0 and message in rejected.stderr, rejected
         # Lake preserves configuration options in its cached lakefile. Warm the ordinary
         # configuration and CLI first, then prove the native builder uses its requested mode
         # without replacing that CLI or changing the ordinary configuration.
@@ -116,13 +133,15 @@ def main():
         first_native_trace = None
         if args.previous_lean_prefix:
             for selected in [lean_prefix, args.previous_lean_prefix.resolve()]:
-                run(["cmake", f"-DLEAN_PREFIX={selected}", "-P", "scripts/build-toolchain.cmake"])
+                run(["cmake", f"-DLEAN_PREFIX={selected}", *native_cmake_args,
+                     "-P", "scripts/build-toolchain.cmake"], env=build_env)
                 trace = native_object_traces()
                 if first_native_trace is None:
                     first_native_trace = trace
                 else:
                     assert all(trace[name] != first_native_trace[name] for name in trace), trace
-        run(["cmake", f"-DLEAN_PREFIX={lean_prefix}", "-P", "scripts/build-toolchain.cmake"])
+        run(["cmake", f"-DLEAN_PREFIX={lean_prefix}", *native_cmake_args,
+             "-P", "scripts/build-toolchain.cmake"], env=build_env)
         final_native_trace = native_object_traces()
         if first_native_trace is not None:
             assert final_native_trace == first_native_trace, final_native_trace
