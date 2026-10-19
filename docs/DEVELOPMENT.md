@@ -414,8 +414,10 @@ wait; a timeout, failed reply, or failed write proceeds directly to process term
 The pending-request store also owns terminal channel failure. Reader failure closes admission and
 settles all admitted requests after its bounded cleanup attempt, retaining the original typed failure
 and cleanup context. Registration and closure share one mutex: a request racing closure is either
-admitted and settled by it, or rejected with that same failure before writing. Session copies share
-this gate. Repeated closure retains the first failure, and clearing requests does not reopen it.
+admitted and settled by it, or rejected with that same failure before its request write. A request
+admitted before closure may still write afterward; closure does not cancel an in-progress write or
+serialize document notifications with failure publication. Session copies share this gate, and
+repeated closure retains the first failure.
 A session whose reader has failed cannot serve later requests even if its child is still running;
 workspace reset or removal remains available, and unrelated workspaces remain usable. Confirmed
 process exit still uses the existing detach-and-restart path.

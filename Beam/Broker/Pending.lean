@@ -302,13 +302,6 @@ def snapshotEntries (store : PendingRequestStore) : IO (Array (RequestID × Pend
 def snapshot (store : PendingRequestStore) : IO (Array PendingRequest) := do
   pure <| (← snapshotEntries store).map Prod.snd
 
-/-- Drain current requests without changing admission or discarding a retained failure. -/
-def clear (store : PendingRequestStore) : IO (Array PendingRequest) :=
-  store.state.atomically do
-    let state ← get
-    set { state with requests := {} }
-    pure <| state.requests.toList.map Prod.snd |>.toArray
-
 /-- Retain the first failure and reject future registration before settling admitted requests. -/
 def close (store : PendingRequestStore) (failure : ResponseFailure) : IO Unit := do
   let (failure, pending) ← store.state.atomically do

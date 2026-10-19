@@ -250,9 +250,8 @@ private def checkPendingStoreClosedAdmission : IO Unit := do
   let failure := responseFailureFor .workerExited "original reader failure"
   PendingRequestStore.close store failure
   PendingRequestStore.close store (responseFailureFor .internalError "later cleanup failure")
-  discard <| PendingRequestStore.clear store
   let retained ← PendingRequestStore.failure? store
-  require "clear and repeated close retain the first terminal failure"
+  require "repeated close retains the first terminal failure"
     (retained.any fun actual => toJson actual.error == toJson failure.error)
   for cancelled in [false, true] do
     let progress : SyncFileProgress := { updates := 17, done := false }

@@ -1769,37 +1769,6 @@ private def checkUnconfirmedCleanup
          else signalCount == 1)
       require "failed reader or wait never enters the graceful protocol"
         ((← writes.get) == if scenario == .waitFailure || consumer == .readerFailure then 0 else 1)
-      if consumer == .readerFailure && scenario == .signalFailure then
-        require "reader failure can leave process exit unconfirmed" ((← process.observe).isNone)
-        -- A retained Session copy bypasses runtime lookup. Its accepting stream makes a late
-        -- write hang awaiting the reader that already returned, unless registration rejects it.
-        let captured := { session with
-          stdin := { session.stdin with putStr := fun _ => writes.modify (· + 1) }
-        }
-        let lateTask ← IO.asTask (prio := Task.Priority.dedicated) <|
-          sendRequestJsonTrackedDetailed captured "textDocument/hover" Json.null
-        try
-          let some (.ok (.error failure)) ← Beam.waitTaskWithTimeout lateTask 1000
-            | throw <| IO.userError "failed reader admitted a request without a response consumer"
-          require "captured session retains the typed reader failure"
-            (toJson failure.error == toJson pendingFailure.error)
-          require "rejected request does not write to the failed channel" ((← writes.get) == 0)
-        finally
-          PendingRequestStore.close session.pending pendingFailure
-          discard <| IO.wait lateTask
-        let response ← runtime.dispatchRequest {
-          workspaceId? := some workspaceId
-          payload := .close { path := "Dead.lean" }
-        }
-        require "runtime rejects reuse with the original typed reader failure"
-          (response.error?.any fun error => toJson error == toJson pendingFailure.error)
-        require "failed-session rejection does not write to the failed channel" ((← writes.get) == 0)
-        discard <| runtime.initWorkspaceWithConfig "healthy" { root := base / "healthy" }
-        let healthy ← runtime.dispatchRequest {
-          workspaceId? := some "healthy"
-          payload := .close { path := "Independent.lean" }
-        }
-        require "reader failure leaves unrelated workspaces usable" healthy.ok
       match consumer with
       | .runtimeClose =>
           let repeated : Except IO.Error Unit ←
@@ -1814,6 +1783,101 @@ private def checkUnconfirmedCleanup
           require "failed cleanup retains the committed removal"
             ((← runtime.workspaceRoot? workspaceId).isNone)
       | .readerFailure => pure ()
+  finally
+    try runtime.close catch _ => pure ()
+    IO.FS.removeDirAll base
+
+/-- Failed readers reject both captured and runtime requests without fencing a healthy backend. -/
+private def checkFailedReaderAdmission : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-failed-reader-admission-{← IO.monoNanosNow}"
+  let failedId := "failed-reader"
+  let healthyId := "healthy-reader"
+  IO.FS.createDirAll base
+  let runtime ← ServerRuntime.create { root := base } failedId
+  try
+    withShutdownObservedSession failedId base (base / "failed-shutdown") .stall fun initial => do
+      withShutdownObservedSession healthyId (base / "healthy") (base / "healthy-shutdown") .stall fun healthy => do
+        let exitCode ← IO.mkRef (none : Option UInt32)
+        let failedWrites ← IO.mkRef (0 : Nat)
+        let healthyRequests ← IO.mkRef (0 : Nat)
+        -- Controlled operations leave the real child with the fixture's independent owner.
+        let process ← BackendProcess.create 0 exitCode.get
+          (throw <| IO.userError "controlled reader termination failure")
+        let failed := { initial with
+          proc := process
+          stdin := { initial.stdin with putStr := fun _ => failedWrites.modify (· + 1) }
+          stdout := { initial.stdout with
+            getLine := throw <| IO.userError "controlled admission reader failure"
+          }
+        }
+        let healthy := { healthy with
+          stdin := { healthy.stdin with putStr := fun text => do
+            unless text.contains "\"method\":\"workspace/symbol\"" do
+              throw <| IO.userError "unexpected healthy-backend fixture write"
+            healthyRequests.modify (· + 1)
+            let some pending ← PendingRequestStore.remove healthy.pending healthy.nextId
+              | throw <| IO.userError "healthy-backend request was not registered"
+            PendingRequest.resolveResponse pending (Json.arr #[])
+          }
+        }
+        match ← runtime.initWorkspaceWithConfig healthyId { root := base / "healthy" } with
+        | .ok _ => pure ()
+        | .error failure => throw <| IO.userError failure.error.message
+        runtime.state.atomically do
+          for session in #[failed, healthy] do
+            let state ← get
+            let some workspace := state.workspaces.get? session.workspaceId
+              | throw <| IO.userError "reader-admission fixture workspace is missing"
+            let session := { session with workspaceGeneration := workspace.generation }
+            let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
+            set { state with workspaces := state.workspaces.insert session.workspaceId workspace }
+        let ordinary ← cleanupPending
+        require "reader-admission fixture registers ordinary pending work"
+          (← PendingRequestStore.register failed.pending 0 ordinary)
+        sessionReaderLoop failed
+        let some (some (.error failure)) ← Beam.waitTaskWithTimeout ordinary.promise.result? 1000
+          | throw <| IO.userError "reader failure did not settle admitted work"
+        require "reader failure retains its typed cause and incomplete cleanup"
+          (failure.error.code == "workerExited" &&
+            failure.error.message.contains "controlled admission reader failure" &&
+            failure.error.message.contains "backend process exit was not confirmed")
+        require "failed-reader fixture still has unconfirmed process exit" ((← process.observe).isNone)
+        let lateTask ← IO.asTask (prio := Task.Priority.dedicated) <|
+          sendRequestJsonTrackedDetailed failed "textDocument/hover" Json.null
+        try
+          let some (.ok (.error actual)) ← Beam.waitTaskWithTimeout lateTask 1000
+            | throw <| IO.userError "failed reader admitted a request without a response consumer"
+          require "captured session retains the typed reader failure"
+            (toJson actual.error == toJson failure.error)
+        finally
+          PendingRequestStore.close failed.pending failure
+          discard <| IO.wait lateTask
+        let rejected ← runtime.dispatchRequest {
+          workspaceId? := some failedId
+          payload := .workspaceSymbols { query := "failed" }
+        }
+        require "runtime rejects reuse with the original typed reader failure"
+          (rejected.error?.any fun actual => toJson actual == toJson failure.error)
+        let answered ← runtime.dispatchRequest {
+          workspaceId? := some healthyId
+          payload := .workspaceSymbols { query := "healthy" }
+        }
+        let healthyRequestCount ← healthyRequests.get
+        require "reader failure leaves an unrelated active backend usable"
+          (answered.ok && healthyRequestCount == 1)
+        exitCode.set (some 0)
+        let recovered ← runtime.dispatchRequest {
+          workspaceId? := some failedId
+          payload := .close { path := "Dead.lean" }
+        }
+        require "confirmed exit permits detachment of a failed reader" recovered.ok
+        runtime.state.atomically do
+          let some workspace := (← get).workspaces.get? failedId
+            | throw <| IO.userError "recovered reader-admission workspace is missing"
+          require "confirmed exit clears the failed session and advances its epoch"
+            (workspace.lean.session?.isNone && workspace.lean.nextEpoch == 3)
+        require "terminally rejected requests and retained exit never write to the failed channel"
+          ((← failedWrites.get) == 0)
   finally
     try runtime.close catch _ => pure ()
     IO.FS.removeDirAll base
@@ -2257,8 +2321,13 @@ private partial def takePendingRequests
     (store : PendingRequestStore)
     (count : Nat)
     (tries : Nat := 200) : IO (Array PendingRequest) := do
-  if (← PendingRequestStore.snapshot store).size >= count then
-    PendingRequestStore.clear store
+  let entries ← PendingRequestStore.snapshotEntries store
+  if entries.size >= count then
+    let mut pending := #[]
+    for (id, _) in entries.take count do
+      if let some request ← PendingRequestStore.remove store id then
+        pending := pending.push request
+    pure pending
   else if tries == 0 then
     throw <| IO.userError s!"timed out waiting for {count} pending backend request(s)"
   else
@@ -2488,6 +2557,7 @@ def main : IO Unit := do
   checkUnconfirmedCleanup .runtimeClose .waitFailure
   checkUnconfirmedCleanup .readerFailure .signalFailure true
   checkUnconfirmedCleanup .readerFailure .waitFailure
+  checkFailedReaderAdmission
   checkUnconfirmedCleanup .reset .signalFailure
   checkUnconfirmedCleanup .drop .exitNotObserved
   checkLifecycleTeardownConcurrency
