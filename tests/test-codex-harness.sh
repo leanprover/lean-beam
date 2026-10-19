@@ -23,7 +23,7 @@ trap cleanup EXIT
 
 # The harness runs against a throwaway repository with a local bare origin, so the test never
 # creates worktrees or branches in the checkout under test and does not depend on network access.
-unset BEAM_CODEX_WORKTREE_ROOT BEAM_CODEX_ALLOW_PRIMARY_WORKTREE BEAM_CODEX_TOOL_LOG
+unset BEAM_CODEX_WORKTREE_ROOT BEAM_CODEX_ALLOW_PRIMARY_WORKTREE BEAM_CODEX_TOOL_LOG GIT_SSH_COMMAND GIT_SSH
 export GIT_CONFIG_GLOBAL="$tmp_root/gitconfig"
 export GIT_CONFIG_NOSYSTEM=1
 git config --global user.name "Beam Harness Test"
@@ -212,7 +212,7 @@ expect_no_branch codex/offline
 
 # Uncommitted changes block drop even with --force.
 printf 'uncommitted\n' >> "$default_root/explicit-base/README"
-expect_harness_fails_with drop-dirty "commit, push, or discard its changes first" worktree drop --force explicit-base
+expect_harness_fails_with drop-dirty "contains modified or untracked files" worktree drop --force explicit-base
 assert_file "$default_root/explicit-base/README"
 expect_branch codex/explicit-base
 
@@ -252,12 +252,74 @@ assert_not_exists "$tmp_root/fake-ssh.log"
 # A failed fetch during drop is reported, and the merge check falls back to the last fetched copy.
 commit_in "$default_root/ssh-default" "unmerged work"
 PATH="$fake_bin:$PATH" expect_harness_fails_with drop-offline "neither on any remote nor merged" worktree drop ssh-default
-assert_contains_literal "$tmp_root/drop-offline.err" "checking against the last fetched copy"
+assert_contains_literal "$tmp_root/drop-offline.err" "checking codex/ssh-default against the last fetched remote branches"
 git -C "$repo" update-ref -d refs/remotes/origin/main
 PATH="$fake_bin:$PATH" expect_harness_fails_with drop-no-base "neither on any remote nor merged" worktree drop ssh-default
-assert_contains_literal "$tmp_root/drop-no-base.err" "cannot check whether codex/ssh-default is merged"
+assert_contains_literal "$tmp_root/drop-no-base.err" "no fetched origin/main; cannot check whether codex/ssh-default is merged"
 git -C "$repo" remote set-url origin "$origin"
 git -C "$repo" fetch --quiet origin
+
+# A pushed task branch deleted on the remote without being merged is no longer treated as pushed,
+# even before the local remote-tracking ref is pruned.
+expect_harness_ok remote-deleted worktree add remote-deleted
+commit_in "$default_root/remote-deleted" "work on a deleted remote branch"
+git -C "$default_root/remote-deleted" push --quiet origin codex/remote-deleted
+git -C "$upstream_clone" push --quiet origin --delete codex/remote-deleted
+expect_harness_fails_with drop-remote-deleted "neither on any remote nor merged" worktree drop remote-deleted
+expect_branch codex/remote-deleted
+
+# A squash-merged branch is recognized even after later base commits change nearby lines, which
+# makes a three-way merge of the branch conflict.
+commit_in "$default_root/remote-deleted" "second line of squashed work"
+git -C "$upstream_clone" pull --quiet origin main
+git -C "$default_root/remote-deleted" diff "$(git -C "$repo" merge-base origin/main codex/remote-deleted)" codex/remote-deleted |
+  git -C "$upstream_clone" apply
+git -C "$upstream_clone" commit --quiet -am "squash merge remote-deleted"
+printf 'follow-up next to the squashed lines\n' >> "$upstream_clone/README"
+git -C "$upstream_clone" commit --quiet -am "follow-up"
+git -C "$upstream_clone" push --quiet origin main
+expect_harness_ok drop-squashed-moved worktree drop remote-deleted
+expect_no_branch codex/remote-deleted
+
+# Cleaning up a deleted task directory leaves unrelated missing worktree registrations alone.
+unrelated="$tmp_root/unrelated-worktree"
+git -C "$repo" worktree add --quiet --detach "$unrelated" main
+rm -rf -- "$unrelated"
+expect_harness_ok unrelated-add worktree add unrelated-check
+expect_harness_ok unrelated-drop worktree drop unrelated-check
+assert_contains_literal <(git -C "$repo" worktree list --porcelain) "worktree $unrelated"
+git -C "$repo" worktree prune
+
+# A failure inside session start stops it with one error instead of continuing with an empty base.
+git -C "$repo" remote set-url origin "$tmp_root/missing-origin.git"
+saved_base="$(git -C "$repo" rev-parse origin/main)"
+git -C "$repo" update-ref -d refs/remotes/origin/main
+expect_harness_fails_with start-no-base "no fetched copy exists" session start no-base
+assert_not_contains "$tmp_root/start-no-base.err" "invalid reference"
+assert_not_exists "$default_root/no-base"
+git -C "$repo" update-ref refs/remotes/origin/main "$saved_base"
+git -C "$repo" remote set-url origin "$origin"
+
+# Tracked edits in the primary checkout block new tasks but not resuming an existing one.
+printf 'primary edit\n' >> "$repo/README"
+expect_harness_fails_with dirty-primary-new "primary checkout has tracked edits" worktree add dirty-primary
+expect_harness_ok dirty-primary-resume worktree add --resume explicit-base
+git -C "$repo" checkout --quiet -- README
+
+# A task interrupted during a rebase can be resumed, but not dropped until the rebase is finished.
+expect_harness_ok rebasing worktree add rebasing
+commit_in "$default_root/rebasing" "commit to replay"
+git -C "$default_root/rebasing" rebase --quiet --exec false HEAD~1 >/dev/null 2>&1 || true
+expect_harness_ok rebasing-resume worktree add --resume rebasing
+assert_contains_literal "$tmp_root/rebasing-resume.err" "a rebase of codex/rebasing is in progress"
+expect_harness_fails_with rebasing-drop "finish or abort it before dropping the task" worktree drop --force rebasing
+git -C "$default_root/rebasing" rebase --abort
+
+# A locked task worktree is not dropped, and git's reason is reported.
+git -C "$repo" worktree lock "$default_root/rebasing"
+expect_harness_fails_with locked-drop "see the git error above" worktree drop --force rebasing
+assert_contains_literal "$tmp_root/locked-drop.err" "locked"
+git -C "$repo" worktree unlock "$default_root/rebasing"
 
 # BEAM_CODEX_WORKTREE_ROOT overrides the default root inside the repo.
 override_root="$repo/.codex-worktrees/override"

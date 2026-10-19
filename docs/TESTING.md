@@ -368,8 +368,8 @@ The maintainer surface covers local workflow helpers:
 
 [tests/test-codex-harness.sh](../tests/test-codex-harness.sh) runs the harness against a throwaway
 repository with a local bare `origin` under `/tmp`, so it never creates worktrees or branches in the
-checkout under test and needs no network access. The maintainer surface needs no Lean toolchain and
-runs in the `shell-lint` CI job.
+checkout under test and needs no network access. It needs no Lean toolchain and runs in the
+`shell-lint` CI job; the other maintainer tests also run in `beam-fast`.
 
 Run these when the change touches [scripts/codex-harness.sh](../scripts/codex-harness.sh),
 [scripts/codex-session-start.sh](../scripts/codex-session-start.sh),
@@ -442,7 +442,7 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
   macOS mode. Combined macOS mode qualifies the repository-pinned version.
   Other RCs and superseded stable points qualify locally instead of receiving dedicated CI jobs.
 - `shell-lint`: [scripts/lint-shell.sh](../scripts/lint-shell.sh) and
-  [tests/test-maintainer.sh](../tests/test-maintainer.sh)
+  [tests/test-codex-harness.sh](../tests/test-codex-harness.sh)
 
 ## Extended Fork CI
 

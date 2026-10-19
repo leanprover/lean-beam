@@ -55,14 +55,18 @@ Harness behavior that agents and humans can rely on:
   sandbox without network access, the harness uses the last fetched `origin/main` and reports its age
   on stderr. The fetch does not wait on terminal credential prompts, and unless `GIT_SSH_COMMAND`,
   `GIT_SSH`, or `core.sshCommand` is set it uses ssh with `BatchMode` and a 15-second connect timeout.
+  HTTPS remotes get no timeout. Tracked edits in the primary checkout block new tasks.
 - task branches do not track their base, so a plain `git push` cannot target `main`
 - an existing task worktree or task branch is refused unless `--resume` is passed:
-  `./scripts/codex-harness.sh session start --resume <task-id>`
-- `./scripts/codex-harness.sh worktree drop <task-id>` refuses to delete a task branch with commits
-  that are neither on any remote nor already merged into `origin/main`, so squash-merged tasks can be
-  dropped after their remote branch is deleted; `--force` discards unmerged commits. Uncommitted or
-  untracked changes always block `drop`; ignored files such as `.lake` and `.beam` are deleted with
-  the worktree. A task whose directory was deleted by hand can still be resumed or dropped.
+  `./scripts/codex-harness.sh session start --resume <task-id>`. Resuming works with tracked edits
+  in the primary checkout and for a task interrupted during a rebase or bisect.
+- `./scripts/codex-harness.sh worktree drop <task-id>` first refreshes `origin`'s branches, pruning
+  deleted ones, and then refuses to delete a task branch with commits that are neither on any remote
+  nor already merged into `origin/main`. A squash merge counts as merged, also after later commits on
+  `main` and after the task's remote branch is deleted. `--force` discards unmerged commits.
+  Uncommitted or untracked changes, a rebase or bisect in progress, and a locked worktree always
+  block `drop`; ignored files such as `.lake` and `.beam` are deleted with the worktree. A task whose
+  directory was deleted by hand can still be resumed or dropped.
 - stdout carries the worktree path (after the session summary for `session start`); errors and
   warnings go to stderr
 

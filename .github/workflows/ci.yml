@@ -125,8 +125,8 @@ jobs:
       - name: Shell Lint
         run: bash scripts/lint-shell.sh
 
-      - name: Maintainer Tests
-        run: bash tests/test-maintainer.sh
+      - name: Task Harness Test
+        run: bash tests/test-codex-harness.sh
 
   lsp:
     name: lsp (${{ matrix.os }})
