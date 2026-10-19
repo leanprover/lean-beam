@@ -1,6 +1,12 @@
 {
   "cases": [
     {
+      "id": "runAt.header-universes",
+      "method": "$/lean/runAt",
+      "coverage": ["proof-context", "isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/HeaderUniverseTest.lean#run"
+    },
+    {
       "id": "runAt.available-goal",
       "method": "$/lean/runAt",
       "coverage": ["proof-context", "isolation"],

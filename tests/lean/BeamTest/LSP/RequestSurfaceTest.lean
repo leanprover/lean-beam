@@ -11,6 +11,7 @@ import BeamTest.LSP.Requests.Goals.BasicTest
 import BeamTest.LSP.Requests.RunAt.BasicTest
 import BeamTest.LSP.Requests.RunAt.AuxiliaryDeclarationTest
 import BeamTest.LSP.Requests.RunAt.AvailabilityTest
+import BeamTest.LSP.Requests.RunAt.HeaderUniverseTest
 import BeamTest.LSP.Requests.Save.BasicTest
 import BeamTest.LSP.Requests.Todo.BasicTest
 
@@ -20,6 +21,7 @@ def main : IO Unit := BeamTest.LSP.Scenario.run do
   BeamTest.LSP.Requests.RunAt.BasicTest.run
   BeamTest.LSP.Requests.RunAt.AuxiliaryDeclarationTest.run
   BeamTest.LSP.Requests.RunAt.AvailabilityTest.run
+  BeamTest.LSP.Requests.RunAt.HeaderUniverseTest.run
   BeamTest.LSP.Requests.Goals.BasicTest.run
   BeamTest.LSP.Requests.Todo.BasicTest.run
   BeamTest.LSP.Requests.DiagnosticsBarrier.BasicTest.run

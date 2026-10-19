@@ -22,14 +22,15 @@ def run : ScenarioM Unit := do
   let source ← IO.FS.readFile path
   let doc ← openDoc path
   syncDoc doc
-  for label in ["sync", "async"] do
+  for label in ["sync", "async", "body"] do
     let root ← mkTmpDir s!"beam-run-at-availability-{label}"
     let entered := root / "entered"
     let release := root / "release"
     let gateLine ← markerLine source s!"gate:{label}"
     let probeLine ← markerLine source s!"probe:{label}"
-    let gate := s!"await_test_gate {(toJson entered.toString).compress} {(toJson release.toString).compress}"
-    changeDoc doc { line := gateLine, character := 2, delete := "trivial", insert := gate }
+    let original := (((source.splitOn "\n")[gateLine]!).splitOn " -- gate:").head!.trimAscii.toString
+    let gate := s!"await_test_gate {(toJson entered.toString).compress} {(toJson release.toString).compress} then {original}"
+    changeDoc doc { line := gateLine, character := 2, delete := original, insert := gate }
     try
       let started ← IO.monoMsNow
       while !(← entered.pathExists) do
@@ -52,8 +53,9 @@ def run : ScenarioM Unit := do
             return
           IO.sleep 5
       try
+        let finish := if label == "body" then original else "trivial"
         requireRunAtSolvesProof s!"{label}: probe an available goal before the later tactic finishes"
-          doc { line := probeLine, character := 2 } "first | guard_command_universe; trivial"
+          doc { line := probeLine, character := 2 } s!"first | guard_command_universe; {finish}"
         if ← release.pathExists then
           throw <| IO.userError s!"{label}: runAt waited for the enclosing command to finish"
       finally
