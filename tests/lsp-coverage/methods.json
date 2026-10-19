@@ -8,6 +8,7 @@
       "requiredCoverage": [
         "isolation",
         "tactic-position",
+        "auxiliary-declarations",
         "single-command-limit",
         "theorem-proof-failure",
         "theorem-tactic-failure",
@@ -26,6 +27,7 @@
       "definition": "Beam/LSP/RunAt.lean#runWithMethod",
       "requiredCoverage": [
         "handle-continuation",
+        "auxiliary-declarations",
         "handle-invalidation",
         "linear-handle",
         "failed-successor-no-handle",

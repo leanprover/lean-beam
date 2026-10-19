@@ -89,11 +89,20 @@ Current LSP coverage includes:
 - shuffled concurrent workload coverage in [tests/lean/BeamTest/LSP/Scenario/StressTest.lean](../tests/lean/BeamTest/LSP/Scenario/StressTest.lean)
 - handle API, restart, lifecycle, and nested-failure coverage in [tests/lean/BeamTest/LSP/Handle](../tests/lean/BeamTest/LSP/Handle)
 - full registered LSP request coverage through request-family tests under [tests/lean/BeamTest/LSP/Requests](../tests/lean/BeamTest/LSP/Requests), aggregated by [tests/lean/BeamTest/LSP/RequestSurfaceTest.lean](../tests/lean/BeamTest/LSP/RequestSurfaceTest.lean), including `$/lean/todo` and `$/lean/runAt` composition
+- auxiliary-declaration conformance in [AuxiliaryDeclarationTest.lean](../tests/lean/BeamTest/LSP/Requests/RunAt/AuxiliaryDeclarationTest.lean), comparing `runAt` with identical tactic replacements through ordinary LSP document edits, including private and nested proofs, stored-handle branches, and failure isolation
 - search-style handle workflows in [tests/lean/BeamTest/LSP/Scenario/MctsProofSearchTest.lean](../tests/lean/BeamTest/LSP/Scenario/MctsProofSearchTest.lean)
 - parallel multi-sorry workflow coverage in [tests/lean/BeamTest/LSP/Scenario/ParallelGrindBatchTest.lean](../tests/lean/BeamTest/LSP/Scenario/ParallelGrindBatchTest.lean), which queries actionable todos with `$/lean/todo`, validates one `$/lean/runAt` request per returned item, and then mirrors those exact replacements in one atomic batched `didChange`
 - lightweight search-workload latency reporting in [tests/lean/BeamTest/LSP/Scenario/SearchWorkloadReport.lean](../tests/lean/BeamTest/LSP/Scenario/SearchWorkloadReport.lean) and [scripts/search-workload-report.sh](../scripts/search-workload-report.sh)
 
 Run the LSP surface when the change touches request semantics, proof-vs-command basis selection, positions, cancellation, handles, stale snapshots, per-request isolation, or any method in [Beam/LSP/Plugin.lean](../Beam/LSP/Plugin.lean).
+
+For proof-execution regressions, compare speculative execution with ordinary Lean elaboration of
+the same replacement. Assert the relevant effect as well as goal closure: the auxiliary-declaration
+fixture's `fresh_aux` tactic checks an actual declaration-set difference, so a cached lemma cannot
+hide a missing creation path. Its handle tests retain one lemma, create different lemmas after
+resuming, and check that failed attempts and sibling branches leave the original snapshot intact.
+Keep ordinary Lean's own rejection cases as controls; for example, `decide +kernel` rejects a goal
+containing free variables in both execution paths.
 
 ## Beam Surface
 
