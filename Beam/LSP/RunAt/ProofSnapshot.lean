@@ -46,10 +46,16 @@ def runMetaM (p : ProofSnapshot) (t : MetaM α) : IO (α × ProofSnapshot) := do
 
 def runTermElabM (p : ProofSnapshot) (t : TermElabM α) : IO (α × ProofSnapshot) := do
   let ((a, termState), p') ←
-    p.runMetaM (Term.TermElabM.run (s := p.termState) do
-      let r ← t
-      Term.synthesizeSyntheticMVarsNoPostponing
-      pure r)
+    p.runMetaM (Term.TermElabM.run (ctx := p.termContext) (s := p.termState) do
+      let run := do
+        let r ← t
+        Term.synthesizeSyntheticMVarsNoPostponing
+        pure r
+      -- Setting `declName?` in the reader context is not enough: Lean's auxiliary
+      -- declaration generator is stateful and must be scoped to this declaration too.
+      match p.termContext.declName? with
+      | some declName => Term.withDeclName declName run
+      | none => run)
   return (a, { p' with termState })
 
 def runTacticM (p : ProofSnapshot) (t : TacticM α) : IO (α × ProofSnapshot) := do
@@ -66,7 +72,9 @@ def create (ctx : Elab.ContextInfo) (goals : List MVarId) (types : List Expr := 
       metaState := ← getThe Meta.State
       metaContext := ← readThe Meta.Context
       termState := {}
-      termContext := {}
+      -- Tactic info contexts may omit `parentDecl?`; the environment's async prefix still
+      -- identifies the enclosing declaration whose scope admits auxiliary declarations.
+      termContext := { declName? := ctx.parentDecl? <|> ctx.env.asyncPrefix? }
       tacticState := { goals }
       -- Editor-style tactic recovery is useful for collecting later diagnostics, but an isolated
       -- runAt probe should report the direct tactic failure. With recovery enabled, term
