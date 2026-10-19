@@ -379,6 +379,7 @@ log "overlaying current working tree state"
   --exclude='.lake/' \
   --exclude='.native-test/' \
   --exclude='.beam/' \
+  --exclude='.worktrees/' \
   --exclude='.codex-worktrees/' \
   "$repo_root"/ "$clone_root"/
 

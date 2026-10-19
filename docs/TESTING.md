@@ -361,18 +361,19 @@ progress notifications or the underlying `lean_sync` / `waitForDiagnostics` path
 The maintainer surface covers local workflow helpers:
 
 - [tests/test-maintainer.sh](../tests/test-maintainer.sh)
-- [tests/test-codex-harness.sh](../tests/test-codex-harness.sh)
+- [tests/test-task-harness.sh](../tests/test-task-harness.sh)
 - [tests/test-validate-defensive.sh](../tests/test-validate-defensive.sh)
 - [tests/test-extended-ci.py](../tests/test-extended-ci.py): offline destination, revision, and CLI
   failure checks for the fork-CI helper; also included in the fast suite
 
-[tests/test-codex-harness.sh](../tests/test-codex-harness.sh) runs the harness against a throwaway
-repository with a local bare `origin` under `/tmp`, so it never creates worktrees or branches in the
-checkout under test and needs no network access. It needs no Lean toolchain and runs in the
-`shell-lint` CI job; the other maintainer tests also run in `beam-fast`.
+[tests/test-task-harness.sh](../tests/test-task-harness.sh) runs the harness, including its Claude Code
+hook adapters and `adopt`, against a throwaway repository with a local bare `origin` under `/tmp`, so
+it never creates worktrees or branches in the checkout under test and needs no network access. It
+needs no Lean toolchain and runs in the `shell-lint` CI job; the other maintainer tests also run in
+`beam-fast`.
 
-Run these when the change touches [scripts/codex-harness.sh](../scripts/codex-harness.sh),
-[scripts/codex-session-start.sh](../scripts/codex-session-start.sh),
+Run these when the change touches [scripts/task-harness.sh](../scripts/task-harness.sh),
+[.claude/settings.json](../.claude/settings.json),
 [scripts/validate-defensive.sh](../scripts/validate-defensive.sh), or
 [scripts/extended-ci.py](../scripts/extended-ci.py).
 
@@ -442,7 +443,7 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
   macOS mode. Combined macOS mode qualifies the repository-pinned version.
   Other RCs and superseded stable points qualify locally instead of receiving dedicated CI jobs.
 - `shell-lint`: [scripts/lint-shell.sh](../scripts/lint-shell.sh) and
-  [tests/test-codex-harness.sh](../tests/test-codex-harness.sh)
+  [tests/test-task-harness.sh](../tests/test-task-harness.sh)
 
 ## Extended Fork CI
 
