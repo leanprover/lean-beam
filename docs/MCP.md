@@ -218,6 +218,11 @@ The Lean operations include update/sync/refresh/save/close operations, runAt and
 handle operations, hover and navigation, document/workspace symbols, goals, todo discovery, and
 code-action resolution. Raw LSP methods and generic broker escape hatches are intentionally absent.
 
+The [proof-probe limitations](STATUS.md#operational-notes) also apply to `lean_run_at`,
+`lean_run_at_handle`, `lean_run_with`, and `lean_run_with_linear`: introducing a local `let rec` in a
+tactic returns a semantic failure without a successor handle. Add the recursive definition to the
+document and sync before probing its use.
+
 Twelve observational tools advertise MCP `annotations.readOnlyHint = true`:
 
 - process inspection: `beam_version`, `beam_stats`

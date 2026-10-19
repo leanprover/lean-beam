@@ -1,9 +1,45 @@
 {
   "cases": [
     {
-      "id": "runAt.auxiliary-conformance",
+      "id": "runWith.proof-context",
+      "method": "$/lean/runWith",
+      "coverage": ["proof-context", "handle-continuation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/AuxiliaryDeclarationTest.lean#checkContextHandles"
+    },
+    {
+      "id": "runWith.local-instances",
+      "method": "$/lean/runWith",
+      "coverage": ["proof-context", "handle-continuation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/AuxiliaryDeclarationTest.lean#checkInstanceHandles"
+    },
+    {
+      "id": "runWith.dependent-induction",
+      "method": "$/lean/runWith",
+      "coverage": ["proof-context", "handle-continuation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/AuxiliaryDeclarationTest.lean#checkDependentHandles"
+    },
+    {
+      "id": "runAt.local-recursion",
+      "method": "$/lean/runAt",
+      "coverage": ["local-recursion", "isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/AuxiliaryDeclarationTest.lean#checkLocalRecursionBoundary"
+    },
+    {
+      "id": "runWith.local-recursion",
+      "method": "$/lean/runWith",
+      "coverage": ["local-recursion", "failed-successor-no-handle"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/AuxiliaryDeclarationTest.lean#checkLocalRecursionBoundary"
+    },
+    {
+      "id": "runAt.solver-failures",
       "method": "$/lean/runAt",
       "coverage": ["auxiliary-declarations", "isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/AuxiliaryDeclarationTest.lean#checkRejectedProofs"
+    },
+    {
+      "id": "runAt.auxiliary-conformance",
+      "method": "$/lean/runAt",
+      "coverage": ["auxiliary-declarations", "proof-context", "isolation"],
       "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/AuxiliaryDeclarationTest.lean#checkAuxiliaryConformance"
     },
     {

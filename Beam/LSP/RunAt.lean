@@ -423,6 +423,12 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
             let initialTraceCount := (← getTraces).size
             try
               Elab.Tactic.evalTactic stx
+              Elab.Term.synthesizeSyntheticMVarsNoPostponing
+              -- Lean lifts local recursive definitions and checks their termination when
+              -- finalizing the enclosing declaration. A standalone tactic probe has no such
+              -- finalization step, so it must not report these pending definitions as solved.
+              unless (← Elab.Term.getLetRecsToLift).isEmpty do
+                throwError "Local recursive declarations are not supported in runAt tactics. Add the declaration to the document and sync before probing."
               let (messages, traces) ← collectNewTacticArtifacts initialMsgCount initialTraceCount
               return { disposition := .keepAdvanced, error? := none, messages, traces }
             catch ex =>
@@ -441,11 +447,11 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
     let nextHandle? := outcome.disposition.nextHandleState? result proofSnapshot'
     return (result, nextHandle?)
 
-def runTacticAtBasis (basis : GoalsAtResult) (text : String) :
+def runTacticAtBasis (basis : GoalsAtResult) (text : String) (levelNames : List Name) :
     RequestM (Result × Option StoredHandleState) := do
   let ctxInfo := mkBasisCtxInfo basis
   let initialProofState ← basisProofState basis
-  let proofSnapshot ← ProofSnapshot.create ctxInfo (basisGoals basis)
+  let proofSnapshot ← ProofSnapshot.create ctxInfo (basisGoals basis) (levelNames := levelNames)
   runTacticText proofSnapshot initialProofState text
 
 def handleRunAt (p : Params) : RequestM (RequestTask Result) := do
@@ -455,10 +461,11 @@ def handleRunAt (p : Params) : RequestM (RequestTask Result) := do
   checkRequestCancelled
   let proofTask ← findProofBasisAt p.position
   RequestM.bindRequestTaskCostly proofTask <| fun
-    | some basis => do
-        checkRequestCancelled
-        let (result, state?) ← runTacticAtBasis basis p.text
-        return RequestTask.pure (← maybeAttachHandle result (p.storeHandle?.getD false) state?)
+    | some basis =>
+        withRunAtSnapAtPos p.position fun snap => do
+          checkRequestCancelled
+          let (result, state?) ← runTacticAtBasis basis p.text snap.cmdState.scopes.head!.levelNames
+          maybeAttachHandle result (p.storeHandle?.getD false) state?
     | none =>
         withRunAtSnapAtPos p.position fun snap => do
           checkRequestCancelled

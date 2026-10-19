@@ -101,6 +101,13 @@ The base request remains intentionally small:
 Request-level failures stay at the transport layer. Semantic Lean outcomes stay in the normal typed
 response payload.
 
+Proof probes through `$/lean/runAt` and `$/lean/runWith` do not support newly introduced local
+`let rec` declarations. They return a semantic failure with the original proof state and no successor
+handle, including when the recursion is valid in ordinary Lean. Lean checks these definitions and
+their termination when finalizing the enclosing declaration; a tactic fragment has no such step.
+Add valid recursive definitions to the document and sync before probing their use. Command probes
+that elaborate a complete declaration use Lean's normal finalization and termination checks.
+
 Follow-up handles exist, but they should be treated as pre-stable support APIs rather than as a frozen
 long-term contract. They are opaque, workspace- and document-bound, invalidated by same-document
 edits, document close, worker or daemon restart, and reset/drop of their owning workspace. Exact

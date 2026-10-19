@@ -47,31 +47,47 @@ def runMetaM (p : ProofSnapshot) (t : MetaM α) : IO (α × ProofSnapshot) := do
 def runTermElabM (p : ProofSnapshot) (t : TermElabM α) : IO (α × ProofSnapshot) := do
   let ((a, termState), p') ←
     p.runMetaM (Term.TermElabM.run (ctx := p.termContext) (s := p.termState) do
-      let run := do
-        let r ← t
-        Term.synthesizeSyntheticMVarsNoPostponing
-        pure r
       -- Setting `declName?` in the reader context is not enough: Lean's auxiliary
       -- declaration generator is stateful and must be scoped to this declaration too.
+      -- The caller owns synthesis so its diagnostics and exceptions share the tactic's
+      -- saved-state boundary.
       match p.termContext.declName? with
-      | some declName => Term.withDeclName declName run
-      | none => run)
+      | some declName => Term.withDeclName declName t
+      | none => t)
   return (a, { p' with termState })
 
 def runTacticM (p : ProofSnapshot) (t : TacticM α) : IO (α × ProofSnapshot) := do
   let ((a, tacticState), p') ← p.runTermElabM (t p.tacticContext |>.run p.tacticState)
   return (a, { p' with tacticState })
 
-def create (ctx : Elab.ContextInfo) (goals : List MVarId) (types : List Expr := []) :
+def create (ctx : Elab.ContextInfo) (goals : List MVarId) (types : List Expr := [])
+    (levelNames : List Name := []) :
     IO ProofSnapshot := do
   ctx.runMetaM {} do
     let goals := goals ++ (← types.mapM fun t => Expr.mvarId! <$> Meta.mkFreshExprMVar (some t))
+    -- InfoTree contexts do not save the term elaborator's universe scope. Start with the
+    -- command scope and enclosing signature, then recover parameters from goals and hypotheses.
+    let mut levels : CollectLevelParams.State := {}
+    for name in levelNames.reverse do
+      levels := CollectLevelParams.visitLevel (.param name) levels
+    if let some name := ctx.env.asyncPrefix? <|> ctx.parentDecl? then
+      -- The signature is available once proof info exists; do not force the declaration's body.
+      if let some signature := ctx.env.findConstVal? name (skipRealize := true) then
+        for name in signature.levelParams do
+          levels := CollectLevelParams.visitLevel (.param name) levels
+    for goal in goals do
+      let decl ← goal.getDecl
+      for localDecl in decl.lctx do
+        levels := collectLevelParams levels (← instantiateMVars localDecl.type)
+        if let some value := localDecl.value? then
+          levels := collectLevelParams levels (← instantiateMVars value)
+      levels := collectLevelParams levels (← instantiateMVars decl.type)
     pure {
       coreState := ← getThe Core.State
       coreContext := ← readThe Core.Context
       metaState := ← getThe Meta.State
       metaContext := ← readThe Meta.Context
-      termState := {}
+      termState := { levelNames := levels.params.toList.reverse }
       -- Tactic info contexts may omit `parentDecl?`; the environment's async prefix still
       -- identifies the enclosing declaration whose scope admits auxiliary declarations.
       termContext := { declName? := ctx.parentDecl? <|> ctx.env.asyncPrefix? }

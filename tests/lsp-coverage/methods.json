@@ -9,6 +9,8 @@
         "isolation",
         "tactic-position",
         "auxiliary-declarations",
+        "proof-context",
+        "local-recursion",
         "single-command-limit",
         "theorem-proof-failure",
         "theorem-tactic-failure",
@@ -28,6 +30,8 @@
       "requiredCoverage": [
         "handle-continuation",
         "auxiliary-declarations",
+        "proof-context",
+        "local-recursion",
         "handle-invalidation",
         "linear-handle",
         "failed-successor-no-handle",

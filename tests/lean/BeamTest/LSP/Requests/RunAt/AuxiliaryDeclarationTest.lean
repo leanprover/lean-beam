@@ -66,7 +66,24 @@ def checkAuxiliaryConformance (doc : DocHandle) (source : String) : ScenarioM Un
     ("grind", "fresh_aux grind"),
     ("decide", "fresh_aux decide +kernel"),
     ("private", "fresh_aux decide +kernel"),
-    ("nested", "fresh_aux decide +kernel")
+    ("nested", "fresh_aux decide +kernel"),
+    ("universe", "fresh_aux decide +kernel"),
+    ("explicit-universe", "fresh_aux decide +kernel"),
+    ("ambient-universe", "first | guard_universe v; trivial"),
+    ("cleared-universe", "first | guard_universe q; trivial"),
+    ("local-universe", "first | have h : ([] : List (ULift.{w} Nat)).length = 0 := (by fresh_aux decide +kernel); trivial"),
+    ("universe-grind", "fresh_aux grind"),
+    ("rollback", "first | (guard_aux_count 0; fresh_aux decide +kernel; fail \"rollback after auxiliary\") | (guard_aux_count 0; fresh_aux decide +kernel; guard_aux_count 1)"),
+    ("instance", "first | letI valueInstance : LocalValue := ⟨7⟩; exact ⟨LocalValue.value, by simp [LocalValue.value, valueInstance]⟩"),
+    ("instance-rollback", "first | (letI : LocalValue := ⟨9⟩; fail \"rollback instance\") | ((fail_if_success have _ : LocalValue := inferInstance); exact ⟨7, rfl⟩)"),
+    ("document-instance", "exact ⟨LocalValue.value, by rfl⟩"),
+    ("recursive", "first | (let rec count (n : Nat) : Nat := match n with | 0 => offset | n + 1 => count n + 1; fail \"rollback recursion\") | exact ⟨fun _ => offset, trivial⟩"),
+    ("postponed", "postpone_exact ⟨fun _ => offset, trivial⟩"),
+    ("dependent", "induction n with | zero => intro i; exact Fin.elim0 i | succ n ih => intro i; omega"),
+    ("native", "fresh_aux native_decide"),
+    ("conv", "first | (conv => lhs; intro x; arg 1; rw [Nat.zero_add]); funext x; simp"),
+    ("bitvector", "bv_decide (config := { timeout := 5 })"),
+    ("bitvector-solver", "fresh_aux bv_decide (config := { timeout := 5 })")
   ]
   let mut edits := #[]
   for (label, text) in cases do
@@ -179,6 +196,180 @@ def checkAuxiliaryFailureIsolation (doc : DocHandle) (source : String) : Scenari
   if command.proofState?.isSome then
     throw <| IO.userError "command theorem unexpectedly ran as a tactic"
 
+def checkContextHandles (doc : DocHandle) (source : String) : ScenarioM Unit := do
+  for (marker, seed, finish) in [
+      ("explicit-universe", "skip", "fresh_aux decide +kernel"),
+      ("universe", "skip", "postpone_exact (by fresh_aux decide +kernel)"),
+      ("ambient-universe", "skip", "first | guard_universe v; trivial"),
+      ("native", "skip", "fresh_aux native_decide")
+    ] do
+    let (position, _) ← probeAt source marker
+    let req ← sendRunAt doc {
+      line := position.line, character := position.character, text := seed, storeHandle := true
+    }
+    let seeded ← requireRunAtResponseSuccess s!"store {marker} context" req
+    requireGoalCount marker 1 seeded
+    let root ← requireHandle marker seeded
+    -- Reusing the same root must preserve both its context and its unmodified environment.
+    for _ in [:2] do
+      let continuation ← runWithHandle doc root { text := finish }
+      let result ← requireRunAtResponseSuccess s!"resume {marker} context" continuation
+      requireGoalCount marker 0 result
+    releaseHandle doc root
+
+def checkInstanceHandles (doc : DocHandle) (source : String) : ScenarioM Unit := do
+  let (position, _) ← probeAt source "instance"
+  let req ← sendRunAt doc {
+    line := position.line, character := position.character
+    text := "letI : LocalValue := ⟨7⟩", storeHandle := true
+  }
+  let seeded ← requireRunAtResponseSuccess "store a local instance" req
+  requireGoalCount "local instance seed" 1 seeded
+  let root ← requireHandle "local instance seed" seeded
+  let branchReq ← runWithHandle doc root {
+    text := "first | letI : LocalValue := ⟨9⟩; have : LocalValue.value = 9 := (by rfl)"
+    storeHandle := true
+  }
+  let branchResult ← requireRunAtResponseSuccess "shadow an instance in a sibling" branchReq
+  requireGoalCount "shadowed instance" 1 branchResult
+  let branch ← requireHandle "shadowed instance" branchResult
+  for (handle, text) in [
+      (root, "exact ⟨LocalValue.value, by rfl⟩"),
+      (branch, "first | have : LocalValue.value = 9 := (by rfl); exact ⟨7, rfl⟩"),
+      (root, "exact ⟨LocalValue.value, by rfl⟩")
+    ] do
+    let continuation ← runWithHandle doc handle { text }
+    let result ← requireRunAtResponseSuccess "local instances stay in their own branch" continuation
+    requireGoalCount "completed instance branch" 0 result
+  releaseHandle doc root
+  releaseHandle doc branch
+  requireRunAtFailureMessage "a stored instance does not enter the document" doc position
+    "exact ⟨LocalValue.value, by rfl⟩" "failed to synthesize"
+
+def checkDependentHandles (doc : DocHandle) (source : String) : ScenarioM Unit := do
+  let (position, _) ← probeAt source "dependent"
+  let req ← sendRunAt doc {
+    line := position.line, character := position.character
+    text := "induction n", storeHandle := true
+  }
+  let seeded ← requireRunAtResponseSuccess "store dependent induction branches" req
+  requireGoalCount "dependent induction" 2 seeded
+  let root ← requireHandle "dependent induction" seeded
+  let zeroReq ← runWithHandle doc root {
+    text := "case zero => intro i; exact Fin.elim0 i", storeHandle := true
+  }
+  let zeroResult ← requireRunAtResponseSuccess "close the named zero case" zeroReq
+  requireGoalCount "remaining successor case" 1 zeroResult
+  unless zeroResult.proofState?.map (fun state => state.goals[0]?.bind (·.userName?)) ==
+      some (some "succ") do
+    throw <| IO.userError s!"dependent induction lost its case name: {(toJson zeroResult).compress}"
+  let successor ← requireHandle "remaining successor case" zeroResult
+  let finishReq ← runWithHandle doc successor {
+    text := "case succ n ih => intro i; omega", linear := true
+  }
+  let finished ← requireRunAtResponseSuccess "resume the dependent successor case" finishReq
+  requireGoalCount "completed dependent induction" 0 finished
+  let unchangedReq ← runWithHandle doc root { text := "skip" }
+  let unchanged ← requireRunAtResponseSuccess "the induction root remains unchanged" unchangedReq
+  unless toJson unchanged.proofState? == toJson seeded.proofState? do
+    throw <| IO.userError "dependent induction continuations changed their root"
+  releaseHandle doc root
+
+-- A tactic fragment cannot perform Lean's enclosing-declaration finalization for `let rec`.
+-- Valid ordinary proofs are deliberately rejected here too, until that path is supported.
+def checkLocalRecursionBoundary (doc : DocHandle) (source : String) : ScenarioM Unit := do
+  let (position, original) ← probeAt source "recursive"
+  let cases := [
+    ("tactic let rec", "first | let rec count (n : Nat) : Nat := match n with | 0 => offset | n + 1 => count n + 1; exact ⟨count, trivial⟩", false),
+    ("term let rec under refine", "first | refine ⟨(let rec count (n : Nat) : Nat := match n with | 0 => offset | n + 1 => count n + 1; count), ?_⟩; trivial", false),
+    ("let rec inside have", "first | have h : ∃ _f : Nat → Nat, True := (by let rec count (n : Nat) : Nat := match n with | 0 => offset | n + 1 => count n + 1; exact ⟨count, trivial⟩); exact h", false),
+    ("postponed let rec", "postpone_exact (by let rec count (n : Nat) : Nat := match n with | 0 => offset | n + 1 => count n + 1; exact ⟨count, trivial⟩)", false),
+    ("nonterminating let rec", "first | let rec loop (n : Nat) : Nat := loop n; exact ⟨loop, trivial⟩", true)
+  ]
+  let initial ← requireRunAtSuccess "recursive boundary initial state" doc position "skip"
+  for (label, text, ordinaryFails) in cases do
+    let req ← sendRunAt doc {
+      line := position.line, character := position.character, text, storeHandle := true
+    }
+    let result : Beam.LSP.RunAt.Result ← awaitResponseAs req
+    unless !result.success && result.handle?.isNone && result.messages.any (fun msg =>
+        msg.severity == .error && msg.text.contains "Local recursive declarations are not supported") do
+      throw <| IO.userError s!"{label}: expected explicit unsupported result: {(toJson result).compress}"
+    unless toJson result.proofState? == toJson initial.proofState? do
+      throw <| IO.userError s!"{label}: failed recursion did not restore the original proof state"
+    changeDoc doc { line := position.line, character := position.character, delete := original, insert := text }
+    let ordinary ← collectDiagnostics doc
+    if ordinaryFails then
+      unless ordinary.diagnostics.any (fun diagnostic => diagnostic.severity? == some .error &&
+          diagnostic.message.contains "termination") do
+        throw <| IO.userError s!"{label}: ordinary Lean did not reject nontermination: {(toJson ordinary).compress}"
+    else
+      requireNoErrors s!"{label}: ordinary Lean control" ordinary
+    changeDoc doc { line := position.line, character := position.character, delete := text, insert := original }
+    requireNoErrors s!"{label}: restore ordinary Lean" (← collectDiagnostics doc)
+
+  let rootReq ← sendRunAt doc {
+    line := position.line, character := position.character, text := "skip", storeHandle := true
+  }
+  let root ← requireHandle "recursive boundary root" (← requireRunAtResponseSuccess "recursive boundary root" rootReq)
+  for (label, text, _) in cases do
+    let failedReq ← runWithHandle doc root { text, storeHandle := true }
+    let failed : Beam.LSP.RunAt.Result ← awaitResponseAs failedReq
+    unless !failed.success && failed.handle?.isNone && failed.messages.any (fun msg =>
+        msg.text.contains "Local recursive declarations are not supported") do
+      throw <| IO.userError s!"{label}: recursive continuation escaped the boundary: {(toJson failed).compress}"
+    unless toJson failed.proofState? == toJson initial.proofState? do
+      throw <| IO.userError s!"{label}: recursive continuation did not restore the original proof state"
+  let retryReq ← runWithHandle doc root { text := original, linear := true }
+  requireGoalCount "retry a handle after rejecting recursion" 0
+    (← requireRunAtResponseSuccess "retry a handle after rejecting recursion" retryReq)
+
+  let (commandPosition, _) ← probeAt source "command"
+  let command ← requireRunAtSuccess "command probes finalize local recursive definitions" doc commandPosition
+    "theorem recursiveCommandProbe (offset : Nat) : ∃ _f : Nat → Nat, True := by\n  let rec count (n : Nat) : Nat := match n with | 0 => offset | n + 1 => count n + 1\n  exact ⟨count, trivial⟩"
+  if command.proofState?.isSome then
+    throw <| IO.userError "recursive command unexpectedly used a tactic basis"
+  requireRunAtFailureMessage "command probes check local recursive termination" doc commandPosition
+    "theorem recursiveCommandProbe : ∃ _f : Nat → Nat, True := by\n  let rec loop (n : Nat) : Nat := loop n\n  exact ⟨loop, trivial⟩" "termination"
+
+def checkRejectedProofs (doc : DocHandle) (source : String) : ScenarioM Unit := do
+  for (marker, text, needle, retry, expectedGoals) in [
+      ("postponed", "postpone_exact (by fail \"delayed elaboration failure\")",
+        "delayed elaboration failure", "postpone_exact ⟨fun _ => offset, trivial⟩", 0),
+      ("native", "have h : (1 : Nat) = 2 := by native_decide", "is false", "fresh_aux native_decide", 1),
+      ("bitvector", "have h : x + y = x := by bv_decide (config := { timeout := 5 })",
+        "counterexample", "bv_decide (config := { timeout := 5 })", 1)
+    ] do
+    let (position, original) ← probeAt source marker
+    let req ← sendRunAt doc {
+      line := position.line, character := position.character, text, storeHandle := true
+    }
+    let result : Beam.LSP.RunAt.Result ← awaitResponseAs req
+    unless !result.success && result.handle?.isNone && result.messages.any (fun msg =>
+        msg.severity == .error && msg.text.contains needle) do
+      throw <| IO.userError s!"{marker}: missing proof rejection without a handle: {(toJson result).compress}"
+    -- A postponed term can assign its placeholder before Lean logs its elaboration error.
+    -- It must still return semantic failure without a reusable handle.
+    requireGoalCount marker expectedGoals result
+    changeDoc doc { line := position.line, character := position.character, delete := original, insert := text }
+    let ordinary ← collectDiagnostics doc
+    unless ordinary.diagnostics.any (fun diagnostic => diagnostic.severity? == some .error &&
+        diagnostic.message.contains needle) do
+      throw <| IO.userError s!"{marker}: ordinary Lean did not reproduce the proof rejection: {(toJson ordinary).compress}"
+    changeDoc doc { line := position.line, character := position.character, delete := text, insert := original }
+    requireNoErrors s!"{marker}: restore after proof rejection" (← collectDiagnostics doc)
+    requireRunAtSolvesProof s!"{marker}: retry after proof rejection" doc position retry
+
+  let (position, _) ← probeAt source "native"
+  let failedReq ← sendRunAt doc {
+    line := position.line, character := position.character
+    text := "first | guard_aux_count 0; fresh_aux native_decide; fail \"failure after auxiliary\""
+    storeHandle := true
+  }
+  requireAuxFailure "failure after native auxiliary creation" (← awaitResponseAs failedReq)
+  requireRunAtSolvesProof "native retry starts from a clean environment" doc position
+    "first | guard_aux_count 0; fresh_aux native_decide"
+
 def run : ScenarioM Unit := do
   let source ← IO.FS.readFile fixturePath
   let doc ← openDoc fixturePath
@@ -187,6 +378,11 @@ def run : ScenarioM Unit := do
   checkDocumentIsolation doc source
   checkAuxiliaryHandles doc source
   checkAuxiliaryFailureIsolation doc source
+  checkContextHandles doc source
+  checkInstanceHandles doc source
+  checkDependentHandles doc source
+  checkLocalRecursionBoundary doc source
+  checkRejectedProofs doc source
   checkDocumentIsolation doc source
   if let some finalDiagnostics ← collectDiagnostics? doc then
     unless finalDiagnostics.diagnostics == ordinaryDiagnostics.diagnostics do
