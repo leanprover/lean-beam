@@ -105,17 +105,20 @@ private def buildNativeObject (pkg : Package) (name : String) : FetchM (Job File
         let sdk ← IO.Process.output { cmd := "clang", args := #["--print-resource-dir"] }
         unless sdk.exitCode == 0 do error "cannot locate native clang SDK headers"
         pure sdk.stdout.trimAscii.toString
-    unless ← (FilePath.mk resourceDir / "include" / "x86intrin.h").pathExists do
+    let resourceDir ← IO.FS.realPath (FilePath.mk resourceDir)
+    unless ← (resourceDir / "include" / "x86intrin.h").pathExists do
       error "native Windows builds require a full clang SDK on PATH (for example MSYS2 clang64)"
     let systemIncludes : Array String ← match ← IO.getEnv "BEAM_NATIVE_SYSTEM_INCLUDE_DIRS" with
       | none => pure #[]
       | some value => match Lean.Json.parse value >>= Lean.fromJson? with
         | .ok directories => pure directories
         | .error message => error s!"invalid BEAM_NATIVE_SYSTEM_INCLUDE_DIRS: {message}"
-    for directory in systemIncludes do
+    -- Resolve caller-relative SDK paths before both compilation and buildO's argument trace.
+    let systemIncludes ← systemIncludes.mapM fun directory => do
       unless ← (FilePath.mk directory).isDir do
         error s!"native Windows system include directory does not exist: {directory}"
-    pure (#["-resource-dir", resourceDir] ++
+      return (← IO.FS.realPath (FilePath.mk directory)).toString
+    pure (#["-resource-dir", resourceDir.toString] ++
       (if systemIncludes.isEmpty then #[] else #["-nostdlibinc"]) ++
       systemIncludes.flatMap fun directory => #["-idirafter", directory])
   else pure #[]

@@ -8,6 +8,7 @@ file(REAL_PATH "${LEAN_PREFIX}" LEAN_PREFIX)
 get_filename_component(BEAM_SOURCE "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${BEAM_SOURCE}"
   OUTPUT_VARIABLE SOURCE_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+set(NATIVE_SYSTEM_INCLUDES "[]")
 if(CMAKE_HOST_WIN32)
   set(EXE ".exe")
   # Resolve native SDK headers before Lake prepends the selected Lean's bin directory to PATH.
@@ -20,9 +21,6 @@ if(CMAKE_HOST_WIN32)
   if(NOT EXISTS "${NATIVE_CLANG_RESOURCE_DIR}/include/x86intrin.h")
     message(FATAL_ERROR "select a full native clang SDK with -DNATIVE_CLANG_RESOURCE_DIR=/sdk/lib/clang/VERSION")
   endif()
-  string(REPLACE ";" "\\;" NATIVE_RESOURCE_ENV "BEAM_NATIVE_CLANG_RESOURCE_DIR=${NATIVE_CLANG_RESOURCE_DIR}")
-  set(NATIVE_SDK_ENV "${NATIVE_RESOURCE_ENV}")
-  set(NATIVE_SYSTEM_INCLUDES "[]")
   set(index 0)
   foreach(directory IN LISTS NATIVE_SYSTEM_INCLUDE_DIRS)
     if(NOT IS_DIRECTORY "${directory}")
@@ -33,8 +31,6 @@ if(CMAKE_HOST_WIN32)
     string(JSON NATIVE_SYSTEM_INCLUDES SET "${NATIVE_SYSTEM_INCLUDES}" ${index} "${value}")
     math(EXPR index "${index}+1")
   endforeach()
-  string(REPLACE ";" "\\;" NATIVE_INCLUDE_ENV "BEAM_NATIVE_SYSTEM_INCLUDE_DIRS=${NATIVE_SYSTEM_INCLUDES}")
-  list(APPEND NATIVE_SDK_ENV "${NATIVE_INCLUDE_ENV}")
 else()
   set(EXE "")
 endif()
@@ -67,7 +63,9 @@ if(LEAN_GITHASH STREQUAL "" OR NOT LAKE_GITHASH STREQUAL LEAN_GITHASH)
 endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" -E env ${BEAM_LAKE_ENV_FILTER}
   "LEAN=${LEAN}" "LEAN_SYSROOT=${LEAN_PREFIX}" "LAKE_CACHE_DIR=${BEAM_SOURCE}/.lake/toolchain-cache"
-  ${NATIVE_SDK_ENV}
+  # CMake lists cannot preserve arbitrary paths, including a trailing backslash or unmatched bracket.
+  "BEAM_NATIVE_CLANG_RESOURCE_DIR=${NATIVE_CLANG_RESOURCE_DIR}"
+  "BEAM_NATIVE_SYSTEM_INCLUDE_DIRS=${NATIVE_SYSTEM_INCLUDES}"
   "${LAKE}" --file "${NATIVE_CONFIG}" -KbeamToolchain=true
   "-KbeamBuildId=${BEAM_BUILD_ID}" "-KbeamSourceRevision=${SOURCE_COMMIT}"
   --no-cache build beam-cli beam-daemon lean-beam-mcp Beam.LSP:shared

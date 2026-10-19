@@ -43,6 +43,29 @@ def self_check(mcp, source, *, cwd, env):
     return result
 
 
+def native_object_traces(build_dir):
+    return {name: json.loads((build_dir / "native" / f"{name}.o.trace").read_text())["depHash"]
+            for name in ["control_dir", "process_job"]}
+
+
+def check_relative_native_includes(lake, scratch, env, includes):
+    callers = [scratch / "sdk A λ", scratch / "sdk B λ"]
+    for caller in callers:
+        (caller / "include").mkdir(parents=True)
+    # The relative directory is deliberately identical in both environments; the remaining
+    # directories supply the real SDK. No SDK headers need to be copied into these fixtures.
+    relative_env = dict(env, BEAM_NATIVE_SYSTEM_INCLUDE_DIRS=json.dumps(["include", *includes]))
+    traces = []
+    for index, caller in enumerate([callers[0], callers[1], callers[0]]):
+        run([lake, "-d", REPO, *(["--reconfigure", "-KbeamToolchain=false"] if index == 0 else []),
+             "--no-cache", "build", "beamControlDirObj", "beamProcessJobObj"],
+            cwd=caller, env=relative_env)
+        traces.append(native_object_traces(REPO / ".lake/build"))
+    assert all(traces[0][name] != traces[1][name] for name in traces[0]), traces
+    assert traces[0] == traces[2], traces
+    print("native SDK relative include paths: both object traces passed A -> B -> A", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("lean_prefix", type=Path)
@@ -91,6 +114,9 @@ def main():
                 rejected = run([lean_prefix / "bin" / f"lake{EXE}", "--no-cache", "build",
                                 "beamControlDirObj"], env=rejected_env, ok=False)
                 assert rejected.returncode != 0 and message in rejected.stdout + rejected.stderr, rejected
+            if includes:
+                check_relative_native_includes(lean_prefix / "bin" / f"lake{EXE}", scratch,
+                                               build_env, includes)
         # Lake preserves configuration options in its cached lakefile. Warm the ordinary
         # configuration and CLI first, then prove the native builder uses its requested mode
         # without replacing that CLI or changing the ordinary configuration.
@@ -126,23 +152,19 @@ def main():
                    REPO / ".lake" / "config" / "0" / "lakefile.olean.trace"]
         config_before = {path: path.read_bytes() for path in configs if path.exists()}
         assert config_before, "standalone Lake configuration trace was not written"
-        def native_object_traces():
-            return {name: json.loads((REPO / f".lake/toolchain-build/native/{name}.o.trace").read_text())["depHash"]
-                    for name in ["control_dir", "process_job"]}
-
         first_native_trace = None
         if args.previous_lean_prefix:
             for selected in [lean_prefix, args.previous_lean_prefix.resolve()]:
                 run(["cmake", f"-DLEAN_PREFIX={selected}", *native_cmake_args,
                      "-P", "scripts/build-toolchain.cmake"], env=build_env)
-                trace = native_object_traces()
+                trace = native_object_traces(REPO / ".lake/toolchain-build")
                 if first_native_trace is None:
                     first_native_trace = trace
                 else:
                     assert all(trace[name] != first_native_trace[name] for name in trace), trace
         run(["cmake", f"-DLEAN_PREFIX={lean_prefix}", *native_cmake_args,
              "-P", "scripts/build-toolchain.cmake"], env=build_env)
-        final_native_trace = native_object_traces()
+        final_native_trace = native_object_traces(REPO / ".lake/toolchain-build")
         if first_native_trace is not None:
             assert final_native_trace == first_native_trace, final_native_trace
         assert hashlib.sha256(standalone.read_bytes()).hexdigest() == standalone_hash

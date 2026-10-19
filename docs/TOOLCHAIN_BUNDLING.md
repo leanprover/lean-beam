@@ -41,8 +41,8 @@ build, take that directory from the full native compiler configured by Lean, usi
 `clang --print-resource-dir`. The resource directory supplies compiler headers; the Windows C runtime
 and operating-system headers are a separate input. Supply their directories as a CMake list through
 `-DNATIVE_SYSTEM_INCLUDE_DIRS="/sdk/clang64/include;/sdk/other/include"`. When these directories are
-provided, native helper compilation disables implicit system-header discovery and searches the explicit
-directories after the selected Clang resource headers.
+provided, native helper compilation disables Clang's default system include directories and searches
+the explicit directories after the selected Clang resource headers.
 
 Lean release integration should forward its configured native SDK paths to these arguments. Beam
 continues to compile with the selected Lean installation's compiler and link against its libraries;
@@ -50,6 +50,9 @@ the headers are build inputs and do not enter the installed artifact inventory. 
 object-cache identities include these compiler arguments and the selected Lean toolchain and compiler.
 Direct developer Lake builds can supply the same include directories as a JSON string array in
 `BEAM_NATIVE_SYSTEM_INCLUDE_DIRS`, alongside `BEAM_NATIVE_CLANG_RESOURCE_DIR`.
+Lake resolves these SDK paths relative to its caller's working directory and canonicalizes them before
+compilation and object-cache tracing. The build retains host header-search settings such as `CPATH`
+and `C_INCLUDE_PATH`.
 
 ### Build Environment
 

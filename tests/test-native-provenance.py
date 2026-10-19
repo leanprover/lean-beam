@@ -6,6 +6,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -146,6 +147,74 @@ include("${SCRIPT}")
         result = self.run_script("build-toolchain.cmake", windows_sdk=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads((self.root / "includes.json").read_text(encoding="utf-8")), [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX stand-ins exercise Windows CMake argument transport")
+    def test_windows_sdk_environment_survives_real_child_processes(self):
+        # Keep execute_process intact: the child must observe the actual cmake -E env arguments.
+        probe = self.root / "probe.py"
+        probe.write_text('''import json
+import os
+from pathlib import Path
+import sys
+root = Path(__file__).parent
+name = Path(sys.argv[1]).name
+args = sys.argv[2:]
+revision = "2" * 40
+if name == "git":
+    print("1" * 40)
+elif "--version" in args:
+    print("fixture compiler")
+elif name == "lean.exe" or (name == "lake.exe" and "--no-cache" not in args):
+    print(revision)
+elif name == "lake.exe":
+    (root / "child-env.json").write_text(json.dumps({key: os.environ.get(key) for key in
+        ["BEAM_NATIVE_CLANG_RESOURCE_DIR", "BEAM_NATIVE_SYSTEM_INCLUDE_DIRS"]}), encoding="utf-8")
+    build_id = next(arg.split("=", 1)[1] for arg in args if arg.startswith("-KbeamBuildId="))
+    (root / "build-info.json").write_text(json.dumps(dict(compiledLeanRevision=revision,
+        loadedLeanRevision=revision, buildId=build_id, sourceRevision="1" * 40)), encoding="utf-8")
+else:
+    print((root / "build-info.json").read_text(encoding="utf-8"))
+''', encoding="utf-8")
+        for executable in [self.sdk / "bin/lean.exe", self.sdk / "bin/lake.exe",
+                           self.root / "git", self.build / "bin/beam-cli.exe"]:
+            executable.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} '
+                                  f'{shlex.quote(str(probe))} "$0" "$@"\n', encoding="utf-8")
+            executable.chmod(0o755)
+        for artifact in ["bin/beam-daemon.exe", "bin/lean-beam-mcp.exe", "lib/beam_Beam_LSP.dll"]:
+            (self.build / artifact).write_bytes(b"fixture Windows artifact\n")
+        driver = self.root / "real-process.cmake"
+        driver.write_text('''set(CMAKE_HOST_WIN32 TRUE)
+set(CMAKE_HOST_APPLE FALSE)
+include("${SCRIPT}")
+''', encoding="utf-8")
+        directories = [self.root / "headers λ", self.root / "extra;headers"]
+        for directory in directories:
+            directory.mkdir()
+        for spelling in ["clang-resource", "resource [", "resource;semi", "resource λ spaces"]:
+            resource = self.root / spelling
+            values = [str(resource)]
+            if spelling == "clang-resource":
+                values.append(str(resource) + "\\")
+            for value in values:
+                # On POSIX, a backslash is a filename character rather than a separator.
+                (Path(value) / "include").mkdir(parents=True, exist_ok=True)
+                (Path(value) / "include/x86intrin.h").touch()
+                for includes in [[], directories]:
+                    with self.subTest(resource=value, includes=includes):
+                        encoded = ";".join(str(path).replace(";", "\\;") for path in includes)
+                        result = subprocess.run([
+                            "cmake", f"-DLEAN_PREFIX={self.sdk}",
+                            f"-DNATIVE_CLANG_RESOURCE_DIR={value}",
+                            f"-DNATIVE_SYSTEM_INCLUDE_DIRS={encoded}",
+                            f"-DSCRIPT={self.source / 'scripts/build-toolchain.cmake'}",
+                            "-P", str(driver)],
+                            env=dict(os.environ, PATH=str(self.root) + os.pathsep + os.environ["PATH"]),
+                            capture_output=True, text=True, encoding="utf-8", timeout=15)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        actual = json.loads((self.root / "child-env.json").read_text(encoding="utf-8"))
+                        self.assertEqual(actual["BEAM_NATIVE_CLANG_RESOURCE_DIR"], value)
+                        self.assertEqual(json.loads(actual["BEAM_NATIVE_SYSTEM_INCLUDE_DIRS"]),
+                                         [path.resolve().as_posix() for path in includes])
 
     def test_missing_windows_system_headers_fail_before_lake_or_manifest_publication(self):
         result = self.run_script("build-toolchain.cmake",
