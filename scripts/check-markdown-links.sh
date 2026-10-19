@@ -17,6 +17,7 @@ import sys
 from urllib.parse import unquote
 
 repo = Path.cwd()
+skill_payload = repo / "skills" / "lean-beam"
 md_files = subprocess.check_output(
     ["git", "ls-files", "*.md"],
     cwd=repo,
@@ -96,6 +97,12 @@ for rel in md_files:
         else:
             dest = path.parent / target
         dest = dest.resolve(strict=False)
+
+        if path.is_relative_to(skill_payload) and (
+            target.startswith("/") or not dest.is_relative_to(skill_payload)
+        ):
+            failures.append(f"{rel}: link leaves installed skill payload: {raw_target}")
+            continue
 
         try:
             dest.relative_to(repo)

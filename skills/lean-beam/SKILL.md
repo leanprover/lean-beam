@@ -29,8 +29,10 @@ target.
 The installer puts `lean-beam`, `lean-beam-search`, and `lean-beam-mcp` in `~/.local/bin`, stages
 the self-contained runtime under `BEAM_INSTALL_ROOT` (default `~/.local/share/beam`), requires
 `elan` on `PATH`, prebuilds the pinned `lean-toolchain` bundle by default, and installs the bundled
-Lean skill only for the agent flags you request. Use the setup docs for additional supported or
-custom toolchain prebuilds.
+Lean skill only for the agent flags you request. Select additional project toolchains with repeated
+`--toolchain NAME` or `--custom-toolchain NAME` flags in one installer invocation. Each run selects
+the complete target set; include every target you want to retain. Explicit selections do not
+automatically retain the pinned target or targets from the previous installation.
 
 Use `lean-beam --version` for CLI bug reports and installed runtime identity checks. Use
 `lean-beam-mcp --version` to verify which installed MCP server wrapper, server binary, runtime
@@ -54,9 +56,10 @@ if the project path or its Lean/Lake markers become unavailable.
 
 Restart active agent or MCP client sessions after installation.
 
-For the authoritative install and bundle-resolution order, see the repo
-[docs/SETUP.md](../../docs/SETUP.md) and [Validated And Compatible Toolchains](../../docs/SETUP.md#validated-and-compatible-toolchains)
-sections.
+The workflow references below are bundled with this installed skill. Optional online installation
+reference is available in the repository's
+[setup guide](https://github.com/leanprover/lean-beam/blob/main/docs/SETUP.md) and
+[toolchain selection section](https://github.com/leanprover/lean-beam/blob/main/docs/SETUP.md#validated-and-compatible-toolchains).
 
 ## Skill Surface
 
@@ -436,8 +439,8 @@ Diagnostic defaults on that path:
 - when `lean-beam save` or `lean-beam close-save` fails with `invalidParams` because the document still has
   errors, `error.message` includes a compact preview of underlying diagnostics and/or command
   messages, and `error.data.sync` contains the blocking sync verdict
-- readiness semantics and field-level progress/diagnostic/readiness details live in
-  [../../docs/SYNC_AND_DIAGNOSTICS.md](../../docs/SYNC_AND_DIAGNOSTICS.md)
+- additional field-level progress, diagnostic, and readiness details are documented in the optional
+  [online sync and save contract](https://github.com/leanprover/lean-beam/blob/main/docs/SYNC_AND_DIAGNOSTICS.md)
 
 Surface rule:
 
@@ -453,7 +456,8 @@ Surface rule:
   selected diagnostics in the final sync or refresh result; neither setting controls progress, and
   requested replay may intentionally duplicate matching diagnostics already consumed live
 - the operation-by-operation MCP display matrix, including log-level interactions and tools without
-  an automatic no-token status, lives in [../../docs/MCP.md](../../docs/MCP.md#display-control-matrix)
+  an automatic no-token status, is available in the optional
+  [online MCP reference](https://github.com/leanprover/lean-beam/blob/main/docs/MCP.md#display-control-matrix)
 
 ## Quick Picks
 

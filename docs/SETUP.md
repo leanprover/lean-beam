@@ -15,6 +15,9 @@ installer locations, and offline setup notes.
 You do not add Beam to the target project's `lakefile` or install a copy into each project.
 Beam detects the project root from the current directory or `--root`.
 
+After installation, go directly to [the CLI workflow](#use-beam-from-a-lean-project) or
+[MCP setup](#mcp-setup). Session recovery and installed-state maintenance are covered afterward.
+
 ## Use Beam Bundled With Lean
 
 This path requires a Lean distribution that includes Beam; an ordinary elan toolchain need not
@@ -69,7 +72,7 @@ These forms install:
 - `lean-beam`, `lean-beam-search`, and `lean-beam-mcp` into `~/.local/bin`
 - an immutable runtime payload under `BEAM_INSTALL_ROOT`, default `~/.local/share/beam`
 - a bundle cache under `~/.local/share/beam/state/install-bundles`
-- a prebuilt bundle for the repo-pinned validated Lean toolchain
+- project runtimes for the selected toolchains (the repo-pinned toolchain by default)
 
 Each install rebuilds the runtime binaries from the current source checkout before staging the
 immutable runtime payload and its provenance manifest. After reinstalling, restart active MCP client
@@ -119,18 +122,28 @@ not the same claim as exact CI validation: the installer builds a bundle for the
 fingerprint and loads the resulting plugin in a small Lean elaboration probe before marking that
 bundle ready.
 
-The repository's [`lean-toolchain`](../lean-toolchain) is the default toolchain prebuilt by the
-installer. If your target projects use another validated toolchain or a compatible canonical
-RC/patch variant, prebuild those bundles by exact name:
+The repository's [`lean-toolchain`](../lean-toolchain) is selected when no toolchain flags or
+interactive choices specify another set. Each successful installer run publishes the **complete selected
+target set**. It does not add to the previous installation's targets or automatically retain the
+repo-pinned target when you select others. Include every toolchain you want to keep using.
+
+For example, select two project toolchains in one invocation:
 
 ```bash
-./scripts/install-beam.sh --toolchain leanprover/lean4:v4.33.1
-./scripts/install-beam.sh --toolchain leanprover/lean4:v4.33.0-rc1
+./scripts/install-beam.sh \
+  --toolchain leanprover/lean4:v4.33.1 \
+  --toolchain leanprover/lean4:v4.35.0
+```
+
+Alternatively, select every exact validated toolchain:
+
+```bash
 ./scripts/install-beam.sh --all-validated
 ```
 
 `--all-validated` prebuilds the finite exact validated allowlist; it does not attempt every possible
-RC or patch version from compatible release lines.
+RC or patch version from compatible release lines. To select a compatible RC or patch variant,
+include its exact name, such as `--toolchain leanprover/lean4:v4.33.0-rc1`, in the target list.
 
 If you are working on Lean itself or another local Lean build through an elan-linked toolchain, use
 `--custom-toolchain <toolchain>` to explicitly accept and prebuild that toolchain for this Beam
@@ -140,6 +153,9 @@ install:
 elan toolchain link lean4-dev /path/to/lean/build/release/stage1
 ./scripts/install-beam.sh --custom-toolchain lean4-dev
 ```
+
+To retain other project targets too, include their `--toolchain` or `--custom-toolchain` flags
+in that same invocation, including when reinstalling after a local Lean rebuild.
 
 Custom toolchains are not validated release targets. The installer records each selected Lean
 installation and its qualified matching runtime in the published component set. After rebuilding
@@ -153,68 +169,14 @@ cache entry is rejected with its exact path. Preserve or replace that owned cach
 retrying setup; failed setup leaves the existing `current` installation unchanged.
 
 Normal execution can use only those constructed targets. If a project's target is unavailable,
-rerun the installer with that target explicitly selected. Beam does not build missing runtimes in
-projects, search other providers, or download a target during admission.
+rerun the installer with that target and every other target you want to retain. Beam does not build
+missing runtimes in projects, search other providers, or download a target during admission.
 
 If you are unsure which runtime bundle is active or why a toolchain is rejected, use:
 
 ```bash
 lean-beam doctor
 ```
-
-## Prune Old Installed State
-
-The checkout installer publishes each distinct content payload as an immutable runtime payload under
-`BEAM_INSTALL_ROOT/versions`. Reinstalling an identical payload reuses its existing runtime only
-after validating its ownership marker, manifest, required files, executable commands, and payload
-contents. The schema-4 manifest records fixed companions and the complete constructed target set.
-Its generation includes that membership and source provenance. Reuse preserves the manifest byte
-for byte; a different target set or provenance produces another generation. Qualified target
-executables and plugins live inside that version under `runtimes/`. Prior distinct versions remain
-available when `current` changes and are not removed automatically. Earlier installation manifests
-require reinstallation before they can establish current component membership. Preview old state with:
-
-```bash
-lean-beam prune
-```
-
-The preview validates the Beam ownership marker, requires the command to come from the current
-installed runtime, and checks every candidate's manifest. It never selects the current runtime.
-Stop foreground owners through their original installation and restart agents and MCP clients
-before removing an old version. A different installation cannot control those owners after the
-original version is removed.
-
-Apply the displayed runtime cleanup with:
-
-```bash
-lean-beam prune --apply
-```
-
-Restart active owners, agents, and MCP clients before `prune --apply`; a process can remain bound
-to an old generation after the launcher's `current` link changes. Pruning coordinates with the
-installer's atomic-directory lock and refuses symlinked or unmarked runtime directories. A crashed
-installer fails closed and requires explicit recovery rather than automatic stale-lock removal.
-Construction caches are installer inputs and are not selected or pruned by runtime commands.
-
-Apply is incremental rather than transactional: Beam validates and removes one displayed path at a
-time and reports each successful removal immediately. If a later path fails validation or its lock
-cannot be acquired, earlier reported removals remain applied. Resolve the reported error and rerun
-`lean-beam prune` to preview what remains.
-
-If reinstalling reports that an existing runtime does not match its payload hash, stop active Beam
-agents and MCP clients first. Move only the exact reported runtime directory out of
-`BEAM_INSTALL_ROOT/versions` and preserve it for inspection, then rerun the installer. Do not remove
-the whole `versions` directory. `lean-beam prune` deliberately refuses invalid state and the current
-runtime, so it is not the repair path for this case. Use the same recovery when reinstalling refuses
-to reuse a older runtime manifest schema.
-
-If pruning reports an invalid install-root marker, preserve the whole install root for inspection.
-Do not recreate that ownership marker in place. Stop active Beam clients, rename the exact
-`BEAM_INSTALL_ROOT` as a unit, then rerun the installer to create a fresh owned root. Do not delete
-the preserved root until its contents are understood.
-
-The command is intentionally unavailable from a source checkout because there is no owned
-immutable install root to prune there.
 
 ## Use Beam From A Lean Project
 
@@ -245,98 +207,27 @@ process, ask questions against saved Lean files in that project:
 lean-beam serve
 
 # terminal/session 2
-update_json="$(lean-beam update "Foo.lean")"
-printf '%s\n' "$update_json"
-version="$(printf '%s\n' "$update_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["version"])')"
-lean-beam hover "Foo.lean" "$version" 10 2
-lean-beam definition "Foo.lean" "$version" 10 2
-lean-beam goals before "Foo.lean" "$version" 10 2
-lean-beam run-at "Foo.lean" "$version" 10 2 "exact trivial"
+if update_json="$(lean-beam update "Foo.lean")" &&
+   version="$(printf '%s\n' "$update_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["version"])')"; then
+  printf '%s\n' "$update_json"
+  lean-beam hover "Foo.lean" "$version" 10 2
+  lean-beam definition "Foo.lean" "$version" 10 2
+  lean-beam goals before "Foo.lean" "$version" 10 2
+  lean-beam run-at "Foo.lean" "$version" 10 2 "exact trivial"
+fi
 ```
+
+Replace `Foo.lean` and the coordinates with a saved file and position in your project.
+The guard skips JSON parsing and probes when `update` fails; read its stderr diagnostic first.
 
 `lean-beam serve` is the only wrapper command that starts a project session. Its
 inherited ownership pipe defines the session lifetime: interrupt the holder, or run
-`lean-beam --root ROOT stop`, to close the daemon and its backend processes. All other wrapper
-commands attach to an existing owner and report the exact `serve` command when no session exists.
-Abnormal fenced state instead reports the explicit recovery command. Attaching commands use the
-owner's frozen configuration and do not rebuild a competing desired configuration. A second owner
-does resolve its proposed configuration and reports any mismatch while preserving the old owner.
-During stopping the descriptor reports `draining` and a replacement owner is refused until owned
-cleanup completes after graceful or process-group teardown and daemon-leader reaping. MCP clients
-do not need a separate holder; the stdio MCP process owns its runtime session.
-
-`lean-beam status` reports the public session state as `absent`, `running`, `stopping`, or
-`recoveryRequired`, together with the resolved workspace and session directory. Human-facing
-commands infer a Lean/Lake project root from the current directory and its ancestors. Automated
-callers should pass an explicit root; `stop` and `recover` always require one.
-
-Successful `serve`, `status`, `stop`, and `recover` commands emit the same top-level
-`{"ok": true, "result": ...}` shape. `serve` reports the public running session rather than its
-private backend warm-up request. `stop` reports whether it committed the transition to `stopping`;
-repeating it while already stopping returns `changed: false`. If the transition commits but its
-immediate authenticated shutdown delivery fails, the successful stopping result includes a typed
-warning. Recovery reports `state: "absent"` and whether it changed the selected session fence.
-
-The default session descriptor and lock live in `<root>/.beam`. This is intentional for
-project-scoped agent sandboxes: clients that can access the same workspace can discover the same
-session. Before creating a lock or capability-bearing descriptor, Beam makes the selected session
-directory account-private (`0700`) when the leaf does not exist; the published descriptor is
-`0600`. An existing selection must already be a real, non-symlinked directory with mode `0700`, or
-Beam refuses it without changing its permissions. This permits coordination between sandboxes and
-agents running as the same local account, but a group-shared or traversable session directory is
-not a supported authentication boundary. Use an exact alternate directory when the project is
-read-only or several same-account clients need another stable control plane:
-
-```bash
-lean-beam --root /workspace/a --session-dir /workspace/control serve
-lean-beam --root /workspace/a --session-dir /workspace/control stats
-```
-
-The session selector is the canonical workspace root plus the resolved session directory. Beam
-admits at most one owner for that selector; choosing another session directory deliberately chooses
-another namespace. A shared `BEAM_SESSION_ROOT` can coordinate several workspaces without sharing
-their broker processes: each canonical root receives its own derived session directory and owner.
-
-Every participant must supply the same `--root` and an absolute `--session-dir`; Beam does not
-search alternate session directories. If the exact directory already exists, prepare its `0700` mode explicitly;
-Beam will not adopt it by silently changing permissions. `BEAM_SESSION_ROOT=/writable/base` is the
-sandbox convenience form and must be absolute: Beam canonicalizes the base, then derives a separate
-hashed directory for each canonical root below it.
-
-For a missing explicit session directory, Beam canonicalizes its longest existing ancestor before
-retaining the missing suffix. The selector therefore has the same spelling before and after Beam
-creates it, including through platform aliases such as macOS `/tmp`.
-
-Beam rejects an explicit symbolic-link leaf before canonicalizing `--session-dir` and revalidates
-the selected leaf without following links before every status or attachment operation. Permission
-drift therefore fails closed instead of silently weakening an already published session boundary.
-
-Each wrapper session publishes exactly one frozen workspace. Wrapper mode does not allow runtime
-`init_workspace`, `list_workspaces`, or `drop_workspace` requests. Use the dedicated
-`lean-beam --root ROOT stop` command for lifecycle control.
-
-Use a stable external session directory when ownership must remain fenced while the project path is
-deleted and recreated; deleting a project-local `.beam` necessarily deletes its default fence.
-
-An abnormal owner or broker exit, including a nonzero broker exit after stopping begins, leaves the
-descriptor as a safety fence. After independently
-establishing that the recorded generation is no longer authoritative, quarantine that exact record
-without signalling its recorded PIDs:
-
-```bash
-lean-beam --root /workspace/a recover --generation GENERATION_ID
-```
-
-Use the same `--session-dir` selection and the original owning installation when applicable.
-Stop and recovery do not require its current plugin, selector, or provenance. A different Beam
-installation cannot control that owner, even if its binaries are identical. Recovery preserves a
-typed old descriptor under a `beam-daemon.recovered-*.json` name for diagnosis. Opaque or malformed
-descriptors cannot establish installation ownership: preserve them, independently stop their
-original owner, then archive the descriptor explicitly as an operator. There is no force bypass.
-
-For a current descriptor, the selected `--root` must match its recorded workspace;
-using the same session directory with an unrelated root cannot quarantine the session. `status`
-reports this as `sessionSelectorMismatch`, not as a lifecycle state or recovery requirement.
+`lean-beam --root ROOT stop`, to close the daemon and its backend processes. Lean queries and file
+operations attach to an existing owner and report the exact `serve` command when no session exists.
+Help, version reporting, `doctor`, `status`, and `prune` can run without a live owner.
+MCP clients do not need a separate holder; the stdio MCP process owns its runtime session.
+For alternate session directories, status details, and abnormal-exit recovery, see
+[Sessions And Recovery](#sessions-and-recovery).
 
 Machine clients should pass an explicit `--root`, invoke the typed wrapper operations, and check
 the process exit status before parsing stdout. Completed broker operations print final JSON,
@@ -476,6 +367,72 @@ claude mcp add --scope user lean-beam -- "/absolute/path/to/lean-beam-mcp"
 opencode mcp add
 ```
 
+### Verify The MCP Server
+
+To verify the installed MCP path without writing JSON-RPC by hand, change to the Lean project.
+Use the same absolute MCP command you registered above:
+
+```bash
+cd /path/to/lean/project
+"/absolute/path/to/lean-beam-mcp" --self-check MyPkg/Sub/Module.lean
+```
+
+The self-check starts a child MCP server, calls `lean_sync` with an explicit descriptor for the
+current project, and shuts the child server down. The project target must already be a member of
+the installed component set; the self-check does not construct missing runtimes. Success requires valid discovery and sync
+responses and a zero server exit status. It verifies that sync can run, without requiring completed
+elaboration, a file without Lean diagnostics, or readiness to save artifacts. Server stderr is
+diagnostic: logging does not fail an otherwise successful check, and failures include the final
+64 KiB of captured stderr when available.
+The smoke test uses one best-effort timeout for discovery, sync, and shutdown, including stderr
+draining; notifications do not restart it. Process creation and failure cleanup are outside that
+budget, and blocked I/O tasks can delay process exit. If a very slow machine needs a longer wait,
+set `LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS` to a positive timeout in milliseconds (default 120000).
+CI supervises the command with a separate process watchdog. Maintainer details
+for MCP live in the [MCP maintainer notes](MCP.md).
+
+### Workspaces And Server Identity
+
+The following applies to every MCP client. Every workspace-bound tool call includes an explicit
+local descriptor:
+
+```json
+{"workspace":{"root":"/absolute/path/to/lean/project"},"path":"Main.lean"}
+```
+
+The root must be an absolute path to an existing Lean/Lake project. No setup call is required: the
+first ordinary Lean tool lazily creates or reuses the runtime for the canonical root. The same
+server process can serve several roots because every relevant request identifies its own workspace.
+There is no connection-wide current or default workspace.
+
+To evict one cached runtime after project-configuration changes, call `lean_drop_workspace` with:
+
+```json
+{"workspace":{"root":"/absolute/path/to/lean/project"}}
+```
+
+Drop invalidates proof handles for that runtime. It does not select context for later calls; a later
+request with the same descriptor recreates the runtime. Retain the canonical `workspace` descriptor
+when a Lean operation, non-confidential feedback result, or drop result echoes it; it can still evict
+cached state after the project path or its Lean/Lake markers become unavailable. `beam_version` and
+`beam_stats` are process-wide and accept no descriptor. Exact tool and version semantics live in the
+[MCP protocol notes](MCP.md#public-tools).
+
+The executable remains bound to its concrete installation and recorded target set.
+
+Use `lean-beam --version` for bug reports and CLI refresh checks, and `lean-beam-mcp --version` to
+check the registered server's recorded identity. The MCP `beam_version` tool reports the running
+process's installation generation and source revision as structured content. Installed identity
+comes from its manifest rather than a surrounding Git checkout. Malformed or replaced records make
+identity reporting fail; protocol discovery and recorded-owner cleanup remain available.
+
+After reinstalling, restart owners and MCP clients to use the newly selected generation. Changing
+the launcher's `current` link does not retarget a running process. Prior immutable installations
+remain usable while intact; explicitly stop their clients before pruning them.
+
+Use `lean-beam feedback-report --stdin` to create a local report when reporting setup or runtime
+issues; Beam does not upload or submit it. See [FEEDBACK.md](FEEDBACK.md).
+
 ### Codex
 
 Codex CLI `0.147.0` is Beam's validated target for this client-specific adapter; see the
@@ -540,66 +497,140 @@ args = []
 tool_timeout_sec = 600
 ```
 
-Use that command as-is. Every workspace-bound tool call includes an explicit local descriptor:
+## Sessions And Recovery
 
-```json
-{"workspace":{"root":"/absolute/path/to/lean/project"},"path":"Main.lean"}
-```
+`lean-beam status` reports the public session state as `absent`, `running`, `stopping`, or
+`recoveryRequired`, together with the resolved workspace and session directory. Human-facing
+commands infer a Lean/Lake project root from the current directory and its ancestors. Automated
+callers should pass an explicit root; `stop` and `recover` always require one.
 
-The root must be an absolute path to an existing Lean/Lake project. No setup call is required: the
-first ordinary Lean tool lazily creates or reuses the runtime for the canonical root. The same
-server process can serve several roots because every relevant request identifies its own workspace.
-There is no connection-wide current or default workspace.
+Attaching commands use the owner's frozen configuration and do not rebuild a competing desired
+configuration. A second owner resolves its proposed configuration and reports any mismatch while
+preserving the old owner. During stopping the descriptor reports `draining` and a replacement owner
+is refused until owned cleanup completes after graceful or process-group teardown and daemon-leader
+reaping. Abnormal session state reports explicit recovery guidance.
 
-To evict one cached runtime after project-configuration changes, call `lean_drop_workspace` with:
+Successful `serve`, `status`, `stop`, and `recover` commands emit the same top-level
+`{"ok": true, "result": ...}` shape. `serve` reports the public running session rather than its
+private backend warm-up request. `stop` reports whether it committed the transition to `stopping`;
+repeating it while already stopping returns `changed: false`. If the transition commits but its
+immediate authenticated shutdown delivery fails, the successful stopping result includes a typed
+warning. Recovery reports `state: "absent"` and whether it changed the selected session fence.
 
-```json
-{"workspace":{"root":"/absolute/path/to/lean/project"}}
-```
-
-Drop invalidates proof handles for that runtime. It does not select context for later calls; a later
-request with the same descriptor recreates the runtime. Retain the canonical `workspace` descriptor
-when a Lean operation, non-confidential feedback result, or drop result echoes it; it can still evict
-cached state after the project path or its Lean/Lake markers become unavailable. `beam_version` and
-`beam_stats` are process-wide and accept no descriptor. Exact tool and version semantics live in the
-[MCP protocol notes](MCP.md#public-tools).
-
-The executable remains bound to its concrete installation and recorded target set.
-
-Use `lean-beam --version` for bug reports and CLI refresh checks, and `lean-beam-mcp --version` to
-check the registered server's recorded identity. The MCP `beam_version` tool reports the running
-process's installation generation and source revision as structured content. Installed identity
-comes from its manifest rather than a surrounding Git checkout. Malformed or replaced records make
-identity reporting fail; protocol discovery and recorded-owner cleanup remain available.
-
-After reinstalling, restart owners and MCP clients to use the newly selected generation. Changing
-the launcher's `current` link does not retarget a running process. Prior immutable installations
-remain usable while intact; explicitly stop their clients before pruning them.
-
-Use `lean-beam feedback-report --stdin` to create a local report when reporting setup or runtime
-issues; Beam does not upload or submit it. See [FEEDBACK.md](FEEDBACK.md).
-
-To verify the installed MCP path without writing JSON-RPC by hand, change to the Lean project and
-run:
+The default session descriptor and lock live in `<root>/.beam`. This is intentional for
+project-scoped agent sandboxes: clients that can access the same workspace can discover the same
+session. Before creating a lock or capability-bearing descriptor, Beam makes the selected session
+directory account-private (`0700`) when the leaf does not exist; the published descriptor is
+`0600`. An existing selection must already be a real, non-symlinked directory with mode `0700`, or
+Beam refuses it without changing its permissions. This permits coordination between sandboxes and
+agents running as the same local account, but a group-shared or traversable session directory is
+not a supported authentication boundary. Use an exact alternate directory when the project is
+read-only or several same-account clients need another stable control plane:
 
 ```bash
-cd /path/to/lean/project
-lean-beam-mcp --self-check MyPkg/Sub/Module.lean
+lean-beam --root /workspace/a --session-dir /workspace/control serve
+lean-beam --root /workspace/a --session-dir /workspace/control stats
 ```
 
-The self-check starts a child MCP server, calls `lean_sync` with an explicit descriptor for the
-current project, and shuts the child server down. The project target must already be a member of
-the installed component set; the self-check does not construct missing runtimes. Success requires valid discovery and sync
-responses and a zero server exit status. It verifies that sync can run, without requiring completed
-elaboration, a file without Lean diagnostics, or readiness to save artifacts. Server stderr is
-diagnostic: logging does not fail an otherwise successful check, and failures include the final
-64 KiB of captured stderr when available.
-The smoke test uses one best-effort timeout for discovery, sync, and shutdown, including stderr
-draining; notifications do not restart it. Process creation and failure cleanup are outside that
-budget, and blocked I/O tasks can delay process exit. If a very slow machine needs a longer wait,
-set `LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS` to a positive timeout in milliseconds (default 120000).
-CI supervises the command with a separate process watchdog. Maintainer details
-for MCP live in the [MCP maintainer notes](MCP.md).
+The session selector is the canonical workspace root plus the resolved session directory. Beam
+admits at most one owner for that selector; choosing another session directory deliberately chooses
+another namespace. A shared `BEAM_SESSION_ROOT` can coordinate several workspaces without sharing
+their broker processes: each canonical root receives its own derived session directory and owner.
+
+Every participant must supply the same `--root` and an absolute `--session-dir`; Beam does not
+search alternate session directories. If the exact directory already exists, prepare its `0700` mode explicitly;
+Beam will not adopt it by silently changing permissions. `BEAM_SESSION_ROOT=/writable/base` is the
+sandbox convenience form and must be absolute: Beam canonicalizes the base, then derives a separate
+hashed directory for each canonical root below it.
+
+For a missing explicit session directory, Beam canonicalizes its longest existing ancestor before
+retaining the missing suffix. The selector therefore has the same spelling before and after Beam
+creates it, including through platform aliases such as macOS `/tmp`.
+
+Beam rejects an explicit symbolic-link leaf before canonicalizing `--session-dir` and revalidates
+the selected leaf without following links before every status or attachment operation. Permission
+drift therefore fails closed instead of silently weakening an already published session boundary.
+
+Each wrapper session publishes exactly one frozen workspace. Wrapper mode does not allow runtime
+`init_workspace`, `list_workspaces`, or `drop_workspace` requests. Use the dedicated
+`lean-beam --root ROOT stop` command for lifecycle control.
+
+Use a stable external session directory when ownership must remain fenced while the project path is
+deleted and recreated; deleting a project-local `.beam` necessarily deletes its default fence.
+
+An abnormal owner or broker exit, including a nonzero broker exit after stopping begins, leaves the
+descriptor as a safety fence. After independently
+establishing that the recorded generation is no longer authoritative, quarantine that exact record
+without signalling its recorded PIDs:
+
+```bash
+lean-beam --root /workspace/a recover --generation GENERATION_ID
+```
+
+Use the same `--session-dir` selection and the original owning installation when applicable.
+Stop and recovery do not require its current plugin, selector, or provenance. A different Beam
+installation cannot control that owner, even if its binaries are identical. Recovery preserves a
+typed old descriptor under a `beam-daemon.recovered-*.json` name for diagnosis. Opaque or malformed
+descriptors cannot establish installation ownership: preserve them, independently stop their
+original owner, then archive the descriptor explicitly as an operator. There is no force bypass.
+
+For a current descriptor, the selected `--root` must match its recorded workspace;
+using the same session directory with an unrelated root cannot quarantine the session. `status`
+reports this as `sessionSelectorMismatch`, not as a lifecycle state or recovery requirement.
+
+## Prune Old Installed State
+
+The checkout installer publishes each distinct content payload as an immutable runtime payload under
+`BEAM_INSTALL_ROOT/versions`. Reinstalling an identical payload reuses its existing runtime only
+after validating its ownership marker, manifest, required files, executable commands, and payload
+contents. The schema-4 manifest records fixed companions and the complete constructed target set.
+Its generation includes that membership and source provenance. Reuse preserves the manifest byte
+for byte; a different target set or provenance produces another generation. Qualified target
+executables and plugins live inside that version under `runtimes/`. Prior distinct versions remain
+available when `current` changes and are not removed automatically. Earlier installation manifests
+require reinstallation before they can establish current component membership. Preview old state with:
+
+```bash
+lean-beam prune
+```
+
+The preview validates the Beam ownership marker, requires the command to come from the current
+installed runtime, and checks every candidate's manifest. It never selects the current runtime.
+Stop foreground owners through their original installation and restart agents and MCP clients
+before removing an old version. A different installation cannot control those owners after the
+original version is removed.
+
+Apply the displayed runtime cleanup with:
+
+```bash
+lean-beam prune --apply
+```
+
+Restart active owners, agents, and MCP clients before `prune --apply`; a process can remain bound
+to an old generation after the launcher's `current` link changes. Pruning coordinates with the
+installer's atomic-directory lock and refuses symlinked or unmarked runtime directories. A crashed
+installer fails closed and requires explicit recovery rather than automatic stale-lock removal.
+Construction caches are installer inputs and are not selected or pruned by runtime commands.
+
+Apply is incremental rather than transactional: Beam validates and removes one displayed path at a
+time and reports each successful removal immediately. If a later path fails validation or its lock
+cannot be acquired, earlier reported removals remain applied. Resolve the reported error and rerun
+`lean-beam prune` to preview what remains.
+
+If reinstalling reports that an existing runtime does not match its payload hash, stop active Beam
+agents and MCP clients first. Move only the exact reported runtime directory out of
+`BEAM_INSTALL_ROOT/versions` and preserve it for inspection, then rerun the installer. Do not remove
+the whole `versions` directory. `lean-beam prune` deliberately refuses invalid state and the current
+runtime, so it is not the repair path for this case. Use the same recovery when reinstalling refuses
+to reuse a older runtime manifest schema.
+
+If pruning reports an invalid install-root marker, preserve the whole install root for inspection.
+Do not recreate that ownership marker in place. Stop active Beam clients, rename the exact
+`BEAM_INSTALL_ROOT` as a unit, then rerun the installer to create a fresh owned root. Do not delete
+the preserved root until its contents are understood.
+
+The command is intentionally unavailable from a source checkout because there is no owned
+immutable install root to prune there.
 
 ## Installer Locations And Overrides
 

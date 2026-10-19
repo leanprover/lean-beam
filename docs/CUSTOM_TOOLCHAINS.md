@@ -13,8 +13,12 @@ elan toolchain link lean4-dev /path/to/lean/build/release/stage1
 ./scripts/install-beam.sh --custom-toolchain lean4-dev
 ```
 
-Repeat `--toolchain` or `--custom-toolchain` to construct several targets in one standalone Beam
-installation. The installer resolves each compiler installation once, builds its matching daemon
+Repeat `--toolchain` or `--custom-toolchain` in **one installer invocation** to construct several
+targets in one standalone Beam installation. Each run selects the complete target set for the new
+installation; it does not merge with the previous selection or automatically retain the repo-pinned
+target. Include every target you want to retain when reinstalling.
+
+The installer resolves each compiler installation once, builds its matching daemon
 and plugin, qualifies the plugin, and copies the complete runtime into the staged installation.
 The published manifest records the target relationships and the hashes of the installed files.
 The target set and source provenance participate in the installation generation.

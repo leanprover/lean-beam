@@ -213,8 +213,8 @@ What is not a valid checkpoint target:
 - use MCP when a client requires structured live diagnostics or progress
 - streamed diagnostics are request-scoped observations; they may carry `completionBlocking=true`,
   but save-blocking evidence is attached to the final sync/save verdict
-- the field-level progress, diagnostic, and readiness contract lives in
-  [../../../docs/SYNC_AND_DIAGNOSTICS.md](../../../docs/SYNC_AND_DIAGNOSTICS.md)
+- additional field-level progress, diagnostic, and readiness details are documented in the optional
+  [online sync and save contract](https://github.com/leanprover/lean-beam/blob/main/docs/SYNC_AND_DIAGNOSTICS.md)
 - do not parse wrapper `stderr` in tooling
 - `BEAM_PROGRESS` controls stderr progress output for slow calls
 - by default, progress prints when stderr is a TTY
