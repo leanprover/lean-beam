@@ -395,8 +395,8 @@ Its caller receives an observation capability rather than maintaining a separate
 Observation and teardown are serialized: loss of child ownership is permanent, and a capability
 retained past teardown rejects observation before touching the old PID. The caller must not wait
 or kill the raw child separately. Native failures retain their OS error code in `IO.Error`.
-Windows assigns
-a non-inheritable kill-on-close Job Object before the handshake; successful job closure requests
+Windows uses `Child.tryWait` on the retained process handle without collecting the child. It
+assigns a non-inheritable kill-on-close Job Object before the handshake; successful job closure requests
 termination of its members, so cleanup waits on the retained child handle without another kill. Failed
 assignment or closure still requires explicit leader termination and waiting. On POSIX
 the helper owns a new session/process group and watches its owner's stdin lease, terminating its
@@ -406,7 +406,8 @@ can arrive before the child reaches `setsid`. On Darwin, signalling a group whos
 already exiting can return `EPERM` before those members become zombies. Cleanup accepts this only
 after a complete kernel query confirms every member is a zombie or has the kernel's `P_WEXIT`
 exit flag. An uncertain or failed query preserves the error. Do not substitute
-`Child.tryWait` followed by a PID signal. These mechanisms clean up ordinary
+the POSIX `Child.tryWait` followed by a PID signal, since that operation reaps the child. These
+mechanisms clean up ordinary
 descendants; POSIX process groups do not contain descendants that deliberately escape their
 session/group. OS process creation and termination are not hard real-time bounds; CI retains its
 external watchdog.

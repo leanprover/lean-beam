@@ -26,7 +26,6 @@ static lean_obj_res process_error(const char *operation, uint32_t error) {
 #include <errhandlingapi.h>
 #include <handleapi.h>
 #include <processthreadsapi.h>
-#include <synchapi.h>
 
 LEAN_EXPORT lean_obj_res lean_beam_process_job_attach(uint32_t pid, lean_obj_arg world) {
   (void)world;
@@ -65,17 +64,10 @@ LEAN_EXPORT lean_obj_res lean_beam_process_job_terminate_posix(uint32_t pid, lea
   return lean_io_result_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res lean_beam_process_job_poll(uint32_t pid, lean_obj_arg world) {
-  (void)world;
-  /* The caller retains the original Child handle, so this PID cannot be recycled here. */
-  HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
-  if (!process) return process_error("OpenProcess(poll)", GetLastError());
-  DWORD status = WaitForSingleObject(process, 0);
-  DWORD error = GetLastError(); CloseHandle(process);
-  if (status == WAIT_FAILED) return process_error("WaitForSingleObject", error);
-  if (status != WAIT_OBJECT_0 && status != WAIT_TIMEOUT)
-    return process_error("WaitForSingleObject: unexpected process state", ERROR_INVALID_DATA);
-  return lean_io_result_mk_ok(lean_box(status == WAIT_OBJECT_0 ? 1 : 0));
+LEAN_EXPORT lean_obj_res lean_beam_process_job_poll_posix(uint32_t pid, lean_obj_arg world) {
+  /* Link stub for the POSIX-only call; Windows uses the original Lean Child handle. */
+  (void)pid; (void)world;
+  return process_error("POSIX-only child observation", ERROR_NOT_SUPPORTED);
 }
 
 LEAN_EXPORT lean_obj_res lean_beam_process_job_parent_lost(lean_obj_arg world) {
@@ -150,7 +142,7 @@ LEAN_EXPORT lean_obj_res lean_beam_process_job_terminate_posix(uint32_t pid, lea
   return lean_io_result_mk_ok(lean_box(0));
 }
 
-LEAN_EXPORT lean_obj_res lean_beam_process_job_poll(uint32_t pid, lean_obj_arg world) {
+LEAN_EXPORT lean_obj_res lean_beam_process_job_poll_posix(uint32_t pid, lean_obj_arg world) {
   (void)world;
   siginfo_t status = {0};
   if (waitid(P_PID, (id_t)pid, &status, WEXITED | WNOHANG | WNOWAIT) != 0) {

@@ -32,6 +32,9 @@ private def checkExitedGroups : IO Unit := do
       child.stdin.putStr "exit\n"
       child.stdin.flush
       awaitExited scope
+      for _ in [:2] do
+        unless (← scope.poll) == .exited do
+          throw <| IO.userError "exit observation consumed the retained child identity"
       return scope
     -- An escaped observation cannot touch the old PID after scope teardown.
     let rejected ← try scope.poll *> pure false catch _ => pure true

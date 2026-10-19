@@ -15,8 +15,8 @@ private opaque attach (pid : UInt32) : IO USize
 @[extern "lean_beam_process_job_close"]
 private opaque close (job : USize) : IO Unit
 
-@[extern "lean_beam_process_job_poll"]
-private opaque pollNative (pid : UInt32) : IO UInt8
+@[extern "lean_beam_process_job_poll_posix"]
+private opaque pollPosix (pid : UInt32) : IO UInt8
 
 @[extern "lean_beam_process_job_terminate_posix"]
 private opaque terminatePosix (pid : UInt32) : IO Unit
@@ -27,9 +27,13 @@ inductive State where
   | notChild
   deriving BEq, Repr
 
-/-- The native poll never consumes the retained child's exit status. -/
+/-- Observe exit without consuming the retained child's identity on either platform. -/
 private def poll (child : IO.Process.Child cfg) : IO State := do
-  match ← pollNative child.pid with
+  if System.Platform.isWindows then
+    -- Windows tryWait observes the original Child handle without closing or reaping it.
+    return if (← child.tryWait).isSome then .exited else .running
+  -- POSIX tryWait reaps, so retain the non-consuming waitid observation here.
+  match ← pollPosix child.pid with
   | 0 => pure .running
   | 1 => pure .exited
   | 2 => pure .notChild
