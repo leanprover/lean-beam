@@ -656,6 +656,16 @@ private def checkSyncAndSaveNormalization : IO Unit := do
   let saved ← requireObjVal "close-save result" "saved" normalizedCloseSave
   discard <| requireObjVal "close-save saved result" "sync" saved
 
+  let savedCheckpoint ← expectOk "typed committed checkpoint" <|
+    fromJson? (α := Beam.Broker.SaveOleanResult) rawSave
+  let staleData := toJson ({ saved := savedCheckpoint, currentVersion? := some 7 } :
+    Beam.Broker.SaveFinalizationStaleData)
+  let stale ← expectToolError "normalize committed stale close" "contentModified" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .closeSave) <|
+      Beam.Broker.errorResponseFor .contentModified "document reopened" (some staleData)
+  require "stale close projection preserves broker evidence unchanged"
+    (stale.data?.map Json.compress == some staleData.compress)
+
   discard <| expectToolError "save result with undeclared field" "invalidResult" <|
     Beam.Mcp.normalizeBrokerResponse (.leanOperation .save) <| Beam.Broker.Response.success <|
       rawSave.setObjVal! "extra" (toJson true)

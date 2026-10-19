@@ -416,6 +416,23 @@ private def checkSaveResultJsonDecode : IO Unit := do
   require "close-save result round-trip preserves closure and nested save"
     (decodedCloseSave.closed && decodedCloseSave.saved.module == saveResult.module)
 
+  let stale : SaveFinalizationStaleData := { saved := saveResult, currentVersion? := some 7 }
+  let staleJson := toJson stale
+  requireJsonString "same-version stale close reason" "reason" "savedDocumentChanged" staleJson
+  requireJsonBool "stale close did not close replacement" "closed" false staleJson
+  requireJsonInt "stale close can retain the public version" "currentVersion" 7 staleJson
+  let retainedSave ← expectOk "stale close retains typed save" <|
+    staleJson.getObjValAs? SaveOleanResult "saved"
+  require "stale close retains committed source evidence" (retainedSave.sourceHash == saveResult.sourceHash)
+  requireFieldAbsent "absent current document" "currentVersion" <|
+    toJson ({ saved := saveResult } : SaveFinalizationStaleData)
+  for originalData in [Json.mkObj [("detail", toJson "original typed data")], toJson "opaque data", Json.null] do
+    let failed := toJson ({ saved := saveResult, originalData? := some originalData } : SaveFinalizationFailureData)
+    requireFieldAbsent "ambiguous delivery failure" "closed" failed
+    let retainedData ← expectOk "post-save failure retains arbitrary original JSON" <|
+      failed.getObjVal? "originalData"
+    require "post-save failure preserves original data" (retainedData.compress == originalData.compress)
+
   let missingOlean :=
     match toJson saveResult with
     | .obj fields => Json.obj <| fields.erase "olean"

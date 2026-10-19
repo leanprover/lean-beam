@@ -198,6 +198,17 @@ marker is written, even with a stale source hash. A structured `leanOptions` con
 that marker. The broker save-stream test checks that these setup errors retain the completed sync
 verdict and progress through both save and close-save.
 
+The fast suite runs [tests/test-save-finalization.py](../tests/test-save-finalization.py) against
+the non-shipped daemon fixture and the real Lean plugin. Explicit helper readiness/release gates
+cover changed and identical-text replacements after artifacts commit, exact and unchanged
+closures, retained replacement handles, historical saves, absent documents, and workspace loss.
+A prepare-helper gate also verifies that a stale basis preserves the preceding trace and
+artifacts before save dispatch. Both native fixture gates run after the helper's ownership
+handshake, wait at most 25 seconds for explicit release, and use no production test hooks.
+The prepare gate precedes real preparation; the identical-text replacement retains the source
+bytes and modification time. Pure document-state tests cover ordered acceptance identity and
+refused late progress; protocol and MCP projection tests retain committed failure evidence.
+
 The fast suite also runs [tests/test-lake-helper-lifetime.py](../tests/test-lake-helper-lifetime.py)
 against the actual staged daemon and a non-shipped helper client. It checks completed requests,
 abrupt helper exit with a live descendant, deadlines, cancellation, and parent death, then cancellation/drop and

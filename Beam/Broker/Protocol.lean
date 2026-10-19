@@ -1038,6 +1038,22 @@ instance : FromJson CloseSaveResult where
       throw "close-save result requires 'closed' to be true"
     pure { saved }
 
+/-- A committed checkpoint whose requested close was refused because the document changed. -/
+structure SaveFinalizationStaleData where
+  saved : SaveOleanResult
+  currentVersion? : Option Nat := none
+
+instance : ToJson SaveFinalizationStaleData where
+  toJson data := Json.mkObj <|
+    [("reason", toJson "savedDocumentChanged"), ("closed", toJson false),
+     ("saved", toJson data.saved)] ++ optionalJsonField "currentVersion" data.currentVersion?
+
+/-- Retain committed evidence and arbitrary original data without duplicating the outer error. -/
+structure SaveFinalizationFailureData where
+  saved : SaveOleanResult
+  originalData? : Option Json := none
+  deriving ToJson
+
 /-- A broker failure together with observations collected before the request failed. -/
 structure ResponseFailure where
   error : Error

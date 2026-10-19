@@ -191,7 +191,71 @@ private def checkMarkSavedVersion : IO Unit := do
     | throw <| IO.userError "stale markSavedVersion erased existing doc"
   require "stale markSavedVersion keeps sync event seq" (staleDoc.lastSyncEventSeq == 9)
 
+private def checkAcceptedBasis : IO Unit := do
+  let uri := "file:///workspace/Foo.lean"
+  let opened := DocumentState.syncFileDecision {} uri { mkSnapshot 10 with readSeq := 1 }
+  let original ← DocumentState.requireDocState opened.docs uri
+  let originalBasis := DocumentState.basis original
+  require "open captures its acceptance sequence" (originalBasis == ⟨1, 1⟩)
+  let unchanged := DocumentState.syncFileDecision opened.docs uri { mkSnapshot 10 with readSeq := 3 }
+  let unchangedDoc ← DocumentState.requireDocState unchanged.docs uri
+  require "unchanged read advances ordering without changing basis"
+    (unchangedDoc.syncSnapshotSeq == 3 && DocumentState.basis unchangedDoc == originalBasis)
+  let changed := DocumentState.syncFileDecision unchanged.docs uri { mkSnapshot 20 with readSeq := 5 }
+  let changedDoc ← DocumentState.requireDocState changed.docs uri
+  require "change renews accepted basis" (DocumentState.basis changedDoc == ⟨2, 5⟩)
+  let superseded := DocumentState.syncFileDecision changed.docs uri { mkSnapshot 30 with readSeq := 4 }
+  let supersededDoc ← DocumentState.requireDocState superseded.docs uri
+  require "superseded read preserves actual accepted basis"
+    (DocumentState.basis supersededDoc == ⟨2, 5⟩ && supersededDoc.rawSourceHash == 20)
+  let reopened := DocumentState.syncFileDecision (superseded.docs.erase uri) uri
+    { mkSnapshot 10 with readSeq := 7 }
+  let reopenedDoc ← DocumentState.requireDocState reopened.docs uri
+  require "identical-text reopen renews basis despite equal public version"
+    (reopenedDoc.version == original.version && reopenedDoc.rawSourceHash == original.rawSourceHash &&
+     DocumentState.basis reopenedDoc != originalBasis)
+  require "matching basis is current"
+    (DocumentState.matchBasis unchanged.docs uri originalBasis == .current)
+  require "advanced basis is superseded"
+    (DocumentState.matchBasis changed.docs uri originalBasis == .superseded (some 2))
+  require "same-version reopened basis is superseded"
+    (DocumentState.matchBasis reopened.docs uri originalBasis == .superseded (some 1))
+  require "absent basis is superseded without a current version"
+    (DocumentState.matchBasis {} uri originalBasis == .superseded none)
+  let replacementProgress := some ({ updates := 17, done := false } : SyncFileProgress)
+  for docs in [changed.docs, reopened.docs] do
+    let docs := DocumentState.recordFileProgress docs uri replacementProgress
+    let guarded := DocumentState.recordFileProgressForBasis docs uri originalBasis
+      (some { updates := 99, done := true })
+    let doc ← DocumentState.requireDocState guarded uri
+    require "old completion preserves updated and same-version reopened progress"
+      (doc.fileProgress? == replacementProgress)
+    let before ← DocumentState.requireDocState docs uri
+    require "refused progress leaves history marks unchanged"
+      (doc.lastSyncEventSeq == before.lastSyncEventSeq &&
+       doc.checkpointedVersion? == before.checkpointedVersion?)
+    let history : DocumentState.ModuleHistories := Std.TreeMap.empty.insert "Foo" {
+      path := "Foo.lean", lastSyncEventSeq := 11, lastSaveEventSeq := 9
+      lastRawSourceHash? := some 42, lastTextChangeEventSeq := 10
+    }
+    let marked := DocumentState.markSyncedBasis docs history uri originalBasis "Foo.lean" 99
+    require "late sync refuses updated and same-version replacement marks" (!marked.applied)
+    let retained ← DocumentState.requireDocState marked.docs uri
+    let some retainedHistory := marked.moduleHistory.get? "Foo"
+      | throw <| IO.userError "refused late sync erased module history"
+    require "late sync preserves replacement progress and history"
+      (retained.fileProgress? == replacementProgress && retained.lastSyncEventSeq == before.lastSyncEventSeq &&
+       retainedHistory.lastSyncEventSeq == 11 && retainedHistory.lastSaveEventSeq == 9 &&
+       retainedHistory.lastRawSourceHash? == some 42 && retainedHistory.lastTextChangeEventSeq == 10)
+  let marked := DocumentState.markSyncedBasis unchanged.docs {} uri originalBasis "Foo.lean" 21
+  require "same acceptance still records a completed sync" marked.applied
+  let matchingProgress := some ({ updates := 6, done := true } : SyncFileProgress)
+  let progressed := DocumentState.recordFileProgressForBasis unchanged.docs uri originalBasis matchingProgress
+  require "unchanged acceptance still records matching progress"
+    ((← DocumentState.requireDocState progressed uri).fileProgress? == matchingProgress)
+
 def main : IO Unit := do
+  checkAcceptedBasis
   checkTrackedModuleName
   checkRecordFileProgress
   checkSyncFileDecisionOpen

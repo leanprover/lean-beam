@@ -22,6 +22,27 @@ private def extract (fixture : Fixture) : List String → Except String Fixture
       extract { fixture with configHash := value, args := fixture.args ++ ["--config-hash", value] } rest
   | arg :: rest => extract { fixture with args := fixture.args ++ [arg] } rest
 
+/-- Gate real helper work after its ownership handshake; this executable is never shipped. -/
+private def gateHelper (args : List String) : IO Unit := do
+  let [operation, directory] := args | return
+  let some gateDirectory ← IO.getEnv "BEAM_TEST_SAVE_GATE_DIR" | return
+  let gateDirectory := System.FilePath.mk gateDirectory
+  unless ← (gateDirectory / "enabled").pathExists do return
+  if operation == "write-save-trace" then
+    IO.FS.writeFile (gateDirectory / "trace-entered") "entered"
+  unless (← IO.getEnv "BEAM_TEST_SAVE_GATE_OP") == some operation do return
+  let ready := Lean.Json.mkObj [
+    ("job", Lean.toJson directory)
+  ]
+  IO.FS.writeFile (gateDirectory / "entered.tmp") ready.compress
+  IO.FS.rename (gateDirectory / "entered.tmp") (gateDirectory / "entered")
+  let deadline := (← IO.monoMsNow) + 25000
+  repeat
+    if ← (gateDirectory / "release").pathExists then return
+    if (← IO.monoMsNow) >= deadline then
+      throw <| IO.userError "save-finalization helper gate timed out"
+    IO.sleep 10
+
 /-- Explicit component fixtures are confined to this non-shipped test executable. -/
 def main (args : List String) : IO Unit := do
   let fixture ← IO.ofExcept <| (extract {} args).mapError IO.userError
@@ -35,7 +56,9 @@ def main (args : List String) : IO Unit := do
   }
   match fixture.args with
   | "lake-helper" :: helperArgs =>
-      Beam.Broker.LakeHelperMain.main (pure fun _ => pure description) helperArgs
+      Beam.Broker.LakeHelperMain.main (do
+        gateHelper helperArgs
+        pure fun _ => pure description) helperArgs
   | _ =>
       Beam.Broker.runDaemon (fun root =>
         pure (Beam.Broker.BrokerConfig.ofRuntime root description, fixture.configHash)) fixture.args

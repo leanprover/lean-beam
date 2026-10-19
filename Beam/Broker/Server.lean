@@ -706,7 +706,7 @@ private structure SyncedFileSnapshot where
 private def readFileSyncSnapshot
     (root path : System.FilePath)
     (workspaceGeneration : Nat)
-    (readSeq : Nat := 0) : IO FileSyncSnapshot := do
+    (readSeq : Nat) : IO FileSyncSnapshot := do
   let path ← resolvePath root path
   let text ← IO.FS.readFile path
   let textMTime ← Lake.getFileMTime path
@@ -758,6 +758,8 @@ private def withSessionForSnapshot
 private def syncFileSnapshotDetailed
     (session : Session)
     (snapshot : FileSyncSnapshot) : IO SyncedFileSnapshot := do
+  unless snapshot.file.readSeq > 0 do
+    throw <| IO.userError "broker source snapshot has no reserved read sequence"
   let decision := DocumentState.syncFileDecision session.docs snapshot.uri snapshot.file
   let session ←
     match decision.action with
@@ -806,10 +808,6 @@ private def closeFile (session : Session) (path : System.FilePath) : IO Session 
     let session ← sendNotificationJson session "textDocument/didClose" param
     pure { session with docs := session.docs.erase uri }
 
-private def recordFileProgress (session : Session) (uri : DocumentUri)
-    (fileProgress? : Option SyncFileProgress) : Session :=
-  { session with docs := DocumentState.recordFileProgress session.docs uri fileProgress? }
-
 private def decodeResponseAs [FromJson α] (json : Json) : IO α := do
   match fromJson? json with
   | .ok value => pure value
@@ -830,9 +828,9 @@ private def applyVersionMarkResult
   else
     session
 
-private def markDocSyncedVersion (session : Session) (uri : DocumentUri) (version : Nat) : Session :=
-  let result := DocumentState.markSyncedVersion
-    session.docs session.moduleHistory uri version
+private def markDocSyncedBasis (session : Session) (uri : DocumentUri) (basis : DocumentBasis) : Session :=
+  let result := DocumentState.markSyncedBasis
+    session.docs session.moduleHistory uri basis
     (trackedPathLabel session.root uri) session.nextEventSeq
   applyVersionMarkResult session result
 
@@ -1449,7 +1447,13 @@ private def mergeFileProgressIfCurrent
     (uri : DocumentUri)
     (fileProgress? : Option SyncFileProgress) : IO Unit := do
   server.withState do
-    modifyCurrentSessionIfMatching session (fun current => recordFileProgress current uri fileProgress?)
+    modifyCurrentSessionIfMatching session fun current =>
+      match session.docs.get? uri with
+      | some captured =>
+          let docs := DocumentState.recordFileProgressForBasis current.docs uri
+            (DocumentState.basis captured) fileProgress?
+          { current with docs }
+      | none => current
 
 private def withCurrentMatchingSession
     (server : ServerRuntime)
@@ -1476,14 +1480,34 @@ private def withCurrentMatchingSession
           message := "broker backend session exited while request was in flight"
         }
 
+private def documentBasisMismatchFailure
+    (uri : DocumentUri)
+    (currentVersion? : Option Nat) : ResponseFailure :=
+  responseFailureFor .contentModified
+    s!"document changed or reopened while request was in flight: {uri}; retry after synchronizing"
+    (some <| Json.mkObj <|
+      [("reason", toJson "documentChanged"), ("uri", toJson uri)] ++
+      currentVersion?.toList.map (fun version => ("currentVersion", toJson version)))
+
+private def withCurrentMatchingDocument
+    (server : ServerRuntime)
+    (session : Session)
+    (uri : DocumentUri)
+    (basis : DocumentBasis)
+    (k : Session → M (Except ResponseFailure α)) : HandlerM α := do
+  let result ← withCurrentMatchingSession server session fun current => do
+    match DocumentState.matchBasis current.docs uri basis with
+    | .current => k current
+    | .superseded version? => pure <| .error <| documentBasisMismatchFailure uri version?
+  requestArg result
+
 private def recordCompletedSync
     (server : ServerRuntime)
     (session : Session)
     (uri : DocumentUri)
-    (version : Nat) : HandlerM Unit := do
-  withCurrentMatchingSession server session fun current => do
-    let current := markDocSyncedVersion current uri version
-    updateSession current
+    (basis : DocumentBasis) : HandlerM Unit :=
+  withCurrentMatchingSession server session fun current =>
+    updateSession (markDocSyncedBasis current uri basis)
 
 private structure StartedSyncedRequest where
   session : Session
@@ -1601,13 +1625,16 @@ private structure StartedTrackedBarrier where
   session : Session
   leanConfig? : Option LeanBackendConfig
   uri : DocumentUri
-  version : Nat
+  basis : DocumentBasis
   documentHash : UInt64
   lakeTraceHash : Lake.Hash
   textMTime : Lake.MTime
   changed : Bool := false
   priorProgress? : Option SyncFileProgress := none
   pending : PendingRequest
+
+private def StartedTrackedBarrier.version (started : StartedTrackedBarrier) : Nat :=
+  started.basis.version
 
 private def startTrackedDiagnosticsBarrierIO
     (server : ServerRuntime)
@@ -1647,7 +1674,7 @@ private def startTrackedDiagnosticsBarrierIO
         session
         leanConfig? := workspace.config.lean?
         uri
-        version := synced.version
+        basis := DocumentState.basis docState
         documentHash := docState.documentHash
         lakeTraceHash := docState.lakeTraceHash
         textMTime := docState.textMTime
@@ -1656,36 +1683,38 @@ private def startTrackedDiagnosticsBarrierIO
         pending
       }
 
-private def finalizeSavedDoc
-    (server : ServerRuntime)
-    (session : Session)
-    (uri : DocumentUri)
-    (version : Nat)
-    (closeAfter : Bool) : HandlerM Unit := do
-  withCurrentMatchingSession server session fun current => do
-    let current := markDocSavedVersion current uri version
-    let current ←
-      if closeAfter && current.docs.contains uri then
-        sendNotificationJson current "textDocument/didClose" (toJson ({
-          textDocument := ({ uri := uri : TextDocumentIdentifier })
-          : DidCloseTextDocumentParams
-        }))
-      else
-        pure current
-    let current :=
-      if closeAfter then
-        { current with docs := current.docs.erase uri }
-      else
-        current
-    updateSession current
-
 private structure SaveOleanCompleted where
   session : Session
   uri : DocumentUri
-  version : Nat
-  spec : LeanSaveSpec
+  basis : DocumentBasis
   result : SaveOleanResult
   fileProgress? : Option SyncFileProgress := none
+
+private inductive SaveFinalizationOutcome where
+  | applied
+  | superseded (currentVersion? : Option Nat)
+
+private def finalizeSavedDoc
+    (server : ServerRuntime)
+    (saved : SaveOleanCompleted)
+    (closeAfter : Bool) : HandlerM SaveFinalizationOutcome :=
+  withCurrentMatchingSession server saved.session fun current => do
+    match DocumentState.matchBasis current.docs saved.uri saved.basis with
+    | .superseded currentVersion? => pure <| .superseded currentVersion?
+    | .current =>
+      let current := markDocSavedVersion current saved.uri saved.basis.version
+      let current ←
+        if closeAfter then
+          sendNotificationJson current "textDocument/didClose" (toJson ({
+            textDocument := ({ uri := saved.uri : TextDocumentIdentifier })
+            : DidCloseTextDocumentParams
+          }))
+        else
+          pure current
+      let current :=
+        if closeAfter then { current with docs := current.docs.erase saved.uri } else current
+      updateSession current
+      pure .applied
 
 private def saveCompletedResponse
     (saved : SaveOleanCompleted)
@@ -1696,6 +1725,39 @@ private def saveCompletedResponse
     else
       toJson saved.result
   Response.withOptionalFileProgress (Response.success result) saved.fileProgress?
+
+/-- A successful trace is a committed checkpoint even if later document finalization fails. -/
+private def finalizeSavedResponse
+    (server : ServerRuntime)
+    (saved : SaveOleanCompleted)
+    (closeAfter : Bool) : HandlerM Response :=
+  ExceptT.mk do
+    let outcome ← try
+      (finalizeSavedDoc server saved closeAfter).run
+    catch error =>
+      pure <| .error <| responseFailureFor .internalError error.toString
+    match outcome with
+    | .error failure =>
+      -- Delivery may have failed after didClose was sent. Preserve the failure without claiming
+      -- that closure did not happen; closed=false belongs only to a refused comparison below.
+      let data : SaveFinalizationFailureData := {
+        saved := saved.result, originalData? := failure.error.data?
+      }
+      pure <| .error {
+        failure with
+        error := { failure.error with data? := some (toJson data) }
+        fileProgress? := failure.fileProgress? <|> saved.fileProgress?
+      }
+    | .ok (.superseded currentVersion?) =>
+      if closeAfter then
+        let data : SaveFinalizationStaleData := { saved := saved.result, currentVersion? }
+        pure <| .error <| (responseFailureFor .contentModified
+          "checkpoint saved, but the tracked document changed or was closed; this request did not close it"
+          (some <| toJson data)).withOptionalFileProgress saved.fileProgress?
+      else
+        pure <| .ok <| saveCompletedResponse saved false
+    | .ok .applied =>
+      pure <| .ok <| saveCompletedResponse saved closeAfter
 
 private def syncSaveReadinessOfBarrierResult
     (uri : DocumentUri)
@@ -1846,14 +1908,14 @@ private def saveOleanCore
     | .error failure =>
       if failure.code != .saveUnsupportedSetup then throwBrokerFailure failure
       -- The helper owns setup validation; the broker retains the completed sync verdict.
-      recordCompletedSync server started.session started.uri started.version
+      recordCompletedSync server started.session started.uri started.basis
       throwBrokerFailure {
         failure with
         data? := some <| (failure.data?.getD <| Json.mkObj [])
           |>.setObjVal! "sync" (toJson syncResult)
       }
   withFailureProgress barrierProgress? <|
-    recordCompletedSync server started.session started.uri started.version
+    recordCompletedSync server started.session started.uri started.basis
   let method := saveArtifactsMethod
   let params := toJson ({
     textDocument := ({ uri := started.uri : TextDocumentIdentifier })
@@ -1877,16 +1939,19 @@ private def saveOleanCore
   })
   -- A cancellation after readiness/spec computation must not invalidate a valid trace.
   withFailureProgress barrierProgress? <| liftFailureIO <| ensureRequestNotCancelled cancelRef?
-  -- Once artifact publication can begin, an older trace must not remain visible: it may have the
-  -- same dependency hash while describing a different in-server artifact family.
-  withFailureProgress barrierProgress? <| liftHandlerIO <| invalidateLeanSaveTrace spec
   let (session, saveRequest) ← withFailureProgress barrierProgress? <|
-    withCurrentMatchingSession server started.session fun current => do
+    withCurrentMatchingDocument server started.session started.uri started.basis fun current => do
+      match ← ensureRequestNotCancelled cancelRef? with
+      | .error failure => return .error failure
+      | .ok () => pure ()
+      -- Compare the basis before invalidating the trace, and retain the state lock through
+      -- dispatch so a replacement cannot be admitted between the check and this request.
+      invalidateLeanSaveTrace spec
       let (current, saveRequest) ← startRequestJsonTrackedDetailed current method params
         (clientRequestId? := req.clientRequestId?)
         (cancelRef? := cancelRef?)
       updateSession current
-      pure (current, saveRequest)
+      pure <| .ok (current, saveRequest)
   withFailureProgress barrierProgress? <|
     liftHandlerIO <| propagatePendingCancellation session cancelRef?
   let savePending ←
@@ -1920,8 +1985,7 @@ private def saveOleanCore
   pure {
     session
     uri := started.uri
-    version := started.version
-    spec
+    basis := started.basis
     result := leanSaveResult spec started.lakeTraceHash syncResult
     fileProgress? := barrierProgress?
   }
@@ -1991,7 +2055,7 @@ private def handleSyncFileOp
   let syncResult :=
     mkSyncFileResult resultPath started.version currentDiagnostics saveReadiness replyDiagnostics?
   withFailureProgress fileProgress? <|
-    recordCompletedSync server started.session started.uri started.version
+    recordCompletedSync server started.session started.uri started.basis
   liftHandlerIO <| traceBroker
     s!"sync_file response ready clientRequestId={optionLabel req.clientRequestId?} version={started.version} saveReady={saveReadiness.saveReady}"
   pure <| syncFileSuccessResponse syncResult fileProgress?
@@ -2054,8 +2118,7 @@ private def handleCloseOp
   if request.saveArtifacts?.getD false then
     let saved ← saveOlean server req path (request.diagnosticScope?.getD .errors)
       cancelRef? emitProgress? emitDiagnostic?
-    finalizeSavedDoc server saved.session saved.uri saved.version true
-    pure <| saveCompletedResponse saved true
+    finalizeSavedResponse server saved true
   else
     liftFailureIO <| server.withRequestSessionState req do
       match ← storedSession? req.workspaceId with
@@ -2285,8 +2348,7 @@ private def handleSaveOleanOp
   let path := System.FilePath.mk request.path
   let saved ← saveOlean server req path (request.diagnosticScope?.getD .errors)
     cancelRef? emitProgress? emitDiagnostic?
-  finalizeSavedDoc server saved.session saved.uri saved.version false
-  pure <| saveCompletedResponse saved false
+  finalizeSavedResponse server saved false
 
 private def handleGoalsOp
     (server : ServerRuntime)

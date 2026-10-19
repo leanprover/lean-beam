@@ -84,6 +84,21 @@ they established before checkpointing: `save` under `result.sync`, and `close-sa
 `result.saved.sync`. Document-error save failures include the blocking verdict under
 `error.data.sync`.
 
+After a checkpoint succeeds, finalization checks whether the same accepted document is still
+tracked. If it changed, closed, or reopened, `save` may return its historical
+checkpoint result but does not mark a replacement document checkpointed. `close-save` instead
+returns `contentModified` with `error.data.reason = "savedDocumentChanged"`, the committed save
+result under `error.data.saved`, and `error.data.closed = false`. `currentVersion` is included when
+the document remains tracked; it can equal the saved version after close/reopen. This request
+leaves any replacement document and its handles intact. Unchanged rereads retain the accepted
+document and do not prevent closure.
+
+Other finalization failures after the artifacts and Lake trace have committed retain their
+original error code and message, add the checkpoint under `error.data.saved`, and preserve any
+original error data under `error.data.originalData`. They do not assert `closed = false` when
+notification delivery may have failed. MCP passes this error data through with the broker field
+names, including `sourceHash` inside `saved`; successful MCP save results use snake_case.
+
 Zero-build checkpointing writes artifacts from the accepted Lean server state without rerunning
 batch compilation. It supports structured Lake `leanOptions`, dynamic libraries, and plugins
 already applied to that state. A module with effective `moreLeanArgs`, including arguments

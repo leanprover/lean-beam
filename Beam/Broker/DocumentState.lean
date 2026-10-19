@@ -14,8 +14,16 @@ open Lean.Lsp
 
 namespace Beam.Broker
 
+/-- Internal identity of an accepted document revision; never serialized to clients. -/
+structure DocumentBasis where
+  version : Nat
+  acceptedSeq : Nat
+  deriving BEq, Repr
+
 structure DocState where
   version : Nat
+  /-- Read sequence that opened or changed this document; unchanged reads preserve it. -/
+  acceptedBasisSeq : Nat := 0
   /-- Saved source text without line-ending normalization; controls versions and freshness. -/
   rawSourceHash : UInt64
   /-- Hash of Lean's document text, with CRLF normalized to LF. -/
@@ -49,6 +57,20 @@ namespace DocumentState
 abbrev Docs := Std.TreeMap String DocState
 
 abbrev ModuleHistories := Std.TreeMap String ModuleHistory
+
+def basis (doc : DocState) : DocumentBasis :=
+  { version := doc.version, acceptedSeq := doc.acceptedBasisSeq }
+
+inductive BasisMatch where
+  | current
+  | superseded (currentVersion? : Option Nat)
+  deriving BEq, Repr
+
+def matchBasis (docs : Docs) (uri : DocumentUri) (expected : DocumentBasis) : BasisMatch :=
+  match docs.get? uri with
+  | some doc =>
+      if basis doc == expected then .current else .superseded (some doc.version)
+  | none => .superseded none
 
 structure FileSnapshot where
   /-- Saved source text without line-ending normalization. -/
@@ -119,12 +141,22 @@ def recordFileProgress
   | none =>
       docs
 
+def recordFileProgressForBasis
+    (docs : Docs)
+    (uri : DocumentUri)
+    (expected : DocumentBasis)
+    (fileProgress? : Option SyncFileProgress) : Docs :=
+  match matchBasis docs uri expected with
+  | .current => recordFileProgress docs uri fileProgress?
+  | .superseded _ => docs
+
 private def nextSnapshotSeq (docState : DocState) (snapshot : FileSnapshot) : Nat :=
   if snapshot.readSeq == 0 then docState.syncSnapshotSeq else snapshot.readSeq
 
 /-- Initialize tracked state by copying all hash representations from the same snapshot. -/
 def FileSnapshot.toDocState (snapshot : FileSnapshot) (version : Nat) : DocState := {
   version
+  acceptedBasisSeq := snapshot.readSeq
   rawSourceHash := snapshot.rawSourceHash
   documentHash := snapshot.documentHash
   lakeTraceHash := snapshot.lakeTraceHash
@@ -248,6 +280,18 @@ def markSyncedVersion
         { docs, moduleHistory }
   | none =>
       { docs, moduleHistory }
+
+/-- Late barriers remain historical observations; they must not mark a replacement acceptance. -/
+def markSyncedBasis
+    (docs : Docs)
+    (moduleHistory : ModuleHistories)
+    (uri : DocumentUri)
+    (expected : DocumentBasis)
+    (path : String)
+    (eventSeq : Nat) : VersionMarkResult :=
+  match matchBasis docs uri expected with
+  | .current => markSyncedVersion docs moduleHistory uri expected.version path eventSeq
+  | .superseded _ => { docs, moduleHistory }
 
 def markSavedVersion
     (docs : Docs)
