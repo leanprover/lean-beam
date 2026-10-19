@@ -236,6 +236,22 @@ def withRunAtSnapAtPos
     (notFoundX := throw <| RequestError.invalidParams (noSnapshotFoundMessage position))
     (x := f)
 
+private def withProofScopeAtPos (position : Lean.Lsp.Position)
+    (f : Snapshots.Snapshot → RequestM α) : RequestM (RequestTask α) := do
+  let doc ← RequestM.readDoc
+  let pos := doc.meta.text.lspPosToUtf8Pos position
+  RequestM.bindTaskCostly
+    (Language.Lean.findCmdParsedSnap doc.initSnap doc.meta.text pos).asServerTask fun
+    | none => throw <| RequestError.invalidParams (noSnapshotFoundMessage position)
+    | some parsed => do
+      let some commandStart := parsed.stx.getPos?
+        | throw <| RequestError.invalidParams (noSnapshotFoundMessage position)
+      -- The preceding parser state ends at this command's start. Its universe scope is
+      -- available already; waiting for the containing command would block behind later tactics.
+      RequestM.withWaitFindSnap doc (fun snap => snap.endPos >= commandStart)
+        (notFoundX := throw <| RequestError.invalidParams (noSnapshotFoundMessage position))
+        (x := f)
+
 def maybeAttachHandle
     (result : Result)
     (storeHandle : Bool)
@@ -462,7 +478,7 @@ def handleRunAt (p : Params) : RequestM (RequestTask Result) := do
   let proofTask ← findProofBasisAt p.position
   RequestM.bindRequestTaskCostly proofTask <| fun
     | some basis =>
-        withRunAtSnapAtPos p.position fun snap => do
+        withProofScopeAtPos p.position fun snap => do
           checkRequestCancelled
           let (result, state?) ← runTacticAtBasis basis p.text snap.cmdState.scopes.head!.levelNames
           maybeAttachHandle result (p.storeHandle?.getD false) state?

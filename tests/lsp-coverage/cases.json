@@ -1,6 +1,12 @@
 {
   "cases": [
     {
+      "id": "runAt.available-goal",
+      "method": "$/lean/runAt",
+      "coverage": ["proof-context", "isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/AvailabilityTest.lean#run"
+    },
+    {
       "id": "runWith.proof-context",
       "method": "$/lean/runWith",
       "coverage": ["proof-context", "handle-continuation"],
