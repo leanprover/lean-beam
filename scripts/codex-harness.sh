@@ -17,19 +17,35 @@ default_worktree_root() {
 }
 
 WORKTREE_ROOT="${BEAM_CODEX_WORKTREE_ROOT:-$(default_worktree_root)}"
+DEFAULT_BASE_REMOTE="origin"
+DEFAULT_BASE_BRANCH="main"
 
 die() {
   echo "error: $*" >&2
   exit 1
 }
 
+warn() {
+  echo "warning: $*" >&2
+}
+
 usage() {
   cat <<'EOF'
 Usage:
   ./scripts/codex-harness.sh session start <task-id> [base-ref]
+  ./scripts/codex-harness.sh session start --resume <task-id>
   ./scripts/codex-harness.sh worktree add <task-id> [base-ref]
+  ./scripts/codex-harness.sh worktree add --resume <task-id>
   ./scripts/codex-harness.sh worktree list
-  ./scripts/codex-harness.sh worktree drop <task-id>
+  ./scripts/codex-harness.sh worktree drop [--force] <task-id>
+
+Commands:
+  New task worktrees start from a freshly fetched origin/main unless base-ref is given. If the
+  fetch fails, the last fetched origin/main is used and its age is reported on stderr.
+  --resume reuses an existing task worktree or task branch instead of refusing it.
+  drop refuses to delete a task branch whose commits are not on any remote; --force deletes it
+  anyway. Uncommitted changes always block drop.
+  The worktree path is the only output on stdout; diagnostics go to stderr.
 
 Environment:
   BEAM_CODEX_WORKTREE_ROOT
@@ -122,10 +138,47 @@ ensure_worktree_root() {
   mkdir -p "${WORKTREE_ROOT}"
 }
 
+resolve_default_base() {
+  local remote_ref="refs/remotes/${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH}"
+  local ssh_command="${GIT_SSH_COMMAND:-}"
+  if [[ -z "${ssh_command}" ]]; then
+    ssh_command="$(git -C "${REPO_ROOT}" config --get core.sshCommand || echo "ssh -o BatchMode=yes")"
+  fi
+  # Agents run without a terminal: fail fast instead of waiting on a credential prompt.
+  if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${ssh_command}" \
+    git -C "${REPO_ROOT}" fetch --quiet "${DEFAULT_BASE_REMOTE}" "${DEFAULT_BASE_BRANCH}" >&2; then
+    printf '%s\n' "${remote_ref}"
+    return
+  fi
+  git -C "${REPO_ROOT}" show-ref --verify --quiet "${remote_ref}" || die \
+    "could not fetch ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH} and no fetched copy exists; pass an explicit base-ref"
+  warn "could not fetch ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH}; starting from the last fetched copy:" \
+    "$(git -C "${REPO_ROOT}" log -1 --format='%h, committed %cr' "${remote_ref}")"
+  printf '%s\n' "${remote_ref}"
+}
+
+# Prints the branch checked out in path (empty when detached), or fails unless path is the top
+# level of a worktree of this repository.
+registered_worktree_branch() {
+  local path="$1"
+  local toplevel common_dir repo_common_dir
+  toplevel="$(git -C "${path}" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [[ "$(realpath_of "${toplevel}")" == "$(realpath_of "${path}")" ]] || return 1
+  common_dir="$(git -C "${path}" rev-parse --path-format=absolute --git-common-dir)" || return 1
+  repo_common_dir="$(git -C "${REPO_ROOT}" rev-parse --path-format=absolute --git-common-dir)"
+  [[ "$(realpath_of "${common_dir}")" == "$(realpath_of "${repo_common_dir}")" ]] || return 1
+  git -C "${path}" symbolic-ref --quiet --short HEAD || true
+}
+
+unpushed_commit_count() {
+  git -C "${REPO_ROOT}" rev-list --count "$1" --not --remotes
+}
+
 add_worktree() {
   local task_id="$1"
-  local base_ref="${2:-main}"
-  local slug branch path
+  local base_ref="$2"
+  local resume="$3"
+  local slug branch path current_branch
   slug="$(sanitize_task_id "${task_id}")"
   branch="$(branch_name_for "${slug}")"
   path="$(worktree_path_for "${slug}")"
@@ -134,22 +187,40 @@ add_worktree() {
   ensure_worktree_root
   ensure_managed_worktree_path "${path}"
 
-  if [[ -d "${path}" ]]; then
+  if [[ "${resume}" == "1" && -n "${base_ref}" ]]; then
+    die "--resume reuses an existing task; it cannot be combined with a base-ref"
+  fi
+
+  if [[ -e "${path}" ]]; then
+    current_branch="$(registered_worktree_branch "${path}")" || die \
+      "${path} exists but is not a registered git worktree; inspect it and remove it manually"
+    [[ "${current_branch}" == "${branch}" ]] || die \
+      "task worktree ${path} has ${current_branch:-a detached HEAD} checked out, expected ${branch}"
+    [[ "${resume}" == "1" ]] || die \
+      "task worktree already exists: ${path}; pass --resume to reuse it or choose another task id"
     printf '%s\n' "${path}"
     return
   fi
 
   if git -C "${REPO_ROOT}" show-ref --verify --quiet "refs/heads/${branch}"; then
+    [[ "${resume}" == "1" ]] || die \
+      "branch ${branch} already exists; pass --resume to check it out or choose another task id"
     git -C "${REPO_ROOT}" worktree add "${path}" "${branch}" >/dev/null
-  else
-    git -C "${REPO_ROOT}" worktree add -b "${branch}" "${path}" "${base_ref}" >/dev/null
+    printf '%s\n' "${path}"
+    return
   fi
+
+  [[ "${resume}" != "1" ]] || die "nothing to resume: no worktree or branch exists for task ${slug}"
+  [[ -n "${base_ref}" ]] || base_ref="$(resolve_default_base)"
+  # --no-track keeps a plain `git push` from targeting the base branch.
+  git -C "${REPO_ROOT}" worktree add --no-track -b "${branch}" "${path}" "${base_ref}" >/dev/null
   printf '%s\n' "${path}"
 }
 
 drop_worktree() {
   local task_id="$1"
-  local slug branch path
+  local force="$2"
+  local slug branch path current_branch unpushed
   slug="$(sanitize_task_id "${task_id}")"
   branch="$(branch_name_for "${slug}")"
   path="$(worktree_path_for "${slug}")"
@@ -157,10 +228,21 @@ drop_worktree() {
   ensure_worktree_root
   ensure_managed_worktree_path "${path}"
   [[ -d "${path}" ]] || die "unknown worktree path: ${path}"
-  git -C "${REPO_ROOT}" worktree remove "${path}" >/dev/null
-  if git -C "${REPO_ROOT}" show-ref --verify --quiet "refs/heads/${branch}"; then
-    git -C "${REPO_ROOT}" branch -D "${branch}" >/dev/null
+  current_branch="$(registered_worktree_branch "${path}")" || die \
+    "${path} is not a registered git worktree; inspect it and remove it manually"
+  [[ "${current_branch}" == "${branch}" ]] || die \
+    "task worktree ${path} has ${current_branch:-a detached HEAD} checked out, expected ${branch}; refusing to drop it"
+
+  if [[ "${force}" != "1" ]]; then
+    unpushed="$(unpushed_commit_count "${branch}")"
+    [[ "${unpushed}" == "0" ]] || die \
+      "branch ${branch} has ${unpushed} commit(s) not on any remote; push them or pass --force to discard them"
   fi
+
+  # Without --force, git refuses to remove a worktree with uncommitted or untracked changes.
+  git -C "${REPO_ROOT}" worktree remove "${path}" >/dev/null || die \
+    "could not remove ${path}; commit, push, or discard its changes first"
+  git -C "${REPO_ROOT}" branch -D "${branch}" >/dev/null
 }
 
 list_worktrees() {
@@ -168,15 +250,63 @@ list_worktrees() {
 }
 
 session_start() {
-  local task_id="$1"
-  local base_ref="${2:-main}"
   local path
-  path="$(add_worktree "${task_id}" "${base_ref}")"
+  path="$(add_worktree "$@")"
   (
     cd "${path}"
     "${SCRIPT_DIR}/codex-session-start.sh"
   )
   printf '%s\n' "${path}"
+}
+
+# Parses `[--resume] <task-id> [base-ref]` into TASK_ID, BASE_REF, and RESUME.
+parse_add_args() {
+  TASK_ID=""
+  BASE_REF=""
+  RESUME="0"
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --resume)
+        RESUME="1"
+        ;;
+      -*)
+        die "unknown option: $1"
+        ;;
+      *)
+        if [[ -z "${TASK_ID}" ]]; then
+          TASK_ID="$1"
+        elif [[ -z "${BASE_REF}" ]]; then
+          BASE_REF="$1"
+        else
+          die "unexpected argument: $1"
+        fi
+        ;;
+    esac
+    shift
+  done
+  [[ -n "${TASK_ID}" ]] || die "missing task id"
+}
+
+# Parses `[--force] <task-id>` into TASK_ID and FORCE.
+parse_drop_args() {
+  TASK_ID=""
+  FORCE="0"
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --force)
+        FORCE="1"
+        ;;
+      -*)
+        die "unknown option: $1"
+        ;;
+      *)
+        [[ -z "${TASK_ID}" ]] || die "unexpected argument: $1"
+        TASK_ID="$1"
+        ;;
+    esac
+    shift
+  done
+  [[ -n "${TASK_ID}" ]] || die "missing task id"
 }
 
 main() {
@@ -187,22 +317,25 @@ main() {
 
   case "$1" in
     session)
-      [[ "${2:-}" == "start" ]] || die "usage: ./scripts/codex-harness.sh session start <task-id> [base-ref]"
-      [[ -n "${3:-}" ]] || die "missing task id"
-      session_start "$3" "${4:-main}"
+      [[ "${2:-}" == "start" ]] || die "usage: ./scripts/codex-harness.sh session start [--resume] <task-id> [base-ref]"
+      shift 2
+      parse_add_args "$@"
+      session_start "${TASK_ID}" "${BASE_REF}" "${RESUME}"
       ;;
     worktree)
       case "${2:-}" in
         add)
-          [[ -n "${3:-}" ]] || die "missing task id"
-          add_worktree "$3" "${4:-main}"
+          shift 2
+          parse_add_args "$@"
+          add_worktree "${TASK_ID}" "${BASE_REF}" "${RESUME}"
           ;;
         list)
           list_worktrees
           ;;
         drop)
-          [[ -n "${3:-}" ]] || die "missing task id"
-          drop_worktree "$3"
+          shift 2
+          parse_drop_args "$@"
+          drop_worktree "${TASK_ID}" "${FORCE}"
           ;;
         *)
           die "usage: ./scripts/codex-harness.sh worktree {add|list|drop} ..."

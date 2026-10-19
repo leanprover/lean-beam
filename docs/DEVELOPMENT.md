@@ -44,9 +44,24 @@ Start from the repo root and prefer dedicated worktrees for new tasks:
 ./scripts/codex-harness.sh session start <task-id>
 ```
 
-That keeps new work off the primary checkout and matches the repository's default Codex workflow.
-By default, the harness uses `.codex-worktrees/lean-beam` inside the repo rather than `/tmp` or a
-home-global worktree root.
+That keeps new work off the primary checkout and matches the repository's default agent workflow
+for both Codex and Claude Code. By default, the harness uses `.codex-worktrees/lean-beam` inside the
+repo rather than `/tmp` or a home-global worktree root.
+
+Harness behavior that agents and humans can rely on:
+
+- a new task branch starts from a freshly fetched `origin/main`, not from the local `main`; pass an
+  explicit base ref as the last argument to start elsewhere. If the fetch fails, for example in a
+  sandbox without network access, the harness uses the last fetched `origin/main` and reports its age
+  on stderr. The fetch never waits on a credential prompt.
+- task branches do not track their base, so a plain `git push` cannot target `main`
+- an existing task worktree or task branch is refused unless `--resume` is passed:
+  `./scripts/codex-harness.sh session start --resume <task-id>`
+- `./scripts/codex-harness.sh worktree drop <task-id>` refuses to delete a task branch with commits
+  that are not on any remote; `--force` discards them. Uncommitted or untracked changes always
+  block `drop`.
+- stdout carries the worktree path (after the session summary for `session start`); errors and
+  warnings go to stderr
 
 Important local scripts:
 

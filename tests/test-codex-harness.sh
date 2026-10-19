@@ -7,134 +7,199 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-repo_root="$(pwd)"
-primary_root="$(git worktree list --porcelain | awk '/^worktree / { print $2; exit }')"
+source_root="$(pwd)"
 
 # shellcheck source=tests/lib/tmp-guards.sh
 . tests/lib/tmp-guards.sh
+# shellcheck source=tests/lib/assertions.sh
+. tests/lib/assertions.sh
 
 tmp_root="$(mktemp -d /tmp/beam-codex-harness-XXXXXX)"
 
-override_root_parent="$repo_root/.codex-worktrees/test-codex-harness-$$"
-export BEAM_CODEX_WORKTREE_ROOT="$override_root_parent/worktrees"
-task_id="test-codex-harness-$$"
-task_slug="${task_id}"
-worktree_path="$BEAM_CODEX_WORKTREE_ROOT/$task_slug"
-default_home="$tmp_root/default-home"
-default_root="$repo_root/.codex-worktrees/lean-beam"
-default_task_id="test-codex-harness-default-$$"
-default_task_slug="${default_task_id}"
-default_worktree_path="$default_root/$default_task_slug"
-
-expect_owned_tmp_dir() {
-  beam_test_expect_owned_tmp_dir "$1" beam-codex-harness
-}
-
-remove_owned_tmp_tree() {
-  local path="$1"
-  beam_test_remove_owned_tmp_tree "$path" beam-codex-harness
-}
-
-remove_owned_repo_tree() {
-  local path="$1"
-  case "$path" in
-    "$repo_root"/.codex-worktrees/test-codex-harness-*)
-      rm -rf -- "$path"
-      ;;
-    *)
-      echo "refusing to touch unexpected repo-local harness dir: $path" >&2
-      exit 1
-      ;;
-  esac
-}
-
 cleanup() {
-  if [ -d "$worktree_path" ]; then
-    git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
-  fi
-  if git show-ref --verify --quiet "refs/heads/codex/$task_slug"; then
-    git branch -D "codex/$task_slug" >/dev/null 2>&1 || true
-  fi
-  if [ -d "$default_worktree_path" ]; then
-    git worktree remove --force "$default_worktree_path" >/dev/null 2>&1 || true
-  fi
-  if git show-ref --verify --quiet "refs/heads/codex/$default_task_slug"; then
-    git branch -D "codex/$default_task_slug" >/dev/null 2>&1 || true
-  fi
-  if [ -d "$override_root_parent" ]; then
-    remove_owned_repo_tree "$override_root_parent"
-  fi
-  remove_owned_tmp_tree "$tmp_root"
+  beam_test_remove_owned_tmp_tree "$tmp_root" beam-codex-harness
 }
 trap cleanup EXIT
 
-session_out="$(./scripts/codex-harness.sh session start "$task_id")"
-if ! printf '%s\n' "$session_out" | grep -q "$worktree_path"; then
-  echo "expected session start to print the dedicated worktree path" >&2
-  printf '%s\n' "$session_out" >&2
+# The harness runs against a throwaway repository with a local bare origin, so the test never
+# creates worktrees or branches in the checkout under test and does not depend on network access.
+export GIT_CONFIG_GLOBAL="$tmp_root/gitconfig"
+export GIT_CONFIG_NOSYSTEM=1
+git config --global user.name "Beam Harness Test"
+git config --global user.email "beam-harness-test@example.invalid"
+git config --global init.defaultBranch main
+
+origin="$tmp_root/origin.git"
+repo="$tmp_root/repo"
+upstream_clone="$tmp_root/upstream-clone"
+git init --quiet --bare "$origin"
+git init --quiet "$repo"
+mkdir -p "$repo/scripts"
+cp "$source_root/scripts/codex-harness.sh" "$source_root/scripts/codex-session-start.sh" "$repo/scripts/"
+printf 'fixture\n' > "$repo/README"
+# Mirror the repository's ignore rule for the session-start tool log.
+printf '.beam/\n' > "$repo/.gitignore"
+git -C "$repo" add .
+git -C "$repo" commit --quiet -m "initial"
+git -C "$repo" remote add origin "$origin"
+git -C "$repo" push --quiet origin main
+
+harness="$repo/scripts/codex-harness.sh"
+default_root="$repo/.codex-worktrees/lean-beam"
+
+# Run the harness from the fixture repo, capturing stdout and stderr in files under tmp_root.
+run_harness() {
+  local name="$1"
+  shift
+  (cd "$repo" && "$harness" "$@") >"$tmp_root/$name.out" 2>"$tmp_root/$name.err"
+}
+
+expect_harness_ok() {
+  local name="$1"
+  shift
+  if ! run_harness "$name" "$@"; then
+    echo "expected harness $* to succeed" >&2
+    cat "$tmp_root/$name.err" >&2
+    exit 1
+  fi
+}
+
+expect_harness_fails_with() {
+  local name="$1"
+  local expected="$2"
+  shift 2
+  if run_harness "$name" "$@"; then
+    echo "expected harness $* to fail" >&2
+    cat "$tmp_root/$name.out" >&2
+    exit 1
+  fi
+  assert_contains_literal "$tmp_root/$name.err" "$expected"
+}
+
+expect_same_commit() {
+  local label="$1"
+  local actual="$2"
+  local expected="$3"
+  if [ "$(git -C "$repo" rev-parse "$actual")" != "$(git -C "$repo" rev-parse "$expected")" ]; then
+    echo "expected $label to be at $expected, got $(git -C "$repo" log -1 --format=%h "$actual")" >&2
+    exit 1
+  fi
+}
+
+expect_branch() {
+  if ! git -C "$repo" show-ref --verify --quiet "refs/heads/$1"; then
+    echo "expected branch $1 to exist" >&2
+    exit 1
+  fi
+}
+
+expect_no_branch() {
+  if git -C "$repo" show-ref --verify --quiet "refs/heads/$1"; then
+    echo "expected branch $1 to be deleted" >&2
+    exit 1
+  fi
+}
+
+commit_in() {
+  local path="$1"
+  printf '%s\n' "$2" >> "$path/README"
+  git -C "$path" commit --quiet -am "$2"
+}
+
+# Advance origin/main past the fixture's local main, which is now stale.
+git clone --quiet "$origin" "$upstream_clone"
+commit_in "$upstream_clone" "upstream change"
+git -C "$upstream_clone" push --quiet origin main
+upstream_head="$(git -C "$upstream_clone" rev-parse HEAD)"
+
+# session start creates a task worktree from freshly fetched origin/main, not stale local main.
+expect_harness_ok session-start session start fresh
+assert_contains_literal "$tmp_root/session-start.out" "$default_root/fresh"
+assert_contains_literal "$tmp_root/session-start.out" "worktree discipline: dedicated task checkout"
+expect_same_commit "fresh task" codex/fresh "$upstream_head"
+if git -C "$default_root/fresh" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+  echo "expected task branch not to track the base branch" >&2
   exit 1
 fi
 
-if [ ! -d "$worktree_path/.git" ] && [ ! -f "$worktree_path/.git" ]; then
-  echo "expected dedicated worktree to be created at $worktree_path" >&2
+# An explicit base ref is used as given and not fetched.
+expect_harness_ok explicit-base worktree add explicit-base main
+expect_same_commit "explicit-base task" codex/explicit-base main
+
+# When origin is unreachable, the last fetched origin/main is used with a warning.
+git -C "$repo" remote set-url origin "$tmp_root/missing-origin.git"
+expect_harness_ok offline worktree add offline
+assert_contains_literal "$tmp_root/offline.err" "could not fetch origin/main; starting from the last fetched copy"
+expect_same_commit "offline task" codex/offline "$upstream_head"
+git -C "$repo" remote set-url origin "$origin"
+
+# An existing task worktree is reused only with --resume.
+expect_harness_fails_with existing "pass --resume to reuse it" worktree add fresh
+expect_harness_ok resume-existing worktree add --resume fresh
+if [ "$(cat "$tmp_root/resume-existing.out")" != "$default_root/fresh" ]; then
+  echo "expected --resume to print only the worktree path on stdout" >&2
+  cat "$tmp_root/resume-existing.out" >&2
   exit 1
 fi
+expect_harness_fails_with resume-base "cannot be combined with a base-ref" worktree add --resume fresh main
+expect_harness_fails_with resume-missing "nothing to resume" worktree add --resume never-created
 
-mkdir -p "$default_home"
-default_session_out="$(env -u BEAM_CODEX_WORKTREE_ROOT HOME="$default_home" ./scripts/codex-harness.sh session start "$default_task_id")"
-if ! printf '%s\n' "$default_session_out" | grep -q "$default_worktree_path"; then
-  echo "expected session start without BEAM_CODEX_WORKTREE_ROOT to use the repo-local default" >&2
-  printf '%s\n' "$default_session_out" >&2
-  exit 1
-fi
+# An existing task branch without a worktree is checked out only with --resume.
+git -C "$repo" worktree remove "$default_root/explicit-base"
+expect_harness_fails_with existing-branch "branch codex/explicit-base already exists" worktree add explicit-base
+expect_harness_ok resume-branch session start --resume explicit-base
+expect_same_commit "resumed task" codex/explicit-base main
 
-if [ ! -d "$default_worktree_path/.git" ] && [ ! -f "$default_worktree_path/.git" ]; then
-  echo "expected default dedicated worktree to be created at $default_worktree_path" >&2
-  exit 1
-fi
+# A worktree path with another branch checked out is neither reused nor dropped.
+git -C "$default_root/offline" switch --quiet -c other-work
+expect_harness_fails_with wrong-branch-add "expected codex/offline" worktree add --resume offline
+expect_harness_fails_with wrong-branch-drop "refusing to drop it" worktree drop offline
+git -C "$default_root/offline" switch --quiet codex/offline
 
-worktree_session_out="$(cd "$worktree_path" && "$repo_root/scripts/codex-session-start.sh")"
-if ! printf '%s\n' "$worktree_session_out" | grep -q 'worktree discipline: dedicated task checkout'; then
-  echo "expected codex-session-start inside a task worktree to report dedicated checkout status" >&2
-  printf '%s\n' "$worktree_session_out" >&2
-  exit 1
-fi
+# A plain directory at a task path is not treated as a worktree.
+mkdir -p "$default_root/plain-dir"
+expect_harness_fails_with plain-dir "is not a registered git worktree" worktree add --resume plain-dir
 
-primary_err="$tmp_root/primary.err"
-if (
-  cd "$primary_root"
-  "$repo_root/scripts/codex-session-start.sh" >"$tmp_root/primary.out" 2>"$primary_err"
-); then
+# drop refuses to discard commits that are not on any remote, and keeps the worktree intact.
+commit_in "$default_root/fresh" "local task work"
+expect_harness_fails_with drop-unpushed "1 commit(s) not on any remote" worktree drop fresh
+expect_branch codex/fresh
+assert_file "$default_root/fresh/README"
+
+# Once the task branch is pushed, drop removes the worktree and its branch.
+git -C "$default_root/fresh" push --quiet origin codex/fresh
+expect_harness_ok drop-pushed worktree drop fresh
+assert_not_exists "$default_root/fresh"
+expect_no_branch codex/fresh
+
+# --force discards unpushed commits.
+commit_in "$default_root/offline" "throwaway work"
+expect_harness_ok drop-force worktree drop --force offline
+assert_not_exists "$default_root/offline"
+expect_no_branch codex/offline
+
+# Uncommitted changes block drop even with --force.
+printf 'uncommitted\n' >> "$default_root/explicit-base/README"
+expect_harness_fails_with drop-dirty "commit, push, or discard its changes first" worktree drop --force explicit-base
+assert_file "$default_root/explicit-base/README"
+expect_branch codex/explicit-base
+
+# BEAM_CODEX_WORKTREE_ROOT overrides the default root inside the repo.
+override_root="$repo/.codex-worktrees/override"
+BEAM_CODEX_WORKTREE_ROOT="$override_root" expect_harness_ok override worktree add override-task
+assert_contains_literal "$tmp_root/override.out" "$override_root/override-task"
+
+# The session-start helper refuses the primary checkout without an override.
+if (cd "$repo" && scripts/codex-session-start.sh) >"$tmp_root/primary.out" 2>"$tmp_root/primary.err"; then
   echo "expected codex-session-start in the primary checkout to fail without override" >&2
   exit 1
 fi
+assert_contains_literal "$tmp_root/primary.err" "use ./scripts/codex-harness.sh session start <task-id> instead"
 
-if ! grep -q 'use ./scripts/codex-harness.sh session start <task-id> instead' "$primary_err"; then
-  echo "expected primary checkout refusal to include the worktree guidance" >&2
-  cat "$primary_err" >&2
-  exit 1
-fi
+# Unsafe worktree roots are rejected.
+BEAM_CODEX_WORKTREE_ROOT="/" expect_harness_fails_with unsafe-root \
+  "BEAM_CODEX_WORKTREE_ROOT must not be /" worktree add unsafe-root
+BEAM_CODEX_WORKTREE_ROOT="$tmp_root/outside-repo" expect_harness_fails_with outside-root \
+  "BEAM_CODEX_WORKTREE_ROOT must be inside the repo root" worktree add outside-root
 
-unsafe_root_err="$tmp_root/unsafe-root.err"
-if BEAM_CODEX_WORKTREE_ROOT="/" ./scripts/codex-harness.sh worktree add "unsafe-root-$$" >"$tmp_root/unsafe-root.out" 2>"$unsafe_root_err"; then
-  echo "expected harness to reject / as BEAM_CODEX_WORKTREE_ROOT" >&2
-  exit 1
-fi
-
-if ! grep -q 'BEAM_CODEX_WORKTREE_ROOT must not be /' "$unsafe_root_err"; then
-  echo "expected unsafe worktree root refusal to mention / explicitly" >&2
-  cat "$unsafe_root_err" >&2
-  exit 1
-fi
-
-outside_root_err="$tmp_root/outside-root.err"
-if BEAM_CODEX_WORKTREE_ROOT="$tmp_root/outside-repo" ./scripts/codex-harness.sh worktree add "outside-root-$$" >"$tmp_root/outside-root.out" 2>"$outside_root_err"; then
-  echo "expected harness to reject BEAM_CODEX_WORKTREE_ROOT outside the repo" >&2
-  exit 1
-fi
-
-if ! grep -q 'BEAM_CODEX_WORKTREE_ROOT must be inside the repo root' "$outside_root_err"; then
-  echo "expected outside worktree root refusal to mention the repo-root requirement" >&2
-  cat "$outside_root_err" >&2
-  exit 1
-fi
+echo "codex harness tests passed"

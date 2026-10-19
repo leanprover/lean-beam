@@ -111,8 +111,13 @@ the public `lean-beam` API or the installed skill surface.
 
 When working locally:
 
-- start new Codex tasks from `./scripts/codex-harness.sh session start <task-id>` so the task runs
-  in a dedicated git worktree instead of the primary checkout
+- start new agent tasks (Codex or Claude Code) from
+  `./scripts/codex-harness.sh session start <task-id>` so the task runs in a dedicated git worktree
+  based on freshly fetched `origin/main` instead of the primary checkout; use the harness rather than
+  an agent's built-in worktree feature, and pass `--resume` to continue an existing task
+- remove finished task worktrees with `./scripts/codex-harness.sh worktree drop <task-id>`; it
+  refuses to discard unpushed commits or uncommitted changes, so surface the refusal instead of
+  reaching for `--force` or `git worktree remove --force`
 - let the harness keep its default persistent worktree root under
   `<repo>/.codex-worktrees/lean-beam`; do not place long-lived task worktrees under `/tmp`
 - keep destructive shell cleanup scoped to owned temp/worktree paths; do not use broad `rm` or

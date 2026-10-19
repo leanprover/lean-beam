@@ -125,6 +125,9 @@ jobs:
       - name: Shell Lint
         run: bash scripts/lint-shell.sh
 
+      - name: Maintainer Tests
+        run: bash tests/test-maintainer.sh
+
   lsp:
     name: lsp (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
