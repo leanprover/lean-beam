@@ -8,6 +8,7 @@ import Beam.Mcp.Server
 import Beam.Mcp.Options
 import Beam.Mcp.SelfCheck
 import Beam.Mcp.Stdio
+import BeamTest.Broker.McpDropFailureTest
 import BeamTest.Broker.JsonAssert
 import BeamTest.Broker.TestUtil
 import BeamTest.TestHarness
@@ -1897,6 +1898,7 @@ private def checkSelfCheck : IO Unit := do
 
 def main (args : List String) : IO Unit := do
   match args with
+  | ["--drop-failure-tests"] => return ← BeamTest.Broker.McpDropFailureTest.run
   | ["--self-check-tests"] => return ← checkSelfCheck
   | ["--runtime-admission-tests"] => return ← checkRuntimeAdmissionPolicy
   | ["--self-check-parent", _] => return ← Beam.Mcp.SelfCheck.run "lakefile.lean"
@@ -1917,6 +1919,7 @@ def main (args : List String) : IO Unit := do
   checkServerBasics
   checkRuntimeAdmissionPolicy
   checkIdempotentLifecycleTools
+  BeamTest.Broker.McpDropFailureTest.run
   checkDiagnosticLogForwarding
 
 end BeamTest.Broker.McpProtocolTest

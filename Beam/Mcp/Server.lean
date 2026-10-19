@@ -50,6 +50,7 @@ private structure OwnedWorkspace where
 
 private structure OwnedRuntime where
   broker : Beam.Broker.ServerRuntime
+  /-- MCP admission evidence and instance tokens; the broker owns workspace membership. -/
   workspaces : Std.HashMap Beam.Broker.WorkspaceId OwnedWorkspace := {}
 
 structure ServerState where
@@ -625,8 +626,7 @@ private def handleBeamStats
           pure <| callToolResult result
 
 private def handleDropWorkspace
-    (runtime? : Option OwnedRuntime)
-    (workspace : ResolvedWorkspace) : IO (Json × Option OwnedRuntime) := do
+    (workspace : ResolvedWorkspace) : Std.AtomicT (Option OwnedRuntime) IO Json := do
   let resultJson (dropped invalidatedHandles : Bool) (reason? : Option String := none) : Json :=
     Json.mkObj <| [
       ("workspace", toJson workspace.descriptor),
@@ -635,16 +635,21 @@ private def handleDropWorkspace
     ] ++ match reason? with
       | some reason => [("reason", toJson reason)]
       | none => []
-  match runtime? with
+  match ← get with
   | none =>
-      pure (callToolResult <| resultJson false false (some "notFound"), none)
+      pure (callToolResult <| resultJson false false (some "notFound"))
   | some runtime =>
-      match ← runtime.broker.dropWorkspace workspace.workspaceId with
-      | .ok dropped =>
-          pure (callToolResult <| resultJson dropped.dropped dropped.invalidatedHandles dropped.reason?,
-            some { runtime with workspaces := runtime.workspaces.erase workspace.workspaceId })
-      | .error failure =>
-          pure (callToolErrorResult <| ToolError.fromBrokerError failure.error, some runtime)
+      try
+        match ← runtime.broker.dropWorkspace workspace.workspaceId with
+        | .ok dropped =>
+            pure <| callToolResult <| resultJson dropped.dropped dropped.invalidatedHandles dropped.reason?
+        | .error failure =>
+            pure <| callToolErrorResult <| ToolError.fromBrokerError failure.error
+      finally
+        -- Broker removal commits before detached-session cleanup, which may throw. Keep the
+        -- admission cache consistent with that committed state while preserving the cleanup error.
+        if (← runtime.broker.workspaceRoot? workspace.workspaceId).isNone then
+          set (some { runtime with workspaces := runtime.workspaces.erase workspace.workspaceId })
 
 private def serverIdentity
     (opts : Options)
@@ -818,10 +823,7 @@ def Internal.handleToolCall
       | .error err => return .ok <| callToolErrorResult err
     if initialProgress == 0 then
       emitProgress? progress? s!"{params.name.key}: preparing workspace eviction"
-    let result ← state.runtime.atomically do
-      let (result, runtime) ← handleDropWorkspace (← get) workspace
-      set runtime
-      pure result
+    let result ← state.runtime.atomically <| handleDropWorkspace workspace
     Internal.traceMcp
       s!"tools/call workspace drop complete id={req.id.label} tool={params.name.key}"
     return .ok result

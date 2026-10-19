@@ -277,7 +277,11 @@ When adding an MCP-facing operation:
    descriptor. Keep errors typed until the transport edge.
 6. Treat `lean_drop_workspace` only as idempotent cache eviction. It invalidates that runtime's
    handles; the next descriptor-bound call recreates it lazily. Preserve the canonical descriptor
-   recovery path when the project directory or its Lean/Lake markers no longer resolve.
+   recovery path when the project directory or its Lean/Lake markers no longer resolve. Reconcile
+   cached membership with the broker even when detached-session cleanup throws after committing
+   removal; propagate the original cleanup error without restoring stale membership. The broker
+   owns workspace membership; MCP caches the admitted runtime description and an instance token
+   used to reject requests racing a drop/recreate.
 7. Update projection, protocol, and real stdio coverage, including missing/relative descriptors,
    canonical aliases, multi-root isolation, cross-workspace handles, and eviction/recreation.
 8. Run the projection/protocol builds and executables, the concurrent stdio scenario,

@@ -137,9 +137,12 @@ role before using components; wire requests cannot supply an alternative compile
 `lean_drop_workspace` is optional cache management, not context selection. It evicts the runtime
 for its descriptor and invalidates proof handles owned by that runtime. Drop is idempotent and
 returns `dropped: false` with `reason: "notFound"` when no cache exists. A later ordinary request
-with the same descriptor recreates the runtime lazily. Retain the canonical descriptor when a Lean
-operation, non-confidential feedback result, or drop result echoes it: cache eviction accepts that
-absolute descriptor even if the project directory or its Lean/Lake markers have since disappeared.
+with the same descriptor recreates the runtime lazily. Workspace removal commits before backend
+cleanup: if cleanup fails, drop reports the error and the cache entry remains evicted. The next
+ordinary request can recreate it without a second drop; unrelated workspace entries remain cached.
+Retain the canonical descriptor when a Lean operation, non-confidential feedback result, or drop
+result echoes it: cache eviction accepts that absolute descriptor even if the project directory or
+its Lean/Lake markers have since disappeared.
 
 After editing a lakefile, manifest, package override, Lean options, plugins, or
 dynamic libraries, drop that workspace or restart the MCP server before the next request. Re-syncing
