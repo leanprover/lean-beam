@@ -9,6 +9,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 beam_fast_state_root="$(mktemp -d "${TMPDIR:-/tmp}/beam-fast-state-XXXXXX")"
+# Match the physical paths reported by installed launchers, including macOS /private/var aliases.
+beam_fast_state_root="$(cd "$beam_fast_state_root" && pwd -P)"
 beam_fast_cleanup() {
   rm -rf -- "$beam_fast_state_root"
 }
