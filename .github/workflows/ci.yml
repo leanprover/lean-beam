@@ -126,7 +126,7 @@ jobs:
         run: bash scripts/lint-shell.sh
 
       - name: Task Harness Test
-        run: bash tests/test-codex-harness.sh
+        run: bash tests/test-task-harness.sh
 
   lsp:
     name: lsp (${{ matrix.os }})

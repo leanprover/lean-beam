@@ -16,6 +16,7 @@ beam_test_overlay_install_source() {
     --exclude='.git' \
     --exclude='.lake/' \
     --exclude='.beam/' \
+    --exclude='.worktrees/' \
     --exclude='.codex-worktrees/' \
     "$1"/ "$2"/
 }

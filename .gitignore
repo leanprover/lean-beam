@@ -4,7 +4,10 @@
 /_eval/
 /.runat/
 /.codex
+/.worktrees/
+# Task worktrees created before the harness moved to .worktrees.
 /.codex-worktrees/
+/.claude/settings.local.json
 /.tmp/
 .beam/
 __pycache__/

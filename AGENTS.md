@@ -102,24 +102,28 @@ The repo includes:
 - `lake exe beam-daemon`
 - `lake exe beam-daemon-smoke-test`
 - [scripts/lean-beam](scripts/lean-beam)
-- [scripts/codex-harness.sh](scripts/codex-harness.sh)
-- [scripts/codex-session-start.sh](scripts/codex-session-start.sh)
+- [scripts/task-harness.sh](scripts/task-harness.sh)
 - [scripts/validate-defensive.sh](scripts/validate-defensive.sh)
 
-The Codex harness scripts are maintainer workflow helpers for this repository. They are not part of
-the public `lean-beam` API or the installed skill surface.
+The task harness is a maintainer workflow helper for this repository, shared by humans, Codex, and
+Claude Code. It is not part of the public `lean-beam` API or the installed skill surface.
 
 When working locally:
 
-- start new agent tasks (Codex or Claude Code) from
-  `./scripts/codex-harness.sh session start <task-id>` so the task runs in a dedicated git worktree
-  based on freshly fetched `origin/main` instead of the primary checkout; use the harness rather than
-  an agent's built-in worktree feature, and pass `--resume` to continue an existing task
-- remove finished task worktrees with `./scripts/codex-harness.sh worktree drop <task-id>`; it
-  refuses to discard unmerged unpushed commits or uncommitted changes, so surface the refusal instead of
-  reaching for `--force` or `git worktree remove --force`
-- let the harness keep its default persistent worktree root under
-  `<repo>/.codex-worktrees/lean-beam`; do not place long-lived task worktrees under `/tmp`
+- work in a dedicated task worktree based on freshly fetched `origin/main`, never in the primary
+  checkout:
+  - Codex CLI and humans: `./scripts/task-harness.sh start <task-id>`, then work in the printed path;
+    pass `--resume` to continue an existing task
+  - Claude Code: use `EnterWorktree` or `claude --worktree <task-id>`; the project hooks in
+    `.claude/settings.json` route them through the harness
+  - Codex app worktree (detached HEAD under `$CODEX_HOME/worktrees`): run
+    `./scripts/task-harness.sh adopt <task-id>` before editing
+  - do not run `git worktree add` directly
+- remove finished task worktrees with `./scripts/task-harness.sh drop <task-id>`; it refuses to
+  discard unmerged unpushed commits or uncommitted changes, so surface the refusal instead of reaching for
+  `--force` or `git worktree remove --force`
+- let the harness keep task worktrees under `<repo>/.worktrees`; do not place long-lived task
+  worktrees under `/tmp`
 - keep destructive shell cleanup scoped to owned temp/worktree paths; do not use broad `rm` or
   `rm -rf` against repo-local `.beam`, install caches, or user homes as part of normal workflows
 - for LSP request / handle / scenario changes, run `bash tests/test-lsp.sh`

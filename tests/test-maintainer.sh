@@ -11,6 +11,6 @@ cd "$(dirname "$0")/.."
 python3 tests/test-extended-ci.py
 python3 tests/test-toolchain-compat-owner.py
 
-bash tests/test-codex-harness.sh
+bash tests/test-task-harness.sh
 
 bash tests/test-validate-defensive.sh

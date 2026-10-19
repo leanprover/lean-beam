@@ -6,23 +6,20 @@
 
 set -euo pipefail
 
-# Maintainer workflow helper for this repository.
+# Maintainer workflow helper for this repository, shared by humans and coding agents.
 # This script is intentionally local contributor tooling, not a product compatibility surface.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Task worktrees belong to the primary checkout, even when this script runs from a task worktree;
-# otherwise new tasks would nest inside that task and be deleted when it is dropped.
+# Task worktrees always belong to the primary checkout, even when this script runs from a task
+# worktree; otherwise each task would nest its own worktree root.
 REPO_ROOT="$(git -C "${SCRIPT_DIR}" worktree list --porcelain | awk '/^worktree / { print substr($0, 10); exit }')"
 [[ -n "${REPO_ROOT}" ]] || {
   echo "error: could not resolve the primary checkout from ${SCRIPT_DIR}" >&2
   exit 1
 }
 
-default_worktree_root() {
-  printf '%s\n' "${REPO_ROOT}/.codex-worktrees/lean-beam"
-}
-
-WORKTREE_ROOT="${BEAM_CODEX_WORKTREE_ROOT:-$(default_worktree_root)}"
+WORKTREE_ROOT="${BEAM_TASK_WORKTREE_ROOT:-${REPO_ROOT}/.worktrees}"
+BRANCH_PREFIX="task/"
 DEFAULT_BASE_REMOTE="origin"
 DEFAULT_BASE_BRANCH="main"
 
@@ -38,42 +35,48 @@ warn() {
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/codex-harness.sh session start <task-id> [base-ref]
-  ./scripts/codex-harness.sh session start --resume <task-id>
-  ./scripts/codex-harness.sh worktree add <task-id> [base-ref]
-  ./scripts/codex-harness.sh worktree add --resume <task-id>
-  ./scripts/codex-harness.sh worktree list
-  ./scripts/codex-harness.sh worktree drop [--force] <task-id>
+  ./scripts/task-harness.sh start [--resume] <task-id> [base-ref]
+  ./scripts/task-harness.sh adopt <task-id> [base-ref]
+  ./scripts/task-harness.sh check
+  ./scripts/task-harness.sh list
+  ./scripts/task-harness.sh drop [--force] <task-id>
+  ./scripts/task-harness.sh hook claude-worktree-create
+  ./scripts/task-harness.sh hook claude-worktree-remove
 
 Commands:
-  New task worktrees start from a freshly fetched origin/main unless base-ref is given. If the
-  fetch fails, the last fetched origin/main is used and named on stderr.
-  Tracked edits in the primary checkout block new tasks.
-  --resume reuses an existing task worktree or task branch instead of refusing it.
-  drop deletes a task branch only when all its commits are on a branch origin has right now, or
-  when merging it into a freshly fetched origin/main would change nothing; otherwise --force is
-  needed.
-  Uncommitted or untracked changes, a rebase or bisect in progress, and a locked worktree always
-  block drop; ignored files such as .lake and .beam are deleted with the worktree.
-  worktree add prints only the worktree path on stdout; session start prints the session summary
-  followed by the path. Diagnostics go to stderr.
+  start   Create the task worktree <root>/<task-id> on branch task/<task-id>. New task branches
+          start from a freshly fetched origin/main unless base-ref is given; if the fetch fails,
+          the last fetched origin/main is used and named on stderr. Tracked edits in the primary
+          checkout produce a warning for new tasks. --resume reuses an existing task worktree or
+          task branch instead of refusing it.
+  adopt   Turn the current worktree, created by another tool such as the Codex app, into task
+          <task-id>: create branch task/<task-id> there from the same base as start. The worktree
+          must be clean and have a detached HEAD. Its location and lifetime stay with that tool.
+  check   Report whether the current checkout is a dedicated task worktree; fails in the
+          primary checkout.
+  list    List the worktrees of this repository.
+  drop    Remove a task worktree and its branch, only when all its commits are on a branch
+          origin has right now or merging it into a freshly fetched origin/main would change
+          nothing; otherwise --force is needed. Uncommitted or untracked changes always block it;
+          ignored files such as .lake and .beam are deleted with the worktree.
+  hook    Adapters for Claude Code WorktreeCreate and WorktreeRemove hooks. They read the hook
+          JSON on stdin; create starts or resumes the task named by the hook, remove drops the
+          task worktree without --force.
+
+start, adopt, and the create hook print only the worktree path on stdout; diagnostics go to
+stderr.
 
 Environment:
-  BEAM_CODEX_WORKTREE_ROOT
-  BEAM_CODEX_ALLOW_PRIMARY_WORKTREE=1   Allow session-start in the primary checkout
+  BEAM_TASK_WORKTREE_ROOT        Task worktree root; must be inside the primary checkout.
+                                 Defaults to <primary checkout>/.worktrees.
+  BEAM_TASK_ALLOW_PRIMARY=1      Let check pass in the primary checkout.
 
 Note:
   This is maintainer workflow tooling for this repo. It is not part of the public Beam CLI
   and its output is not a compatibility surface.
-  By default, worktrees live under .codex-worktrees/lean-beam inside this repo.
-  BEAM_CODEX_WORKTREE_ROOT must also point inside this repo when set explicitly.
-  Destructive cleanup must stay scoped to harness-owned worktrees under BEAM_CODEX_WORKTREE_ROOT.
+  Destructive cleanup must stay scoped to harness-owned worktrees under the task worktree root.
   Do not use broad rm/rm -rf against repo-local or user-local state from normal maintainer flows.
 EOF
-}
-
-primary_root() {
-  git -C "${REPO_ROOT}" worktree list --porcelain | awk '/^worktree / { print $2; exit }'
 }
 
 sanitize_task_id() {
@@ -85,7 +88,7 @@ sanitize_task_id() {
 }
 
 branch_name_for() {
-  printf 'codex/%s\n' "$1"
+  printf '%s%s\n' "${BRANCH_PREFIX}" "$1"
 }
 
 worktree_path_for() {
@@ -97,25 +100,22 @@ realpath_of() {
 }
 
 ensure_safe_worktree_root() {
-  local resolved_root resolved_repo resolved_primary
-  [[ -n "${WORKTREE_ROOT}" ]] || die "BEAM_CODEX_WORKTREE_ROOT must not be empty"
+  local resolved_root resolved_repo
+  [[ -n "${WORKTREE_ROOT}" ]] || die "BEAM_TASK_WORKTREE_ROOT must not be empty"
   case "${WORKTREE_ROOT}" in
     /*)
       ;;
     *)
-      die "BEAM_CODEX_WORKTREE_ROOT must be an absolute path: ${WORKTREE_ROOT}"
+      die "BEAM_TASK_WORKTREE_ROOT must be an absolute path: ${WORKTREE_ROOT}"
       ;;
   esac
   resolved_root="$(realpath_of "${WORKTREE_ROOT}")"
   resolved_repo="$(realpath_of "${REPO_ROOT}")"
-  resolved_primary="$(realpath_of "$(primary_root)")"
-  [[ "${resolved_root}" != "/" ]] || die "BEAM_CODEX_WORKTREE_ROOT must not be /"
+  [[ "${resolved_root}" != "/" ]] || die "BEAM_TASK_WORKTREE_ROOT must not be /"
   [[ "${resolved_root}" != "${resolved_repo}" ]] || die \
-    "BEAM_CODEX_WORKTREE_ROOT must not be the repo root: ${resolved_root}"
-  [[ "${resolved_root}" != "${resolved_primary}" ]] || die \
-    "BEAM_CODEX_WORKTREE_ROOT must not be the primary worktree: ${resolved_root}"
+    "BEAM_TASK_WORKTREE_ROOT must not be the primary checkout: ${resolved_root}"
   python3 - "$resolved_repo" "$resolved_root" <<'PY' >/dev/null || \
-    die "BEAM_CODEX_WORKTREE_ROOT must be inside the repo root: ${resolved_root}"
+    die "BEAM_TASK_WORKTREE_ROOT must be inside the primary checkout: ${resolved_root}"
 import os, sys
 repo, root = sys.argv[1:]
 if os.path.commonpath([repo, root]) != repo:
@@ -137,11 +137,11 @@ if os.path.commonpath([root, path]) != root:
 PY
 }
 
-ensure_primary_tracked_clean() {
-  local tracked_status
-  tracked_status="$(git -C "$(primary_root)" status --short --untracked-files=no)"
-  [[ -z "${tracked_status}" ]] || die \
-    "primary checkout has tracked edits; move or commit them before starting a new task worktree"
+# Tasks start from their base ref, so primary checkout edits are only a reminder, not a blocker;
+# blocking would also fail Claude Code subagent worktrees whenever the primary checkout is dirty.
+warn_primary_tracked_edits() {
+  [[ -z "$(git -C "${REPO_ROOT}" status --short --untracked-files=no)" ]] || warn \
+    "primary checkout ${REPO_ROOT} has tracked edits; they are not part of the new task"
 }
 
 ensure_worktree_root() {
@@ -183,15 +183,25 @@ resolve_default_base() {
 # level of a worktree of this repository.
 registered_worktree_branch() {
   local path="$1"
-  local toplevel common_dir repo_common_dir head_ref
+  local toplevel common_dir repo_common_dir
   toplevel="$(git -C "${path}" rev-parse --show-toplevel 2>/dev/null)" || return 1
   [[ "$(realpath_of "${toplevel}")" == "$(realpath_of "${path}")" ]] || return 1
   common_dir="$(git -C "${path}" rev-parse --path-format=absolute --git-common-dir)" || return 1
   repo_common_dir="$(git -C "${REPO_ROOT}" rev-parse --path-format=absolute --git-common-dir)" || return 1
   [[ "$(realpath_of "${common_dir}")" == "$(realpath_of "${repo_common_dir}")" ]] || return 1
-  # The full ref avoids --short's disambiguated output, such as heads/<name> next to a same-name tag.
-  head_ref="$(git -C "${path}" symbolic-ref --quiet HEAD || true)"
+  checked_out_branch "${path}"
+}
+
+# Prints the branch checked out in path, or nothing when detached. The full ref avoids --short's
+# disambiguated output, such as heads/<name> next to a same-name tag.
+checked_out_branch() {
+  local head_ref
+  head_ref="$(git -C "$1" symbolic-ref --quiet HEAD || true)"
   printf '%s\n' "${head_ref#refs/heads/}"
+}
+
+branch_exists() {
+  git -C "${REPO_ROOT}" show-ref --verify --quiet "refs/heads/$1"
 }
 
 # Prints how many commits of the branch are not reachable from the branches origin has right now,
@@ -247,7 +257,7 @@ ensure_task_worktree() {
     "task worktree ${path} has ${current_branch:-a detached HEAD} checked out, expected ${branch}"
 }
 
-add_worktree() {
+start_task() {
   local task_id="$1"
   local base_ref="$2"
   local resume="$3"
@@ -266,30 +276,56 @@ add_worktree() {
     ensure_task_worktree "${path}" "${branch}"
     [[ "${resume}" == "1" ]] || die \
       "task worktree already exists: ${path}; pass --resume to reuse it or choose another task id"
-    printf '%s\n' "${path}"
-    return
-  fi
-
-  if git -C "${REPO_ROOT}" show-ref --verify --quiet "refs/heads/${branch}"; then
+  elif branch_exists "${branch}"; then
     [[ "${resume}" == "1" ]] || die \
       "branch ${branch} already exists; pass --resume to check it out or choose another task id"
-    git -C "${REPO_ROOT}" worktree add "${path}" "${branch}" >/dev/null || die \
+    git -C "${REPO_ROOT}" worktree add "${path}" "${branch}" >&2 || die \
       "could not check out ${branch} at ${path}; see the git error above"
-    printf '%s\n' "${path}"
-    return
+  else
+    [[ "${resume}" != "1" ]] || die "nothing to resume: no worktree or branch exists for task ${slug}"
+    # Resuming never reads the primary checkout, so only new tasks get the reminder.
+    warn_primary_tracked_edits
+    [[ -n "${base_ref}" ]] || base_ref="$(resolve_default_base)"
+    # --no-track keeps a plain `git push` from targeting the base branch.
+    git -C "${REPO_ROOT}" worktree add --no-track -b "${branch}" "${path}" "${base_ref}" >&2 || die \
+      "could not create ${branch} at ${path} from ${base_ref}; see the git error above"
   fi
-
-  [[ "${resume}" != "1" ]] || die "nothing to resume: no worktree or branch exists for task ${slug}"
-  # Resuming never reads the primary checkout, so only new tasks are guarded.
-  ensure_primary_tracked_clean
-  [[ -n "${base_ref}" ]] || base_ref="$(resolve_default_base)"
-  # --no-track keeps a plain `git push` from targeting the base branch.
-  git -C "${REPO_ROOT}" worktree add --no-track -b "${branch}" "${path}" "${base_ref}" >/dev/null || die \
-    "could not create ${branch} at ${path} from ${base_ref}; see the git error above"
+  report_checkout "${path}" >&2
   printf '%s\n' "${path}"
 }
 
-drop_worktree() {
+adopt_task() {
+  local task_id="$1"
+  local base_ref="$2"
+  local slug branch path current_branch status
+  slug="$(sanitize_task_id "${task_id}")"
+  branch="$(branch_name_for "${slug}")"
+  path="$(git rev-parse --show-toplevel 2>/dev/null)" || die "run adopt from inside a worktree of this repository"
+
+  current_branch="$(registered_worktree_branch "${path}")" || die \
+    "${path} is not a worktree of ${REPO_ROOT}"
+  [[ "$(realpath_of "${path}")" != "$(realpath_of "${REPO_ROOT}")" ]] || die \
+    "refusing to adopt the primary checkout; use ./scripts/task-harness.sh start <task-id> instead"
+  if [[ "${current_branch}" == "${branch}" ]]; then
+    printf '%s\n' "${path}"
+    return
+  fi
+  [[ -z "${current_branch}" ]] || die \
+    "${path} already has branch ${current_branch} checked out; adopt needs a detached HEAD"
+  status="$(git -C "${path}" status --porcelain)" || die "could not read the status of ${path}"
+  [[ -z "${status}" ]] || die \
+    "${path} has uncommitted or untracked changes; adopt needs a clean checkout"
+  ! branch_exists "${branch}" || die \
+    "branch ${branch} already exists; use ./scripts/task-harness.sh start --resume ${slug} or choose another task id"
+
+  [[ -n "${base_ref}" ]] || base_ref="$(resolve_default_base)"
+  git -C "${path}" switch --quiet --no-track -c "${branch}" "${base_ref}" >&2 || die \
+    "could not create ${branch} in ${path} from ${base_ref}; see the git error above"
+  report_checkout "${path}" >&2
+  printf '%s\n' "${path}"
+}
+
+drop_task() {
   local task_id="$1"
   local force="$2"
   local slug branch path
@@ -311,24 +347,65 @@ drop_worktree() {
     "could not delete branch ${branch}; see the git error above"
 }
 
-list_worktrees() {
-  git -C "${REPO_ROOT}" worktree list
+report_checkout() {
+  local path="$1"
+  printf 'task worktree: %s\n' "${path}"
+  printf 'branch: %s\n' "$(checked_out_branch "${path}" | grep . || echo detached)"
+  printf 'base: %s\n' "$(git -C "${path}" log -1 --format='%h %s' HEAD)"
+  printf 'primary checkout: %s\n' "${REPO_ROOT}"
 }
 
-session_start() {
-  local path
-  # Called directly rather than in $(...), where bash disables errexit for add_worktree.
-  add_worktree "$@" >/dev/null
-  path="$(worktree_path_for "$(sanitize_task_id "$1")")"
-  (
-    cd "${path}"
-    "${SCRIPT_DIR}/codex-session-start.sh"
-  )
-  printf '%s\n' "${path}"
+check_checkout() {
+  local current
+  current="$(git rev-parse --show-toplevel 2>/dev/null)" || die "run check from inside a git worktree"
+  if [[ "$(realpath_of "${current}")" == "$(realpath_of "${REPO_ROOT}")" ]]; then
+    [[ "${BEAM_TASK_ALLOW_PRIMARY:-0}" == "1" ]] || die \
+      "refusing to work in the primary checkout ${REPO_ROOT}; use ./scripts/task-harness.sh start <task-id> instead"
+    printf 'primary checkout override: enabled\n'
+  else
+    printf 'worktree discipline: dedicated task checkout\n'
+  fi
+  printf 'checkout: %s\n' "${current}"
+  printf 'branch: %s\n' "$(checked_out_branch "${current}" | grep . || echo detached)"
+  printf 'tracked dirty files: %s\n' "$(git -C "${current}" status --short --untracked-files=no | wc -l | tr -d ' ')"
+}
+
+# Prints one string field of the hook JSON object on stdin.
+hook_input_field() {
+  python3 -c '
+import json, sys
+value = json.load(sys.stdin).get(sys.argv[1])
+if not isinstance(value, str) or not value:
+    sys.exit("hook input has no %s field" % sys.argv[1])
+print(value)
+' "$1"
+}
+
+# Claude Code reads the last stdout line as the worktree path and fails creation on a non-zero exit.
+claude_worktree_create() {
+  local name slug resume="0"
+  name="$(hook_input_field name)"
+  slug="$(sanitize_task_id "${name}")"
+  # The hook runs when Claude Code asks for this name, so an existing task is resumed.
+  if [[ -e "$(worktree_path_for "${slug}")" ]] || branch_exists "$(branch_name_for "${slug}")"; then
+    resume="1"
+  fi
+  start_task "${slug}" "" "${resume}"
+}
+
+# Claude Code keeps the worktree when this exits non-zero and the directory still exists.
+claude_worktree_remove() {
+  local path resolved_root resolved_path
+  path="$(hook_input_field worktree_path)"
+  resolved_root="$(realpath_of "${WORKTREE_ROOT}")"
+  resolved_path="$(realpath_of "${path}")"
+  [[ "$(dirname "${resolved_path}")" == "${resolved_root}" ]] || die \
+    "refusing to remove ${path}: it is not a task worktree under ${WORKTREE_ROOT}"
+  drop_task "$(basename "${resolved_path}")" "0"
 }
 
 # Parses `[--resume] <task-id> [base-ref]` into TASK_ID, BASE_REF, and RESUME.
-parse_add_args() {
+parse_task_args() {
   TASK_ID=""
   BASE_REF=""
   RESUME="0"
@@ -379,34 +456,43 @@ parse_drop_args() {
 
 main() {
   [[ "$#" -gt 0 ]] || {
-    usage
+    usage >&2
     exit 1
   }
 
-  case "$1" in
-    session)
-      [[ "${2:-}" == "start" ]] || die "usage: ./scripts/codex-harness.sh session start {<task-id> [base-ref]|--resume <task-id>}"
-      shift 2
-      parse_add_args "$@"
-      session_start "${TASK_ID}" "${BASE_REF}" "${RESUME}"
+  local command="$1"
+  shift
+  case "${command}" in
+    start)
+      parse_task_args "$@"
+      start_task "${TASK_ID}" "${BASE_REF}" "${RESUME}"
       ;;
-    worktree)
-      case "${2:-}" in
-        add)
-          shift 2
-          parse_add_args "$@"
-          add_worktree "${TASK_ID}" "${BASE_REF}" "${RESUME}"
+    adopt)
+      parse_task_args "$@"
+      [[ "${RESUME}" != "1" ]] || die "adopt does not take --resume"
+      adopt_task "${TASK_ID}" "${BASE_REF}"
+      ;;
+    check)
+      [[ "$#" -eq 0 ]] || die "check takes no arguments"
+      check_checkout
+      ;;
+    list)
+      git -C "${REPO_ROOT}" worktree list
+      ;;
+    drop)
+      parse_drop_args "$@"
+      drop_task "${TASK_ID}" "${FORCE}"
+      ;;
+    hook)
+      case "${1:-}" in
+        claude-worktree-create)
+          claude_worktree_create
           ;;
-        list)
-          list_worktrees
-          ;;
-        drop)
-          shift 2
-          parse_drop_args "$@"
-          drop_worktree "${TASK_ID}" "${FORCE}"
+        claude-worktree-remove)
+          claude_worktree_remove
           ;;
         *)
-          die "usage: ./scripts/codex-harness.sh worktree {add|list|drop} ..."
+          die "usage: ./scripts/task-harness.sh hook {claude-worktree-create|claude-worktree-remove}"
           ;;
       esac
       ;;
@@ -414,7 +500,7 @@ main() {
       usage
       ;;
     *)
-      die "unknown command: $1"
+      die "unknown command: ${command}"
       ;;
   esac
 }

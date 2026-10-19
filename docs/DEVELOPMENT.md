@@ -38,15 +38,16 @@ If the question is "how do I work on the repo safely and efficiently?", start he
 
 ## Local Workflow
 
-Start from the repo root and prefer dedicated worktrees for new tasks:
+Start from the repo root and use a dedicated worktree for each task:
 
 ```bash
-./scripts/codex-harness.sh session start <task-id>
+./scripts/task-harness.sh start <task-id>
 ```
 
-That keeps new work off the primary checkout and matches the repository's default agent workflow
-for both Codex and Claude Code. By default, the harness uses `.codex-worktrees/lean-beam` inside the
-repo rather than `/tmp` or a home-global worktree root.
+The task harness, [scripts/task-harness.sh](../scripts/task-harness.sh), is shared by humans,
+Codex, and Claude Code. It owns the task policy: which base a task starts from, the `task/<task-id>`
+branch name, the `.worktrees/<task-id>` location inside the primary checkout, and what is safe to
+delete. Agent built-in worktree features are routed through it where the agent allows that.
 
 Harness behavior that agents and humans can rely on:
 
@@ -56,31 +57,44 @@ Harness behavior that agents and humans can rely on:
   commit on stderr. Remote commands never wait on terminal prompts, and unless `GIT_SSH_COMMAND`,
   `GIT_SSH`, or `core.sshCommand` is set, ssh runs with `BatchMode` and a 15-second connect timeout.
 - task branches do not track their base, so a plain `git push` cannot target `main`
-- tasks always live under the primary checkout's `.codex-worktrees/lean-beam`, also when the harness
-  runs from a task worktree
-- tracked edits in the primary checkout block new tasks but not `--resume`
+- tasks always live under the primary checkout's `.worktrees`, also when a task worktree's copy of
+  the script runs
+- tracked edits in the primary checkout produce a warning for new tasks, not for `--resume`
 - an existing task worktree or task branch is refused unless `--resume` is passed:
-  `./scripts/codex-harness.sh session start --resume <task-id>`
-- `./scripts/codex-harness.sh worktree drop <task-id>` deletes a task branch only when every commit is
-  on a branch that `origin` has right now (asked with `git ls-remote`, so local remote-tracking refs
-  are neither trusted nor changed), or when merging the branch into a freshly fetched `origin/main`
-  would change nothing, as after a squash merge (Git 2.38 or newer). Otherwise it refuses, for
-  example once `main` has changed lines next to a squash merge, and `--force` deletes the branch
-  anyway. Uncommitted or untracked changes always block `drop`; ignored files such as `.lake` and
-  `.beam` are deleted with the worktree.
-- stdout carries the worktree path (after the session summary for `session start`); errors and
-  warnings go to stderr
+  `./scripts/task-harness.sh start --resume <task-id>`
+- `./scripts/task-harness.sh drop <task-id>` deletes a task branch only when every commit is on a
+  branch that `origin` has right now (asked with `git ls-remote`, so local remote-tracking refs are
+  neither trusted nor changed), or when merging the branch into a freshly fetched `origin/main` would
+  change nothing, as after a squash merge (Git 2.38 or newer). Otherwise it refuses, for example
+  once `main` has changed lines next to a squash merge, and `--force` deletes the branch anyway.
+  Uncommitted or untracked changes always block `drop`; ignored files such as `.lake` and `.beam`
+  are deleted with the worktree.
+- `start` and `adopt` print only the worktree path on stdout; the task summary, errors, and warnings
+  go to stderr
+
+Agent integration:
+
+- Claude Code: [.claude/settings.json](../.claude/settings.json) registers `WorktreeCreate` and
+  `WorktreeRemove` hooks, so `claude --worktree <name>`, the `EnterWorktree` tool, and subagents
+  with worktree isolation create harness task worktrees. Creating a name that already exists resumes
+  that task. Removal goes through `drop` without `--force`, so Claude Code keeps a worktree whose
+  branch has unpushed commits or whose checkout has uncommitted changes. Claude Code keeps worktrees
+  made for subagents; drop them when their work is merged. A `git worktree add` run through a shell
+  bypasses the hooks.
+- Codex CLI: run `./scripts/task-harness.sh start <task-id>` and work in the printed path.
+- Codex app: its managed worktrees start detached under `$CODEX_HOME/worktrees` and the app owns
+  their location and cleanup. Run `./scripts/task-harness.sh adopt <task-id>` in a fresh app
+  worktree before editing; it creates `task/<task-id>` there from the same base as `start`.
 
 Important local scripts:
 
-- `scripts/codex-harness.sh`: start and manage dedicated task worktrees
-- `scripts/codex-session-start.sh`: lower-level helper used by the harness
+- `scripts/task-harness.sh`: start, adopt, check, and drop dedicated task worktrees
 - `scripts/validate-defensive.sh`: slower guarded validation in a cloned `/tmp` sandbox
 - `scripts/lean-beam`: installed wrapper entry point
 
 Preferred maintainer entrypoints:
 
-- new Codex task: `./scripts/codex-harness.sh session start <task-id>`
+- new task: `./scripts/task-harness.sh start <task-id>`
 - risky wrapper/install validation: `bash scripts/validate-defensive.sh`
 - public workflow checks: `lean-beam` and the skill docs
 - sandboxed repeated wrapper probes: `lean-beam serve`, then interrupt that foreground
@@ -103,7 +117,7 @@ Preferred maintainer entrypoints:
 - `AGENTS.md` carries repo-specific agent instructions
 - this document is for maintainers working locally, whether the operator is a human or an AI; do not
   use it as a second source of truth for user-visible setup, status, or protocol behavior
-- the Codex harness scripts are maintainer tools, not public product surface
+- the task harness is a maintainer tool, not public product surface
 
 ## Change Discipline
 
