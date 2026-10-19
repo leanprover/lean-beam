@@ -17,9 +17,9 @@ private def fixturePath : System.FilePath :=
 
 -- Markers tie tactic positions and ordinary document replacements to the same fixture text.
 private def probeAt (source marker : String) : ScenarioM (Lsp.Position × String) := do
-  let matches := source.splitOn "\n" |>.zipIdx |>.filter fun (line, _) =>
+  let positions := source.splitOn "\n" |>.zipIdx |>.filter fun (line, _) =>
     line.endsWith s!" -- probe:{marker}"
-  let [(line, lineNo)] := matches
+  let [(line, lineNo)] := positions
     | throw <| IO.userError s!"expected exactly one fixture marker {marker}"
   let some code := (line.splitOn " -- probe:").head?
     | throw <| IO.userError s!"missing tactic at fixture marker {marker}"
