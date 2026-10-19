@@ -348,7 +348,8 @@ Lean project or use `--session-dir`.
 The default report summarizes each client and expands findings that need attention. Use `--verbose`
 for all inspected paths and individual checks, or `--json` for typed findings with stable codes and
 inspection limits. It checks JSON/TOML syntax, local MCP launch field types, disabled registrations, absolute
-executable paths, and existing installed-runtime metadata where identifiable. OpenCode's JSONC
+executable paths, POSIX execute bits, and existing standalone installation metadata where identifiable.
+Windows execution permissions remain unverified. OpenCode's JSONC
 comments and trailing commas are supported. Pi receives settings and Lean skill checks; no native
 Pi MCP configuration is required or inspected. Skill checks establish that a non-empty file is
 readable in the listed standard locations, not that the running client loaded it. MCP and skills

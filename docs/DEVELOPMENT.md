@@ -729,6 +729,7 @@ Install manifests name fixed companions and complete targets through the shared 
 [Beam/Installation/Components.lean](../Beam/Installation/Components.lean), with references into one
 artifact inventory. The current formats and rejection of earlier incomplete records are documented
 in [COMPATIBILITY.md](COMPATIBILITY.md).
+
 Read-only client inspection is implemented by
 [Beam/Cli/ClientDoctor.lean](../Beam/Cli/ClientDoctor.lean). Its `Types` module owns the typed report
 and diagnostic exit status; `Locations` describes client-specific file candidates; `Parse` uses

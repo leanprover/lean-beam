@@ -10,12 +10,24 @@ import subprocess
 import tempfile
 import unittest
 
+from installation_fixture import stage
+
 
 REPO = Path(__file__).resolve().parent.parent
-WRAPPER = REPO / "scripts" / "lean-beam"
 
 
 class ClientDoctorTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if "BEAM_TEST_INSTALLATION" in os.environ:
+            cls.installation = Path(os.environ["BEAM_TEST_INSTALLATION"]).resolve()
+        else:
+            temporary = tempfile.TemporaryDirectory(prefix="beam-client-doctor-installation-")
+            cls.addClassCleanup(temporary.cleanup)
+            cls.installation = Path(temporary.name).resolve()
+            stage(cls.installation)
+        cls.wrapper = cls.installation / "bin/lean-beam"
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="beam-client-doctor-")
         self.addCleanup(self.temp.cleanup)
@@ -70,7 +82,7 @@ class ClientDoctorTest(unittest.TestCase):
 
     def run_doctor(self, *args, expected=0, as_json=True):
         before = self.snapshot()
-        command = [str(WRAPPER), "doctor", "clients", *args]
+        command = [str(self.wrapper), "doctor", "clients", *args]
         if as_json:
             command.append("--json")
         result = subprocess.run(
@@ -598,7 +610,7 @@ class ClientDoctorTest(unittest.TestCase):
         self.codex_config()
         before = self.snapshot()
         result = subprocess.run(
-            [str(WRAPPER), "--root", str(self.workspace), "doctor", "clients", "codex", "--json"],
+            [str(self.wrapper), "--root", str(self.workspace), "doctor", "clients", "codex", "--json"],
             cwd=self.root, env=self.env, capture_output=True, text=True, timeout=15,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -689,16 +701,14 @@ class ClientDoctorTest(unittest.TestCase):
         install = self.root / "install"
         self.write(install / ".lean-beam-install-root", f"schema=1\nowner=lean-beam\nroot={install}\n")
         runtimes = []
-        for payload in ["first", "second"]:
+        for payload in ["1" * 64, "2" * 64]:
             runtime = install / "versions" / payload
             executable = runtime / "bin/lean-beam-mcp"
             self.write(executable, self.executable.read_text())
             executable.chmod(0o755)
-            manifest = subprocess.run(
-                [str(WRAPPER), "install-manifest", payload, "-", "leanprover/lean4:v4.35.0"],
-                cwd=self.workspace, env=self.env, capture_output=True, text=True, check=True, timeout=15,
-            )
-            self.write(runtime / "manifest.json", manifest.stdout)
+            manifest = json.loads((self.installation / "manifest.json").read_text())
+            manifest["payloadHash"] = payload
+            self.json_file(runtime / "manifest.json", manifest)
             runtimes.append(runtime)
         current = install / "current"
         current.symlink_to(runtimes[0])
@@ -708,6 +718,15 @@ class ClientDoctorTest(unittest.TestCase):
         current.unlink()
         current.symlink_to(runtimes[1])
         self.has_code(self.run_doctor("codex"), "runtime.superseded", "warning")
+        manifest = runtimes[1] / "manifest.json"
+        valid_manifest = manifest.read_bytes()
+        for contents in [b" " * (1024 * 1024 + 1), b"\xffDOCTOR_SECRET_SENTINEL"]:
+            with self.subTest(current_manifest=contents[:1]):
+                manifest.write_bytes(contents)
+                report = self.run_doctor("codex", expected=2)
+                self.has_code(report, "runtime.unreadable", "unknown")
+                self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+        manifest.write_bytes(valid_manifest)
         current.unlink()
         self.has_code(self.run_doctor("codex", expected=1), "runtime.currentMissing", "error")
         self.write(current, "invalid current selection")

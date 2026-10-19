@@ -167,6 +167,22 @@ LEAN_EXPORT lean_obj_res lean_beam_path_is_link(b_lean_obj_arg path, lean_obj_ar
   return lean_io_result_mk_ok(lean_box(linked));
 }
 
+/* Config inspection is not an execution/access probe; Windows ACLs need a separate evaluator. */
+LEAN_EXPORT lean_obj_res lean_beam_file_execute_bits(b_lean_obj_arg path, lean_obj_arg world) {
+  (void)world;
+  if (!valid_path(path)) return path_error(EINVAL, path);
+#if defined(_WIN32)
+  return lean_io_result_mk_ok(lean_box(0)); /* none: POSIX execute bits do not apply */
+#else
+  struct stat status;
+  if (lstat(lean_string_cstr(path), &status) != 0) return path_error(errno, path);
+  if (!S_ISREG(status.st_mode)) return path_error(EINVAL, path);
+  lean_object *result = lean_alloc_ctor(1, 1, 0); /* some */
+  lean_ctor_set(result, 0, lean_box((status.st_mode & 0111) != 0));
+  return lean_io_result_mk_ok(result);
+#endif
+}
+
 LEAN_EXPORT lean_obj_res lean_beam_observe_private_dir(b_lean_obj_arg path, lean_obj_arg world) {
   (void)world;
   if (!valid_path(path)) return path_error(EINVAL, path);

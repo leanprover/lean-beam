@@ -173,13 +173,15 @@ Current Beam coverage includes:
 
 Read-only client inspection is covered by
 [tests/test-client-doctor.py](../tests/test-client-doctor.py), run by `tests/test-beam-fast.sh` after
-building `beam-cli`. It exercises all five clients through the public wrapper with fake homes,
+staging the shared installed test runtime. It exercises all five clients through the public wrapper with fake homes,
 installer home overrides, JSON/TOML/JSONC input, partial config layers, disabled registrations,
 installed-runtime metadata, cached Pi package manifests, OpenCode merging, compact/verbose output,
 and diagnostic exit codes. Filesystem snapshots detect writes,
 executable sentinels detect configured/client/toolchain command launches, and secret sentinels
-detect config or exception-text disclosure. Run it directly after `lake build beam-cli` when
-changing client discovery, parsing, findings, or rendering. The install suite also runs
+detect config or exception-text disclosure. For a direct run, build `Beam.LSP:shared`, `beam-cli`,
+`beam-daemon`, `lean-beam-mcp`, and `beam-installation-stage-fixture` first, then run
+`python3 tests/test-client-doctor.py`. It stages one same-compiler installation unless
+`BEAM_TEST_INSTALLATION` names an existing one. The install suite also runs
 [tests/test-client-doctor-installed.py](../tests/test-client-doctor-installed.py) against the published
 CLI after installing all five Lean skills and registering Codex, Claude, and Vibe MCP servers. It
 also repeats OpenCode skill installation and discovery with `XDG_CONFIG_HOME` set and

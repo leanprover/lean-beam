@@ -272,9 +272,12 @@ private def inspectRuntime (path : System.FilePath) (entry : Entry)
             "The install root's current link does not select a runtime directory." entry.source entry.key
         match ← readFile (currentHome / "manifest.json") with
         | .text _ => pure ()
-        | _ =>
+        | .missing | .notFile =>
             return add report .mcp "runtime.currentInvalid" .error
-              "The current runtime's manifest is missing, unreadable, or exceeds the inspection limit." entry.source entry.key
+              "The current runtime's manifest is missing or is not a regular file." entry.source entry.key
+        | _ =>
+            return add report .mcp "runtime.unreadable" .unknown
+              "The current runtime's manifest is unreadable or exceeds the inspection limit." entry.source entry.key
         match ← resolveRuntimeHome currentHome with
         | .installed runtime =>
             if runtime.location.installRoot != location.installRoot then
@@ -314,11 +317,15 @@ private def inspectExecutable (entry : Entry) (command : String)
     if metadata.type != .file then
       return add report .mcp "launch.notFile" .error
         "The configured executable is not a regular file." entry.source entry.key
-    if (← Beam.fileModeNoFollow resolved).toNat &&& 73 == 0 then
+    let executeBits ← Beam.fileExecuteBits resolved
+    if executeBits == some false then
       return add report .mcp "launch.notExecutable" .error
         "The configured executable has no execute permission bits." entry.source entry.key
-    let report := add report .mcp "launch.file" .ok
-      "The configured executable exists and has execute permission bits; it was not run." entry.source entry.key
+    let mut report := add report .mcp "launch.file" .ok
+      "The configured executable exists as a regular file; it was not run." entry.source entry.key
+    if executeBits.isNone then
+      report := add report .mcp "launch.permissions" .unknown
+        "Execution permissions are not checked on this platform." entry.source entry.key
     if path.fileName != some "lean-beam-mcp" then
       return add report .mcp "launch.custom" .unknown
         "A custom launcher is configured; its behavior is not inspected." entry.source entry.key
