@@ -47,8 +47,8 @@ Commands:
   start   Create the task worktree <root>/<task-id> on branch task/<task-id>. New task branches
           start from a freshly fetched origin/main unless base-ref is given; if the fetch fails,
           the last fetched origin/main is used and named on stderr. Tracked edits in the primary
-          checkout block new tasks. --resume reuses an existing task worktree or task branch
-          instead of refusing it.
+          checkout produce a warning for new tasks. --resume reuses an existing task worktree or
+          task branch instead of refusing it.
   adopt   Turn the current worktree, created by another tool such as the Codex app, into task
           <task-id>: create branch task/<task-id> there from the same base as start. The worktree
           must be clean and have a detached HEAD. Its location and lifetime stay with that tool.
@@ -137,11 +137,11 @@ if os.path.commonpath([root, path]) != root:
 PY
 }
 
-ensure_primary_tracked_clean() {
-  local tracked_status
-  tracked_status="$(git -C "${REPO_ROOT}" status --short --untracked-files=no)"
-  [[ -z "${tracked_status}" ]] || die \
-    "primary checkout has tracked edits; move or commit them before starting a new task worktree"
+# Tasks start from their base ref, so primary checkout edits are only a reminder, not a blocker;
+# blocking would also fail Claude Code subagent worktrees whenever the primary checkout is dirty.
+warn_primary_tracked_edits() {
+  [[ -z "$(git -C "${REPO_ROOT}" status --short --untracked-files=no)" ]] || warn \
+    "primary checkout ${REPO_ROOT} has tracked edits; they are not part of the new task"
 }
 
 ensure_worktree_root() {
@@ -283,8 +283,8 @@ start_task() {
       "could not check out ${branch} at ${path}; see the git error above"
   else
     [[ "${resume}" != "1" ]] || die "nothing to resume: no worktree or branch exists for task ${slug}"
-    # Resuming never reads the primary checkout, so only new tasks are guarded.
-    ensure_primary_tracked_clean
+    # Resuming never reads the primary checkout, so only new tasks get the reminder.
+    warn_primary_tracked_edits
     [[ -n "${base_ref}" ]] || base_ref="$(resolve_default_base)"
     # --no-track keeps a plain `git push` from targeting the base branch.
     git -C "${REPO_ROOT}" worktree add --no-track -b "${branch}" "${path}" "${base_ref}" >&2 || die \

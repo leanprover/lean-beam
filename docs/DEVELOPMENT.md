@@ -59,7 +59,7 @@ Harness behavior that agents and humans can rely on:
 - task branches do not track their base, so a plain `git push` cannot target `main`
 - tasks always live under the primary checkout's `.worktrees`, also when a task worktree's copy of
   the script runs
-- tracked edits in the primary checkout block new tasks but not `--resume`
+- tracked edits in the primary checkout produce a warning for new tasks, not for `--resume`
 - an existing task worktree or task branch is refused unless `--resume` is passed:
   `./scripts/task-harness.sh start --resume <task-id>`
 - `./scripts/task-harness.sh drop <task-id>` deletes a task branch only when every commit is on a

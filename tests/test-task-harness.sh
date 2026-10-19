@@ -153,6 +153,13 @@ expect_harness_ok narrow-refspec start narrow-refspec
 expect_same_commit "narrow-refspec task" task/narrow-refspec "$upstream_head"
 git -C "$repo" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 
+# Tracked edits in the primary checkout only produce a warning.
+printf 'primary edit\n' >> "$repo/README"
+expect_harness_ok dirty-primary start dirty-primary
+assert_contains_literal "$tmp_root/dirty-primary.err" "has tracked edits; they are not part of the new task"
+expect_same_commit "dirty-primary task" task/dirty-primary "$upstream_head"
+git -C "$repo" checkout --quiet -- README
+
 # An explicit base ref is used as given and not fetched.
 expect_harness_ok explicit-base start explicit-base main
 expect_same_commit "explicit-base task" task/explicit-base main
@@ -311,10 +318,10 @@ assert_not_exists "$default_root/no-base"
 git -C "$repo" update-ref refs/remotes/origin/main "$saved_base"
 git -C "$repo" remote set-url origin "$origin"
 
-# Tracked edits in the primary checkout block new tasks but not resuming an existing one.
+# Resuming with tracked edits in the primary checkout does not repeat the new-task warning.
 printf 'primary edit\n' >> "$repo/README"
-expect_harness_fails_with dirty-primary-new "primary checkout has tracked edits" start dirty-primary
 expect_harness_ok dirty-primary-resume start --resume explicit-base
+assert_not_contains "$tmp_root/dirty-primary-resume.err" "has tracked edits"
 git -C "$repo" checkout --quiet -- README
 
 # adopt turns a clean detached worktree made by another tool into a task branch from the base.
