@@ -341,11 +341,12 @@ runs the stdio stress harness with `BEAM_MCP_STDIO_TIMEOUT` defaulting to 60 sec
 `BEAM_MCP_SERVER_TRACE=1` for the stdio harness by default, and sets the diagnostics-barrier watchdog
 to `BEAM_MCP_STDIO_WAIT_DIAGNOSTICS_WATCHDOG_MS=10000`. Set `BEAM_MCP_STDIO_SERVER_TRACE=0` only
 when intentionally checking the quiet stderr path. The fast suite's installed-wrapper self-check uses
-`BEAM_MCP_SELF_CHECK_TIMEOUT_MS`, defaulting to 120 seconds, because first-time bundle setup may
-build the local fixture under CI contention. Keep `--timeout 30` for local repro attempts unless you
-are specifically checking the CI budget. The focused daemon lifecycle fixture explicitly prebuilds
-its toolchain into one owned shared cache before timing daemon startup, so cold bundle compilation
-is not misdiagnosed as a daemon-readiness timeout.
+`BEAM_MCP_SELF_CHECK_TIMEOUT_MS`, defaulting to 120 seconds. The suite stages its complete installation
+before starting the self-check budget; normal MCP execution does not construct missing runtimes.
+Workspace initialization and Lean processing during sync still run within that budget. Keep
+`--timeout 30` for local repro attempts unless you are specifically checking the CI budget.
+Focused wrapper tests, including `tests/test-beam-wrapper-daemon.sh`, consume a preconstructed
+`BEAM_TEST_INSTALLATION`; see [the Beam test setup](#beam-surface).
 
 MCP self-check is an installation smoke test with one best-effort timeout covering discovery,
 sync, and shutdown, including stderr draining. Success verifies discovery of the supported protocol

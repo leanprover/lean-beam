@@ -8,6 +8,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Changed
 
+- Document CLI/MCP launch for Beam bundled with Lean alongside checkout installation.
+  Correct the documented construction-cache and session descriptor schema versions
+  ([#266](https://github.com/leanprover/lean-beam/pull/266), @ejgallego).
 - Publish standalone installations with complete, qualified target runtimes and a hashed membership
   record. Reinstallation preserves existing generation manifests instead of rewriting their provenance
   ([#262](https://github.com/leanprover/lean-beam/pull/262), @ejgallego).

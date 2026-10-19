@@ -72,7 +72,8 @@ The three product executables, `beam-cli`, `beam-daemon`, and `lean-beam-mcp`, u
 from `LakeInstall.ofLean`, including Lean's split-library stubs. On Windows, `supportInterpreter`
 selects Lake's shared Lean linker flags, so the CLI enables it there too.
 
-The target stages these prebuilt SDK inputs beside its outputs. Each changed library is published
+Here the Lean SDK is the selected Lean installation, including Lean, Lake, and their libraries.
+The target stages these prebuilt inputs beside its outputs. Each changed library is published
 by atomic rename; unchanged libraries keep their existing files. The `beamSharedRuntimeFiles`
 Lake script supplies the exact staged dependency list to installation construction, avoiding a
 second hard-coded library list or directory scan.
@@ -80,7 +81,8 @@ second hard-coded library list or directory scan.
 Unix executables use a relative `../lib/lean` loader path; Windows loads DLLs beside each
 executable. Build outputs under `.lake/build` and `.lake/toolchain-build` are staging layouts.
 Published command and plugin locations follow the two
-[installation paths](SETUP.md) and their [runtime layouts](TOOLCHAIN_BUNDLING.md).
+[installation paths](SETUP.md) and their
+[runtime layouts](TOOLCHAIN_BUNDLING.md#installation-records-and-runtime-libraries).
 
 Report executable file sizes separately from shared-library and complete installation sizes.
 Bundled Lean distributions reuse the containing SDK's libraries. Checkout installations carry
@@ -92,6 +94,8 @@ include those files when reporting installation size.
 - README is for humans who want to understand and use the project
 - [docs/SETUP.md](SETUP.md) is the canonical user path for install, supported toolchains, first CLI
   use, MCP setup, installer locations, and offline notes
+- [docs/TOOLCHAIN_BUNDLING.md](TOOLCHAIN_BUNDLING.md) owns the release-builder commands, packaged
+  layouts, and installation record contract
 - [docs/STATUS.md](STATUS.md) is the public beta scope, limitation, and direction summary
 - [docs/MCP.md](MCP.md) owns MCP implementation, protocol, tool-list, and conformance notes
 - [docs/SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md) owns the exact sync, refresh, save,
@@ -694,11 +698,10 @@ Beam runtime source hash and the resolved Lean/Lake fingerprint so local custom 
 and reported identity changes cannot silently reuse stale helpers. The user-facing model is in
 [CUSTOM_TOOLCHAINS.md](CUSTOM_TOOLCHAINS.md).
 
-The Lake `beamSharedRuntime` target stages the selected SDK's declared Lean/Lake shared dependencies
-atomically and supplies executable link settings. The `beamSharedRuntimeFiles` source-side script
-reports those relative build inputs to construction. Cached target metadata retains that list and
-requires every recorded library before reuse. Construction copies each compiler's libraries into
-its own loader layout and includes their bytes in the single installed artifact inventory.
+Construction consumes the [shared-runtime dependency list](#executable-linking-and-runtime-libraries).
+Cached target metadata retains that list and requires every recorded library before reuse.
+Construction copies each compiler's libraries into its own loader layout and includes their bytes
+in the single installed artifact inventory.
 
 [Beam/Cli/InstallConstruction.lean](../Beam/Cli/InstallConstruction.lean) builds and qualifies selected
 runtimes, copies their artifacts into staging, and finalizes the standalone manifest. The

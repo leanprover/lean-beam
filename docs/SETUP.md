@@ -2,28 +2,49 @@
 
 Beam has two installation paths:
 
-- If your elan-installed Lean toolchain includes Beam, use the commands from that toolchain.
-  Release builders prepare that payload with the [native toolchain build/install interface](TOOLCHAIN_BUNDLING.md).
-- Otherwise, install Beam from a checkout with `./scripts/install-beam.sh`, as described below.
+- If your elan-installed Lean toolchain includes Beam, follow
+  [Use Beam Bundled With Lean](#use-beam-bundled-with-lean).
+- Otherwise, follow [Install Beam From This Checkout](#install-beam-from-this-checkout).
 
 The checkout installer targets Linux and macOS; Windows x86_64 uses the bundled toolchain runtime.
 
-Use this document as the single path from a Lean Beam checkout to a working `lean-beam` command.
+Use this document to set up and run Beam through either installation path.
 It covers installation, validated and compatible Lean toolchains, first CLI use, MCP registration,
 installer locations, and offline setup notes.
 
-Lean Beam setup has two separate locations:
+You do not add Beam to the target project's `lakefile` or install a copy into each project.
+Beam detects the project root from the current directory or `--root`.
 
-- the Lean Beam checkout, where you run the installer once
-- the Lean project you want to work on, where you run the installed `lean-beam` wrapper
+## Use Beam Bundled With Lean
 
-You do not add Lean Beam to the target project's `lakefile`, and you do not install a copy into each
-project. The wrapper detects the target project root from the current directory or `--root`.
+This path requires a Lean distribution that includes Beam; an ordinary elan toolchain need not
+contain it. Replace `SELECTOR` below with the installed elan toolchain name:
+
+```bash
+cd /path/to/lean/project
+elan run SELECTOR lean-beam --version
+elan run SELECTOR lean-beam doctor
+```
+
+Use the same `elan run SELECTOR` prefix for the commands in
+[Use Beam From A Lean Project](#use-beam-from-a-lean-project), including `serve` and `stop`.
+You can also invoke the toolchain's `bin/lean-beam` directly (`lean-beam.exe` on Windows).
+If the project has a `lean-toolchain` file, its selector must resolve to that same Lean installation.
+A different installation is rejected even if its Lean version is identical.
+
+The bundled MCP server is `bin/lean-beam-mcp` (`lean-beam-mcp.exe` on Windows). Launch it directly
+or with `elan run SELECTOR lean-beam-mcp`, and follow [MCP Setup](#mcp-setup) to register it.
+One bundled server serves projects using its containing Lean installation. To work with another
+toolchain, launch that toolchain's server.
+
+Update or repair Beam through the containing toolchain's distributor. Release builders use the
+[native toolchain build/install interface](TOOLCHAIN_BUNDLING.md#build-and-install).
 
 ## Install Beam From This Checkout
 
 The current public distribution path starts from a Lean Beam source checkout. To install a specific
-release, check out that tag first, then run the installer from the checkout root.
+release, check out that tag first, then run the installer from the checkout root. After installation,
+run the installed commands from the Lean project you want to work on.
 
 From a Lean Beam checkout, run one installer command that matches how you plan to use it:
 
@@ -55,12 +76,8 @@ immutable runtime payload and its provenance manifest. After reinstalling, resta
 sessions so they launch the new runtime instead of continuing to use an already-running server
 process.
 
-The CLI, daemon, and MCP server dynamically link to matching Lean/Lake shared libraries.
-The checkout installer packages separate library sets for its frontends and each selected target
-runtime inside the immutable installation. Commands locate these libraries relative to their own
-executables; bundled Lean distributions reuse the containing toolchain's libraries instead.
-See [the runtime layouts](TOOLCHAIN_BUNDLING.md) for packaging details. Executable file sizes
-exclude the shared libraries and do not represent the complete installation size.
+The installer includes the matching Lean/Lake shared libraries with Beam's commands and selected
+project runtimes. No separate library setup is required.
 
 The agent flags install the bundled Lean skill into the corresponding agent home. Rocq goal
 probes and the Rocq skill are installed separately from the frozen [rocq-beam](https://github.com/ejgallego/rocq-beam) project.
@@ -75,6 +92,9 @@ The installer requires `elan` on `PATH`. Make sure `~/.local/bin` is on `PATH` b
 installed wrappers directly.
 
 ## Validated And Compatible Toolchains
+
+This section describes toolchain selection for checkout installations. Bundled Beam uses its
+[containing Lean installation](#use-beam-bundled-with-lean).
 
 The supported Lean release window is 4.33–4.36. The repository defaults to 4.36.0-rc1, a release
 candidate. Projects on Lean 4.28–4.32 must upgrade their Lean
@@ -144,7 +164,7 @@ lean-beam doctor
 
 ## Prune Old Installed State
 
-The installer publishes each distinct content payload as an immutable runtime payload under
+The checkout installer publishes each distinct content payload as an immutable runtime payload under
 `BEAM_INSTALL_ROOT/versions`. Reinstalling an identical payload reuses its existing runtime only
 after validating its ownership marker, manifest, required files, executable commands, and payload
 contents. The schema-4 manifest records fixed companions and the complete constructed target set.
@@ -418,9 +438,9 @@ Detailed Lean workflow guidance lives in
 Use this section only when your editor or agent client speaks MCP. The ordinary `lean-beam` CLI
 workflow does not require MCP.
 
-The installer includes the experimental stdio MCP server as `lean-beam-mcp`. It can register the
-server automatically for Codex, Claude Code, or Mistral Vibe. For Mistral Vibe, the
-installer edits `~/.vibe/config.toml` directly: it replaces any existing `lean-beam` entry in
+Both installation paths provide the experimental stdio MCP server as `lean-beam-mcp`.
+The checkout installer can register its server automatically for Codex, Claude Code, or Mistral Vibe.
+For Mistral Vibe, the installer edits `~/.vibe/config.toml` directly: it replaces any existing `lean-beam` entry in
 `[[mcp_servers]]`, removes Vibe's default empty `mcp_servers = []` line (TOML forbids extending an
 inline array with `[[mcp_servers]]` tables), and leaves other entries untouched. If the config
 holds other servers as inline `mcp_servers = [...]` entries, the installer refuses; move those
@@ -442,12 +462,17 @@ normally. The workspace descriptor shown below is explicit in both cases.
 ./scripts/install-beam.sh --all-mcp
 ```
 
-To register an existing install manually, use an absolute path so the client can launch the server
-even if `~/.local/bin` is not on its PATH:
+To register either installation manually, use the absolute path to its MCP command:
+
+- Checkout installation: `$HOME/.local/bin/lean-beam-mcp`, or your chosen wrapper location.
+- Bundled toolchain: the toolchain's `bin/lean-beam-mcp` (`lean-beam-mcp.exe` on Windows).
+
+Replace `/absolute/path/to/lean-beam-mcp` below with that path. This lets the client launch the
+matching server independently of its working directory and `PATH`.
 
 ```bash
-codex mcp add lean-beam -- "$HOME/.local/bin/lean-beam-mcp"
-claude mcp add --scope user lean-beam -- "$HOME/.local/bin/lean-beam-mcp"
+codex mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"
+claude mcp add --scope user lean-beam -- "/absolute/path/to/lean-beam-mcp"
 opencode mcp add
 ```
 
@@ -578,7 +603,9 @@ for MCP live in the [MCP maintainer notes](MCP.md).
 
 ## Installer Locations And Overrides
 
-Default install locations are:
+The checkout installer's default locations are listed below. Bundled commands live in the Lean
+toolchain's `bin`; their [packaged layout](TOOLCHAIN_BUNDLING.md#installed-files-and-publication)
+is managed by that toolchain's distributor.
 
 | Purpose | Default | Override |
 | --- | --- | --- |

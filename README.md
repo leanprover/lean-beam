@@ -160,6 +160,8 @@ For contributors and maintainers:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md): commit, PR, and contributor workflow guidance.
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): maintainer workflow and implementation notes.
+- [docs/TOOLCHAIN_BUNDLING.md](docs/TOOLCHAIN_BUNDLING.md): release-builder commands, packaged
+  runtime layouts, and publication requirements for Beam bundled with Lean.
 - [docs/TESTING.md](docs/TESTING.md): developer test-suite guidance and coverage map.
 - [docs/SYNC_AND_DIAGNOSTICS.md](docs/SYNC_AND_DIAGNOSTICS.md): sync, refresh, save, progress,
   diagnostics, and readiness contract.

@@ -18,6 +18,88 @@ Here a Lean SDK means the complete Lean installation, including Lean, Lake, and 
 Operating-system SDK headers used to compile native helpers are a separate build dependency.
 This interface lets distributors opt into bundling Beam; an ordinary elan toolchain need not contain it.
 
+## Build And Install
+
+`LEAN_PREFIX` contains `bin/lean`, `bin/lake`, the compiler configuration, and Lean/Lake libraries.
+It can be any native build stage or installed toolchain. The scripts do not select a stage number,
+consult Beam's `lean-toolchain`, link an elan toolchain, download other runtimes, or modify agent
+configuration. The compiler revision frozen into Beam during elaboration must agree with the loaded
+Lean runtime and selected Lean executable. This revision check does not distinguish every local
+modification or build configuration and is not a complete ABI fingerprint.
+
+Use CMake 3.21 or later from a Beam source checkout pinned to an immutable revision:
+
+```sh
+cmake -DLEAN_PREFIX="/path/to/selected/lean/stage" -P scripts/build-toolchain.cmake
+cmake -DLEAN_PREFIX="/path/to/selected/lean/stage" -DPREFIX="/path/to/install/prefix" -P scripts/install-toolchain.cmake
+```
+
+The control-directory helper also needs native SDK headers: the Apple SDK selected by `xcrun` on macOS,
+and a full clang SDK on `PATH` on Windows (the native CI uses MSYS2 clang64). Windows builders can
+instead pass `-DNATIVE_CLANG_RESOURCE_DIR=/sdk/lib/clang/VERSION` to the build command. Beam compiles
+with the selected Lean installation's compiler and links against its libraries.
+`control_dir.c` uses this compiler and native header setup; its object-cache identity includes
+the selected Lean toolchain and compiler.
+
+### Build Environment
+
+Selected-SDK construction applies the following environment policy to its Lake invocations:
+
+| Input | Policy |
+| --- | --- |
+| `LEAN`, `LEAN_SYSROOT` | Set from the captured SDK. The nonstandard development layout uses its private Lake home and clears `LEAN_SYSROOT`. |
+| `LAKE_HOME`, `LEAN_PATH`, `LEAN_SRC_PATH`, `LEAN_CC`, `LEAN_AR`, `LEAN_ABORT_ON_PANIC` | Clear inherited values. The nonstandard layout explicitly supplies its private `LAKE_HOME`. |
+| `LAKE_CACHE_DIR` | Native CMake builds use `.lake/toolchain-cache`; standalone construction inherits the caller's Lake cache choice. |
+| `PATH`, native SDK and host compiler settings | Inherited build-host inputs. Windows CMake selects the clang resource directory before Lake changes `PATH`; macOS uses `xcrun`. |
+
+The same filter applies to standalone frontend and target builds. Ordinary developer `lake build`
+retains Lake's environment behavior. In particular, Lake can use host `CC`/`AR` when an SDK lacks
+its packaged compiler/archiver; these differ from the cleared `LEAN_CC`/`LEAN_AR` overrides.
+The standalone construction-cache key covers Beam source, platform, and the captured Lean SDK
+fingerprint, and does not cover arbitrary host environment changes. Reusing it requires an unchanged
+native SDK and host compiler configuration. Deliberately changing that configuration requires a fresh
+source workspace and construction cache, with `LAKE_CACHE_DIR=` to avoid restoring prior Lake objects.
+
+### Build Record And Staging
+
+A successful build emits `.lake/toolchain-build.json`: the Beam source revision, a fresh build
+generation, Lean/Lake descriptions, compiler revision, and one artifact inventory with content hashes.
+The installer reads this data record, verifies every listed artifact before copying, and publishes the
+same record as installed provenance. It validates the source compiler revision unconditionally and
+also checks the destination compiler when present. Git metadata is needed only for the build.
+
+Native configuration and outputs live separately under `.lake/toolchain-lakefile.lean` and
+`.lake/toolchain-build`. A warmed standalone configuration or CLI is preserved; the native
+scripts explicitly reconfigure their own Lake file for the requested build mode. This interface
+supports one native build at a time per checkout; concurrent SDK builds require separate checkouts.
+
+## Installed Files And Publication
+
+`PREFIX` is the destination Lean installation, with its corresponding Lean files installed by the
+release builder. It may equal `LEAN_PREFIX`. Spaces are supported. The installed Beam files are:
+
+- `bin/lean-beam`, `bin/beam-daemon`, and `bin/lean-beam-mcp` (with `.exe` on Windows)
+- `lib/lean-beam/libbeam_Beam_LSP.so` on Linux,
+  `lib/lean-beam/libbeam_Beam_LSP.dylib` on macOS, or
+  `lib/lean-beam/beam_Beam_LSP.dll` on Windows
+- `lib/lean-beam/LICENSE` and `lib/lean-beam/provenance.json`
+
+The executables locate these files relative to themselves. The bundled MCP application calls the SDK
+resolver directly and rejects runtime options selecting a different toolchain. Provenance records the
+Beam source and build generation, artifact inventory and SHA-256 payload identity, and selected
+Lean/Lake identities.
+`lean-beam version` and `lean-beam --root PROJECT doctor` read this installed record. The payload
+identity also participates in session configuration: replacing it requires stopping the old
+foreground owner before attaching to a new session.
+
+Distributors must validate and publish a complete toolchain as an immutable unit. Runtime admission
+trusts its published provenance; it does not rehash all installed files on every operation. Observable
+generation changes invalidate reuse, but arbitrary in-place edits without a corresponding published
+record are outside this contract. A running MCP server retains its original provenance generation and
+cannot describe itself as a replacement generation after the record changes.
+
+## Installation Records And Runtime Libraries
+
 Explicit construction resolves each selected compiler installation once, then uses its exact Lean
 and Lake paths for observation, building, and plugin qualification. It compares the constructed
 daemon's frozen compiler revision with its loaded runtime and the selected compiler. Normal
@@ -60,6 +142,8 @@ admission must require the recorded Lean executable as well as Beam's components
 Native Beam executables link against that SDK's shared Lean/Lake libraries; Beam's contribution
 does not duplicate the containing SDK's library inventory.
 
+### Payload Identity
+
 The two published formats retain the wire field `payloadHash` with distinct scopes:
 
 | Format | Digest input | Installation generation |
@@ -82,77 +166,7 @@ participate in its installation-record digest. Changing a serializer can therefo
 even when the component bytes remain identical. The construction-cache record is separate from
 both published formats: its qualification and workspace data do not become installation identity.
 
-Use CMake 3.21 or later from a Beam source checkout pinned to an immutable revision:
-
-```sh
-cmake -DLEAN_PREFIX="/path/to/selected/lean/stage" -P scripts/build-toolchain.cmake
-cmake -DLEAN_PREFIX="/path/to/selected/lean/stage" -DPREFIX="/path/to/install/prefix" -P scripts/install-toolchain.cmake
-```
-
-The control-directory helper also needs native SDK headers: the Apple SDK selected by `xcrun` on macOS,
-and a full clang SDK on `PATH` on Windows (the native CI uses MSYS2 clang64). Windows builders can
-instead pass `-DNATIVE_CLANG_RESOURCE_DIR=/sdk/lib/clang/VERSION` to the build command. Beam compiles
-with the selected Lean installation's compiler and links against its libraries.
-`control_dir.c` uses this compiler and native header setup; its object-cache identity includes
-the selected Lean toolchain and compiler.
-
-Selected-SDK construction applies the following environment policy to its Lake invocations:
-
-| Input | Policy |
-| --- | --- |
-| `LEAN`, `LEAN_SYSROOT` | Set from the captured SDK. The nonstandard development layout uses its private Lake home and clears `LEAN_SYSROOT`. |
-| `LAKE_HOME`, `LEAN_PATH`, `LEAN_SRC_PATH`, `LEAN_CC`, `LEAN_AR`, `LEAN_ABORT_ON_PANIC` | Clear inherited values. The nonstandard layout explicitly supplies its private `LAKE_HOME`. |
-| `LAKE_CACHE_DIR` | Native CMake builds use `.lake/toolchain-cache`; standalone construction inherits the caller's Lake cache choice. |
-| `PATH`, native SDK and host compiler settings | Inherited build-host inputs. Windows CMake selects the clang resource directory before Lake changes `PATH`; macOS uses `xcrun`. |
-
-The same filter applies to standalone frontend and target builds. Ordinary developer `lake build`
-retains Lake's environment behavior. In particular, Lake can use host `CC`/`AR` when an SDK lacks
-its packaged compiler/archiver; these differ from the cleared `LEAN_CC`/`LEAN_AR` overrides.
-The standalone construction-cache key covers Beam source, platform, and the captured Lean SDK
-fingerprint, and does not cover arbitrary host environment changes. Reusing it requires an unchanged
-native SDK and host compiler configuration. Deliberately changing that configuration requires a fresh
-source workspace and construction cache, with `LAKE_CACHE_DIR=` to avoid restoring prior Lake objects.
-
-`LEAN_PREFIX` contains `bin/lean`, `bin/lake`, the compiler configuration, and Lean/Lake libraries.
-It can be any native build stage or installed toolchain. The scripts do not select a stage number,
-consult Beam's `lean-toolchain`, link an elan toolchain, download other runtimes, or modify agent
-configuration. The compiler revision frozen into Beam during elaboration must agree with the loaded
-Lean runtime and selected Lean executable. This revision check does not distinguish every local
-modification or build configuration and is not a complete ABI fingerprint.
-
-A successful build emits `.lake/toolchain-build.json`: the Beam source revision, a fresh build
-generation, Lean/Lake descriptions, compiler revision, and one artifact inventory with content hashes.
-The installer reads this data record, verifies every listed artifact before copying, and publishes the
-same record as installed provenance. It validates the source compiler revision unconditionally and
-also checks the destination compiler when present. Git metadata is needed only for the build.
-
-Native configuration and outputs live separately under `.lake/toolchain-lakefile.lean` and
-`.lake/toolchain-build`. A warmed standalone configuration or CLI is preserved; the native
-scripts explicitly reconfigure their own Lake file for the requested build mode. This interface
-supports one native build at a time per checkout; concurrent SDK builds require separate checkouts.
-
-`PREFIX` is the destination Lean installation, with its corresponding Lean files installed by the
-release builder. It may equal `LEAN_PREFIX`. Spaces are supported. The installed Beam files are:
-
-- `bin/lean-beam`, `bin/beam-daemon`, and `bin/lean-beam-mcp` (with `.exe` on Windows)
-- `lib/lean-beam/libbeam_Beam_LSP.so` on Linux,
-  `lib/lean-beam/libbeam_Beam_LSP.dylib` on macOS, or
-  `lib/lean-beam/beam_Beam_LSP.dll` on Windows
-- `lib/lean-beam/LICENSE` and `lib/lean-beam/provenance.json`
-
-The executables locate these files relative to themselves. The bundled MCP application calls the SDK
-resolver directly and rejects runtime options selecting a different toolchain. Provenance records the
-Beam source and build generation, artifact inventory and SHA-256 payload identity, and selected
-Lean/Lake identities.
-`lean-beam version` and `lean-beam --root PROJECT doctor` read this installed record. The payload
-identity also participates in session configuration: replacing it requires stopping the old
-foreground owner before attaching to a new session.
-
-Distributors must validate and publish a complete toolchain as an immutable unit. Runtime admission
-trusts its published provenance; it does not rehash all installed files on every operation. Observable
-generation changes invalidate reuse, but arbitrary in-place edits without a corresponding published
-record are outside this contract. A running MCP server retains its original provenance generation and
-cannot describe itself as a replacement generation after the record changes.
+## Runtime Selection And Maintenance
 
 Toolchain mode ignores `BEAM_HOME`, `BEAM_INSTALL_BUNDLE_DIR`, and `BEAM_BUNDLE_DIR`. It neither
 fetches Beam sources nor builds or selects standalone runtime bundles. Missing runtime files are
@@ -194,36 +208,12 @@ It never silently retargets open documents or handles. Standalone MCP applies th
 and can serve projects using different recorded targets from one server. Its process identity also
 retains the installation record observed at startup.
 
-The normal foreground owner and document-version contract applies:
+Follow the [user setup guide](SETUP.md#use-beam-bundled-with-lean) for launch commands and
+[the common CLI workflow](SETUP.md#use-beam-from-a-lean-project) for session ownership and
+document-version handling. Save behavior and unsupported batch compilation options are defined
+in [the sync and save contract](SYNC_AND_DIAGNOSTICS.md).
 
-```sh
-lean-beam --root PROJECT serve
-# In another process, after saving source edits:
-lean-beam --root PROJECT update Demo.lean
-lean-beam --root PROJECT run-at Demo.lean VERSION LINE CHARACTER -- 'trivial'
-lean-beam --root PROJECT sync Demo.lean
-lean-beam --root PROJECT save Demo.lean
-lean-beam --root PROJECT stop
-```
-
-Coordinates are zero-based. Save is a checkpoint from the accepted language-server snapshot,
-subject to [the save contract](SYNC_AND_DIAGNOSTICS.md). Lake module checkpoints include
-`.ir.sig` and its metadata. `compiler.postponeCompile` requires Lake's separate `leanir` compilation
-phase and is unsupported for zero-build save, including declarations deferred by a scoped option;
-use `lake build` for that configuration.
-
-Run the native build/install/relocation/runtime regression with:
-
-```sh
-python3 tests/test-native-toolchain.py /path/to/selected/lean/stage
-```
-
-The `native-toolchain` CI job exercises Linux x86_64/aarch64 and Windows layouts with the
-repository's supported compiler. The combined `macos-platform` job also runs this test on macOS.
-Setting `BEAM_FULL_MACOS_CI=true` enables separate macOS x86_64/aarch64 native jobs instead;
-see [the CI layout](TESTING.md#ci-map).
-A release integration must also run this test against the actual compiler being shipped. Wasm, MCP
-registration and skill installation are outside this build/install interface.
+### Runtime Admission
 
 Runtime membership is owned by the application installation adapters. Both supply
 [one typed runtime description](../Beam/Runtime.lean) to session and broker code; execution does not
@@ -243,6 +233,21 @@ external CLI, compiler, and Elan discovery probes have been removed.
 | Workspace reuse | Read-only admission and retained identity comparison |
 | Stop and recover | Matching concrete installation and recorded ownership; no current runtime admission |
 | Drop | Retained workspace ownership; no current runtime admission |
+
+## Release Qualification
+
+Run the native build/install/relocation/runtime regression with:
+
+```sh
+python3 tests/test-native-toolchain.py /path/to/selected/lean/stage
+```
+
+The `native-toolchain` CI job exercises Linux x86_64/aarch64 and Windows layouts with the
+repository's supported compiler. The combined `macos-platform` job also runs this test on macOS.
+Setting `BEAM_FULL_MACOS_CI=true` enables separate macOS x86_64/aarch64 native jobs instead;
+see [the CI layout](TESTING.md#ci-map).
+A release integration must also run this test against the actual compiler being shipped. Wasm, MCP
+registration and skill installation are outside this build/install interface.
 
 Version and doctor may read provenance and fail when it is malformed. Release qualification must
 also run the actual unpacked distribution with original build/SDK paths unavailable; a relocation

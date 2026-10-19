@@ -37,16 +37,18 @@ A Lean release line is the canonical `major.minor` family recorded in
   use Lake's full `ModulePreSetup.trace` directly. Lake 4.33–4.35 require the C output descriptor;
   4.36 and the pinned nightly use optional `ModuleOutputDescrs.c?`. Beam supplies the generated C
   descriptor on both shapes.
-- Construction-cache metadata schema 4, standalone installation manifest schema 4, and native
-  installation manifest schema 3. Earlier installation records do not establish a complete component
+- [Construction-cache metadata](../Beam/Cli/RuntimeBundle/Metadata.lean) schema 6,
+  standalone installation manifest schema 4, and native installation manifest schema 3.
+  Earlier installation records do not establish a complete component
   set and must be reinstalled; they are not accepted as current installation inventories.
-- CLI session descriptor schema 4. It freezes one workspace binding plus one
-  generation identity, lifecycle, endpoint, and capability. Workspace bindings require a Lean
+- [CLI session descriptor](../Beam/Daemon/Protocol.lean) schema 5. It freezes one workspace binding,
+  the canonical owning installation root, generation identity, lifecycle, endpoint, and capability.
+  Workspace bindings require a Lean
   command, plugin, toolchain, and bundle identity. Descriptors and their workspace bindings reject
   undeclared fields, including removed Rocq configuration. Schema-less, schema-1, the superseded
   schema-2 multi-binding shape, schema 3 with its obsolete client-executable and
-  caller-selected-port fields, and unknown records are reported and remain fenced;
-  normal startup does not decode, delete, or migrate them.
+  caller-selected-port fields, schema 4 without installation ownership, and unknown records are
+  reported and remain fenced. Normal startup does not decode, delete, or migrate them.
   Opaque records cannot establish installation ownership; after independently stopping their
   original owner, an operator must preserve and archive them explicitly. Typed descriptors require
   their exact generation ID and the owning installation for recovery. A different installation
