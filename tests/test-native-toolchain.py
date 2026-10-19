@@ -90,7 +90,7 @@ def main():
                 rejected_env = dict(build_env, BEAM_NATIVE_SYSTEM_INCLUDE_DIRS=value)
                 rejected = run([lean_prefix / "bin" / f"lake{EXE}", "--no-cache", "build",
                                 "beamControlDirObj"], env=rejected_env, ok=False)
-                assert rejected.returncode != 0 and message in rejected.stderr, rejected
+                assert rejected.returncode != 0 and message in rejected.stdout + rejected.stderr, rejected
         # Lake preserves configuration options in its cached lakefile. Warm the ordinary
         # configuration and CLI first, then prove the native builder uses its requested mode
         # without replacing that CLI or changing the ordinary configuration.
