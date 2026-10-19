@@ -1821,27 +1821,26 @@ private def saveOleanCore
         |>.setObjVal! "reason" (toJson saveReadiness.saveReadyReason)
         |>.setObjVal! "path" (toJson relPath)
     }
-  let spec ← withFailureProgress barrierProgress? <| liftBrokerFailureIO <|
-    requestSaveSpecification leanConfig.lakeHelper started.session.root path
-      { hash := started.lakeTraceHash, mtime := started.textMTime }
-      { cancelRef? }
   let syncResult :=
-    mkSyncFileResult spec.relPath started.version currentDiagnostics saveReadiness
+    mkSyncFileResult (Beam.pathRelativeToRootOrSelf started.session.root path)
+      started.version currentDiagnostics saveReadiness
+  let spec ← withFailureProgress barrierProgress? do
+    match ← liftHandlerIO <|
+        requestSaveSpecification leanConfig.lakeHelper started.session.root path
+          { hash := started.lakeTraceHash, mtime := started.textMTime }
+          { cancelRef? } with
+    | .ok spec => pure spec
+    | .error failure =>
+      if failure.code != .saveUnsupportedSetup then throwBrokerFailure failure
+      -- The helper owns setup validation; the broker retains the completed sync verdict.
+      recordCompletedSync server started.session started.uri started.version
+      throwBrokerFailure {
+        failure with
+        data? := some <| (failure.data?.getD <| Json.mkObj [])
+          |>.setObjVal! "sync" (toJson syncResult)
+      }
   withFailureProgress barrierProgress? <|
     recordCompletedSync server started.session started.uri started.version
-  if let some reason := spec.unsupportedSetupReason? then
-    withFailureProgress barrierProgress? <| throwBrokerFailure {
-      code := .saveUnsupportedSetup
-      message :=
-        s!"lean-beam save cannot reuse the Lean server snapshot for {spec.relPath}: {reason}. " ++
-        "Move shared -D settings from moreLeanArgs to leanOptions so Lake applies them to both " ++
-        "the language server and batch compilation. If the arguments are intentionally batch-only, " ++
-        "run lake build for this module instead."
-      data? :=
-        some <| (syncResultErrorData syncResult)
-          |>.setObjVal! "reason" (toJson reason)
-          |>.setObjVal! "path" (toJson spec.relPath)
-    }
   let method := saveArtifactsMethod
   let params := toJson ({
     textDocument := ({ uri := started.uri : TextDocumentIdentifier })

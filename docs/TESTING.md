@@ -174,6 +174,12 @@ The fast and MCP interoperability suites instead use a non-shipped staging fixtu
 same-compiler transport tests; this is not cross-compiler construction qualification. Test launchers
 do not restore removed component-selection flags or allow runtime provisioning.
 
+The fast suite runs [tests/test-lake-save-preflight.py](../tests/test-lake-save-preflight.py) against
+the target-built Lake helper. Package and library `moreLeanArgs` must fail before a dependency-fetch
+marker is written, even with a stale source hash. A structured `leanOptions` control must reach
+that marker. The broker save-stream test checks that these setup errors retain the completed sync
+verdict and progress through both save and close-save.
+
 The fast suite also runs [tests/test-lake-helper-lifetime.py](../tests/test-lake-helper-lifetime.py)
 against the actual staged daemon and a non-shipped helper client. It checks completed requests,
 abrupt helper exit with a live descendant, deadlines, cancellation, and parent death, then cancellation/drop and

@@ -64,7 +64,6 @@ elab "mkModuleOutputDescrsCompat(" isModule:term ", " olean:term ", " oleanServe
 structure LocalLeanSaveSpec extends LeanSaveOutputs where
   relPath : String
   moduleName : String
-  unsupportedSetupReason? : Option String := none
   depTrace : BuildTrace
 
 /-- Broker-side preparation retains only serialized target metadata and its admitted helper. -/
@@ -87,7 +86,6 @@ private def quietTraceConfig : BuildConfig :=
 private structure SaveTraceInputs where
   trace : BuildTrace
   isModule : Bool
-  unsupportedSetupReason? : Option String
   sourceMatchesSnapshot : Bool
 
 private def buildDepTraceJob
@@ -99,7 +97,6 @@ private def buildDepTraceJob
       return {
         trace := setup.trace
         isModule := setup.isModule
-        unsupportedSetupReason? := unsupportedZeroBuildSaveReason? mod
         sourceMatchesSnapshot := input.trace.hash == snapshot.hash &&
           input.trace.mtime.sec == snapshot.mtime.sec &&
           input.trace.mtime.nsec == snapshot.mtime.nsec
@@ -173,16 +170,27 @@ def computeSaveSpecification
             s!"could not resolve a Lake module for {path}. " ++
             "lean-beam save only works for synced files that belong to the current Lake workspace package graph."
         }
+    let relPath := Beam.pathRelativeToRootOrSelf root path
+    -- Configuration already determines support. Do not fetch dependencies, even in no-build
+    -- mode, for a snapshot whose setup cannot represent batch compilation.
+    if let some reason := unsupportedZeroBuildSaveReason? mod then
+      return .error {
+        code := .saveUnsupportedSetup
+        message :=
+          s!"lean-beam save cannot reuse the Lean server snapshot for {relPath}: {reason}. " ++
+          "Move shared -D settings from moreLeanArgs to leanOptions so Lake applies them to both " ++
+          "the language server and batch compilation. If the arguments are intentionally batch-only, " ++
+          "run lake build for this module instead."
+        data? := some <| Json.mkObj [("reason", toJson reason), ("path", toJson relPath)]
+      }
     let depTraceResult ← buildDepTrace ws root path mod snapshot
     let inputs ←
       match depTraceResult with
       | .ok result => pure result
       | .error failure => return .error failure
-    let relPath := Beam.pathRelativeToRootOrSelf root path
     pure <| .ok {
       relPath
       moduleName := mod.name.toString
-      unsupportedSetupReason? := inputs.unsupportedSetupReason?
       oleanPath := mod.oleanFile
       oleanServerPath? := if inputs.isModule then some mod.oleanServerFile else none
       oleanPrivatePath? := if inputs.isModule then some mod.oleanPrivateFile else none
@@ -306,7 +314,6 @@ def lakeHelperSaveSpec
         root := FilePath.mk request.root
         relPath := spec.relPath
         moduleName := spec.moduleName
-        unsupportedSetupReason? := spec.unsupportedSetupReason?
         toLeanSaveOutputs := spec.toLeanSaveOutputs
         traceMetadata
       }

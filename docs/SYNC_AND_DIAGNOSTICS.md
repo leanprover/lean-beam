@@ -86,7 +86,9 @@ they established before checkpointing: `save` under `result.sync`, and `close-sa
 
 Zero-build checkpointing supports structured Lake `leanOptions`, dynamic libraries, and plugins
 already applied to the accepted file-worker snapshot. Strong `moreLeanArgs` are batch-only and fail
-with `saveUnsupportedSetup` after the sync verdict is established.
+with `saveUnsupportedSetup` after the sync verdict is established, before Lake dependency-trace
+preparation. This rejection preserves the sync verdict under `error.data.sync` and leaves prior
+artifacts and the Lake trace unchanged.
 Move shared `-D` settings from `moreLeanArgs` to `leanOptions`, or use `lake build` when the arguments
 are intentionally batch-only. Save target resolution delegates to Lake's workspace loader for the
 project's real `lakefile.lean` or `lakefile.toml`; the broker does not synthesize fallback Lake

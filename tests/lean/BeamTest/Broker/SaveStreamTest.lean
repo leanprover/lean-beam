@@ -96,7 +96,63 @@ private def checkCrlfSyncSaveReplay : IO Unit := do
     discard <| broker.tryWait
     IO.FS.removeDirAll root
 
+private def checkUnsupportedSetupSyncVerdict : IO Unit := do
+  let endpoint ← freshTcpEndpoint
+  let root ← mkTempProjectRoot "beam-unsupported-save-setup"
+  copySaveProjectFixture root
+  IO.FS.writeFile (root / "lakefile.toml") <| String.intercalate "\n" [
+    "name = \"SaveSmoke\"",
+    "moreLeanArgs = [\"-Dweak.batchOnlySetup=true\"]",
+    "[[lean_lib]]",
+    "name = \"SaveSmoke\"",
+    ""
+  ]
+  writeSaveWarningFile root "-- unsupported setup"
+  let broker ← spawnLeanBroker endpoint root
+  try
+    waitForBrokerReadyForRoot endpoint root
+    let requests : Array Beam.Broker.RequestPayload := #[
+      .saveOlean { path := "SaveSmoke/B.lean", diagnosticScope? := some .all },
+      .close {
+        path := "SaveSmoke/B.lean"
+        saveArtifacts? := some true
+        diagnosticScope? := some .all
+      }
+    ]
+    for payload in requests do
+      let (response, _, _) ← runClientWithStream endpoint { payload }
+      expectErrCode response "saveUnsupportedSetup"
+      let some error := response.error?
+        | throw <| IO.userError "expected unsupported save error"
+      let verdict ← expectErrorSyncVerdict "unsupported save setup" error true
+      unless verdict.diagnostics.counts.warning > 0 && verdict.diagnostics.counts.error == 0 do
+        throw <| IO.userError s!"unsupported save lost sync diagnostics: {(toJson verdict).compress}"
+      unless (← requireFileProgress "unsupported save setup" response).done do
+        throw <| IO.userError "unsupported save lost completed progress"
+      let some data := error.data?
+        | throw <| IO.userError "unsupported save lost error data"
+      unless (← IO.ofExcept <| data.getObjValAs? String "path") == "SaveSmoke/B.lean" &&
+          (← IO.ofExcept <| data.getObjValAs? String "reason") ==
+            "Lake module uses batch-only moreLeanArgs" do
+        throw <| IO.userError s!"unsupported save lost helper failure data: {data.compress}"
+      let opened ← expectOk (← runClient endpoint {
+        Beam.Broker.Request.openDocs with workspaceId? := some testWorkspaceId
+      })
+      let session ← IO.ofExcept <| opened.getObjVal? "session"
+      let files ← IO.ofExcept <| session.getObjValAs? (Array Json) "files"
+      unless files.any (fun file =>
+          match file.getObjValAs? String "path" with
+          | .ok path => path == "SaveSmoke/B.lean"
+          | .error _ => false) do
+        throw <| IO.userError "unsupported save closed its document"
+    discard <| expectOk (← runClient endpoint Beam.Broker.Request.shutdown)
+  finally
+    try broker.kill catch _ => pure ()
+    discard <| broker.tryWait
+    IO.FS.removeDirAll root
+
 def main : IO Unit := do
+  checkUnsupportedSetupSyncVerdict
   checkCrlfSyncSaveReplay
   let endpoint ← freshTcpEndpoint
   let root ← mkTempProjectRoot "beam-daemon-save-stream"
