@@ -142,7 +142,7 @@ expect_same_commit "explicit-base task" codex/explicit-base main
 # When origin is unreachable, the last fetched origin/main is used with a warning.
 git -C "$repo" remote set-url origin "$tmp_root/missing-origin.git"
 expect_harness_ok offline worktree add offline
-assert_contains_literal "$tmp_root/offline.err" "could not fetch origin/main; starting from the last fetched copy"
+assert_contains_literal "$tmp_root/offline.err" "could not fetch origin/main; using the last fetched copy"
 expect_same_commit "offline task" codex/offline "$upstream_head"
 git -C "$repo" remote set-url origin "$origin"
 
@@ -166,7 +166,7 @@ expect_same_commit "resumed task" codex/explicit-base main
 # A worktree path with another branch checked out is neither reused nor dropped.
 git -C "$default_root/offline" switch --quiet -c other-work
 expect_harness_fails_with wrong-branch-add "expected codex/offline" worktree add --resume offline
-expect_harness_fails_with wrong-branch-drop "refusing to drop it" worktree drop offline
+expect_harness_fails_with wrong-branch-drop "expected codex/offline" worktree drop offline
 git -C "$default_root/offline" switch --quiet codex/offline
 
 # A plain directory at a task path is not treated as a worktree.
@@ -175,7 +175,7 @@ expect_harness_fails_with plain-dir "is not a registered git worktree" worktree 
 
 # drop refuses to discard commits that are not on any remote, and keeps the worktree intact.
 commit_in "$default_root/fresh" "local task work"
-expect_harness_fails_with drop-unpushed "1 commit(s) that are not on any origin branch and not merged" worktree drop fresh
+expect_harness_fails_with drop-unpushed "1 commit(s) not found on any origin branch and not merged" worktree drop fresh
 expect_branch codex/fresh
 assert_file "$default_root/fresh/README"
 
@@ -208,7 +208,7 @@ expect_no_branch codex/narrow-refspec
 # A tag with the task branch name does not hide the branch's unpushed commits.
 commit_in "$default_root/offline" "work behind a same-name tag"
 git -C "$repo" tag codex/offline "$upstream_head"
-expect_harness_fails_with drop-tag-shadow "1 commit(s) that are not on any origin branch and not merged" worktree drop offline
+expect_harness_fails_with drop-tag-shadow "1 commit(s) not found on any origin branch and not merged" worktree drop offline
 git -C "$repo" tag -d codex/offline >/dev/null
 git -C "$default_root/offline" reset --quiet --hard HEAD~1
 
@@ -224,23 +224,12 @@ expect_harness_fails_with drop-dirty "contains modified or untracked files" work
 assert_file "$default_root/explicit-base/README"
 expect_branch codex/explicit-base
 
-# A worktree directory deleted by hand can still be resumed, and dropped with the same checks.
+# A task directory deleted by hand is reported with the git command that cleans it up.
 expect_harness_ok removed-dir worktree add removed-dir
 rm -rf -- "$default_root/removed-dir"
-expect_harness_ok removed-dir-resume worktree add --resume removed-dir
-if [ "$(cat "$tmp_root/removed-dir-resume.out")" != "$default_root/removed-dir" ]; then
-  echo "expected --resume of a deleted worktree to print only its path" >&2
-  cat "$tmp_root/removed-dir-resume.out" >&2
-  exit 1
-fi
-commit_in "$default_root/removed-dir" "work in a deleted directory"
-rm -rf -- "$default_root/removed-dir"
-expect_harness_fails_with removed-dir-unpushed "not on any origin branch and not merged" worktree drop removed-dir
-expect_branch codex/removed-dir
-git -C "$repo" push --quiet origin codex/removed-dir
-expect_harness_ok removed-dir-drop worktree drop removed-dir
-expect_no_branch codex/removed-dir
-expect_harness_fails_with unknown-task "unknown task removed-dir" worktree drop removed-dir
+expect_harness_fails_with removed-dir-drop "run git worktree prune" worktree drop removed-dir
+git -C "$repo" worktree prune
+git -C "$repo" branch -D codex/removed-dir >/dev/null
 
 # Without a user ssh setting, the fetch uses non-interactive ssh with a connect timeout; a user's
 # GIT_SSH wrapper is left alone. Fake ssh programs record their arguments without any network.
@@ -265,11 +254,10 @@ expect_no_branch codex/ssh-wrapper
 commit_in "$default_root/ssh-default" "unmerged work"
 PATH="$fake_bin:$PATH" expect_harness_fails_with drop-offline \
   "could not confirm that branch codex/ssh-default is pushed or merged" worktree drop ssh-default
-assert_contains_literal "$tmp_root/drop-offline.err" "checking against the last fetched copy"
+assert_contains_literal "$tmp_root/drop-offline.err" "using the last fetched copy"
 git -C "$repo" update-ref -d refs/remotes/origin/main
 PATH="$fake_bin:$PATH" expect_harness_fails_with drop-no-base \
   "could not confirm that branch codex/ssh-default is pushed or merged" worktree drop ssh-default
-assert_contains_literal "$tmp_root/drop-no-base.err" "no fetched copy exists"
 git -C "$repo" remote set-url origin "$origin"
 git -C "$repo" fetch --quiet origin
 
@@ -279,7 +267,7 @@ expect_harness_ok remote-deleted worktree add remote-deleted
 commit_in "$default_root/remote-deleted" "work on a deleted remote branch"
 git -C "$default_root/remote-deleted" push --quiet origin codex/remote-deleted
 git -C "$upstream_clone" push --quiet origin --delete codex/remote-deleted
-expect_harness_fails_with drop-remote-deleted "not on any origin branch and not merged" worktree drop remote-deleted
+expect_harness_fails_with drop-remote-deleted "not found on any origin branch and not merged" worktree drop remote-deleted
 expect_branch codex/remote-deleted
 
 # Once later base commits change lines next to a squash merge, merging the branch would conflict,
@@ -297,15 +285,6 @@ expect_branch codex/remote-deleted
 expect_harness_ok drop-squashed-moved-force worktree drop --force remote-deleted
 expect_no_branch codex/remote-deleted
 
-# Cleaning up a deleted task directory leaves unrelated missing worktree registrations alone.
-unrelated="$fixture_root/unrelated-worktree"
-git -C "$repo" worktree add --quiet --detach "$unrelated" main
-rm -rf -- "$unrelated"
-expect_harness_ok unrelated-add worktree add unrelated-check
-expect_harness_ok unrelated-drop worktree drop unrelated-check
-assert_contains_literal <(git -C "$repo" worktree list --porcelain) "worktree $unrelated"
-git -C "$repo" worktree prune
-
 # A failure inside session start stops it with one error instead of continuing with an empty base.
 git -C "$repo" remote set-url origin "$tmp_root/missing-origin.git"
 saved_base="$(git -C "$repo" rev-parse origin/main)"
@@ -322,20 +301,15 @@ expect_harness_fails_with dirty-primary-new "primary checkout has tracked edits"
 expect_harness_ok dirty-primary-resume worktree add --resume explicit-base
 git -C "$repo" checkout --quiet -- README
 
-# A task interrupted during a rebase can be resumed, but not dropped until the rebase is finished.
-expect_harness_ok rebasing worktree add rebasing
-commit_in "$default_root/rebasing" "commit to replay"
-git -C "$default_root/rebasing" rebase --quiet --exec false HEAD~1 >/dev/null 2>&1 || true
-expect_harness_ok rebasing-resume worktree add --resume rebasing
-assert_contains_literal "$tmp_root/rebasing-resume.err" "a rebase of codex/rebasing is in progress"
-expect_harness_fails_with rebasing-drop "finish or abort it before dropping the task" worktree drop --force rebasing
-git -C "$default_root/rebasing" rebase --abort
-
-# A locked task worktree is not dropped, and git's reason is reported.
-git -C "$repo" worktree lock "$default_root/rebasing"
-expect_harness_fails_with locked-drop "see the git error above" worktree drop --force rebasing
-assert_contains_literal "$tmp_root/locked-drop.err" "locked"
-git -C "$repo" worktree unlock "$default_root/rebasing"
+# The task worktree's own copy of the harness still uses the primary checkout's root, so a new task
+# is not nested inside the task it was started from.
+(cd "$default_root/explicit-base" && scripts/codex-harness.sh worktree add nested) >"$tmp_root/nested.out" 2>"$tmp_root/nested.err"
+if [ "$(cat "$tmp_root/nested.out")" != "$default_root/nested" ]; then
+  echo "expected a task started from a task worktree to live under the primary checkout's root" >&2
+  cat "$tmp_root/nested.out" "$tmp_root/nested.err" >&2
+  exit 1
+fi
+assert_not_exists "$default_root/explicit-base/.codex-worktrees"
 
 # BEAM_CODEX_WORKTREE_ROOT overrides the default root inside the repo.
 override_root="$repo/.codex-worktrees/override"

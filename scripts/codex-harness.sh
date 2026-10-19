@@ -10,7 +10,13 @@ set -euo pipefail
 # This script is intentionally local contributor tooling, not a product compatibility surface.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# Task worktrees belong to the primary checkout, even when this script runs from a task worktree;
+# otherwise new tasks would nest inside that task and be deleted when it is dropped.
+REPO_ROOT="$(git -C "${SCRIPT_DIR}" worktree list --porcelain | awk '/^worktree / { print substr($0, 10); exit }')"
+[[ -n "${REPO_ROOT}" ]] || {
+  echo "error: could not resolve the primary checkout from ${SCRIPT_DIR}" >&2
+  exit 1
+}
 
 default_worktree_root() {
   printf '%s\n' "${REPO_ROOT}/.codex-worktrees/lean-beam"
@@ -41,10 +47,9 @@ Usage:
 
 Commands:
   New task worktrees start from a freshly fetched origin/main unless base-ref is given. If the
-  fetch fails, the last fetched origin/main is used and its age is reported on stderr.
+  fetch fails, the last fetched origin/main is used and named on stderr.
   Tracked edits in the primary checkout block new tasks.
-  --resume reuses an existing task worktree or task branch instead of refusing it, including one
-  interrupted during a rebase or bisect.
+  --resume reuses an existing task worktree or task branch instead of refusing it.
   drop deletes a task branch only when all its commits are on a branch origin has right now, or
   when merging it into a freshly fetched origin/main would change nothing; otherwise --force is
   needed.
@@ -147,65 +152,38 @@ ensure_worktree_root() {
 DEFAULT_BASE_REF="refs/remotes/${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH}"
 
 # Runs a git command that talks to the default base remote. Agents run without a terminal, so it
-# fails instead of prompting for credentials or waiting on a stalled connection. A user-configured
-# ssh command is left alone.
+# fails instead of prompting; unless the user configured an ssh command, ssh also fails fast.
 remote_git() {
   if [[ -z "${GIT_SSH_COMMAND:-}${GIT_SSH:-}" ]] && ! git -C "${REPO_ROOT}" config --get core.sshCommand >/dev/null; then
-    GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15" remote_git_noninteractive "$@"
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15" git -C "${REPO_ROOT}" "$@"
   else
-    remote_git_noninteractive "$@"
+    GIT_TERMINAL_PROMPT=0 git -C "${REPO_ROOT}" "$@"
   fi
 }
 
-remote_git_noninteractive() {
-  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=false git -C "${REPO_ROOT}" \
-    -c credential.interactive=never -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 "$@"
-}
-
-# Refreshes DEFAULT_BASE_REF only. The explicit refspec updates it even when the configured refspec
-# omits it.
-fetch_default_base() {
-  remote_git fetch --quiet "${DEFAULT_BASE_REMOTE}" "+refs/heads/${DEFAULT_BASE_BRANCH}:${DEFAULT_BASE_REF}" >&2
-}
-
-last_fetched_base_label() {
-  git -C "${REPO_ROOT}" log -1 --format='%h, committed %cr' "${DEFAULT_BASE_REF}"
+# Fetches DEFAULT_BASE_REF, falling back to the last fetched copy with a warning. Fails when no copy
+# exists. The explicit refspec updates the ref even when the configured refspec omits it.
+refresh_default_base() {
+  if remote_git fetch --quiet "${DEFAULT_BASE_REMOTE}" \
+    "+refs/heads/${DEFAULT_BASE_BRANCH}:${DEFAULT_BASE_REF}" >&2; then
+    return
+  fi
+  git -C "${REPO_ROOT}" show-ref --verify --quiet "${DEFAULT_BASE_REF}" || return 1
+  warn "could not fetch ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH}; using the last fetched copy," \
+    "$(git -C "${REPO_ROOT}" log -1 --format='%h "%s"' "${DEFAULT_BASE_REF}")"
 }
 
 resolve_default_base() {
-  if ! fetch_default_base; then
-    git -C "${REPO_ROOT}" show-ref --verify --quiet "${DEFAULT_BASE_REF}" || die \
-      "could not fetch ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH} and no fetched copy exists; pass an explicit base-ref"
-    warn "could not fetch ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH}; starting from the last fetched copy:" \
-      "$(last_fetched_base_label)"
-  fi
+  refresh_default_base || die \
+    "could not fetch ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH} and no fetched copy exists; pass an explicit base-ref"
   printf '%s\n' "${DEFAULT_BASE_REF}"
 }
 
-# Prints the absolute path of a file in the git directory of the worktree at path.
-worktree_git_path() {
-  git -C "$1" rev-parse --path-format=absolute --git-path "$2"
-}
-
-# Prints rebase or bisect when that operation is in progress in the worktree at path.
-worktree_operation() {
-  local path="$1"
-  local rebase_merge rebase_apply bisect_start
-  rebase_merge="$(worktree_git_path "${path}" rebase-merge)" || return 1
-  rebase_apply="$(worktree_git_path "${path}" rebase-apply)" || return 1
-  bisect_start="$(worktree_git_path "${path}" BISECT_START)" || return 1
-  if [[ -e "${rebase_merge}" || -e "${rebase_apply}" ]]; then
-    printf 'rebase\n'
-  elif [[ -e "${bisect_start}" ]]; then
-    printf 'bisect\n'
-  fi
-}
-
-# Prints the branch checked out in path, including the branch being rebased or bisected (empty when
-# otherwise detached), or fails unless path is the top level of a worktree of this repository.
+# Prints the branch checked out in path (empty when detached), or fails unless path is the top
+# level of a worktree of this repository.
 registered_worktree_branch() {
   local path="$1"
-  local toplevel common_dir repo_common_dir head_ref state
+  local toplevel common_dir repo_common_dir head_ref
   toplevel="$(git -C "${path}" rev-parse --show-toplevel 2>/dev/null)" || return 1
   [[ "$(realpath_of "${toplevel}")" == "$(realpath_of "${path}")" ]] || return 1
   common_dir="$(git -C "${path}" rev-parse --path-format=absolute --git-common-dir)" || return 1
@@ -213,69 +191,44 @@ registered_worktree_branch() {
   [[ "$(realpath_of "${common_dir}")" == "$(realpath_of "${repo_common_dir}")" ]] || return 1
   # The full ref avoids --short's disambiguated output, such as heads/<name> next to a same-name tag.
   head_ref="$(git -C "${path}" symbolic-ref --quiet HEAD || true)"
-  if [[ -z "${head_ref}" ]]; then
-    # Rebase and bisect detach HEAD but record the branch they started from.
-    for state in rebase-merge/head-name rebase-apply/head-name BISECT_START; do
-      state="$(worktree_git_path "${path}" "${state}")" || return 1
-      if [[ -f "${state}" ]]; then
-        head_ref="$(cat "${state}")" || return 1
-        break
-      fi
-    done
-  fi
   printf '%s\n' "${head_ref#refs/heads/}"
 }
 
-# Forgets the registration of a task worktree whose directory was deleted by hand. Unlike
-# `git worktree prune`, this touches no other worktree; a locked registration is kept.
-forget_missing_worktree() {
-  local path="$1"
-  [[ -e "${path}" ]] || git -C "${REPO_ROOT}" worktree remove "${path}" >/dev/null 2>&1 || true
-}
-
-# Prints how many commits of the branch are not reachable from any branch the default base remote
-# has right now, or fails when the remote cannot be listed. Asking the remote avoids trusting local
-# remote-tracking refs, which still exist after a remote branch is deleted.
+# Prints how many commits of the branch are not reachable from the branches origin has right now,
+# or fails when origin cannot be listed. Asking origin avoids trusting local remote-tracking refs,
+# which survive the deletion of a remote branch.
 unpushed_commit_count() {
   local branch="$1"
   local remote_heads
   remote_heads="$(remote_git ls-remote --heads "${DEFAULT_BASE_REMOTE}")" || return 1
   {
     printf 'refs/heads/%s\n' "${branch}"
-    # Remote commits missing locally cannot contain local commits that are reachable from them.
+    # Only commits present locally can be excluded; newer commits pushed from elsewhere are skipped.
     printf '%s\n' "${remote_heads}" | cut -f 1 |
       git -C "${REPO_ROOT}" cat-file --batch-check='%(objectname) %(objecttype)' |
       awk '$2 == "commit" { print "^" $1 }'
   } | git -C "${REPO_ROOT}" rev-list --count --stdin
 }
 
-# Succeeds when merging the branch into the default base would change nothing: everything on the
-# branch is already in the base, as after a squash merge. Fetches the base first. Without Git 2.38
-# `merge-tree --write-tree` fails, and the branch counts as unmerged.
+# Succeeds when merging the branch into the default base would change nothing, as after a squash
+# merge. Needs Git 2.38 or newer for `merge-tree --write-tree`; older Git counts as unmerged.
 merged_into_default_base() {
   local branch="$1"
   local merged_tree base_tree
-  if ! fetch_default_base; then
-    if ! git -C "${REPO_ROOT}" show-ref --verify --quiet "${DEFAULT_BASE_REF}"; then
-      warn "could not fetch ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH} and no fetched copy exists"
-      return 1
-    fi
-    warn "could not fetch ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH}; checking against the last fetched copy:" \
-      "$(last_fetched_base_label)"
-  fi
+  refresh_default_base || return 1
   merged_tree="$(git -C "${REPO_ROOT}" merge-tree --write-tree "${DEFAULT_BASE_REF}" "refs/heads/${branch}")" ||
     return 1
   base_tree="$(git -C "${REPO_ROOT}" rev-parse "${DEFAULT_BASE_REF}^{tree}")" || return 1
   [[ "${merged_tree}" == "${base_tree}" ]]
 }
 
-# Fails unless the branch is pushed to the default base remote or merged into the default base.
+# Fails unless the branch is pushed to origin or merged into the default base.
 ensure_safe_to_delete_branch() {
   local branch="$1"
   local unpushed
   if unpushed="$(unpushed_commit_count "${branch}")"; then
     [[ "${unpushed}" == "0" ]] || merged_into_default_base "${branch}" || die \
-      "branch ${branch} has ${unpushed} commit(s) that are not on any ${DEFAULT_BASE_REMOTE} branch and not merged into ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH}; push them, or pass --force to discard them"
+      "branch ${branch} has ${unpushed} commit(s) not found on any ${DEFAULT_BASE_REMOTE} branch and not merged into ${DEFAULT_BASE_REMOTE}/${DEFAULT_BASE_BRANCH}; push them, or pass --force to discard them"
   else
     warn "could not list ${DEFAULT_BASE_REMOTE}'s branches to check whether ${branch} is pushed"
     merged_into_default_base "${branch}" || die \
@@ -283,11 +236,22 @@ ensure_safe_to_delete_branch() {
   fi
 }
 
+# Fails unless path is a task worktree with the task branch checked out.
+ensure_task_worktree() {
+  local path="$1"
+  local branch="$2"
+  local current_branch
+  current_branch="$(registered_worktree_branch "${path}")" || die \
+    "${path} exists but is not a registered git worktree; inspect it and remove it manually"
+  [[ "${current_branch}" == "${branch}" ]] || die \
+    "task worktree ${path} has ${current_branch:-a detached HEAD} checked out, expected ${branch}"
+}
+
 add_worktree() {
   local task_id="$1"
   local base_ref="$2"
   local resume="$3"
-  local slug branch path current_branch operation
+  local slug branch path
   slug="$(sanitize_task_id "${task_id}")"
   branch="$(branch_name_for "${slug}")"
   path="$(worktree_path_for "${slug}")"
@@ -299,14 +263,9 @@ add_worktree() {
   fi
 
   if [[ -e "${path}" ]]; then
-    current_branch="$(registered_worktree_branch "${path}")" || die \
-      "${path} exists but is not a registered git worktree; inspect it and remove it manually"
-    [[ "${current_branch}" == "${branch}" ]] || die \
-      "task worktree ${path} has ${current_branch:-a detached HEAD} checked out, expected ${branch}"
+    ensure_task_worktree "${path}" "${branch}"
     [[ "${resume}" == "1" ]] || die \
       "task worktree already exists: ${path}; pass --resume to reuse it or choose another task id"
-    operation="$(worktree_operation "${path}")" || die "could not inspect ${path}"
-    [[ -z "${operation}" ]] || warn "a ${operation} of ${branch} is in progress in ${path}"
     printf '%s\n' "${path}"
     return
   fi
@@ -314,7 +273,6 @@ add_worktree() {
   if git -C "${REPO_ROOT}" show-ref --verify --quiet "refs/heads/${branch}"; then
     [[ "${resume}" == "1" ]] || die \
       "branch ${branch} already exists; pass --resume to check it out or choose another task id"
-    forget_missing_worktree "${path}"
     git -C "${REPO_ROOT}" worktree add "${path}" "${branch}" >/dev/null || die \
       "could not check out ${branch} at ${path}; see the git error above"
     printf '%s\n' "${path}"
@@ -334,36 +292,21 @@ add_worktree() {
 drop_worktree() {
   local task_id="$1"
   local force="$2"
-  local slug branch path current_branch operation
+  local slug branch path
   slug="$(sanitize_task_id "${task_id}")"
   branch="$(branch_name_for "${slug}")"
   path="$(worktree_path_for "${slug}")"
 
   ensure_worktree_root
   ensure_managed_worktree_path "${path}"
-  if [[ -e "${path}" ]]; then
-    current_branch="$(registered_worktree_branch "${path}")" || die \
-      "${path} is not a registered git worktree; inspect it and remove it manually"
-    [[ "${current_branch}" == "${branch}" ]] || die \
-      "task worktree ${path} has ${current_branch:-a detached HEAD} checked out, expected ${branch}; refusing to drop it"
-    operation="$(worktree_operation "${path}")" || die "could not inspect ${path}"
-    [[ -z "${operation}" ]] || die \
-      "a ${operation} of ${branch} is in progress in ${path}; finish or abort it before dropping the task"
-  else
-    git -C "${REPO_ROOT}" show-ref --verify --quiet "refs/heads/${branch}" || die \
-      "unknown task ${slug}: no worktree at ${path} and no branch ${branch}"
-  fi
-
+  [[ -d "${path}" ]] || die \
+    "unknown worktree path: ${path}; if its directory was deleted by hand, run git worktree prune"
+  ensure_task_worktree "${path}" "${branch}"
   [[ "${force}" == "1" ]] || ensure_safe_to_delete_branch "${branch}"
 
-  if [[ -e "${path}" ]]; then
-    # Without --force, git refuses to remove a worktree with uncommitted or untracked changes, or a
-    # locked one.
-    git -C "${REPO_ROOT}" worktree remove "${path}" >/dev/null || die \
-      "could not remove ${path}; see the git error above"
-  else
-    forget_missing_worktree "${path}"
-  fi
+  # Without --force, git refuses to remove a worktree with uncommitted or untracked changes.
+  git -C "${REPO_ROOT}" worktree remove "${path}" >/dev/null || die \
+    "could not remove ${path}; see the git error above"
   git -C "${REPO_ROOT}" branch -D "${branch}" >/dev/null || die \
     "could not delete branch ${branch}; see the git error above"
 }
