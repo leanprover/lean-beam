@@ -158,11 +158,12 @@ private def entries (context : Context) (client : Client) (source : ConfigSource
           let mut result := #[]
           for entry in values do
             let _ ← object entry
-            if isBeam client ((field? entry "name").bind (·.getStr?.toOption) |>.getD "") entry then
+            let name := (field? entry "name").bind (·.getStr?.toOption) |>.getD ""
+            if isBeam client name entry then
               result := result.push {
                 source := source.path.toString
-                key := "mcp_servers[lean-beam]"
-                name := (field? entry "name").bind (·.getStr?.toOption) |>.getD ""
+                key := s!"mcp_servers[{name}]"
+                name
                 value := entry
                 conditional := source.conditional
               }

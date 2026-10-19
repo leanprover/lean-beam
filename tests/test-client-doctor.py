@@ -649,6 +649,9 @@ class ClientDoctorTest(unittest.TestCase):
         report = self.run_doctor("vibe", expected=2)
         self.has_code(report, "config.layers", "unknown")
         self.assertNotIn("mcp.duplicate", {item["code"] for item in self.findings(report)})
+        self.assertEqual({item["key"] for item in self.findings(report)
+                          if item["code"] == "mcp.definition"},
+                         {"mcp_servers[lean-beam]", "mcp_servers[another-beam]"})
 
     def test_vibe_empty_project_collection_leaves_selection_unknown(self):
         self.write(self.home / ".vibe/config.toml", (
