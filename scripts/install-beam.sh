@@ -745,6 +745,10 @@ read_validated_toolchains() {
 
 load_validated_toolchains() {
   validated_toolchains=()
+  local registry_entries=""
+  if ! registry_entries="$(read_validated_toolchains)"; then
+    die "failed to read validated Lean toolchain registry; restore validated-lean-toolchains from the same Beam revision or fix its read permissions"
+  fi
   local toolchain=""
   while IFS= read -r toolchain; do
     [ -n "$toolchain" ] || continue
@@ -755,7 +759,7 @@ load_validated_toolchains() {
       die "duplicate validated Lean toolchain: $toolchain"
     fi
     validated_toolchains+=("$toolchain")
-  done < <(read_validated_toolchains)
+  done <<< "$registry_entries"
 }
 
 read_compatible_release_lines() {
@@ -768,6 +772,10 @@ read_compatible_release_lines() {
 
 load_compatible_release_lines() {
   compatible_release_lines=()
+  local registry_entries=""
+  if ! registry_entries="$(read_compatible_release_lines)"; then
+    die "failed to read compatible Lean release-line registry; restore compatible-lean-release-lines from the same Beam revision or fix its read permissions"
+  fi
   local release_line=""
   while IFS= read -r release_line; do
     [ -n "$release_line" ] || continue
@@ -778,7 +786,7 @@ load_compatible_release_lines() {
       die "duplicate compatible Lean release line: $release_line"
     fi
     compatible_release_lines+=("$release_line")
-  done < <(read_compatible_release_lines)
+  done <<< "$registry_entries"
 }
 
 load_toolchain_policy() {

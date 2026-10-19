@@ -4,7 +4,7 @@
 # Released under Apache 2.0 license as described in the file LICENSE.
 # Author: Emilio J. Gallego Arias
 
-"""Check that shell tests consume formatted toolchain registries without changing entries."""
+"""Check registry normalization and read-error handling in shell tests and the installer."""
 
 from pathlib import Path
 import os
@@ -17,6 +17,8 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 PINNED = "leanprover/lean4:v99.2.0-rc1"
 STABLE = "leanprover/lean4:v99.1.2"
+PINNED_LINE = "leanprover/lean4:v99.2"
+STABLE_LINE = "leanprover/lean4:v99.1"
 
 
 class ToolchainRegistryTests(unittest.TestCase):
@@ -131,6 +133,126 @@ class ToolchainRegistryTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 77, result.stderr)
                 self.assertEqual(result.stderr, b"")
                 self.assertTrue(setup_called)
+
+
+class InstallerRegistryTests(unittest.TestCase):
+    def run_installer(self, registries=None, missing=None, partial_failure=None):
+        with tempfile.TemporaryDirectory(prefix="beam-installer-registry-") as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            for name in ["install-beam.sh", "install-lib.sh", "install-locations.sh",
+                         "install-mcp.sh", "shared-lib.sh"]:
+                shutil.copyfile(ROOT / "scripts" / name, root / "scripts" / name)
+            (root / "lean-toolchain").write_text(PINNED + "\n")
+            entries = {
+                "validated-lean-toolchains": PINNED + "\n" + STABLE + "\n",
+                "compatible-lean-release-lines": PINNED_LINE + "\n" + STABLE_LINE + "\n",
+            }
+            entries.update(registries or {})
+            for name, contents in entries.items():
+                if name != missing:
+                    (root / name).write_bytes(contents.encode("utf-8"))
+
+            stub_bin = root / "bin"
+            stub_bin.mkdir()
+            marker = root / "setup-called"
+            # No write approval is given. Guard setup/build commands against accidental execution.
+            for command in ["elan", "lake", "mkdir", "mktemp"]:
+                stub = stub_bin / command
+                stub.write_text(
+                    '#!/usr/bin/env bash\n'
+                    'printf "%s\\n" "$0" >> "$BEAM_REGISTRY_SETUP_MARKER"\nexit 77\n'
+                )
+                stub.chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "PATH": str(stub_bin) + os.pathsep + env["PATH"],
+                "HOME": str(root / "home"),
+                "BEAM_BIN_HOME": str(root / "commands"),
+                "BEAM_INSTALL_ROOT": str(root / "install"),
+                "BEAM_REGISTRY_SETUP_MARKER": str(marker),
+            })
+            if partial_failure:
+                env["BEAM_REGISTRY_FAIL_PATH"] = str(root / partial_failure)
+                env["BEAM_REGISTRY_REAL_AWK"] = shutil.which("awk")
+                env["BEAM_REGISTRY_PARTIAL_ENTRY"] = (
+                    PINNED if partial_failure == "validated-lean-toolchains" else PINNED_LINE
+                )
+                stub = stub_bin / "awk"
+                stub.write_text(
+                    '#!/usr/bin/env bash\n'
+                    'if [ "${!#}" = "$BEAM_REGISTRY_FAIL_PATH" ]; then\n'
+                    '  printf "%s\\n" "$BEAM_REGISTRY_PARTIAL_ENTRY"\n'
+                    '  echo "injected registry read failure" >&2\n  exit 23\nfi\n'
+                    'exec "$BEAM_REGISTRY_REAL_AWK" "$@"\n'
+                )
+                stub.chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(root / "scripts/install-beam.sh"), "--all-validated"],
+                cwd=root, env=env, input=b"", capture_output=True, timeout=10, check=False,
+            )
+            self.assertEqual(result.stdout, b"")
+            self.assertFalse(marker.exists(), result.stderr)
+            for name in ["home", "commands", "install", ".lake"]:
+                self.assertFalse((root / name).exists(), result.stderr)
+            return result
+
+    def test_missing_registries_stop_install_planning(self):
+        for name, label in [("validated-lean-toolchains", "validated Lean toolchain"),
+                            ("compatible-lean-release-lines", "compatible Lean release-line")]:
+            with self.subTest(registry=name):
+                result = self.run_installer(missing=name)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(f"failed to read {label} registry".encode(), result.stderr)
+                self.assertIn(
+                    f"restore {name} from the same Beam revision or fix its read permissions".encode(),
+                    result.stderr,
+                )
+                self.assertNotIn(b"Install Plan", result.stderr)
+
+    def test_partial_reads_stop_install_planning(self):
+        for name, label in [("validated-lean-toolchains", "validated Lean toolchain"),
+                            ("compatible-lean-release-lines", "compatible Lean release-line")]:
+            with self.subTest(registry=name):
+                result = self.run_installer(partial_failure=name)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(b"injected registry read failure", result.stderr)
+                self.assertIn(f"failed to read {label} registry".encode(), result.stderr)
+                self.assertIn(
+                    f"restore {name} from the same Beam revision or fix its read permissions".encode(),
+                    result.stderr,
+                )
+                self.assertNotIn(b"Install Plan", result.stderr)
+
+    def test_formatted_registries_reach_confirmation_without_writing(self):
+        for newline in ["\n", "\r\n"]:
+            with self.subTest(newline=repr(newline)):
+                result = self.run_installer(registries={
+                    "validated-lean-toolchains": newline.join(
+                        ["  # exact releases", "", f" \t{PINNED}\t ", f"  {STABLE}  "]),
+                    "compatible-lean-release-lines": newline.join(
+                        ["\t# release lines", f"  {PINNED_LINE}  ", f" \t{STABLE_LINE}\t "]),
+                })
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(b"Install Plan", result.stderr)
+                self.assertLess(result.stderr.index(PINNED.encode()), result.stderr.index(STABLE.encode()))
+                self.assertIn(b"refusing to install without confirmation", result.stderr)
+                self.assertNotIn(b"failed to read", result.stderr)
+
+    def test_invalid_and_duplicate_entries_still_fail_policy_checks(self):
+        for name, contents, expected in [
+            ("validated-lean-toolchains", "invalid toolchain\n", "invalid validated Lean toolchain"),
+            ("validated-lean-toolchains", f"{PINNED}\n{PINNED}\n", "duplicate validated Lean toolchain"),
+            ("compatible-lean-release-lines", "invalid line\n", "invalid compatible Lean release line"),
+            ("compatible-lean-release-lines", f"{PINNED_LINE}\n{PINNED_LINE}\n",
+             "duplicate compatible Lean release line"),
+        ]:
+            with self.subTest(registry=name, expected=expected):
+                result = self.run_installer(registries={name: contents})
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(expected.encode(), result.stderr)
+                self.assertNotIn(b"failed to read", result.stderr)
+                self.assertNotIn(b"Install Plan", result.stderr)
 
 
 if __name__ == "__main__":
