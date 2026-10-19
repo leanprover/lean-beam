@@ -531,6 +531,25 @@ class ClientDoctorTest(unittest.TestCase):
         self.json_file(self.workspace / "opencode.json", {"mcp": {"lean-beam": {"enabled": True}}})
         self.has_code(self.run_doctor("opencode", expected=2), "config.partial", "unknown")
 
+    def test_opencode_changed_alias_shape_is_not_reported_absent(self):
+        self.json_file(self.home / ".config/opencode/opencode.json", {
+            "mcp": {"beam-alias": {"type": "local", "command": [str(self.executable)]}},
+        })
+        for override, expected, code in [
+            (None, 2, "config.entryShape"), (False, 2, "config.entryShape"),
+            ([], 2, "config.entryShape"), ("DOCTOR_SECRET_SENTINEL", 2, "config.entryShape"),
+            ({"command": None}, 1, "mcp.invalidEntry"),
+            ({"command": ["DOCTOR_SECRET_SENTINEL", 7]}, 1, "mcp.invalidEntry"),
+            ({"command": ["other-mcp"]}, 2, "launch.relative"),
+        ]:
+            with self.subTest(override=override):
+                self.json_file(self.workspace / "opencode.json", {"mcp": {"beam-alias": override}})
+                report = self.run_doctor("opencode", expected=expected)
+                self.has_code(report, code)
+                self.assertNotIn("mcp.notConfigured", {f["code"] for f in self.findings(report)})
+                self.assertNotIn("launch.file", {f["code"] for f in self.findings(report)})
+                self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+
     def test_opencode_distinct_server_names_are_independent(self):
         self.json_file(self.workspace / "opencode.json", {"mcp": {
             name: {"type": "local", "command": [str(self.executable)]}

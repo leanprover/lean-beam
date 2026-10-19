@@ -512,6 +512,7 @@ private partial def mergeObjects (earlier later : Json) : Json :=
 /-- OpenCode merges objects recursively; scalars and command arrays are replaced.
     Keep the command's source when a later layer only changes another field. -/
 private def mergeOpenCode (entries : Array Entry) : Array Entry := Id.run do
+  let beamNames := (entries.filter fun entry => isBeam .opencode entry.name entry.value).map (·.name)
   let mut result : Array Entry := #[]
   for entry in entries do
     if let some index := result.findIdx? (·.key == entry.key) then
@@ -521,9 +522,8 @@ private def mergeOpenCode (entries : Array Entry) : Array Entry := Id.run do
         commandSource? := if (field? entry.value "command").isSome then some entry.source
           else some (previous.commandSource?.getD previous.source) }
     else result := result.push entry
-  return result.filter fun entry =>
-    entry.key == "mcp.lean-beam" || ((command? .opencode entry.value).any fun command =>
-      (System.FilePath.mk command).fileName == some "lean-beam-mcp")
+  -- A malformed override must not erase recognition of an inherited Beam alias.
+  return result.filter fun entry => beamNames.contains entry.name
 
 def inspectClient (context : Context) (client : Client) (dirs : Array System.FilePath)
     (configOverride? : Option System.FilePath := none) : IO ClientReport := do
