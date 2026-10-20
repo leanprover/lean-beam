@@ -415,6 +415,11 @@ Read the save path as a progression, not as three unrelated commands:
   `lean-beam --root ROOT stop`
   before the next command that uses the Lean server; `lean-beam refresh` is not sufficient
 - `lean-beam close-save` is `lean-beam save` plus closing the tracked file afterward
+- if close-save returns `contentModified` with `error.data.reason = "savedDocumentChanged"`,
+  `error.data.saved` is an already committed checkpoint of the earlier accepted version;
+  `closed: false` means this request refused to close a changed or absent document, leaving any
+  replacement intact. Run `lean-beam update <file>` or `lean-beam sync <file>` to reacquire current
+  state, then save again if the current text needs a checkpoint
 - a Beam save checkpoints the accepted Lean server environment; it does not rerun batch elaboration
 - the one-time `stop` / `lake clean` / `lake build` sequence discards development checkpoints
   and supplies final batch evidence when no successful clean CI result is available; routine local

@@ -168,6 +168,14 @@ The cheap regression guard is [scripts/check-daemon-safety.sh](../scripts/check-
 It is intentionally conservative and should be updated when a new daemon-safe wrapper around an
 exit-capable Lean/Lake API is introduced.
 
+Save dispatch currently holds the runtime-wide state lock across the accepted-document comparison,
+Lake trace invalidation, and backend request write. Trace invalidation performs filesystem I/O, so
+include this path when reducing shared-lock work alongside workspace loading
+([#308](https://github.com/leanprover/lean-beam/pull/308)). Moving invalidation outside the lock alone
+would allow document replacement between validation and dispatch; a narrower lock or ordered
+delivery mechanism must preserve that ordering. See the `before-dispatch` case in
+[the save-finalization regression](../tests/test-save-finalization.py).
+
 The broker has no default workspace. Every workspace-bound broker request names a workspace or
 carries a continuation handle that names one, and daemon startup receives its initial workspace id
 explicitly through `--workspace-id`. The public CLI still manages one daemon per project, but that

@@ -8,6 +8,14 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Changed
 
+- Save finalization now checks the exact accepted document before marking or closing it.
+  A refused close-save reports `contentModified` with reason `savedDocumentChanged`, the
+  committed checkpoint in `error.data.saved`, and `closed: false`; any replacement is left intact.
+  Other failures after checkpoint commit preserve their error code and message, but move any
+  original error data beneath `error.data.originalData` alongside `saved`. Clients reading those
+  original fields must use that nested path for these finalization failures. MCP preserves the
+  broker's error-data field names
+  ([#309](https://github.com/leanprover/lean-beam/pull/309)).
 - Remove the standalone installer's persistent construction cache under
   `BEAM_INSTALL_ROOT/state/install-bundles`, which grew by roughly 300 MB per target for every
   source change and had no cleanup command. Each install now builds its targets in a temporary
