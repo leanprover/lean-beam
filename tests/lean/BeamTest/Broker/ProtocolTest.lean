@@ -1347,6 +1347,82 @@ private def awaitFixtureTask
   | some (.error err) => throw err
   | none => throw <| IO.userError s!"{label}: fixture task did not finish"
 
+private inductive LateWriteFailure where
+  | open
+  | closed
+  | cancelled
+  deriving BEq
+
+/-- A write admitted before closure must retain the channel's typed failure and cancellation. -/
+private def checkLateWriteFailure (kind : LateWriteFailure) : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-late-write-failure-{← IO.monoNanosNow}"
+  let workspaceId := "late-write-failure"
+  IO.FS.createDirAll base
+  let runtime ← ServerRuntime.create { root := base } workspaceId
+  let failure := BrokerFailure.toResponseFailure {
+    code := .workerExited
+    message := "controlled channel failure before write error"
+    data? := some <| Json.mkObj [("source", toJson ("reader" : String))]
+  }
+  try
+    withShutdownObservedSession workspaceId base (base / "shutdown") .stall fun initial => do
+      let writes ← IO.mkRef (0 : Nat)
+      let admitted ← IO.mkRef false
+      let cancelled ← IO.mkRef false
+      let session := { initial with
+        stdin := { initial.stdin with putStr := fun text => do
+          if text.contains "\"method\":\"workspace/symbol\"" then
+            writes.modify (· + 1)
+            admitted.set (!(← PendingRequestStore.snapshot initial.pending).isEmpty)
+            if kind == .cancelled then
+              if let some active ← ActiveRequestRegistry.markCancelled runtime.activeRequests
+                  (some workspaceId) "late-write" then
+                cancelled.set (← active.cancelRef.get)
+            if kind != .open then
+              PendingRequestStore.close initial.pending failure
+            throw <| IO.userError "controlled broken pipe"
+          else initial.stdin.putStr text
+        }
+      }
+      runtime.state.atomically do
+        let state ← get
+        let some workspace := state.workspaces.get? workspaceId
+          | throw <| IO.userError "late-write fixture workspace is missing"
+        let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
+        set { state with workspaces := state.workspaces.insert workspaceId workspace }
+      let task ← IO.asTask (prio := Task.Priority.dedicated) <| runtime.dispatchRequest {
+        workspaceId? := some workspaceId
+        clientRequestId? := some "late-write"
+        payload := .workspaceSymbols { query := "late-write" }
+      }
+      try
+        let some (.ok response) ← Beam.waitTaskWithTimeout task 3000
+          | throw <| IO.userError "late write failure left its caller blocked"
+        require "late write fixture fails an admitted request" ((← admitted.get) && (← writes.get) == 1)
+        match kind with
+        | .open =>
+            require "open-channel write errors retain their existing internal error"
+              (response.error?.any fun error =>
+                error.code == "internalError" && error.message.contains "controlled broken pipe")
+        | .closed =>
+            require "late write failure preserves the typed reader failure and data"
+              (response.error?.any fun error => toJson error == toJson failure.error)
+        | .cancelled =>
+            require "late write fixture marked the exact active cancellation identity" (← cancelled.get)
+            require "cancelled late write keeps cancellation precedence"
+              (response.error?.any (·.code == "requestCancelled"))
+        require "late write failure removes its pending request"
+          ((← PendingRequestStore.snapshot initial.pending).isEmpty)
+        let retained ← PendingRequestStore.failure? initial.pending
+        require "late write failure preserves channel admission state"
+          (if kind == .open then retained.isNone
+           else retained.any fun actual => toJson actual.error == toJson failure.error)
+      finally
+        PendingRequestStore.close initial.pending failure
+        discard <| IO.wait task
+  finally
+    try runtime.close finally IO.FS.removeDirAll base
+
 private inductive ShutdownReply where
   | success
   | error
@@ -1867,6 +1943,10 @@ private def checkFailedReaderAdmission : IO Unit := do
           (failure.error.code == "workerExited" &&
             failure.error.message.contains "controlled admission reader failure" &&
             failure.error.message.contains "backend process exit was not confirmed")
+        require "unconfirmed reader termination explains workspace recovery"
+          (failure.error.message.contains "drop this workspace" &&
+            failure.error.message.contains "lean-beam --root <workspace-root> stop" &&
+            failure.error.message.contains "lean-beam --root <workspace-root> serve")
         require "failed-reader fixture still has unconfirmed process exit" ((← process.observe).isNone)
         let lateTask ← IO.asTask (prio := Task.Priority.dedicated) <|
           sendRequestJsonTrackedDetailed failed "textDocument/hover" Json.null
@@ -2640,6 +2720,9 @@ def main : IO Unit := do
   checkWorkspaceLifecycleProtocol
   checkFixtureChildCleanupOnFailure
   checkFixtureCleanupRejectsWaitFailure
+  checkLateWriteFailure .open
+  checkLateWriteFailure .closed
+  checkLateWriteFailure .cancelled
   checkShutdownReplyCleanup .timeout
   checkShutdownReplyCleanup .success
   checkShutdownReplyCleanup .error

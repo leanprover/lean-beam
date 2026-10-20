@@ -424,10 +424,14 @@ and cleanup context. Registration and closure share one mutex: a request racing 
 admitted and settled by it, or rejected with that same failure before its request write. A request
 admitted before closure may still write afterward; closure does not cancel an in-progress write or
 serialize document notifications with failure publication. Session copies share this gate, and
-repeated closure retains the first failure.
+repeated closure retains the first failure. If an admitted write then fails and observes a closed
+store, it settles through that retained typed failure rather than replacing it with an I/O error.
 A session whose reader has failed cannot serve later requests even if its child is still running;
 workspace reset or removal remains available, and unrelated workspaces remain usable. Confirmed
-process exit still uses the existing detach-and-restart path.
+process exit still uses the existing detach-and-restart path. If reader failure leaves the process
+observed running, the retained failure tells the caller to drop the workspace or restart its owning
+session. For wrapper sessions, run `lean-beam --root <workspace-root> stop`, then start a new
+`lean-beam --root <workspace-root> serve` owner before retrying.
 Final cleanup explicitly settles remaining requests with `workerExited`
 and the retained process outcome, even when an inherited stdout pipe prevents reader EOF.
 After settling pending work and observing stderr completion, unconfirmed process exit is reported

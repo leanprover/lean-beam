@@ -436,6 +436,12 @@ partial def sessionReaderLoop (session : Session) : IO Unit := do
     let message ←
       terminateBackendFailure "after startup" e.toString
         session.proc session.stderrCapture
+    let message :=
+      if (← session.proc.observe).isNone then
+        message ++ "\nRecovery: drop this workspace or restart the owning session. " ++
+          "For wrapper sessions, run `lean-beam --root <workspace-root> stop`, then start a new " ++
+          "`lean-beam --root <workspace-root> serve` owner before retrying."
+      else message
     PendingRequestStore.close session.pending <| BrokerFailure.toResponseFailure {
       code := .workerExited
       message
@@ -483,6 +489,10 @@ private def startRequestJsonTrackedDetailed
   catch e =>
     discard <| PendingRequestStore.remove session.pending id
     traceBroker s!"lsp request send failed id={id} method={method} error={e.toString}"
+    if let some failure ← PendingRequestStore.failure? session.pending then
+      -- Removal can precede closure's drain; settle explicitly with its retained typed cause.
+      pending.resolveFailure failure
+      return (session, pending)
     try
       promise.resolve (.error (responseFailureFor .internalError e.toString))
     catch _ =>
