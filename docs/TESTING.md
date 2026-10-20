@@ -203,6 +203,9 @@ against the actual staged daemon and a non-shipped helper client. A fresh public
 holds Lake evaluation behind a latch for over 31 seconds, then releases it and checks completed
 `sync` progress and save readiness. Before release, stderr must explain that configuration is
 loading while stdout contains no readiness result. CLI interruption and owner loss exercise cold-load cleanup.
+Normal stop must report acknowledged shutdown without a warning, and both stop and interruption
+must release the owner pipe without forced daemon termination. The foreground owner still has
+the same 15-second exit assertion.
 The fixture also checks completed requests, abrupt helper exit with a live descendant, explicit
 test deadlines, cancellation, and parent death, then cancellation/drop and
 EOF shutdown through both legacy and modern MCP. Save preparation is also cancelled with a

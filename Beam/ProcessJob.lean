@@ -53,8 +53,13 @@ structure Scope where
 /-- Observe without reaping. Lost ownership is permanent; observation after closure is rejected. -/
 def Scope.poll (scope : Scope) : IO State := scope.observe
 
-/-- Request explicit leader/group termination before the one final wait. -/
-private def terminate (child : IO.Process.Child cfg) : IO Unit := do
+namespace Internal
+
+/-- Request termination while the caller retains the unreaped child spawned with `setsid := true`
+(which may not yet have established its session). The caller must own that POSIX process group;
+this operation signals both the leader and `-pid`. It does not wait or consume ownership, and does
+not depend on `Child.takeStdin` preserving flags. -/
+def requestTermination (child : IO.Process.Child cfg) : IO Unit := do
   if System.Platform.isWindows then
     try child.kill
     catch error =>
@@ -64,8 +69,10 @@ private def terminate (child : IO.Process.Child cfg) : IO Unit := do
   else
     terminatePosix child.pid
 
+end Internal
+
 private def terminateAndWait (child : IO.Process.Child cfg) : IO Unit := do
-  try terminate child finally discard <| child.wait
+  try Internal.requestTermination child finally discard <| child.wait
 
 private def closeAndWait (child : IO.Process.Child cfg) (job : USize) (owned : Bool) :
     IO Unit := do
@@ -77,7 +84,7 @@ private def closeAndWait (child : IO.Process.Child cfg) (job : USize) (owned : B
     if owned then
       -- Successful Windows job closure already requests termination. A second kill can
       -- fail while termination is pending. Failed closure still needs explicit termination.
-      if !System.Platform.isWindows || closeError?.isSome then terminate child
+      if !System.Platform.isWindows || closeError?.isSome then Internal.requestTermination child
     if let some error := closeError? then throw error
   finally
     if owned then discard <| child.wait

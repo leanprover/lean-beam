@@ -227,12 +227,18 @@ def through_cli(base, compiler, cli):
                     assert synced["fileProgress"]["done"] is True, synced
                     assert synced["result"]["readiness"]["saveReady"] is True, synced
                     assert synced["result"]["readiness"]["blockingErrorCount"] == 0, synced
-                    invoke("stop")
+                    stopping = invoke("stop")["result"]
+                    assert stopping["state"] == "stopping" and stopping["changed"] is True, stopping
+                    assert "warning" not in stopping, stopping
                     assert owner.wait(timeout=15) == 0, stderr_path.read_text(errors="replace")
+                    assert "forcing daemon termination" not in stderr_path.read_text(errors="replace"), \
+                        "normal stop must release the owner pipe and let the daemon exit gracefully"
                 elif scenario == "interrupt":
                     owner.send_signal(signal.SIGINT)
                     assert owner.wait(timeout=15) != 0, "interrupted cold serve reported success"
                     assert stdout_path.stat().st_size == 0, "interrupted cold serve became ready"
+                    assert "forcing daemon termination" not in stderr_path.read_text(errors="replace"), \
+                        "interruption must release the owner pipe and let the daemon exit gracefully"
                 else:
                     owner.kill()
                     owner.wait(timeout=5)

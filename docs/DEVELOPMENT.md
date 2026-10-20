@@ -454,6 +454,14 @@ Its caller receives an observation capability rather than maintaining a separate
 Observation and teardown are serialized: loss of child ownership is permanent, and a capability
 retained past teardown rejects observation before touching the old PID. The caller must not wait
 or kill the raw child separately. Native failures retain their OS error code in `IO.Error`.
+
+The CLI detaches the daemon's stdin writer immediately after spawning it. Published child handles
+therefore cannot retain that writer; one shared reference owns it until foreground-owner cleanup
+clears the reference and sends EOF. Taking stdin only during cleanup would leave aliases of the
+original child keeping the pipe open. Forced termination uses the existing native child/group
+signalling operation, so it does not depend on detached child handles retaining `setsid` metadata.
+A forced owner cleanup emits a stderr diagnostic; ordinary stop and interruption must exit without
+that fallback. Exit observation and bounded collection still belong to the CLI owner.
 Windows uses `Child.tryWait` on the retained process handle without collecting the child. It
 assigns a non-inheritable kill-on-close Job Object before the handshake; successful job closure requests
 termination of its members, so cleanup waits on the retained child handle without another kill. Failed
