@@ -252,12 +252,20 @@ private partial def finishedHeaderLevelNamesAt (snap : Language.DynamicSnapshot)
         return some levels
   return none
 
+-- Lean 4.35 moved parsed-command lookup from the server API to the language API.
+-- Select the public API while elaborating this definition; there is no runtime fallback.
+private def findParsedCommandAt (doc : FileWorker.EditableDocument) (pos : String.Pos.Raw) :
+    ServerTask (Option Language.Lean.CommandParsedSnapshot) := by
+  first
+  | exact (Language.Lean.findCmdParsedSnap doc.initSnap doc.meta.text pos).asServerTask
+  | exact Lean.Server.RequestM.findCmdParsedSnap doc pos
+
 private def withProofScopeAtPos (position : Lean.Lsp.Position)
     (f : List Name → RequestM α) : RequestM (RequestTask α) := do
   let doc ← RequestM.readDoc
   let pos := doc.meta.text.lspPosToUtf8Pos position
   RequestM.bindTaskCostly
-    (Language.Lean.findCmdParsedSnap doc.initSnap doc.meta.text pos).asServerTask fun
+    (findParsedCommandAt doc pos) fun
     | none => throw <| RequestError.invalidParams (noSnapshotFoundMessage position)
     | some parsed => do
       let some commandStart := parsed.stx.getPos?
