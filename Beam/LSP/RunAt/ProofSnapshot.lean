@@ -60,13 +60,11 @@ def runTacticM (p : ProofSnapshot) (t : TacticM α) : IO (α × ProofSnapshot) :
   let ((a, tacticState), p') ← p.runTermElabM (t p.tacticContext |>.run p.tacticState)
   return (a, { p' with tacticState })
 
-def create (ctx : Elab.ContextInfo) (goals : List MVarId) (types : List Expr := [])
-    (levelNames : List Name := []) :
+def create (ctx : Elab.ContextInfo) (goals : List MVarId) (levelNames : List Name := []) :
     IO ProofSnapshot := do
   ctx.runMetaM {} do
-    let goals := goals ++ (← types.mapM fun t => Expr.mvarId! <$> Meta.mkFreshExprMVar (some t))
     -- InfoTree contexts do not save the term elaborator's universe scope. Start with the
-    -- command scope, then recover declaration-local parameters from goals and hypotheses.
+    -- command and declaration-header scopes, then collect parameters from goals and hypotheses.
     let mut levels : CollectLevelParams.State := {}
     for name in levelNames.reverse do
       levels := CollectLevelParams.visitLevel (.param name) levels
