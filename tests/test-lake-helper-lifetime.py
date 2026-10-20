@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import shutil
 import subprocess
@@ -187,6 +188,8 @@ def through_cli(base, compiler, cli):
     for scenario in scenarios:
         root = project(base, compiler, "cli-" + scenario)
         environment = child_environment(root)
+        if scenario == "cold-success":
+            environment["BEAM_PROGRESS"] = "1"
         command = [str(cli), "--root", str(root)]
         stdout_path, stderr_path = root / "owner.out", root / "owner.err"
 
@@ -216,6 +219,11 @@ def through_cli(base, compiler, cli):
                         assert stdout_path.stat().st_size == 0, "serve completed before release"
 
                     hold_helper(pids, "cold server environment", still_loading)
+                    waits = [int(seconds) for seconds in re.findall(
+                        r"still preparing Lean workspace \((\d+)s\)",
+                        stderr_path.read_text(encoding="utf-8"))]
+                    assert waits and waits[-1] >= 30, "held serve must report elapsed waiting time"
+                    assert waits == sorted(set(waits)), waits
                     (root / "release").touch()
 
                     def ready():

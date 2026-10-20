@@ -108,7 +108,7 @@ private def cancelledOwnerAcquisition : IO Unit := IO.FS.withTempDir fun tempora
       pure { root, runtime }) root (some control) fun owner => do
         retained.set (some owner)
         Beam.Cli.runThenHoldUntilInterrupted watcher owner do
-          Beam.Cli.callBrokerQuiet watcher root owner.client Beam.Broker.Request.ensure
+          Beam.Cli.ensureProjectSession watcher root owner.client
           ready.set true
           IO.println "unexpected readiness"
   let outcome ← try

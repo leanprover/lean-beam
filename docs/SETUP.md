@@ -227,8 +227,13 @@ Replace `Foo.lean` and the coordinates with a saved file and position in your pr
 The guard skips JSON parsing and probes when `update` fails; read its stderr diagnostic first.
 
 `lean-beam serve` is the only wrapper command that starts a project session. Its
-inherited ownership pipe defines the session lifetime: interrupt the holder, or run
-`lean-beam --root ROOT stop`, to close the daemon and its backend processes. Lean queries and file
+loading notice goes to stderr. While preparation is pending, elapsed waiting messages follow the
+normal progress setting: enabled on a terminal, forced with `BEAM_PROGRESS=1` when stderr is
+redirected, or disabled with `BEAM_PROGRESS=0`. These messages report liveness, not a percentage.
+The running-session JSON appears on stdout only after preparation completes.
+
+Interrupt the foreground process, or run `lean-beam --root ROOT stop`, to close the daemon and its
+backend processes. Lean queries and file
 operations attach to an existing owner and report the exact `serve` command when no session exists.
 
 The foreground owner handles Ctrl-C and, on POSIX, SIGTERM and SIGHUP from acquisition through
