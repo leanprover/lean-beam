@@ -1795,6 +1795,11 @@ private def checkFailedReaderAdmission : IO Unit := do
   IO.FS.createDirAll base
   let runtime ← ServerRuntime.create { root := base } failedId
   try
+    let text := "def openedBeforeReaderFailure := 1\n"
+    let path := base / "Open.lean"
+    IO.FS.writeFile path text
+    let uri := sessionUri (← IO.FS.realPath path)
+    let doc := (DocumentState.FileSnapshot.ofText text default).toDocState 1
     withShutdownObservedSession failedId base (base / "failed-shutdown") .stall fun initial => do
       withShutdownObservedSession healthyId (base / "healthy") (base / "healthy-shutdown") .stall fun healthy => do
         let exitCode ← IO.mkRef (none : Option UInt32)
@@ -1805,6 +1810,7 @@ private def checkFailedReaderAdmission : IO Unit := do
           (throw <| IO.userError "controlled reader termination failure")
         let failed := { initial with
           proc := process
+          docs := initial.docs.insert uri doc
           stdin := { initial.stdin with putStr := fun _ => failedWrites.modify (· + 1) }
           stdout := { initial.stdout with
             getLine := throw <| IO.userError "controlled admission reader failure"
@@ -1852,6 +1858,19 @@ private def checkFailedReaderAdmission : IO Unit := do
         finally
           PendingRequestStore.close failed.pending failure
           discard <| IO.wait lateTask
+        -- A document close sends only a notification, so request registration cannot reject it.
+        let rejectedClose ← runtime.dispatchRequest {
+          workspaceId? := some failedId
+          payload := .close { path := "Open.lean" }
+        }
+        require "failed reader rejects notification-only close with the retained failure"
+          (rejectedClose.error?.any fun actual => toJson actual == toJson failure.error)
+        require "rejected notification-only close does not write" ((← failedWrites.get) == 0)
+        runtime.state.atomically do
+          let some session := (← get).workspaces.get? failedId |>.bind (·.lean.session?)
+            | throw <| IO.userError "rejected notification-only close detached the failed session"
+          require "rejected notification-only close preserves the opened document"
+            (session.docs.contains uri)
         let rejected ← runtime.dispatchRequest {
           workspaceId? := some failedId
           payload := .workspaceSymbols { query := "failed" }
@@ -1868,7 +1887,7 @@ private def checkFailedReaderAdmission : IO Unit := do
         exitCode.set (some 0)
         let recovered ← runtime.dispatchRequest {
           workspaceId? := some failedId
-          payload := .close { path := "Dead.lean" }
+          payload := .close { path := "Open.lean" }
         }
         require "confirmed exit permits detachment of a failed reader" recovered.ok
         runtime.state.atomically do
