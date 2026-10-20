@@ -24,12 +24,12 @@ private def startWaiter (watcher : Beam.Cli.InterruptWatcher) :
 
 private def awaitWaiter (waiter : Task (Except IO.Error Unit)) : IO (Except IO.Error Unit) := do
   let some result ← Beam.waitTaskWithTimeout waiter 2000
-    | throw <| IO.userError "SIGINT waiter survived watcher teardown"
+    | throw <| IO.userError "interrupt waiter survived watcher teardown"
   return result
 
 private def requireReleased (waiter : Task (Except IO.Error Unit)) : IO Unit := do
   match ← awaitWaiter waiter with
-  | .error (.userError "SIGINT watcher promise dropped") => pure ()
+  | .error (.userError "interrupt watcher promise dropped") => pure ()
   | .error err => throw err
   | .ok () => throw <| IO.userError "teardown delivered a signal that was never sent"
 
@@ -52,33 +52,36 @@ private def checkThrow : IO Unit := do
     | throw <| IO.userError "failed action did not start its waiter"
   requireReleased waiter
 
-private def sendSigint : IO Unit := do
+private def sendSignal (name : String) : IO Unit := do
   let result ← IO.Process.output {
     cmd := "kill"
-    args := #["-INT", toString (← IO.Process.getPID)]
+    args := #["-" ++ name, toString (← IO.Process.getPID)]
   }
-  require s!"cannot send SIGINT: {result.stderr}" (result.exitCode == 0)
+  require s!"cannot send {name}: {result.stderr}" (result.exitCode == 0)
 
-private def checkDelivery : IO Unit :=
+private def checkDelivery (name : String) : IO Unit :=
   Beam.Cli.withInterruptWatcher fun watcher => do
     let waiter ← startWaiter watcher
-    sendSigint
+    sendSignal name
     IO.ofExcept (← awaitWaiter waiter)
-    require "delivered SIGINT not visible to polling" (← watcher.interrupted)
+    require s!"delivered {name} not visible to polling" (← watcher.interrupted)
 
-/-- Run in a child: the final SIGINT must terminate it after every watcher has been released. -/
+/-- Run in a child: the final signal must terminate it after every watcher has been released. -/
 def child (mode : String) : IO Unit := do
   match mode with
   | "return" => checkReturn
   | "throw" => checkThrow
-  | "signal" => checkDelivery
+  | "signal-INT" => checkDelivery "INT"
+  | "signal-TERM" => checkDelivery "TERM"
+  | "signal-HUP" => checkDelivery "HUP"
   | _ => throw <| IO.userError s!"unknown interrupt watcher test mode: {mode}"
   Beam.Cli.withInterruptWatcher fun watcher => do
     require "a later watcher inherited an earlier interrupt" (!(← watcher.interrupted))
   IO.println "watcher cleanup complete"
   (← IO.getStdout).flush
   unless System.Platform.isWindows do
-    sendSigint
-    throw <| IO.userError "watcher teardown did not restore default SIGINT behavior"
+    let name := if mode == "signal-TERM" then "TERM" else if mode == "signal-HUP" then "HUP" else "INT"
+    sendSignal name
+    throw <| IO.userError s!"watcher teardown did not restore default {name} behavior"
 
 end BeamTest.Broker.InterruptWatcherTest

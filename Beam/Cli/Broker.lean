@@ -37,9 +37,10 @@ structure InterruptWatcher where
   interrupted : IO Bool
   awaitInterrupt : IO Unit
 
-/-- Acquire one non-repeating SIGINT watcher and release its pending wait on every exit path. -/
-def withInterruptWatcher (act : InterruptWatcher → IO α) : IO α := do
-  let signal ← Std.Internal.UV.Signal.mk 2 false
+private def withSignalEvent
+    (signum : Int32) (act : Task (Option Int) → IO α) : IO α := do
+  -- Keep listening after the first signal so repeated termination cannot bypass cleanup.
+  let signal ← Std.Internal.UV.Signal.mk signum true
   let promise ←
     try
       Std.Internal.UV.Signal.next signal
@@ -49,19 +50,27 @@ def withInterruptWatcher (act : InterruptWatcher → IO α) : IO α := do
       catch _ =>
         pure ()
       throw err
-  let event := promise.result?
-  let watcher : InterruptWatcher := {
-    interrupted := IO.hasFinished event
-    awaitInterrupt := do
-      let some _ ← IO.wait event
-        | throw <| IO.userError "SIGINT watcher promise dropped"
-      pure ()
-  }
   try
-    act watcher
+    act promise.result?
   finally
     -- Every supported runtime drops its pending promise when the signal handler is stopped.
     Std.Internal.UV.Signal.stop signal
+
+/-- Watch ordinary termination through cleanup: SIGINT everywhere, plus SIGTERM/SIGHUP on POSIX. -/
+def withInterruptWatcher (act : InterruptWatcher → IO α) : IO α :=
+  withSignalEvent 2 fun interrupt => do
+    let use (others : List (Task (Option Int))) := act {
+      interrupted := (interrupt :: others).anyM fun event => do return ← IO.hasFinished event
+      awaitInterrupt := do
+        let some _ ← IO.waitAny (interrupt :: others)
+          | throw <| IO.userError "interrupt watcher promise dropped"
+        pure ()
+    }
+    if System.Platform.isWindows then
+      use []
+    else
+      withSignalEvent 15 fun terminate =>
+        withSignalEvent 1 fun hangup => use [terminate, hangup]
 
 private def progressEnabled : IO Bool := do
   match ← envFlag? "BEAM_PROGRESS" with

@@ -587,7 +587,10 @@ cancellation, generation probes, and shutdown, first verifies the selected gener
 daemon's bounded same-connection identity greeting and then presents the capability. The greeting
 prevents a stale descriptor whose port was reused from receiving request contents or fabricating a
 valid wrapper result; it is identity pinning, not a cryptographic proof against an actively hostile
-process that already knows the descriptor. The daemon watches the
+process that already knows the descriptor. Foreground ownership watches SIGINT and, on POSIX, SIGTERM and SIGHUP through the same shutdown path.
+The watchers remain active from acquisition through final cleanup, so repeated signals do not bypass
+that cleanup. Unexpected daemon crashes and incomplete cleanup retain their recovery fences.
+The daemon watches the
 pipe's read end;
 EOF closes admission, marks admitted requests for cancellation, shuts down backend sessions, and
 stops the listener. There is no heartbeat, lease, or time-based retirement fence.
