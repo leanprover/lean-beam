@@ -204,7 +204,7 @@ private def serveProject
     (runtime : RuntimeAccess)
     (opts : CliOptions) : IO Unit := do
   let root ← projectRoot opts
-  withInterruptWatcher fun watcher =>
+  withOwnerInterruptWatcher fun watcher =>
     withProjectDaemonOwner runtime.resolve root
       (explicitControlDir? := opts.explicitControlDir?) fun owner =>
       runThenHoldUntilInterrupted watcher owner do

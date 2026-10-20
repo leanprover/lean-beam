@@ -230,6 +230,14 @@ The guard skips JSON parsing and probes when `update` fails; read its stderr dia
 inherited ownership pipe defines the session lifetime: interrupt the holder, or run
 `lean-beam --root ROOT stop`, to close the daemon and its backend processes. Lean queries and file
 operations attach to an existing owner and report the exact `serve` command when no session exists.
+
+The foreground owner handles Ctrl-C and, on POSIX, SIGTERM and SIGHUP from acquisition through
+cleanup. A signal received during startup remains latched; repeated signals do not bypass cleanup.
+These handlers override an inherited ignored SIGHUP, including from `nohup`. Shutdown is cooperative:
+lock/readiness waits observe the stop when they return, and blocked synchronous output or filesystem
+operations can delay cleanup. Attached commands handle the first Ctrl-C while awaiting a request;
+another Ctrl-C can terminate a blocked client. Their TERM/HUP dispositions remain inherited, and
+completed response output uses the default Ctrl-C action.
 Help, version reporting, `doctor`, `status`, and `prune` can run without a live owner.
 MCP clients do not need a separate holder; the stdio MCP process owns its runtime session.
 For alternate session directories, status details, and abnormal-exit recovery, see

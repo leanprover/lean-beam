@@ -54,6 +54,10 @@ A Lean release line is the canonical `major.minor` family recorded in
   original owner, an operator must preserve and archive them explicitly. Typed descriptors require
   their exact generation ID and the owning installation for recovery. A different installation
   cannot stop or recover that owner. Persisted PIDs are never recovery signal capabilities.
+- Foreground wrapper owners handle SIGINT and, on POSIX, SIGTERM/SIGHUP through cleanup. Windows
+  supports the SIGINT watcher; POSIX termination/hangup tests do not establish Windows console-group
+  shutdown behavior. Attached commands retain one-shot SIGINT interruption and inherited TERM/HUP
+  dispositions. Owner shutdown is cooperative, including during synchronous I/O.
 - MCP `2026-07-28` is the preferred stdio protocol revision. MCP `2025-11-25` remains a named
   transition target for initialization-based clients. Reconsider the legacy path before the 0.3
   release once the clients named by the setup guide can all use per-request metadata.

@@ -280,13 +280,21 @@ client protocol.
   latest 50 incident records, and `lean-beam doctor` lists recent incident paths. Incident logging
   never recreates a deleted project or session directory.
 - `Ctrl-C` is observed across wrapper connect, generation greeting, request send, and response
-  receive. It closes or abandons that operation's one-request connection without waiting behind a
+  receive. Attached commands watch the first SIGINT; subsequent SIGINTs can terminate a client
+  blocked in diagnostic output. Their TERM/HUP dispositions remain inherited, and their completed
+  response rendering runs after the watcher closes. Interruption closes or abandons that operation's
+  one-request connection without waiting behind a
   blocked write; the daemon's
   connection-owned disconnect watcher cancels the exact admitted request without requiring a
   caller-supplied request ID and is joined when the handler completes. The interrupted client exits
   nonzero without fabricating a terminal broker response on
   stdout. `lean-beam cancel ID` remains the explicit cross-process cancellation surface.
   Cancellation is cooperative; prompt stopping depends on inner elaboration polling interruption.
+- The foreground owner retains SIGINT and POSIX SIGTERM/SIGHUP handlers from acquisition through
+  daemon cleanup, and its initial request borrows that same stop observation. Repeated signals remain
+  latched without forcing exit. Lock/readiness waits can defer observation; synchronous output or
+  filesystem operations can block, so owner shutdown has no unconditional hard deadline. POSIX
+  SIGHUP handling overrides inherited ignore dispositions such as `nohup`.
 - Wrapper sessions deliberately publish one frozen workspace. Remote workspaces and same-source
   multi-toolchain mirrors are not implemented yet.
 

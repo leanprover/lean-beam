@@ -1217,7 +1217,7 @@ private def checkBrokerConnectionClosedIncident : IO Unit := do
       requireSubstring "latched stop must cancel before consuming the broker connection"
         "Beam request interrupted" stoppedMsg
       let msg ← expectIoErrorMessage "broker connection close should surface daemon failure" <|
-        Beam.Cli.withInterruptWatcher fun watcher =>
+        Beam.Cli.withRequestInterruptWatcher fun watcher =>
           Beam.Cli.callBrokerQuiet watcher root (projectDaemonClientForTest endpoint controlDir)
             Beam.Broker.Request.stats
       requireSubstring "broker connection close should preserve transport failure"
@@ -1442,6 +1442,17 @@ private def checkSdkRuntimeAdmission : IO Unit := do
       (!(Beam.Installation.Bundled.validateProvenance (layout.home / "provenance.json")
         { compiled with compilerRevision := revision } Lean.githash p).isOk)
 
+/-- Run the real CLI request/rendering path against a parent-owned fake broker. -/
+def blockedOutput (stream : String) (port : UInt16) : IO Unit := do
+  let root : System.FilePath := "/tmp"
+  let client := projectDaemonClientForTest (.tcp port) root
+  match stream with
+  | "stdout" => Beam.Cli.callBroker root client Beam.Broker.Request.stats
+  | "stdout-progress" | "stderr" =>
+      Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
+        (Beam.Cli.syncWaitSpec "Main.lean")
+  | _ => throw <| IO.userError s!"unknown blocked output stream: {stream}"
+
 def main : IO Unit := do
   checkSdkRuntimeAdmission
   checkLeanConfigLowering
@@ -1478,4 +1489,9 @@ def main (args : List String) : IO Unit :=
   match args with
   | [] => BeamTest.Broker.CliDaemonTest.main
   | ["--interrupt-watcher", mode] => BeamTest.Broker.InterruptWatcherTest.child mode
+  | ["--blocked-output", stream, port] => do
+      let some port := port.toNat?
+        | throw <| IO.userError "invalid fixture port"
+      unless port > 0 && port < 65536 do throw <| IO.userError "invalid fixture port"
+      BeamTest.Broker.CliDaemonTest.blockedOutput stream port.toUInt16
   | _ => throw <| IO.userError "unexpected CLI daemon test arguments"

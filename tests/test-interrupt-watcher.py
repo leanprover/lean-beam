@@ -5,9 +5,14 @@
 # Author: Emilio J. Gallego Arias
 
 from pathlib import Path
+import json
+import os
+import select
 import signal
+import socket
 import subprocess
 import sys
+import threading
 import unittest
 
 
@@ -38,6 +43,106 @@ class InterruptWatcherTest(unittest.TestCase):
         for name in ["INT", "TERM", "HUP"]:
             with self.subTest(signal=name):
                 self.check_mode("signal-" + name, getattr(signal, "SIG" + name))
+
+    def check_blocked_output(self, stream, termination, *, repeat=False):
+        """A real request must remain terminable when its output consumer stops reading."""
+        errors = []
+        requests = []
+        release = threading.Event()
+
+        def send_frame(connection, value):
+            payload = json.dumps(value).encode()
+            connection.sendall(str(len(payload)).encode() + b"\n" + payload)
+
+        def serve(listener):
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(5)
+                    send_frame(connection, {"schemaVersion": 1, "identity": {
+                        "daemonId": "test-generation", "configHash": "test-config",
+                    }})
+                    with connection.makefile("rb") as incoming:
+                        size = int(incoming.readline())
+                        request = json.loads(incoming.read(size))
+                        requests.append(request)
+                        if stream == "stderr":
+                            value = {"kind": "diagnostic", "payload": {
+                                "path": "Main.lean", "uri": "file:///Main.lean",
+                                "range": {"start": {"line": 0, "character": 0},
+                                          "end": {"line": 0, "character": 1}},
+                                "message": "x" * (1024 * 1024),
+                                "completionBlocking": False,
+                            }}
+                        else:
+                            value = {"kind": "response", "payload": {
+                                "ok": True, "result": "x" * (1024 * 1024),
+                            }}
+                        if "clientRequestId" in request:
+                            value["clientRequestId"] = request["clientRequestId"]
+                        send_frame(connection, value)
+                        release.wait(5)
+            except Exception as error:
+                errors.append(error)
+
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            listener.settimeout(5)
+            server = threading.Thread(target=serve, args=(listener,))
+            server.start()
+            child = None
+            try:
+                child = subprocess.Popen(
+                    [str(self.binary.resolve()), "--blocked-output", stream,
+                     str(listener.getsockname()[1])],
+                    cwd=REPO_ROOT, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE if stream != "stderr" else subprocess.DEVNULL,
+                    stderr=subprocess.PIPE if stream == "stderr" else subprocess.DEVNULL,
+                    env=dict(os.environ, BEAM_PROGRESS="0"), start_new_session=True,
+                )
+                output = child.stderr if stream == "stderr" else child.stdout
+                # Do not drain the pipe. Readability establishes that rendering has begun;
+                # the megabyte payload exceeds the supported platforms' pipe buffers.
+                self.assertTrue(select.select([output], [], [], 5)[0], errors)
+                self.assertIsNone(child.poll(), errors)
+                child.send_signal(termination)
+                if repeat:
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        child.wait(timeout=0.2)
+                    child.send_signal(termination)
+                child.wait(timeout=3)
+                self.assertEqual(child.returncode, -termination)
+                self.assertEqual(len(requests), 1)
+            finally:
+                if child is not None:
+                    if child.poll() is None:
+                        child.kill()
+                    child.wait(timeout=5)
+                    if child.stdout is not None:
+                        child.stdout.close()
+                    if child.stderr is not None:
+                        child.stderr.close()
+                release.set()
+                server.join(timeout=6)
+            self.assertFalse(server.is_alive(), "fake broker survived fixture cleanup")
+            self.assertEqual(errors, [])
+
+    @unittest.skipIf(sys.platform == "win32", "requires POSIX signal delivery")
+    def test_completed_output_has_default_signal_policy(self):
+        for stream in ["stdout", "stdout-progress"]:
+            with self.subTest(stream=stream):
+                self.check_blocked_output(stream, signal.SIGINT)
+
+    @unittest.skipIf(sys.platform == "win32", "requires POSIX signal delivery")
+    def test_repeated_sigint_can_terminate_blocked_diagnostic_output(self):
+        self.check_blocked_output("stderr", signal.SIGINT, repeat=True)
+
+    @unittest.skipIf(sys.platform == "win32", "requires POSIX signal delivery")
+    def test_request_does_not_intercept_other_termination_signals(self):
+        for termination in [signal.SIGTERM, signal.SIGHUP]:
+            with self.subTest(signal=termination):
+                self.check_blocked_output("stderr", termination)
 
 
 if __name__ == "__main__":

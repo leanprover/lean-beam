@@ -34,13 +34,13 @@ private def requireReleased (waiter : Task (Except IO.Error Unit)) : IO Unit := 
   | .ok () => throw <| IO.userError "teardown delivered a signal that was never sent"
 
 private def checkReturn : IO Unit := do
-  let waiter ← Beam.Cli.withInterruptWatcher startWaiter
+  let waiter ← Beam.Cli.withRequestInterruptWatcher startWaiter
   requireReleased waiter
 
 private def checkThrow : IO Unit := do
   let savedWaiter ← IO.mkRef (none : Option (Task (Except IO.Error Unit)))
   let failed ← try
-    Beam.Cli.withInterruptWatcher fun watcher => do
+    Beam.Cli.withOwnerInterruptWatcher fun watcher => do
       savedWaiter.set (some (← startWaiter watcher))
       throw <| IO.userError "intentional watcher action failure"
     pure false
@@ -60,11 +60,16 @@ private def sendSignal (name : String) : IO Unit := do
   require s!"cannot send {name}: {result.stderr}" (result.exitCode == 0)
 
 private def checkDelivery (name : String) : IO Unit :=
-  Beam.Cli.withInterruptWatcher fun watcher => do
+  Beam.Cli.withOwnerInterruptWatcher fun watcher => do
     let waiter ← startWaiter watcher
     sendSignal name
     IO.ofExcept (← awaitWaiter waiter)
     require s!"delivered {name} not visible to polling" (← watcher.interrupted)
+    -- The first waiter has completed, but the owner still owns its cleanup scope.
+    -- Another delivery must remain latched rather than terminate the owner.
+    sendSignal name
+    watcher.awaitInterrupt
+    require s!"repeated {name} lost the owner's stop" (← watcher.interrupted)
 
 /-- Run in a child: the final signal must terminate it after every watcher has been released. -/
 def child (mode : String) : IO Unit := do
@@ -75,7 +80,7 @@ def child (mode : String) : IO Unit := do
   | "signal-TERM" => checkDelivery "TERM"
   | "signal-HUP" => checkDelivery "HUP"
   | _ => throw <| IO.userError s!"unknown interrupt watcher test mode: {mode}"
-  Beam.Cli.withInterruptWatcher fun watcher => do
+  Beam.Cli.withRequestInterruptWatcher fun watcher => do
     require "a later watcher inherited an earlier interrupt" (!(← watcher.interrupted))
   IO.println "watcher cleanup complete"
   (← IO.getStdout).flush

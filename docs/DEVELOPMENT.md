@@ -903,15 +903,32 @@ companion paths: `.olean.server`, `.olean.private`, `.ir`, and `.ir.sig`. Worker
 directly. No pre-v4.33 API selection remains. The transport still uses `Std.Internal.UV.TCP`
 directly so interruption and timeout can cancel the exact pending receive.
 
+CLI request and owner signal scopes use `try`/`finally` around successfully started subscriptions.
+`withRequestInterruptWatcher` installs one-shot SIGINT; the private request runners return before
+completed-response rendering. `withOwnerInterruptWatcher` retains repeating SIGINT and POSIX
+SIGTERM/SIGHUP from before owner acquisition until after owner cleanup. Startup borrows the owner
+watcher rather than registering nested request handlers. The observation capability is valid during
+the enclosing callback; it does not enforce a linear lifetime. These CLI scopes own process-wide
+signal policy, not independently nestable library-local dispositions. libuv restores SIG_DFL when
+the last watcher stops, rather than restoring arbitrary previous dispositions.
+
 CLI interrupt watchers stop their signal handler with `Std.Internal.UV.Signal.stop`. The runtime
 already releases the pending promise in 4.33–4.35, although those releases' Lean API comments claim
 otherwise; see the [4.33.1 runtime implementation](https://github.com/leanprover/lean4/blob/v4.33.1/src/runtime/uv/signal.cpp).
-An extra `Signal.cancel` call is not needed to release that wait. The native watcher regression
+An extra `Signal.cancel` call is not needed to release that wait. A failed `Signal.next` has no
+subscription to stop: release the native object and propagate the start error. Calling `stop` after
+a failed start can double-release the loop reference on 4.33/4.34. The native watcher regression
 (`python3 tests/test-interrupt-watcher.py`, after `lake build beam-cli-daemon-test`) checks pending
-waiters on normal and exceptional exits. On POSIX it also checks actual SIGINT delivery, isolation
-of a later watcher, and restoration of the default SIGINT action after teardown. This cleanup does
+waiters on normal and exceptional exits. On POSIX it also checks INT/TERM/HUP delivery, repeated owner
+signals after the first waiter completes, isolation of a later watcher, default actions after
+teardown, and blocked stdout/stderr in the real CLI request/rendering paths. This cleanup does
 not require raising the minimum Lean version. The
 [support-window roadmap](STATUS.md#lean-support-window) records the remaining tradeoffs.
+
+Cancellation polling returns the stop before interruption diagnostics are printed. Owned-child
+termination/collection and recovery-fence updates likewise precede their cleanup diagnostics.
+`finally` runs when an action returns or throws; it cannot interrupt a blocked synchronous write.
+Owner shutdown therefore remains cooperative, and repeated ordinary signals do not force exit.
 
 ## Installation admission and workspace ownership
 
