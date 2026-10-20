@@ -118,13 +118,17 @@ private def executesSuppliedLeanText : Operation → Bool
   | .runAt | .runAtHandle | .runWith | .runWithLinear => true
   | _ => false
 
+private def speculativeRecursionCaveat : String :=
+  "Tactic probes reject newly introduced local `let rec` definitions, even valid ones. Save the complete enclosing declaration and sync to validate it; edits invalidate stored handles. Complete command probes use Lean's normal termination checks."
+
 private def speculativeIoCaveat : String :=
   "Speculative execution isolates Beam's source and document state, but it is not an OS sandbox; Lean commands and project metaprogramming may perform IO."
 
 def Operation.behaviorDescription (operation : Operation) : String :=
   String.intercalate " " <|
     [operationDescription operation] ++
-      (if executesSuppliedLeanText operation then [speculativeIoCaveat] else [])
+      (if executesSuppliedLeanText operation then
+        [speculativeRecursionCaveat, speculativeIoCaveat] else [])
 
 def Operation.description (operation : Operation) : String :=
   String.intercalate " " [operation.behaviorDescription, sourceFileInvariant]

@@ -142,3 +142,37 @@ lean-beam run-at "Foo.lean" <version-from-update> 18 0 $'  first | exact h1\n  |
 
 Do not expect the wrapper to turn `"first | exact h1 | exact h2"` into a properly line-broken block,
 or to add missing `\n` separators around the text.
+
+## 5. Introducing Local Recursion In A Tactic Probe
+
+`lean-beam run-at`, `run-at-handle`, `run-with`, and `run-with-linear` reject newly introduced local
+`let rec` definitions in tactic probes, including inside terms passed to `refine` or nested `have`
+proofs. This also applies to their matching MCP tools. A valid recursive definition can trigger this
+restriction; do not interpret it as a termination error or keep retrying the same definition through
+different tactic syntax or handles.
+
+Lean defers turning local recursive definitions into auxiliary declarations and checking termination
+until it finishes the enclosing theorem or definition. Closing the visible tactic goals does not
+perform that work. Beam rejects the fragment rather than reporting an unchecked recursive definition
+as successful.
+
+The request completes with `success=false`, a message beginning
+`Local recursive declarations are not supported in runAt tactics`, the original proof state, and no
+successor handle. A non-linear parent handle remains usable; `run-with-linear` consumes its input
+handle on failure as usual. Recursion discarded by tactic backtracking does not trigger the
+restriction if no pending recursive definitions remain.
+
+To validate the recursive code:
+
+1. Write and save the complete enclosing declaration in the real Lean file, including its `let rec`
+   and the rest of the proof or definition.
+2. Run `lean-beam sync "Foo.lean"` (MCP: `lean_sync`) and inspect the diagnostics/readiness result.
+   Sync reads the saved file; it does not recover speculative text.
+3. After successful sync, use its returned `version` for later position-bound probes. The edit
+   invalidates old handles, so create new ones if continuation is needed. For repeated probes using
+   a recursive helper, define the helper in the document and sync before probing its uses.
+
+For a speculative check without editing the file, probe one complete theorem or definition at a
+command position outside a proof. Complete command probes use Lean's normal declaration finalization:
+valid local recursion is accepted and invalid termination is rejected. Beam selects the execution
+basis from the position; there is no public command/tactic mode flag. The result remains speculative.

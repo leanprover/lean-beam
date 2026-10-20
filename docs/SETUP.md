@@ -270,6 +270,12 @@ Read those commands like this:
 - `lean-beam save` checkpoints one synced workspace module; it does not validate downstream importers
 - `lean-beam doctor` explains toolchain support and runtime bundle selection
 
+Tactic probes through the CLI or MCP cannot introduce local `let rec` definitions, even valid ones.
+Save the complete enclosing theorem or definition and sync to check it, then use the returned
+version for later probes; edits invalidate existing handles. A speculative check of one complete
+declaration at a command position uses Lean's normal termination checks. See the skill's
+[local recursion workflow](../skills/lean-beam/references/lean-run-at-semantics.md#5-introducing-local-recursion-in-a-tactic-probe).
+
 Position and range probes are version-bound. Use the `version` returned by `lean-beam update` or
 `lean-beam sync` for `run-at`, `hover`, `signature-help`, `definition`, `references`,
 `document-symbols`, `goals`, and `todo`. Workspace symbol queries are workspace-scoped and do not

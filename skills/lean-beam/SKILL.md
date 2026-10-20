@@ -241,6 +241,14 @@ batch-equivalence check rather than one-file probing.
 `lean-beam run-at` is a speculative execution request against one explicit broker document version.
 Read it as "try this Lean text here", not as "edit the file here".
 
+Tactic probes, including handle continuations, reject newly introduced local `let rec` definitions,
+even when valid in ordinary Lean. This is a probe limitation, not evidence that the recursion is
+invalid. Save the complete enclosing declaration and run `lean-beam sync` to validate it; use the
+returned version for later probes and recreate any handles invalidated by the edit. Complete
+command probes perform Lean's normal termination checks. See
+[local recursion](references/lean-run-at-semantics.md#5-introducing-local-recursion-in-a-tactic-probe)
+for the failure result and recovery workflow.
+
 What `lean-beam run-at` does not do:
 
 - it does not edit the source file or create a new on-disk baseline for the next request
@@ -271,6 +279,7 @@ concrete examples for:
 - full-file diagnostics after a speculative probe
 - chaining speculative state across multiple calls
 - indentation-sensitive or newline-sensitive probes on blank or layout-sensitive lines
+- local recursive definitions and their validation outside tactic probes
 
 Open [references/workflow-details.md](references/workflow-details.md) for position semantics,
 text/handle input variants, and wrapper debugging.

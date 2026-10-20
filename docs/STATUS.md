@@ -107,6 +107,8 @@ handle, including when the recursion is valid in ordinary Lean. Lean checks thes
 their termination when finalizing the enclosing declaration; a tactic fragment has no such step.
 Add valid recursive definitions to the document and sync before probing their use. Command probes
 that elaborate a complete declaration use Lean's normal finalization and termination checks.
+See the skill's [local recursion workflow](../skills/lean-beam/references/lean-run-at-semantics.md#5-introducing-local-recursion-in-a-tactic-probe)
+for saved-file validation, version updates, and handle invalidation.
 
 Follow-up handles exist, but they should be treated as pre-stable support APIs rather than as a frozen
 long-term contract. They are opaque, workspace- and document-bound, invalidated by same-document
