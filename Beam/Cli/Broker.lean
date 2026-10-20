@@ -113,6 +113,9 @@ private def awaitBrokerResponseWithInterrupts
         lastReportedSeconds.set seconds
         emit <| spec.stillWaitingMsg seconds
     pure interrupted
+  -- A stop latched during owner acquisition must not open a broker connection first.
+  if ← interrupted then
+    return .error .interrupted
   let result ← sendRequestWithCallbacksInterruptiblyResult endpoint req interrupted callbacks
     (.wrapper expectedIdentity)
   match result with
