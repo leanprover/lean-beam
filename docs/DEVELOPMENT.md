@@ -360,6 +360,10 @@ with `actionlint`.
 
 ## Broker Server Boundaries
 
+The [exclusive close-save model](CLOSE_SAVE_MODEL.md) evaluates scoped document reservation,
+delayed-read admission, and committed checkpoint evidence. It is an executable proposal with
+proofs and race traces; it does not describe shipped close-save admission behavior.
+
 Keep [Beam/Broker/Server.lean](../Beam/Broker/Server.lean) focused on session lifecycle, request
 dispatch, cancellation, document sync, and save barriers. Pure metrics structures and JSON encoding
 live in [Beam/Broker/Metrics.lean](../Beam/Broker/Metrics.lean), so adding counters or changing

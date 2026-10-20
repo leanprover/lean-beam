@@ -56,6 +56,12 @@ remaining as the aggregate request-surface runner.
 
 ## Race-Test Discipline
 
+`lake build BeamModel` checks the independent specification library, including proofs for the
+[exclusive close-save proposal](CLOSE_SAVE_MODEL.md). `lake build beam-closing-model-test`
+builds that library and its scenario runner; `.lake/build/bin/beam-closing-model-test` runs the
+explicit transition schedules. The fast suite includes the runner and its library dependency.
+These checks validate the model, not the broker's implementation of that proposed contract.
+
 Race and concurrency regressions should wait for observable state, not for guessed wall-clock
 delays. Prefer request IDs plus cancellation acknowledgements, wrapper progress text, registry
 files, non-empty response files, and Lean-side sentinel files that prove a slow command reached the

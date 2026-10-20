@@ -72,6 +72,7 @@ run_quiet_lake_build \
   beam-broker-protocol-test \
   beam-broker-pending-test \
   beam-broker-document-state-test \
+  beam-closing-model-test \
   beam-broker-open-docs-test \
   beam-daemon-smoke-test \
   beam-sync-concurrency-test \
@@ -127,6 +128,7 @@ run_quiet_test backend-process .lake/build/bin/beam-backend-process-test
 run_quiet_test broker-protocol .lake/build/bin/beam-broker-protocol-test
 run_quiet_test broker-pending .lake/build/bin/beam-broker-pending-test
 run_quiet_test broker-document-state .lake/build/bin/beam-broker-document-state-test
+run_quiet_test closing-model .lake/build/bin/beam-closing-model-test
 run_quiet_test broker-open-docs .lake/build/bin/beam-broker-open-docs-test
 run_quiet_test cli-daemon .lake/build/bin/beam-cli-daemon-test
 run_quiet_test interrupt-watcher python3 tests/test-interrupt-watcher.py
