@@ -18,8 +18,10 @@ from mcp_test_util import shared_lib_name
 
 REPO = Path(__file__).resolve().parent.parent
 WORKSPACE = "save-finalization-test"
+OWNER_CASES = ["workspace-replace", "backend-restart", "distinct-runtime"]
 CASES = ["exact", "update", "reopen", "reopen-identical", "refresh-identical", "unchanged",
          "save-update", "save-reopen", "save-reopen-identical", "absent", "drop", "before-dispatch"]
+CASES += OWNER_CASES
 SOURCE = "def bVal : Nat := 11\nexample : True := by\n  trivial\n"
 
 
@@ -113,6 +115,17 @@ def broker(base, lean, plugin, daemon, gate_operation):
 
 def check_case(base, case, lean, plugin, daemon):
     base.mkdir()
+    if case in OWNER_CASES:
+        project = base / "project"
+        project.mkdir()
+        (project / "lakefile.toml").write_text('name = "Main"\n[[lean_lib]]\nname = "Main"\n')
+        (project / "lean-toolchain").write_text((REPO / "lean-toolchain").read_text())
+        (project / "Main.lean").write_text(SOURCE)
+        subprocess.run([str(daemon), "--lean-cmd", str(lean), "--lean-plugin", str(plugin),
+                        "save-owner-test", case, str(project)], cwd=REPO, check=True, timeout=60,
+                       env=dict(os.environ, BEAM_TEST_SAVE_GATE_DIR=str(base),
+                                BEAM_TEST_SAVE_GATE_OP="write-save-trace"))
+        return
     before_dispatch = case == "before-dispatch"
     with broker(base, lean, plugin, daemon, "prepare-save" if before_dispatch else "write-save-trace") as (port, source):
         initial = ok(request(port, "sync_file", path="Main.lean"))

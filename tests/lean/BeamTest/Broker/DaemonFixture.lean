@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Beam.Broker.Server
 import Beam.Broker.LakeHelperMain
 import BeamTest.TestHarness
+import BeamTest.Broker.SaveOwnerTest
 
 private structure Fixture where
   command : String := "lean"
@@ -55,6 +56,8 @@ def main (args : List String) : IO Unit := do
     toolchain := "library fixture", identity := ⟨(← IO.currentDir), "library fixture"⟩
   }
   match fixture.args with
+  | ["save-owner-test", case, root] =>
+      BeamTest.Broker.SaveOwnerTest.run description (← Beam.resolveExistingPath root) case
   | "lake-helper" :: helperArgs =>
       Beam.Broker.LakeHelperMain.main (do
         gateHelper helperArgs

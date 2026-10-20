@@ -36,6 +36,17 @@ If the question is "how do I work on the repo safely and efficiently?", start he
 - `tests`: scenario-DSL coverage for LSP-level behavior, concurrent stress coverage, broker and
   wrapper regression suites, and install/runtime validation.
 
+Document acceptance owns the private construction of `DocState` and `DocumentBasis`; the LSP
+version is a projection of the accepted basis. Other modules use document transitions rather
+than constructing or rewriting document records.
+
+Pending document requests and saves carry an internal `DocumentRef` that captures the owning
+runtime, backend session, URI, and accepted basis together. Completion operations use that
+runtime and validate ownership under its state lock before changing current state. A reference
+does not prevent replacement or keep a document open. Committed checkpoint evidence survives
+refused finalization; see [the save contract](SYNC_AND_DIAGNOSTICS.md).
+These internal references have no public encoding and do not change numeric version arguments.
+
 ## Local Workflow
 
 Start from the repo root and prefer dedicated worktrees for new tasks:

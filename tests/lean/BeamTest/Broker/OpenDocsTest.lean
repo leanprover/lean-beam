@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Broker.OpenDocs
 import BeamTest.Broker.JsonAssert
+import BeamTest.Broker.DocumentFixture
 
 open Lean
 open Beam.Broker
@@ -23,8 +24,8 @@ private def requireOnlyFile (label : String) (sessionJson : Json) : IO Json := d
   require s!"{label}: expected one file, got {files.size}" (files.size == 1)
   pure files[0]!
 
-private def mkDoc (text : String) (version : Nat := 1) : DocState :=
-  (DocumentState.FileSnapshot.ofText text default).toDocState version
+private def mkDoc (text : String) (version : Nat := 1) : IO DocState :=
+  DocumentFixture.accepted (DocumentState.FileSnapshot.ofText text default) version
 
 private def checkInactivePayload : IO Unit := do
   let root := System.FilePath.mk "/workspace"
@@ -44,12 +45,9 @@ private def checkDocProjection : IO Unit := do
     let text := "def demo : Nat := 1\n"
     IO.FS.writeFile path text
     let uri := (System.Uri.pathToUri path : String)
-    let docs : DocumentState.Docs :=
-      Std.TreeMap.empty.insert uri {
-        (mkDoc text 2) with
-        checkpointedVersion? := some 2
-        fileProgress? := some { updates := 3, done := true }
-      }
+    let docs : DocumentState.Docs := Std.TreeMap.empty.insert uri (← mkDoc text 2)
+    let docs := (DocumentState.markSavedVersion docs {} uri 2 "Demo.lean" 1).docs
+    let docs := DocumentState.recordFileProgress docs uri (some { updates := 3, done := true })
     let session : OpenDocs.SessionView := {
       root
       docs
@@ -85,11 +83,10 @@ private def checkDocProjection : IO Unit := do
     requireJsonBool "open docs missing file" "checkpointed" false missingFile
 
     let nonFileUri := "https://example.invalid/Demo.lean"
+    let nonFileDocs : DocumentState.Docs := Std.TreeMap.empty.insert nonFileUri (← mkDoc text 2)
     let nonFileSession : OpenDocs.SessionView := {
       root
-      docs := Std.TreeMap.empty.insert nonFileUri {
-        (mkDoc text 2) with checkpointedVersion? := some 2
-      }
+      docs := (DocumentState.markSavedVersion nonFileDocs {} nonFileUri 2 "Demo.lean" 1).docs
     }
     let nonFileSessionJson ← OpenDocs.sessionJson (some nonFileSession)
     let unknownFile ← requireOnlyFile "open docs non-file session" nonFileSessionJson
