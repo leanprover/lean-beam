@@ -1831,7 +1831,11 @@ private def checkFailedReaderAdmission : IO Unit := do
             unless text.contains "\"method\":\"workspace/symbol\"" do
               throw <| IO.userError "unexpected healthy-backend fixture write"
             healthyRequests.modify (· + 1)
-            let some pending ← PendingRequestStore.remove healthy.pending healthy.nextId
+            let [_, body] := text.splitOn "\r\n\r\n"
+              | throw <| IO.userError "healthy-backend fixture expected a complete LSP frame"
+            let request ← IO.ofExcept <| Json.parse body
+            let id ← IO.ofExcept <| request.getObjValAs? Lean.JsonRpc.RequestID "id"
+            let some pending ← PendingRequestStore.remove healthy.pending id
               | throw <| IO.userError "healthy-backend request was not registered"
             PendingRequest.resolveResponse pending (Json.arr #[])
             if ← closeAfterReply.get then
@@ -2465,28 +2469,33 @@ private def checkCompletedRequestResetIsolation : IO Unit := do
   }
   try
     let requests ← takePendingRequests session.pending 2
-    let resetTask ← IO.asTask (prio := Task.Priority.dedicated) <|
-      runtime.initWorkspaceWithConfig workspaceId { root := newRoot } (some .reset)
-    unless ← waitForWorkspaceRoot runtime workspaceId newRoot do
-      throw <| IO.userError "completed-reset workspace reset did not commit"
-    let some handle ← documentHandle.get
-      | throw <| IO.userError "completed-reset document request has no cancellation handle"
-    require "reset fixture marks cancellation before its successful backend reply" (← handle.cancel)
-    for request in requests do
-      PendingRequest.resolveResponse request (Json.mkObj [])
-    for (label, task) in [("document request", documentTask), ("workspace symbols", symbolsTask)] do
-      let response ← IO.ofExcept <| ← IO.wait task
-      require s!"{label}: an old-session result should be rejected after reset"
-        (response.error?.any fun err => err.code == "workerExited")
-    let shutdownRequests ← takePendingRequests session.pending 1
-    for request in shutdownRequests do
-      PendingRequest.resolveResponse request Json.null
-    IO.FS.writeFile exit "exit"
-    match ← IO.ofExcept <| ← IO.wait resetTask with
-    | .ok result =>
-        require "completed reset should invalidate the old session" result.invalidatedHandles
-    | .error failure =>
-        throw <| IO.userError s!"completed workspace reset failed: {failure.error.message}"
+    try
+      let resetTask ← IO.asTask (prio := Task.Priority.dedicated) <|
+        runtime.initWorkspaceWithConfig workspaceId { root := newRoot } (some .reset)
+      unless ← waitForWorkspaceRoot runtime workspaceId newRoot do
+        throw <| IO.userError "completed-reset workspace reset did not commit"
+      let some handle ← documentHandle.get
+        | throw <| IO.userError "completed-reset document request has no cancellation handle"
+      require "reset fixture marks cancellation before its successful backend reply" (← handle.cancel)
+      for request in requests do
+        PendingRequest.resolveResponse request (Json.mkObj [])
+      for (label, task) in [("document request", documentTask), ("workspace symbols", symbolsTask)] do
+        let response ← IO.ofExcept <| ← IO.wait task
+        require s!"{label}: an old-session result should be rejected after reset"
+          (response.error?.any fun err => err.code == "workerExited")
+      let shutdownRequests ← takePendingRequests session.pending 1
+      for request in shutdownRequests do
+        PendingRequest.resolveResponse request Json.null
+      IO.FS.writeFile exit "exit"
+      match ← IO.ofExcept <| ← IO.wait resetTask with
+      | .ok result =>
+          require "completed reset should invalidate the old session" result.invalidatedHandles
+      | .error failure =>
+          throw <| IO.userError s!"completed workspace reset failed: {failure.error.message}"
+    finally
+      -- These promises were removed from the store, so runtime closure cannot settle them.
+      for request in requests do
+        request.resolveFailure (responseFailureFor .internalError "completed-reset fixture cleanup")
   finally
     if !(← exit.pathExists) then
       IO.FS.writeFile exit "exit"
