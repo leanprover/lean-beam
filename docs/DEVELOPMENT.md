@@ -835,6 +835,13 @@ keep artifact caches local to each build workspace. The save/checkpoint regressi
 suite uses separate fixture packages and disables their artifact caches so a Lake replay cannot
 masquerade as a Beam-written artifact.
 
+Lake may hard-link executables to its artifact cache. On macOS, dyld can identify that inode by its
+cache path, so a raw cached frontend may fail to find its sibling `lib/lean` libraries. Construction
+and native packaging copy executables into independent files before running them. The application
+startup regression uses that boundary; `tests/test-mcp-application.py` checks both independent
+and cache-linked inputs after removing the copied installation's manifest, so discovery still has
+to succeed without admitting a runtime. Do not modify a cache-linked build output in place.
+
 CI restores the artifact cache for every Lean job. In combined macOS mode, `beam-fast` writes the
 Linux cache and `macos-platform` writes the macOS cache. With `BEAM_FULL_MACOS_CI=true`, the
 `beam-fast` matrix writes both.
