@@ -46,7 +46,7 @@ inductive PrivateDirIssue where
   | windowsDacl
   deriving BEq, Repr
 
-/-- Classification of one exact directory leaf without following a final symbolic link. -/
+/-- Classification of an exact directory leaf under Beam's current per-user private-directory policy. -/
 inductive PrivateDirObservation where
   | absent
   | privateDir

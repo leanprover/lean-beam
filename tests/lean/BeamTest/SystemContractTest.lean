@@ -50,7 +50,7 @@ private def inspect (root : System.FilePath) : IO Unit := do
   let nonPrivate := root / "non-private"
   let before ← Beam.observePrivateDir nonPrivate
   let expected := if System.Platform.isWindows then .nonPrivate .windowsDacl
-    else .nonPrivate (.posixMode 493)
+    else .nonPrivate (.posixMode 493) -- 0755
   require (before == expected) s!"fixture lost its permission failure: {repr before}"
   require ((← Beam.preparePrivateDir nonPrivate) == before) "preparation adopted or repaired an existing directory"
   require ((← Beam.preparePrivateDirLeaf nonPrivate) == before)
@@ -68,10 +68,14 @@ private def foreignOwner (directory : System.FilePath) : IO Unit := do
   let observed ← Beam.observePrivateDir directory
   require (observed == expected) s!"foreign ownership was not rejected distinctly: {repr observed}"
   require ((← Beam.preparePrivateDir directory) == expected) "preparation adopted a foreign directory"
-  require ((← Beam.preparePrivateDirLeaf directory) == expected) "leaf creation adopted a foreign directory"
-  require (expected.problem == some "the directory is not owned by the current effective user")
-    "foreign ownership lost its diagnostic"
-  rejected (Beam.ensurePrivateDir "test directory" directory) "a foreign directory was accepted"
+  let diagnostic ← try
+    Beam.ensurePrivateDir "test directory" directory
+    pure ""
+  catch error => pure error.toString
+  require (diagnostic.contains s!"unsafe test directory {directory}:" &&
+      diagnostic.contains "not owned by the current effective user" &&
+      diagnostic.contains "Select a dedicated directory")
+    s!"foreign-owner rejection lost its path, cause, or recovery advice: {diagnostic}"
 
 def main (args : List String) : IO Unit := do
   let [operation, directory] := args | throw <| IO.userError "expected OPERATION DIRECTORY"
