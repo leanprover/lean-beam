@@ -485,6 +485,13 @@ Protocol fixtures reject malformed response envelopes and progress fields, check
 cannot restart the budget, and cover EOF shutdown stalls and early child exits. The existing
 `Beam.StderrCapture` drains diagnostics concurrently and retains at most the final 64 KiB for failure
 reporting; successful probes do not replay diagnostic stderr.
+One scoped process owner retains child observations across the probe and cleanup; exit polling
+does not create a blocking wait task that can survive a timeout. Portable controlled-callback tests
+exercise normal exit, timeout, observation racing scope closure, retained wait failure, and combined
+operation/cleanup failures. These run through `beam-mcp-protocol-test --self-check-tests`, including
+the native Windows driver. Cleanup closes the observation capability and attempts protocol-task
+completion and stderr draining even when process termination cannot be confirmed; incomplete
+cleanup is reported alongside the original probe failure.
 Process creation and failure cleanup are outside the budget; blocked I/O can still delay process
 exit. The fast suite and
 installed-wrapper suite supervise it using `tests/lib/process_watchdog.py`, with

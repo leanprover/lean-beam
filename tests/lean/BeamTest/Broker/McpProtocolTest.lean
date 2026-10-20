@@ -9,6 +9,7 @@ import Beam.Mcp.Options
 import Beam.Mcp.SelfCheck
 import Beam.Mcp.Stdio
 import BeamTest.Broker.McpDropFailureTest
+import BeamTest.Broker.McpSelfCheckProcessTest
 import BeamTest.Broker.JsonAssert
 import BeamTest.Broker.TestUtil
 import BeamTest.TestHarness
@@ -1889,6 +1890,7 @@ private def checkSelfCheckResponseValidation : IO Unit := do
       (result.exitCode == 0 && result.stdout.contains "Lean Beam MCP self-check passed")
 
 private def checkSelfCheck : IO Unit := do
+  BeamTest.Broker.McpSelfCheckProcessTest.run
   checkSelfCheckStderrDrain
   checkSelfCheckNonzeroExitWithStderr
   checkSelfCheckTimeout .notifications
