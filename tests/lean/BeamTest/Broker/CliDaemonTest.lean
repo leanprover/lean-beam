@@ -1207,9 +1207,19 @@ private def checkBrokerConnectionClosedIncident : IO Unit := do
         | .tcp port => port
       writeTestRegistryEntry root port
       let controlDir ← Beam.Daemon.controlDir root
-      let msg ← expectIoErrorMessage "broker connection close should surface daemon failure" <|
-        Beam.Cli.callBrokerQuiet root (projectDaemonClientForTest endpoint controlDir)
+      let stopped : Beam.Cli.InterruptWatcher := {
+        interrupted := pure true
+        awaitInterrupt := pure ()
+      }
+      let stoppedMsg ← expectIoErrorMessage "a latched stop must survive request handoff" <|
+        Beam.Cli.callBrokerQuiet stopped root (projectDaemonClientForTest endpoint controlDir)
           Beam.Broker.Request.stats
+      requireSubstring "latched stop must cancel before consuming the broker connection"
+        "Beam request interrupted" stoppedMsg
+      let msg ← expectIoErrorMessage "broker connection close should surface daemon failure" <|
+        Beam.Cli.withInterruptWatcher fun watcher =>
+          Beam.Cli.callBrokerQuiet watcher root (projectDaemonClientForTest endpoint controlDir)
+            Beam.Broker.Request.stats
       requireSubstring "broker connection close should preserve transport failure"
         "Beam daemon receive failed:" msg
       requireSubstring "broker connection close should include incident path"

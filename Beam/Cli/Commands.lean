@@ -209,7 +209,7 @@ private def serveProject
       (explicitControlDir? := opts.explicitControlDir?) fun owner =>
       runThenHoldUntilInterrupted watcher owner do
         IO.eprintln "beam: loading Lake workspace configuration..."
-        callBrokerQuiet root owner.client <| Request.ensure
+        callBrokerQuiet watcher root owner.client <| Request.ensure
         printResponse <| Response.success <| toJson <|
           mkSessionStatus .running root owner.client.controlDir (some owner.generation)
         (← IO.getStdout).flush
