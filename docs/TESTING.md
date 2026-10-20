@@ -107,6 +107,26 @@ resuming, and check that failed attempts and sibling branches leave the original
 Keep ordinary Lean's own rejection cases as controls; for example, `decide +kernel` rejects a goal
 containing free variables in both execution paths.
 
+The source-context and artifact-lifetime invariants are documented beside the implementation in
+[RunAt.lean](../Beam/LSP/RunAt.lean). The suggestion regressions in
+[SuggestionTest.lean](../tests/lean/BeamTest/LSP/Requests/RunAt/SuggestionTest.lean) exercise fresh
+tactic and command probes, then handle continuations with different input text:
+
+- Test shifted ASCII input as well as multibyte document and probe text. Invalid offsets are not
+  exclusively a Unicode problem.
+- Inspect Lean's typed `TryThisInfo` edits with
+  [SuggestionSupport.lean](../tests/lean/BeamTest/LSP/Requests/RunAt/SuggestionSupport.lean). Require
+  valid UTF-8 boundaries, round trips through LSP's UTF-16 positions, and a range selecting the
+  actual `exact?` source. Rendered suggestion text alone does not establish range correctness.
+- Require new command suggestions and errors to survive a continuation from a handle whose
+  command already emitted messages. A failed continuation must produce no successor handle;
+  the original handle must remain usable for a separate branch.
+- Check the real document's goals and disk source remain unchanged, and compare any newly
+  published diagnostics with the initial diagnostics.
+
+Require absence of captured panic output as well as success and closed goals: a suggestion
+formatter panic can otherwise coexist with an apparently successful tactic result.
+
 The local-recursion tests deliberately distinguish tactic fragments from complete declarations.
 Valid tactic-local `let rec` fragments, including postponed terms and nested `have`/`refine` terms,
 must return an explicit unsupported diagnostic with unchanged goals and no successor handle. Their

@@ -21,6 +21,21 @@ The speculative execution request family.
 
 This module owns the public `$/lean/runAt` method plus the related handle continuation methods
 `$/lean/runWith` and `$/lean/releaseHandle`.
+
+Execution invariants (a probe is the Lean text supplied by the current request):
+
+- The document position selects a semantic starting state. Newly parsed syntax uses positions
+  relative to the probe, interpreted with that exact text and the parser's `<runAt>` file name.
+  A speculative command's `cmdPos` comes from its own syntax, not the document command.
+- Every execution installs fresh source context and cancellation, including `runWith` from a
+  handle created with different text. These are updates to derived state; elaboration must not
+  mutate the real document or another request's state.
+- Artifact collection follows Lean's reset boundaries: `elabCommandTopLevel` resets command
+  messages, while tactic messages and traces require before/after deltas. Child command snapshot
+  diagnostics are collected once, then their tasks are removed from stored continuation state.
+
+Suggestion range, continuation failure/reuse, and document isolation regressions live in
+`BeamTest.LSP.Requests.RunAt.SuggestionTest`; see `docs/TESTING.md` for their assertions.
 -/
 namespace Beam.LSP.RunAt
 
@@ -210,6 +225,10 @@ def withInnerCancelToken (k : IO.CancelToken → RequestM α) : RequestM α := d
   finally
     finished.resolve ()
 
+/--
+Run using the saved command state. `stx` must have been parsed from `text` with file name `<runAt>`;
+the saved snapshot's syntax and document source do not describe this speculative input.
+-/
 def runCommandElabMWithCancel
     (snap : Snapshots.Snapshot)
     (stx : Syntax)
@@ -361,7 +380,8 @@ def runCommandText (snap : Snapshots.Snapshot) (text : String) :
               throw ex
             pure (some (← ex.toMessageData.toString))
           let state ← get
-          -- Lean resets the message log in `elabCommandTopLevel`, including for handle continuations.
+          -- Lean resets command messages in `elabCommandTopLevel`, including for continuations.
+          -- Traces accumulate instead, so only they use the incoming count here.
           let messages := state.messages.toList
           let traces := (← getTraces).toList.drop initialTraceCount
           let (snapshotMessages, snapshotTraces) ←
@@ -456,7 +476,8 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
   checkRequestCancelled
   withInnerCancelToken fun innerCancelTk => do
     let snapshot := snapshot.withCancelToken (some innerCancelTk)
-    -- Syntax offsets belong to this probe, including when a handle came from different text.
+    -- InfoTree reconstruction supplies an empty map; a handle may instead retain an older probe's.
+    -- Replace either with this execution's parser input before interpreting its syntax offsets.
     let snapshot := { snapshot with coreContext := {
       snapshot.coreContext with fileName := "<runAt>", fileMap := text.toFileMap } }
     let stx ←
