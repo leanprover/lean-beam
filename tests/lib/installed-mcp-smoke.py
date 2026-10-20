@@ -3,6 +3,9 @@
 # Copyright (c) 2026 Lean FRO LLC. All rights reserved.
 # Released under Apache 2.0 license as described in the file LICENSE.
 
+"""Exercise an installed MCP executable through the shared external stdio client."""
+
+import argparse
 import importlib.util
 import json
 import os
@@ -10,71 +13,80 @@ import sys
 from pathlib import Path
 
 
-def main():
-    server, project_root = sys.argv[1:]
-    project_root = Path(project_root).resolve()
-    tests = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(tests))
-    spec = importlib.util.spec_from_file_location("beam_mcp_stdio_tests", tests / "test-mcp-stdio.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    timeout = float(os.environ.get("BEAM_MCP_SMOKE_TIMEOUT", "25"))
+tests = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(tests))
+spec = importlib.util.spec_from_file_location("beam_mcp_stdio_tests", tests / "test-mcp-stdio.py")
+stdio = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(stdio)
+
+
+def smoke(server, project_root, source, *, modern, server_trace):
+    timeout = float(os.environ.get("BEAM_MCP_SMOKE_TIMEOUT", "60"))
     shutdown_timeout = float(os.environ.get("BEAM_MCP_SMOKE_SHUTDOWN_TIMEOUT", "30"))
-    client = module.McpClient(
+    client = stdio.McpClient(
         project_root, project_root, timeout, label="installed-mcp-smoke",
         server_command=[server], shutdown_timeout=min(shutdown_timeout, 5),
+        server_trace=server_trace,
     )
     try:
-        init = client.request("initialize", {
-            "protocolVersion": "2025-11-25", "capabilities": {},
-            "clientInfo": {"name": "lean-beam-install-test", "version": "0"},
-        }, request_id=1)
-        if init.get("result", {}).get("protocolVersion") != "2025-11-25":
-            raise RuntimeError(f"unexpected initialize response: {init}")
-        client.notify("notifications/initialized")
-        sync = client.request("tools/call", {
-            "name": "lean_sync",
-            "arguments": {"path": "PositionEmptyLine.lean", "workspace": {"root": str(project_root)}},
-        }, request_id=2)
-        result = sync.get("result")
-        if not isinstance(result, dict) or result.get("isError") is True:
-            raise RuntimeError(f"expected lean_sync to succeed through installed MCP wrapper: {sync}")
-        structured = result.get("structuredContent")
-        if not isinstance(structured, dict) or not isinstance(structured.get("document_progress"), dict):
-            raise RuntimeError(f"lean_sync result missing structured document_progress: {sync}")
-        progress = structured["document_progress"]
-        updates = progress.get("updates")
-        if not isinstance(updates, int) or isinstance(updates, bool) or updates < 0:
-            raise RuntimeError(f"lean_sync result has invalid document_progress updates: {progress}")
-        done = progress.get("done")
-        if not isinstance(done, bool):
-            raise RuntimeError(f"lean_sync result has invalid document_progress done: {progress}")
-        if "line" in progress:
-            raise RuntimeError(f"lean_sync result should not expose document_progress line: {progress}")
-        if "totalLines" in progress:
-            raise RuntimeError(f"lean_sync result should not expose document_progress totalLines: {progress}")
-        range_end = progress.get("range_end_line")
-        if range_end is not None and (
-            not isinstance(range_end, int) or isinstance(range_end, bool) or range_end < 1
-        ):
-            raise RuntimeError(f"lean_sync result has invalid document_progress range_end_line: {progress}")
-        range_start = progress.get("range_start_line")
-        if range_start is not None and (
-            not isinstance(range_start, int)
-            or isinstance(range_start, bool)
-            or range_start < 1
-            or (range_end is not None and range_start > range_end)
-        ):
-            raise RuntimeError(f"lean_sync result has invalid document_progress range_start_line: {progress}")
-        client.close_input()
-        code = client.wait_for_exit_after_eof(shutdown_timeout)
-        if code != 0:
-            raise RuntimeError(f"lean-beam-mcp exited with code {code}")
-    finally:
-        client.close()
+        try:
+            request = client.modern_request if modern else client.request
+            if modern:
+                discovery = stdio.expect_result(request("server/discover"))
+                stdio.require_modern_result_envelope(discovery, "server/discover")
+                stdio.require(
+                    discovery.get("supportedVersions") == [stdio.MCP_MODERN_PROTOCOL_VERSION],
+                    f"unexpected discovery response: {discovery}",
+                )
+            else:
+                client.initialize()
+            sync = stdio.expect_result(request("tools/call", {
+                "name": "lean_sync",
+                "arguments": {"path": source, "workspace": {"root": str(project_root)}},
+            }))
+            if modern:
+                stdio.require_modern_result_envelope(sync, "lean_sync")
+            stdio.require(sync.get("isError") is False, f"expected lean_sync success: {sync}")
+            structured = sync.get("structuredContent")
+            stdio.require(isinstance(structured, dict), f"lean_sync missing structuredContent: {sync}")
+            stdio.require_document_progress_range(structured, "installed lean_sync")
+
+            # Check the normal tool error path, rather than a separate CLI path preflight.
+            missing = "__beam_mcp_smoke_missing__.lean"
+            stdio.require(not (project_root / missing).exists(), f"smoke fixture exists: {missing}")
+            failure = stdio.expect_result(request("tools/call", {
+                "name": "lean_sync",
+                "arguments": {"path": missing, "workspace": {"root": str(project_root)}},
+            }))
+            stdio.require(failure.get("isError") is True, f"missing file was accepted: {failure}")
+            error = failure.get("structuredContent", {})
+            stdio.require(missing in error.get("message", ""), f"missing-file error omitted path: {failure}")
+            client.close_input()
+            code = client.wait_for_exit_after_eof(shutdown_timeout)
+        finally:
+            client.close()
+    except Exception:
+        # close() has joined the stderr reader; traced failures still need its diagnostic tail.
+        if client.server_trace and client.stderr_lines:
+            print("\n".join(client.stderr_lines)[-65536:], file=sys.stderr)
+        raise
     stderr = "\n".join(client.stderr_lines)
-    if stderr.strip():
-        raise RuntimeError(f"lean-beam-mcp wrote stderr: {stderr}")
+    stdio.require(code == 0, f"lean-beam-mcp exited with code {code}\n{stderr}")
+    return structured["document_progress"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("server")
+    parser.add_argument("project_root", type=Path)
+    parser.add_argument("source", nargs="?", default="PositionEmptyLine.lean")
+    parser.add_argument("--server-trace", action="store_true")
+    args = parser.parse_args()
+    root = args.project_root.resolve()
+    progress = {
+        family: smoke(args.server, root, args.source, modern=modern, server_trace=args.server_trace)
+        for family, modern in [("modern", True), ("legacy", False)]
+    }
     print(json.dumps({"ok": True, "progress": progress}, sort_keys=True))
 
 

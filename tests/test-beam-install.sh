@@ -1266,7 +1266,8 @@ done
 
 mcp_smoke_out="$(mktemp "$tmp_root/install-mcp-smoke-out-XXXXXX")"
 mcp_smoke_err="$(mktemp "$tmp_root/install-mcp-smoke-err-XXXXXX")"
-if ! python3 tests/lib/installed-mcp-smoke.py "$installed_mcp" "$project_root" >"$mcp_smoke_out" 2>"$mcp_smoke_err"
+if ! python3 tests/lib/process_watchdog.py --timeout "${BEAM_MCP_SMOKE_WATCHDOG_SECONDS:-600}" -- \
+    python3 tests/lib/installed-mcp-smoke.py "$installed_mcp" "$project_root" >"$mcp_smoke_out" 2>"$mcp_smoke_err"
 then
   echo "expected installed MCP wrapper smoke to succeed" >&2
   cat "$mcp_smoke_out" >&2
@@ -1278,20 +1279,6 @@ fi
 remove_tmp_file "$mcp_smoke_out"
 remove_tmp_file "$mcp_smoke_err"
 
-mcp_self_check_watchdog="$PWD/tests/lib/process_watchdog.py"
-mcp_self_check_out="$(cd "$project_root" && \
-  python3 "$mcp_self_check_watchdog" --timeout "${BEAM_MCP_SELF_CHECK_WATCHDOG_SECONDS:-600}" -- \
-    "$installed_mcp" --self-check PositionEmptyLine.lean)"
-if ! printf '%s\n' "$mcp_self_check_out" | grep -q 'Lean Beam MCP self-check passed'; then
-  echo "expected installed MCP self-check to report success" >&2
-  printf '%s\n' "$mcp_self_check_out" >&2
-  exit 1
-fi
-if ! printf '%s\n' "$mcp_self_check_out" | grep -q 'workspace: explicit root descriptor'; then
-  echo "expected installed MCP self-check to exercise an explicit workspace descriptor" >&2
-  printf '%s\n' "$mcp_self_check_out" >&2
-  exit 1
-fi
 if [ -d "$project_root/.beam" ]; then
   project_beam_mode="$(python3 -c 'import os, stat, sys; print(format(stat.S_IMODE(os.lstat(sys.argv[1]).st_mode), "o"))' "$project_root/.beam")"
   if [ "$project_beam_mode" != "700" ]; then

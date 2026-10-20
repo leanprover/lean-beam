@@ -242,12 +242,15 @@ The executable path is split into importable modules:
 - [Beam/Mcp/Protocol.lean](../Beam/Mcp/Protocol.lean): current MCP JSON-RPC helpers
 - [Beam/Mcp/Options.lean](../Beam/Mcp/Options.lean): executable options and usage
 - [Beam/Mcp/Application.lean](../Beam/Mcp/Application.lean): installation-owned runtime admission
-- [Beam/Mcp/SelfCheck.lean](../Beam/Mcp/SelfCheck.lean): installed-wrapper self-check
 - [Beam/Mcp/Server.lean](../Beam/Mcp/Server.lean): descriptor resolution, lazy runtime dispatch, and
   the synchronous protocol-test seam
 - [Beam/Mcp/StdioServer.lean](../Beam/Mcp/StdioServer.lean): permanent stdin reader, concurrent
   coordination, cancellation, cache-control barriers, and serialized output
 - [Beam/Mcp/ServerMain.lean](../Beam/Mcp/ServerMain.lean): executable entry point
+
+Installed and relocated native executable checks use the external `McpClient` in
+`tests/test-mcp-stdio.py`, via `tests/lib/installed-mcp-smoke.py`. Keep client conversation and
+integration-test process supervision outside the server executable.
 
 Keep these stdio invariants explicit:
 

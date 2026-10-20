@@ -37,6 +37,8 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Removed
 
+- Remove `lean-beam-mcp --self-check`. Verify the configured MCP client with a normal `lean_sync`
+  call; installed and native stdio smoke tests run through the external test harness.
 - Move Rocq goal probes, agent skill, and `coq-lsp` setup to the independent `rocq-beam` project.
   Lean Beam no longer accepts Rocq broker requests, `serve rocq`, or `--rocq-skill`.
 - Remove the redundant backend selector from broker requests and continuation handles. CLI commands

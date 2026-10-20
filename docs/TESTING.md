@@ -141,7 +141,7 @@ after tactic evaluation is covered by the same failure and restoration boundary.
 Default Beam entrypoints:
 
 - [tests/test-beam-fast.sh](../tests/test-beam-fast.sh): fast broker stream, barrier, request-contract,
-  MCP projection, HTTP bridge, self-check, and toolchain registry/matrix coverage
+  MCP projection, HTTP bridge, installed stdio smoke, and toolchain registry/matrix coverage
 - [tests/test-beam-slow.sh](../tests/test-beam-slow.sh): wrapper, MCP stdio stress and
   multi-toolchain workspace coverage, sandbox-wrapper, and save-replay coverage
 - [tests/test-beam-install.sh](../tests/test-beam-install.sh): installer and installed-runtime layout
@@ -209,7 +209,7 @@ Current Beam coverage includes:
   `doctor`, installed-state pruning, and installed MCP wrapper coverage
   in [tests/test-beam-install.sh](../tests/test-beam-install.sh), with focused prune safety and
   invalid-runtime identity cases in [tests/test-beam-prune.sh](../tests/test-beam-prune.sh)
-- MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, self-check, released
+- MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, installed smoke, released
   official-client interoperability, and external legacy/modern conformance coverage
 
 Run the Beam surface when the change touches broker protocol or transport, request/progress/diagnostics streams, daemon session or restart logic, wrapper CLI behavior, installation lookup or construction, install layout, `doctor`, save replay, save barriers, and MCP.
@@ -489,28 +489,31 @@ Set `--server-trace` to add MCP/broker trace lines to the timeout dump, and set
 runs the stdio stress harness with `BEAM_MCP_STDIO_TIMEOUT` defaulting to 60 seconds, enables
 `BEAM_MCP_SERVER_TRACE=1` for the stdio harness by default, and sets the diagnostics-barrier watchdog
 to `BEAM_MCP_STDIO_WAIT_DIAGNOSTICS_WATCHDOG_MS=10000`. Set `BEAM_MCP_STDIO_SERVER_TRACE=0` only
-when intentionally checking the quiet stderr path. The fast suite's installed-wrapper self-check uses
-`BEAM_MCP_SELF_CHECK_TIMEOUT_MS`, defaulting to 120 seconds. The suite stages its complete installation
-before starting the self-check budget; normal MCP execution does not construct missing runtimes.
-Workspace initialization and Lean processing during sync still run within that budget. Keep
-`--timeout 30` for local repro attempts unless you are specifically checking the CI budget.
-Focused wrapper tests, including `tests/test-beam-wrapper-daemon.sh`, consume a preconstructed
-`BEAM_TEST_INSTALLATION`; see [the Beam test setup](#beam-surface).
+when intentionally checking the quiet stderr path. Keep `--timeout 30` for local repro attempts
+unless you are specifically checking the CI budget. Focused wrapper tests, including
+`tests/test-beam-wrapper-daemon.sh`, consume a preconstructed `BEAM_TEST_INSTALLATION`; see
+[the Beam test setup](#beam-surface).
 
-MCP self-check is an installation smoke test with one best-effort timeout covering discovery,
-sync, and shutdown, including stderr draining. Success verifies discovery of the supported protocol
-and a correctly shaped `lean_sync` result. It does not require completed elaboration (`done: true`),
-a file without Lean diagnostics, or readiness to save artifacts; those have separate sync/save tests.
-Protocol fixtures reject malformed response envelopes and progress fields, check that notifications
-cannot restart the budget, and cover EOF shutdown stalls and early child exits. The existing
-`Beam.StderrCapture` drains diagnostics concurrently and retains at most the final 64 KiB for failure
-reporting; successful probes do not replay diagnostic stderr.
-Process creation and failure cleanup are outside the budget; blocked I/O can still delay process
-exit. The fast suite and
-installed-wrapper suite supervise it using `tests/lib/process_watchdog.py`, with
-`BEAM_MCP_SELF_CHECK_WATCHDOG_SECONDS` defaulting to 600 seconds. The MCP protocol test executable,
-which includes self-check child fixtures, has a separate 240-second external watchdog configurable
-with `BEAM_MCP_PROTOCOL_TEST_WATCHDOG_SECONDS`.
+The fast, installer, and native toolchain suites run `tests/lib/installed-mcp-smoke.py` against
+their installed wrapper or relocated native executable. It reuses the external `McpClient` from
+`tests/test-mcp-stdio.py`, starts separate servers for MCP `2026-07-28` and `2025-11-25`, and checks
+discovery or initialization, an explicitly workspace-bound `lean_sync`, the missing-file error
+path, and zero exit after stdin EOF. Valid sync progress need not have `done: true`; diagnostics
+and artifact readiness have separate sync/save coverage. Quiet runs require empty stderr; the
+native driver also repeats the check with server tracing enabled.
+
+`python3 tests/test-installed-mcp-smoke.py` exercises that client over real fixture pipes. Cases
+cover interleaved notifications, coalesced and fragmented responses, partial frames, malformed
+response/progress fields, notification floods, stderr draining, early/nonzero exits, and stalled
+EOF shutdown. A notification does not reset a request's deadline. These fixtures test the external
+harness rather than embedding a second client or process supervisor in the MCP server.
+
+`BEAM_MCP_SMOKE_TIMEOUT` sets each smoke request's response timeout (60 seconds by default), and
+`BEAM_MCP_SMOKE_SHUTDOWN_TIMEOUT` sets the EOF wait (30 seconds by default). The suites run the
+smoke client under `tests/lib/process_watchdog.py`, with `BEAM_MCP_SMOKE_WATCHDOG_SECONDS`
+defaulting to 600 seconds. This external watchdog covers stalls beyond those individual waits,
+including blocked I/O. The MCP protocol test executable has a separate 240-second external
+watchdog configurable with `BEAM_MCP_PROTOCOL_TEST_WATCHDOG_SECONDS`.
 
 The watchdog captures stdout/stderr in files and reads at most the final 1 MiB of each, so inherited
 writers cannot keep output collection waiting for EOF. This bounds the returned strings, not disk
@@ -591,7 +594,7 @@ still fails the job. The job has a 120-minute timeout.
 
 Each layout runs shell lint once per operating system, separately from the slow suite. The slow
 suite owns the full MCP stdio harness, including four iterations and three restart cycles; the fast
-suite retains protocol, projection, HTTP bridge, and self-check coverage. `test-lsp.sh` builds its own prerequisites, so the
+suite retains protocol, projection, HTTP bridge, and installed stdio smoke coverage. `test-lsp.sh` builds its own prerequisites, so the
 workflow does not run a separate build before it. The local aggregate and default defensive
 validation commands also run shell lint once before their product suites.
 

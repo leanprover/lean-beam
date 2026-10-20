@@ -67,8 +67,6 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
   context, and recent daemon incident paths; `confidential: true` instead omits automatically
   collected project debug context, request/response payloads, and evidence, forces HOME-path
   redaction, and marks the report as unsuitable for public posting
-- `lean-beam-mcp --self-check <lean-file>` verification from a Lean project through a real
-  descriptor-bound `lean_sync` call
 - request-stateless local MCP workspaces: every workspace-bound call carries
   `{"workspace":{"root":"/absolute/project"}}`; runtimes are cached lazily by canonical root,
   `lean_drop_workspace` evicts one cache, and there is no default workspace, setup tool, startup

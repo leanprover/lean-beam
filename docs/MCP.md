@@ -208,13 +208,16 @@ request dispatcher and runtime teardown boundary.
   runtime description on reuse. It uses the installation adapter directly.
 - [Beam/Version.lean](../Beam/Version.lean) holds pure identity data and rendering; installation
   discovery belongs to the application adapters.
-- [Beam/Mcp/SelfCheck.lean](../Beam/Mcp/SelfCheck.lean) owns the installed-wrapper self-check.
 - [Beam/Mcp/Server.lean](../Beam/Mcp/Server.lean) owns descriptor resolution, lazy broker-runtime
   access, the typed protocol-family state machine, and the synchronous protocol-test seam. Runtime
   resolution and process identity are supplied as explicit application effects. The broker runtime
   is authoritative for workspace state.
 - [Beam/Mcp/StdioServer.lean](../Beam/Mcp/StdioServer.lean) owns the permanent stdin reader,
   concurrent coordination, cancellation, cache-control barriers, and serialized output.
+- [tests/lib/installed-mcp-smoke.py](../tests/lib/installed-mcp-smoke.py) verifies installed and
+  native executables through the shared external stdio client in
+  [tests/test-mcp-stdio.py](../tests/test-mcp-stdio.py). Process supervision for this integration
+  check belongs to the test harness.
 
 ## Public Tools
 
