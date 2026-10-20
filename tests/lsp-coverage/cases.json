@@ -1,6 +1,18 @@
 {
   "cases": [
     {
+      "id": "runAt.suggestion-ranges",
+      "method": "$/lean/runAt",
+      "coverage": ["suggestion-ranges", "isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/SuggestionTest.lean#run"
+    },
+    {
+      "id": "runWith.suggestion-ranges",
+      "method": "$/lean/runWith",
+      "coverage": ["suggestion-ranges", "handle-continuation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/SuggestionTest.lean#run"
+    },
+    {
       "id": "runAt.header-universes",
       "method": "$/lean/runAt",
       "coverage": ["proof-context", "isolation"],

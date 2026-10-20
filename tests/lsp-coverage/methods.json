@@ -19,7 +19,8 @@
         "stale-edit",
         "cancellation",
         "standard-lsp-interference",
-        "mixed-concurrency"
+        "mixed-concurrency",
+        "suggestion-ranges"
       ]
     },
     {
@@ -38,7 +39,8 @@
         "document-edit-invalidation",
         "document-close-invalidation",
         "standard-lsp-interference",
-        "mixed-concurrency"
+        "mixed-concurrency",
+        "suggestion-ranges"
       ]
     },
     {

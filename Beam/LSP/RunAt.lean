@@ -212,13 +212,14 @@ def withInnerCancelToken (k : IO.CancelToken → RequestM α) : RequestM α := d
 
 def runCommandElabMWithCancel
     (snap : Snapshots.Snapshot)
-    (doc : DocumentMeta)
+    (stx : Syntax)
+    (text : String)
     (cancelTk? : Option IO.CancelToken)
     (c : Elab.Command.CommandElabM α) : EIO Exception α := do
   let ctx : Command.Context := {
-    cmdPos := snap.stx.getPos? |>.getD 0
-    fileName := doc.uri
-    fileMap := doc.text
+    cmdPos := stx.getPos? |>.getD 0
+    fileName := "<runAt>"
+    fileMap := text.toFileMap
     snap? := none
     cancelTk?
   }
@@ -340,7 +341,6 @@ def runCommandText (snap : Snapshots.Snapshot) (text : String) :
     RequestM (Result × Option StoredHandleState) := do
   checkRequestCancelled
   withInnerCancelToken fun innerCancelTk => do
-    let rc ← readThe RequestContext
     let stx ←
       match parseOneCommandText snap.env text with
       | .ok stx => pure stx
@@ -348,11 +348,10 @@ def runCommandText (snap : Snapshots.Snapshot) (text : String) :
       | .error err => return (errorResult err, none)
     let (output, response) ← IO.FS.withIsolatedStreams do
       EIO.toBaseIO do
-        runCommandElabMWithCancel snap rc.doc.meta (some innerCancelTk) do
+        runCommandElabMWithCancel snap stx text (some innerCancelTk) do
           -- The incoming snapshot can carry already-accounted-for async work from the saved file.
           -- A speculative command result should include only tasks spawned by this command.
           modify fun state => { state with snapshotTasks := #[] }
-          let initialMsgCount := (← get).messages.toList.length
           let initialTraceCount := (← getTraces).size
           let error? ← try
             Elab.Command.elabCommandTopLevel stx
@@ -362,7 +361,8 @@ def runCommandText (snap : Snapshots.Snapshot) (text : String) :
               throw ex
             pure (some (← ex.toMessageData.toString))
           let state ← get
-          let messages := state.messages.toList.drop initialMsgCount
+          -- Lean resets the message log in `elabCommandTopLevel`, including for handle continuations.
+          let messages := state.messages.toList
           let traces := (← getTraces).toList.drop initialTraceCount
           let (snapshotMessages, snapshotTraces) ←
             collectSnapshotTaskArtifacts state.snapshotTasks
@@ -456,6 +456,9 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
   checkRequestCancelled
   withInnerCancelToken fun innerCancelTk => do
     let snapshot := snapshot.withCancelToken (some innerCancelTk)
+    -- Syntax offsets belong to this probe, including when a handle came from different text.
+    let snapshot := { snapshot with coreContext := {
+      snapshot.coreContext with fileName := "<runAt>", fileMap := text.toFileMap } }
     let stx ←
       match Parser.runParserCategory snapshot.coreState.env `tactic text "<runAt>" with
       | .ok stx => pure stx
