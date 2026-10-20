@@ -65,8 +65,33 @@ private def stage (directory root : System.FilePath) : IO InstallManifest := do
     license := "LICENSE", targets
   }
 
-def main (args : List String) : IO Unit := do
-  let [directory] := args | throw <| IO.userError "expected owned fixture directory"
+private def checkShadowedAlias (directory : System.FilePath) (phase : String) : IO Unit := do
+  let suffix := if System.Platform.isWindows then ".exe" else ""
+  let home := directory / s!"shadowed-alias-{phase}"
+  discard <| stage directory home
+  let installation ← Beam.Installation.openExecutable (home / ("libexec/beam-cli" ++ suffix)) .cli false
+  let project := directory / "project"
+  IO.FS.writeFile (project / "lean-toolchain") "leanprover/lean4:v4.33.1\n"
+  match phase, ← installation.lookup project with
+  | "absent", .ok reference | "removed", .ok reference =>
+      let exact ← Beam.resolveExistingPath (directory / "sdk-0/bin" / ("lean" ++ suffix))
+      require (Beam.sameCanonicalPath exact reference.description.command)
+        "removing the alias did not restore the exact installed release"
+  | "healthy", .error (.unavailable command) =>
+      let foreign ← Beam.resolveExistingPath (directory / "foreign/bin" / ("lean" ++ suffix))
+      require (Beam.sameCanonicalPath command foreign) "healthy alias did not shadow the exact release"
+  | "missing-compiler", .error (.selection (.io _))
+    | "nonfile-compiler", .error (.selection (.io _))
+    | "dangling", .error (.selection (.io _)) => pure ()
+  | "observation-error", .error (.selection (.io error)) =>
+      match error with
+      | .userError _ => throw <| IO.userError "alias observation error lost its typed I/O failure"
+      | _ => pure ()
+  | _, .ok _ => throw <| IO.userError s!"shadowing alias {phase} admitted the exact installed release"
+  | _, .error error => throw <| IO.userError s!"unexpected shadowing alias {phase} failure: {error.message}"
+  IO.println s!"shadowing alias transition passed: {phase}"
+
+private def runFullFixture (directory : System.FilePath) : IO Unit := do
   let directory ← Beam.resolveExistingPath directory
   let suffix := if System.Platform.isWindows then ".exe" else ""
   let project := directory / "project"
@@ -159,3 +184,10 @@ def main (args : List String) : IO Unit := do
   -- A plausible target remains available in H; a broken G must never borrow it.
   discard <| accepted other project
   IO.println "exact lookup, aliases, target ownership, retained generation, and independent installation isolation passed"
+
+def main (args : List String) : IO Unit := do
+  match args with
+  | [directory] => runFullFixture directory
+  | [directory, "shadowed-alias", phase] =>
+      checkShadowedAlias (← Beam.resolveExistingPath directory) phase
+  | _ => throw <| IO.userError "expected owned fixture directory and optional shadowing-alias phase"

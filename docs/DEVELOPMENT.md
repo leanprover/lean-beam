@@ -940,6 +940,10 @@ Local Elan aliases must be actual links. On Windows these include directory junc
 directory does not become an alias merely because its `bin` directory links to an admitted compiler.
 Lean 4.36.0-rc1's Windows `symlinkMetadata` follows links, so Beam's filesystem helper inspects the
 leaf's symbolic-link or mount-point reparse tag without following it. POSIX uses `lstat`.
+A local link selected by release name takes precedence over an exact installed descriptor. The link
+must resolve to a regular compiler file; a missing compiler, dangling link, or observation error ends
+selection. Descriptor lookup is available only when no applicable local link exists.
+
 A genuinely absent `lean-toolchain` permits the bundled default. Present links, dangling targets,
 metadata failures, and unreadable files do not become absence. Selector inspection preserves typed
 I/O failures; on Windows a non-following directory observation distinguishes a dangling file link
@@ -979,8 +983,11 @@ helper, with no option-driven switch between execution strategies.
 
 `tests/test-installation-lookup.py` uses real `elan toolchain link` fixtures and exercises two targets,
 aliases, ordinary-directory impostors, floating selectors, changed records, incomplete installations,
-and independent installations with identical bytes. Its candidate compiler files are unusable;
-on POSIX they also record invocation attempts. Lookup must not run them or create provider caches.
+and independent installations with identical bytes. It keeps an exact release installed while a
+shadowing alias moves through healthy foreign, missing compiler, non-file compiler, observation
+failure, dangling link, and removal states; only removal restores exact-release admission.
+Its candidate compiler files are unusable; on POSIX they also record invocation attempts. Lookup must
+not run them or create provider caches.
 The MCP protocol tests retain creation/admission counters, cancellation, independent workspaces,
 and a controlled drop/recreate race. Native qualification tests selector aliases with live handles,
 generation replacement, and cleanup after provenance becomes unusable in both protocol families.

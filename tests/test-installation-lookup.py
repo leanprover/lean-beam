@@ -25,12 +25,20 @@ with tempfile.TemporaryDirectory(prefix="beam installation lookup-") as temporar
                        BEAM_HOME=str(directory / "foreign"))
     elan = shutil.which("elan")
     assert elan, "local link fixtures require elan"
-    for alias, target in [("fixture-alias", "sdk-0"), ("fixture-second", "sdk-1"),
-                          ("foreign-alias", "foreign"),
-                          ("leanprover--lean4---v4.33.1", "sdk-0")]:
+
+    def link(alias, target):
         # Elan uses directory junctions on Windows; no developer-mode symlink privilege.
         subprocess.run([elan, "toolchain", "link", alias, directory / target],
                        env=environment, check=True, capture_output=True, timeout=15)
+
+    def run_lookup(*arguments):
+        subprocess.run([ROOT / ".lake/build/bin" / ("beam-installation-lookup-test" + suffix),
+                        directory, *arguments], env=environment, check=True, timeout=90)
+
+    for alias, target in [("fixture-alias", "sdk-0"), ("fixture-second", "sdk-1"),
+                          ("foreign-alias", "foreign"),
+                          ("leanprover--lean4---v4.33.1", "sdk-0")]:
+        link(alias, target)
     for name in ["ordinary-local", "stable", "beta", "nightly", "lean-toolchain"]:
         ordinary = tools / name
         ordinary.mkdir()
@@ -71,8 +79,35 @@ with tempfile.TemporaryDirectory(prefix="beam installation lookup-") as temporar
         assert os.geteuid() != 0, "selector permission regression must run without root privileges"
         unreadable.parent.chmod(0)
     try:
-        subprocess.run([ROOT / ".lake/build/bin" / ("beam-installation-lookup-test" + suffix), directory],
-                       env=environment, check=True, timeout=90)
+        run_lookup()
+        # The exact installed release remains present throughout every alias transition.
+        run_lookup("shadowed-alias", "absent")
+        link("v4.33.1", "foreign")
+        run_lookup("shadowed-alias", "healthy")
+        compiler = directory / "foreign/bin" / ("lean" + suffix)
+        contents = compiler.read_bytes()
+        compiler.unlink()
+        run_lookup("shadowed-alias", "missing-compiler")
+        compiler.mkdir()
+        run_lookup("shadowed-alias", "nonfile-compiler")
+        compiler.rmdir()
+        compiler.parent.rmdir()
+        compiler.parent.write_text("compiler parent must be a directory\n")
+        try:
+            run_lookup("shadowed-alias", "observation-error")
+        finally:
+            compiler.parent.unlink()
+            compiler.parent.mkdir()
+            compiler.write_bytes(contents)
+            compiler.chmod(0o755)
+        (directory / "foreign").rename(directory / "foreign-moved")
+        run_lookup("shadowed-alias", "dangling")
+        alias = tools / "v4.33.1"
+        if os.name == "nt":
+            alias.rmdir()
+        else:
+            alias.unlink()
+        run_lookup("shadowed-alias", "removed")
     finally:
         if os.name == "nt":
             kernel.CloseHandle(locked_handle)

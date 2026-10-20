@@ -29,11 +29,16 @@ def elanHome : IO (Option System.FilePath) := do
 private def executableName : String :=
   if System.Platform.isWindows then "lean.exe" else "lean"
 
+private def leanIn (toolchainRoot : System.FilePath) : IO System.FilePath := do
+  let command := toolchainRoot / "bin" / executableName
+  unless (← command.metadata).type == .file do
+    throw <| IO.userError s!"Lean compiler must resolve to a regular file: {command}"
+  Beam.resolveExistingPath command
+
+/-- A selector may name an Elan descriptor rather than a project-local filesystem path. -/
 private def leanIn? (toolchainRoot : System.FilePath) : IO (Option System.FilePath) := do
   try
-    let command := toolchainRoot / "bin" / executableName
-    unless (← command.metadata).type == .file do return none
-    pure <| some (← Beam.resolveExistingPath command)
+    pure <| some (← leanIn toolchainRoot)
   catch _ => pure none
 
 private def directoryName? (name : String) : Option String := do
@@ -45,10 +50,9 @@ private def directoryName? (name : String) : Option String := do
 private def linkedLean? (home : System.FilePath) (release : String) : IO (Option System.FilePath) := do
   let some name := directoryName? release | return none
   let path := home / "toolchains" / name
-  try
-    unless ← Beam.pathIsLink path do return none
-    leanIn? path
-  catch _ => pure none
+  unless ← Beam.pathIsLink path do return none
+  -- Once this link takes precedence, observation and compiler failures are terminal.
+  pure <| some (← leanIn path)
 
 /-- Only genuine absence permits the bundled default. Windows metadata follows file links,
 so a missing target requires a non-following directory observation before declaring absence. -/
