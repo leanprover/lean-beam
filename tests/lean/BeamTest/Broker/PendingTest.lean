@@ -304,9 +304,11 @@ private def checkPendingOutcomeCancellationPrecedence : IO Unit := do
   let backendFailure :=
     (responseFailureFor .contentModified "backend worker terminated")
       |>.withOptionalFileProgress (some progress)
-  let cancelRef ← IO.mkRef true
+  let cancelRef ← IO.mkRef false
   let cancelledPending ← mkPending (cancelRef? := some cancelRef)
   cancelledPending.promise.resolve (.error backendFailure)
+  -- Interpretation observes cancellation even when the backend failure settled first.
+  cancelRef.set true
   match ← cancelledPending.awaitOutcome with
   | .ok _ =>
       throw <| IO.userError "cancelled pending backend failure resolved as a success"

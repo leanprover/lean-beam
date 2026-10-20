@@ -380,6 +380,13 @@ handle has been validated, never fall back to matching a reusable client request
 the `PendingRequest` as one value instead of separating its promise from its cancellation reference.
 Once that reference is marked, cancellation takes precedence over a concurrent backend failure;
 an already-completed backend success remains successful.
+The private workspace request context carries that reference through every operation phase. Handlers
+must not take a second cancellation argument. `RequestCancellation.backendFailure` interprets both
+failed pending outcomes and retained channel rejections for the caller, preserving file progress
+without changing the shared channel failure. It reads cancellation when interpreting failure, rather
+than recording which event happened first. Broker-generated validation and freshness failures keep
+their existing semantics. A successful backend reply still requires the broker's remaining identity,
+sync, and save-publication checks before the whole operation can succeed.
 After initialization, `sessionReaderLoop` is the backend session's only stdout reader. Shutdown
 replies use the same pending-request store and reader loop; do not add a second direct stdout read.
 

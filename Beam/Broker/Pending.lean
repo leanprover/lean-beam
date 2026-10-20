@@ -48,6 +48,22 @@ structure PendingRequestStore where
   private mk ::
   private state : Std.Mutex PendingRequestState
 
+/-- Interpret a backend failure for one caller without changing its shared channel failure. -/
+def RequestCancellation.backendFailure
+    (cancelRef? : Option (IO.Ref Bool))
+    (fallback : ResponseFailure) : IO ResponseFailure := do
+  let cancelled ←
+    match cancelRef? with
+    | some cancelRef => cancelRef.get
+    | none => pure false
+  if cancelled then
+    pure <|
+      (responseFailureFor .requestCancelled
+        "request was cancelled before its backend failure was observed")
+      |>.withOptionalFileProgress fallback.fileProgress?
+  else
+    pure fallback
+
 namespace PendingRequest
 
 def resolveResponse (pending : PendingRequest) (result : Json) : IO Unit := do
@@ -73,22 +89,6 @@ def resolveError
     (data? : Option Json := none) : IO Unit :=
   pending.resolveFailure (backendResponseFailure code message data?)
 
-/-- Give an already-marked broker cancellation precedence over a concurrent backend failure. -/
-private def failureRespectingCancellation
-    (cancelRef? : Option (IO.Ref Bool))
-    (fallback : ResponseFailure) : IO ResponseFailure := do
-  let cancelled ←
-    match cancelRef? with
-    | some cancelRef => cancelRef.get
-    | none => pure false
-  if cancelled then
-    pure <|
-      (responseFailureFor .requestCancelled
-        "request was cancelled before its backend failure was observed")
-      |>.withOptionalFileProgress fallback.fileProgress?
-  else
-    pure fallback
-
 /--
 Await the pending request, giving its already-marked cancellation identity precedence over a
 concurrent backend failure while preserving observations attached to that failure. A completed
@@ -100,7 +100,7 @@ def awaitOutcome (pending : PendingRequest) : IO (Except ResponseFailure Pending
   match outcome with
   | .ok result => pure (.ok result)
   | .error failure =>
-      pure (.error (← failureRespectingCancellation pending.cancelRef? failure))
+      pure (.error (← RequestCancellation.backendFailure pending.cancelRef? failure))
 
 private def normalizePublishDiagnostics (params : PublishDiagnosticsParams) :
     PublishDiagnosticsParams := {
