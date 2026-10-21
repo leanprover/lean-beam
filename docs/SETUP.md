@@ -233,6 +233,7 @@ operations attach to an existing owner and report the exact `serve` command when
 
 The foreground owner handles Ctrl-C and, on POSIX, SIGTERM and SIGHUP from acquisition through
 cleanup. A signal received during startup remains latched; repeated signals do not bypass cleanup.
+Cancellation observed before readiness exits nonzero without publishing a running-session response.
 These handlers override an inherited ignored SIGHUP, including from `nohup`. Shutdown is cooperative:
 lock/readiness waits observe the stop when they return, and blocked synchronous output or filesystem
 operations can delay cleanup. Attached commands handle the first Ctrl-C while awaiting a request;

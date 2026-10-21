@@ -919,13 +919,19 @@ otherwise; see the [4.33.1 runtime implementation](https://github.com/leanprover
 An extra `Signal.cancel` call is not needed to release that wait. A failed `Signal.next` has no
 subscription to stop: release the native object and propagate the start error. Calling `stop` after
 a failed start can double-release the loop reference on 4.33/4.34. The native watcher regression
-(`python3 tests/test-interrupt-watcher.py`, after `lake build beam-cli-daemon-test`) checks pending
+(`python3 tests/test-interrupt-watcher.py`, using the executable, plugin, and daemon-fixture
+builds listed in `tests/test-beam-fast.sh`) checks pending
 waiters on normal and exceptional exits. On POSIX it also checks INT/TERM/HUP delivery, retained stop
 observations after the first waiter completes, survival of repeated signals in a held owner scope,
 isolation of a later watcher, default actions after normal and exceptional teardown, and blocked
 stdout/stderr in the real CLI request/rendering paths. This cleanup does
 not require raising the minimum Lean version. The
 [support-window roadmap](STATUS.md#lean-support-window) records the remaining tradeoffs.
+
+The acquisition regression gates runtime resolution, latches the borrowed cancellation observation,
+then releases acquisition of a real fixture daemon. It joins the owned task before checking the
+nonzero exit, absent readiness, reaped daemon, and removed session descriptor. Signal delivery is
+tested separately, so this exit-status regression does not depend on signal scheduling.
 
 Lean 4.33–4.35 retain an upstream race between one-shot callback completion and `Signal.stop`.
 The ownership-ordering fixes in [Lean #14793](https://github.com/leanprover/lean4/pull/14793) and

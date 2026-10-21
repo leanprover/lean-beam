@@ -190,7 +190,9 @@ def runThenHoldUntilInterrupted
     (watcher : InterruptWatcher)
     (owner : ProjectDaemonOwner)
     (act : IO Unit) : IO Unit := do
-  unless ← watcher.interrupted do act
+  -- Initialization owns the pre-readiness cancellation check, including a stop latched
+  -- during acquisition. Skipping it would report success without publishing readiness.
+  act
   while !(← watcher.interrupted) && (← owner.exitCode?).isNone &&
       (← owner.registered) && !(← IO.checkCanceled) do
     IO.sleep 50
@@ -212,6 +214,8 @@ private def serveProject
       runThenHoldUntilInterrupted watcher owner do
         IO.eprintln "beam: loading Lake workspace configuration..."
         callBrokerQuiet watcher root owner.client <| Request.ensure
+        if (← watcher.interrupted) || (← IO.checkCanceled) then
+          throw <| IO.userError "Beam startup interrupted before readiness"
         printResponse <| Response.success <| toJson <|
           mkSessionStatus .running root owner.client.controlDir (some owner.generation)
         (← IO.getStdout).flush
