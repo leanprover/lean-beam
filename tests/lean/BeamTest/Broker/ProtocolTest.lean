@@ -2438,6 +2438,18 @@ private def withDocumentAdmissionSession
           let params ← IO.ofExcept <| message.getObjVal? "params"
           let params : DidOpenTextDocumentParams ← IO.ofExcept <| fromJson? params
           opened.set (some params.textDocument)
+        else if method == "textDocument/didChange" then
+          let params ← IO.ofExcept <| message.getObjVal? "params"
+          let document ← IO.ofExcept <| params.getObjVal? "textDocument"
+          let changes ← IO.ofExcept <| params.getObjValAs? (Array Json) "contentChanges"
+          let [change] := changes.toList
+            | throw <| IO.userError "document admission fixture expected one full change"
+          opened.set <| some {
+            uri := ← IO.ofExcept <| document.getObjValAs? String "uri"
+            languageId := "lean"
+            version := ← IO.ofExcept <| document.getObjValAs? Nat "version"
+            text := ← IO.ofExcept <| change.getObjValAs? String "text"
+          }
         else if method == diagnosticsBarrierMethod || method == "shutdown" then
           let id ← IO.ofExcept <| message.getObjValAs? Lean.JsonRpc.RequestID "id"
           let some pending ← PendingRequestStore.remove initial.pending id
@@ -2570,8 +2582,8 @@ private def checkDocumentAdmissionBeforeRead : IO Unit := do
     try runtime.close
     finally IO.FS.removeDirAll base
 
-/-- Refresh reads once before closing, then uses that identity even if its alias is retargeted. -/
-private def checkRefreshAdmittedIdentity : IO Unit := do
+/-- Refresh keeps its admitted identity and cannot close a newer accepted source read. -/
+private def checkRefreshAdmittedIdentity (newerUpdate : Bool := false) : IO Unit := do
   let base := System.FilePath.mk s!"/tmp/beam-refresh-admitted-identity-{← IO.monoNanosNow}"
   IO.FS.createDirAll (base / "workspace")
   let root ← Beam.resolveExistingPath (base / "workspace")
@@ -2586,6 +2598,7 @@ private def checkRefreshAdmittedIdentity : IO Unit := do
     admissionSymlink fifo alias
     IO.FS.writeFile outside "def outsideFixture := 2\n"
     withDocumentAdmissionSession root fun runtime writes => do
+      let newerDoc ← IO.mkRef (none : Option DocState)
       let uri := sessionUri (← Beam.resolveExistingPath fifo)
       let prior := (DocumentState.FileSnapshot.ofText "def prior := 0\n" default).toDocState 1
       runtime.state.atomically do
@@ -2605,20 +2618,51 @@ private def checkRefreshAdmittedIdentity : IO Unit := do
         try
           require "refresh fixture reached its admitted read" (← waitForPath writerReady)
           require "refresh does not close before its source read completes" (← writes.get).isEmpty
-          IO.FS.removeFile alias
-          admissionSymlink outside alias
+          if newerUpdate then
+            -- The old read keeps the FIFO inode; a newer read observes the replacement file.
+            IO.FS.removeFile fifo
+            IO.FS.writeFile fifo "def newestFixture : Nat := 2\n"
+            let updated ← runtime.dispatchRequest {
+              workspaceId? := some "document-admission"
+              payload := .updateFile { path := fifo.toString }
+            }
+            require "a newer source read completes while refresh is held" updated.ok
+            newerDoc.set <| ← runtime.state.atomically do
+              let state ← get
+              pure <| state.workspaces.get? "document-admission"
+                |>.bind (·.lean.session?) |>.bind (·.docs.get? uri)
+          else
+            IO.FS.removeFile alias
+            admissionSymlink outside alias
           IO.FS.writeFile releaseWriter "release"
           let some (.ok response) ← Beam.waitTaskWithTimeout task 5000
             | throw <| IO.userError "refresh did not complete its admitted snapshot"
           require "refresh of the admitted source succeeds" response.ok
           let sent ← writes.get
-          require "refresh closes and reopens before its barrier"
-            (sent.map Prod.fst == #["textDocument/didClose", "textDocument/didOpen", diagnosticsBarrierMethod])
+          let expected :=
+            if newerUpdate then
+              #["textDocument/didChange", "textDocument/didSave", diagnosticsBarrierMethod]
+            else
+              #["textDocument/didClose", "textDocument/didOpen", diagnosticsBarrierMethod]
+          require "refresh only closes its current admitted source read" (sent.map Prod.fst == expected)
+          if newerUpdate then
+            let some newer ← newerDoc.get
+              | throw <| IO.userError "refresh fixture lost its newer document"
+            let current ← runtime.state.atomically do
+              let state ← get
+              pure <| state.workspaces.get? "document-admission"
+                |>.bind (·.lean.session?) |>.bind (·.docs.get? uri)
+            let some current := current
+              | throw <| IO.userError "old refresh erased the newer document"
+            require "old refresh preserves the newer read, source and accepted basis"
+              (DocumentState.basis current == DocumentState.basis newer &&
+                current.rawSourceHash == newer.rawSourceHash &&
+                current.syncSnapshotSeq == newer.syncSnapshotSeq)
           for (method, message) in sent do
             let params ← IO.ofExcept <| message.getObjVal? "params"
             if method == diagnosticsBarrierMethod then
               require "refresh barrier retains the admitted canonical URI"
-                (params == toJson (WaitForDiagnosticsParams.mk uri 1))
+                (params == toJson (WaitForDiagnosticsParams.mk uri (if newerUpdate then 2 else 1)))
             else
               let document ← IO.ofExcept <| params.getObjVal? "textDocument"
               require "refresh retains the admitted canonical URI"
@@ -3003,6 +3047,7 @@ def main : IO Unit := do
   checkDocumentAdmission
   checkDocumentAdmissionBeforeRead
   checkRefreshAdmittedIdentity
+  checkRefreshAdmittedIdentity true
   checkWorkspaceSnapshotResetIsolation
   checkCompletedRequestResetIsolation
   checkSessionCloseAdmission

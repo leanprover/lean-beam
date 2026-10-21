@@ -1845,9 +1845,12 @@ private def startTrackedDiagnosticsBarrierIO
       let session ← match ← ensureSession req.workspaceId req.cancelRef? with
         | .error failure => return .error failure
         | .ok session => pure session
-      if refresh then
+      -- Closing or fencing first would discard the evidence that a newer read was accepted.
+      let superseded := (session.docs.get? snapshot.uri).any snapshot.file.isSupersededBy
+      let reopen := refresh && !superseded
+      if reopen then
         if let .error failure ← fenceDocument req then return .error failure
-      let session ← if refresh then closeFile session snapshot.uri else pure session
+      let session ← if reopen then closeFile session snapshot.uri else pure session
       let synced ← syncFileSnapshotDetailed session snapshot
       let session := synced.session
       let uri := synced.uri
