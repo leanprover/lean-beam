@@ -9,6 +9,8 @@ import Beam.Mcp.Options
 import Beam.Mcp.SelfCheck
 import Beam.Mcp.Stdio
 import BeamTest.Broker.McpDropFailureTest
+import BeamTest.Broker.McpOutputTest
+import BeamTest.Broker.McpRuntimeLifetimeTest
 import BeamTest.Broker.JsonAssert
 import BeamTest.Broker.TestUtil
 import BeamTest.TestHarness
@@ -1907,6 +1909,8 @@ def main (args : List String) : IO Unit := do
         return ← selfCheckChild (← SelfCheckScenario.parse scenario)
   | _ => pure ()
   checkSelfCheck
+  BeamTest.Broker.McpOutputTest.run
+  BeamTest.Broker.McpRuntimeLifetimeTest.run
   checkJsonHelpers
   checkVersionIdentityJson
   checkIncoming

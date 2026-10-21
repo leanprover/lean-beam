@@ -108,7 +108,7 @@ def run : IO Unit := do
       ({} : Std.HashMap _ _)
         |>.insert failedId ((mcpPrivate% Beam.Mcp.Server.OwnedWorkspace.mk) failedRoot description 0)
         |>.insert healthyId ((mcpPrivate% Beam.Mcp.Server.OwnedWorkspace.mk) healthyRoot description 1)
-    (runtimeRef state).atomically <| set (some cached)
+    (runtimeRef state).atomically <| set ((mcpPrivate% Beam.Mcp.Server.RuntimeState.active) (some cached))
     (nextInstanceRef state).set 2
     let resolutions ← IO.mkRef (0 : Nat)
     let opts : Beam.Mcp.Server.Options := {
@@ -129,7 +129,8 @@ def run : IO Unit := do
     require "failed drop keeps the committed broker removal"
       ((← broker.workspaceRoot? failedId).isNone)
     (runtimeRef state).atomically do
-      let some runtime ← get | throw <| IO.userError "failed drop lost the shared runtime"
+      let some runtime := (mcpPrivate% Beam.Mcp.Server.RuntimeState.owned?) (← get)
+        | throw <| IO.userError "failed drop lost the shared runtime"
       require "failed drop removes stale MCP membership" (!(cachedWorkspaces runtime).contains failedId)
       require "failed drop retains unrelated MCP membership" ((cachedWorkspaces runtime).contains healthyId)
     discard <| successfulResult "unrelated workspace after failed drop" <|
@@ -140,7 +141,8 @@ def run : IO Unit := do
     require "ordinary request recreates the dropped broker workspace"
       ((← broker.workspaceRoot? failedId) == some failedRoot && (← resolutions.get) == 1)
     (runtimeRef state).atomically do
-      let some runtime ← get | throw <| IO.userError "recreated workspace lost its runtime"
+      let some runtime := (mcpPrivate% Beam.Mcp.Server.RuntimeState.owned?) (← get)
+        | throw <| IO.userError "recreated workspace lost its runtime"
       require "recreated workspace has a new MCP instance"
         ((cachedWorkspaces runtime)[failedId]?.any fun workspace =>
           (mcpPrivate% Beam.Mcp.Server.OwnedWorkspace.serial) workspace == 2)
