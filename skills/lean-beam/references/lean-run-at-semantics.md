@@ -143,12 +143,19 @@ lean-beam run-at "Foo.lean" <version-from-update> 18 0 $'  first | exact h1\n  |
 Do not expect the wrapper to turn `"first | exact h1 | exact h2"` into a properly line-broken block,
 or to add missing `\n` separators around the text.
 
-Tactic text is parsed like the body of a `by` block, with columns counted within the text itself:
-each line at the first tactic's column starts a new tactic, `;` also separates tactics, and a more
-indented line continues the previous tactic. Start every tactic of a sequence at the same column:
+At a tactic position, send the body of a tactic block without an outer `by`. Beam parses it with
+Lean's tactic-sequence grammar
+([`Lean.Parser.Tactic.tacticSeq`](https://github.com/leanprover/lean4/blob/master/src/Lean/Parser/Term/Basic.lean)),
+counting columns within the text you send:
+
+- sibling tactics of the sequence share the first tactic's column, or are separated by `;`
+- a more indented line continues the previous tactic
+- nested `have ... := by` proofs, bullets, and other blocks keep their normal Lean layout
+- the sequence runs as one probe: if any tactic fails, the result reports the original proof state
 
 ```bash
 printf 'intro a b\nomega\n' | lean-beam run-at "Foo.lean" <version-from-update> 18 2 --stdin
+printf 'have h : 0 < 1 := by\n  decide\nomega\n' | lean-beam run-at "Foo.lean" <version-from-update> 18 2 --stdin
 ```
 
 ## 5. Introducing Local Recursion In A Tactic Probe

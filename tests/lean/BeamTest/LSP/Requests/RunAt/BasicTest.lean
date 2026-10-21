@@ -85,11 +85,25 @@ def checkRunAtTacticSequences : ScenarioM Unit := do
     ← sendRunAt doc { line := 4, character := 2, text := "skip", storeHandle := true }
   let some handle := minted.handle?
     | throw <| IO.userError s!"expected a handle, got {(toJson minted).compress}"
-  let continued : Beam.LSP.RunAt.Result ←
-    awaitResponseAs (← runWithHandle doc handle { text := "intro a\nomega" })
-  unless continued.success && continued.proofState?.map (·.goals.isEmpty) == some true do
-    throw <| IO.userError
-      s!"runWith tactic sequence should solve the goal, got {(toJson continued).compress}"
+  let targets (result : Beam.LSP.RunAt.Result) := result.proofState?.map (·.goals.map (·.target))
+  -- A failure after an advancing tactic rolls back the whole sequence and mints no successor.
+  let requireRolledBack (label : String) (result : Beam.LSP.RunAt.Result) : ScenarioM Unit := do
+    unless !result.success && result.handle?.isNone && targets result == targets minted do
+      throw <| IO.userError
+        s!"{label}: expected rollback to the parent state, got {(toJson result).compress}"
+  for linear in [false, true] do
+    let failed : Beam.LSP.RunAt.Result ← awaitResponseAs
+      (← runWithHandle doc handle { text := "intro a\nexact rfl", storeHandle := true, linear })
+    requireRolledBack s!"failed sequence continuation (linear := {linear})" failed
+    let reuseReq ← runWithHandle doc handle { text := "intro a\nomega" }
+    if linear then
+      -- A linear continuation consumes its parent even when it fails.
+      expectErrorContains reuseReq invalidParamsJson
+    else
+      let continued : Beam.LSP.RunAt.Result ← awaitResponseAs reuseReq
+      unless continued.success && targets continued == some #[] do
+        throw <| IO.userError
+          s!"runWith tactic sequence should solve the goal, got {(toJson continued).compress}"
   closeDoc doc
 
 def checkRunAtOneCommandOnly : ScenarioM Unit := do
