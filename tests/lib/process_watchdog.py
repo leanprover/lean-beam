@@ -7,12 +7,40 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import math
 import os
 import signal
 import subprocess
 import sys
 import tempfile
+
+
+def process_is_running(pid):
+    """Observe a fresh fixture PID without treating an unreaped zombie as running."""
+    if os.name == "nt":
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            assert ctypes.get_last_error() == 87, ctypes.get_last_error()  # no such process
+            return False
+        try:
+            status = kernel.WaitForSingleObject(handle, 0)
+            assert status in [0, 258], (status, ctypes.get_last_error())
+            return status == 258  # WAIT_TIMEOUT
+        finally:
+            kernel.CloseHandle(handle)
+    result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
+                            capture_output=True, text=True, timeout=5, check=False)
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"ps failed: {result.stderr}")
+    state = result.stdout.strip()
+    return bool(state) and not state.startswith("Z")
 
 
 def _tail(stream, limit=1024 * 1024):

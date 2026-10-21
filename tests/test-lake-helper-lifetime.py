@@ -5,7 +5,6 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-import ctypes
 import importlib.util
 import json
 import os
@@ -18,7 +17,7 @@ import tempfile
 import time
 
 from installation_fixture import EXE, REPO, stage
-from lib.process_watchdog import run_with_watchdog
+from lib.process_watchdog import process_is_running, run_with_watchdog
 
 spec = importlib.util.spec_from_file_location("mcp_stdio_tests", REPO / "tests/test-mcp-stdio.py")
 mcp = importlib.util.module_from_spec(spec)
@@ -30,34 +29,6 @@ def wait_for(predicate, label, seconds=10):
     while not predicate():
         assert time.monotonic() < deadline, label
         time.sleep(0.02)
-
-
-def running(pid):
-    if os.name == "nt":
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-        kernel.OpenProcess.restype = ctypes.c_void_p
-        kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-        kernel.WaitForSingleObject.restype = ctypes.c_uint32
-        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-        handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
-        if not handle:
-            assert ctypes.get_last_error() == 87, ctypes.get_last_error()  # no such process
-            return False
-        try:
-            status = kernel.WaitForSingleObject(handle, 0)
-            assert status in [0, 258], (status, ctypes.get_last_error())
-            return status == 258  # WAIT_TIMEOUT
-        finally:
-            kernel.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    # A terminated grandchild can await its new parent's reap; it cannot execute more work.
-    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
-                           text=True, capture_output=True, check=False).stdout.strip()
-    return bool(state) and not state.startswith("Z")
 
 
 def project(base, compiler, label, stall=True, abrupt=False):
@@ -101,7 +72,7 @@ def entered(root, owner=None):
 
 def stopped(pids):
     for pid in pids:
-        wait_for(lambda: not running(pid), f"owned helper/descendant {pid} still running", seconds=5)
+        wait_for(lambda: not process_is_running(pid), f"owned helper/descendant {pid} still running", seconds=5)
 
 
 def hold_helper(pids, label, assert_pending):
@@ -109,7 +80,7 @@ def hold_helper(pids, label, assert_pending):
     while time.monotonic() - started < 31:
         assert_pending()
         time.sleep(0.05)
-    assert all(running(pid) for pid in pids), f"{label} stopped before release/cancellation"
+    assert all(process_is_running(pid) for pid in pids), f"{label} stopped before release/cancellation"
     print(label, "held for", time.monotonic() - started, "seconds", flush=True)
 
 

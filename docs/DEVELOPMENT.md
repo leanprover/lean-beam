@@ -255,10 +255,16 @@ Keep these stdio invariants explicit:
 - every stdout message passes through `OutputSink`
 - the server emits no JSON-RPC requests to clients
 - request IDs preserve their string-versus-integer type and their original JSON spelling
-- ordinary calls may overlap; cache eviction is a full stream-order fence and shutdown drains work
+- ordinary calls may overlap; cache eviction is a full stream-order fence while stdin remains open
+- each admission has separate execution-cleanup and terminal-delivery completion signals; live
+  control fences await delivery, while EOF switches them to execution cleanup before runtime close
+- terminal delivery retains its own fence dependencies after EOF; execution cleanup resolves before
+  waiting for those dependencies, so runtime close does not wait for serialized response writes
+- EOF marks cancellable admissions before waking control-fence waiters; admitted non-cancellable
+  evictions still run in execution order even if an earlier terminal write blocks stdout
 - once a request is registered, synchronous setup must either transfer it to an owned worker or
-  complete it terminally; worker finalization always retires the request and releases its control
-  fence, including after task-start, reporting, or output failures
+  complete it terminally; execution completion is signalled before terminal output, and terminal
+  finalization retires the request and releases delivery waiters even after output failures
 - ordinary tool calls bind cancellation to the exact broker admission handle; do not reintroduce
   request-ID polling between MCP and the broker
 - routing/output locks do not acquire setup, progress, or per-request locks

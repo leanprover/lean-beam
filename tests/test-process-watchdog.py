@@ -4,7 +4,6 @@
 
 """Exercise the watchdog through real child processes, including inherited output."""
 
-import csv
 import importlib.util
 import os
 from pathlib import Path
@@ -20,20 +19,6 @@ HELPER = Path(__file__).parent / "lib" / "process_watchdog.py"
 spec = importlib.util.spec_from_file_location("process_watchdog", HELPER)
 watchdog = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(watchdog)
-
-
-def process_is_running(pid):
-    # A POSIX zombie has terminated even if its new parent has not reaped it yet.
-    if os.name == "posix":
-        result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="],
-                                capture_output=True, text=True, timeout=5, check=False)
-        if result.returncode not in (0, 1):
-            raise RuntimeError(f"ps failed: {result.stderr}")
-        return bool(result.stdout.strip()) and not result.stdout.strip().startswith("Z")
-    result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                            capture_output=True, text=True, timeout=5, check=True)
-    return any(len(row) > 1 and row[1] == str(pid)
-               for row in csv.reader(result.stdout.splitlines()))
 
 
 def kill_fixture_process(pid):
@@ -118,9 +103,9 @@ time.sleep(60)
                     self.assertNotIn(b"watchdog cleanup failed", stderr)
                 pid = int(pid_file.read_text())
                 deadline = time.monotonic() + 2
-                while process_is_running(pid) and time.monotonic() < deadline:
+                while watchdog.process_is_running(pid) and time.monotonic() < deadline:
                     time.sleep(0.05)
-                self.assertFalse(process_is_running(pid), "watchdog left its descendant running")
+                self.assertFalse(watchdog.process_is_running(pid), "watchdog left its descendant running")
             finally:
                 if pid_file.exists():
                     kill_fixture_process(int(pid_file.read_text()))

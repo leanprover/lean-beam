@@ -449,7 +449,12 @@ between a gated request in one workspace and a fast request in another, single-f
 simultaneous cold first use of distinct roots, stateless multi-root isolation, non-cancellable cache
 eviction with ordering on both sides of the global fence, lazy recreation, and EOF cancellation and
 teardown. The full stdio suite also checks modern request-ID reuse, synchronous and workspace-control
-closed-output teardown, and rejects a proof handle carried across an MCP process restart. The slow
+closed-output teardown, and rejects a proof handle carried across an MCP process restart.
+`run_blocked_stdout_eof_cleanup` holds stdout open and unread while a completed 512 KiB response
+blocks its writer, with another completed response waiting for the output lock. It checks successful
+runtime close and Lean file-worker termination before stdout reading resumes, both with and without
+an admitted workspace eviction queued behind those responses. Reading then resumes to check terminal
+response order and successful exit; the test does not require exit while stdout is blocked. The slow
 Beam suite runs
 `--scenario multi-toolchain-workspaces` after installing both fixture toolchains and verifies that
 one MCP process keeps both project-specific Lean sessions active.

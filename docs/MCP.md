@@ -176,12 +176,17 @@ selector or compiler probes. Cancellation is checked around admission; rejected 
 does not replace the retained runtime.
 
 Closing stdin or reaching EOF closes MCP request admission. The server cooperatively cancels active
-cancellable requests, waits for every admitted request and non-cancellable workspace eviction to
-finish, then closes the broker runtime and all remaining backend sessions. A JSON-RPC request ID is
-active only until its request reaches terminal completion. The server retires that exact admission
-before publishing its terminal response, so a client may reuse the ID after observing the response;
-the completion barrier is resolved only after the terminal response write attempt finishes, including
-when that write fails.
+cancellable requests, waits for admitted executions and non-cancellable workspace evictions to
+finish, then closes the broker runtime and all remaining backend sessions. During this shutdown,
+workspace-control execution fences preserve execution order without waiting for terminal response
+writes. Terminal responses retain their delivery dependencies across these fences after EOF.
+A completed execution's blocked terminal response therefore does not prevent backend teardown.
+This does not guarantee bounded process exit: synchronous stdout writes can remain blocked until
+the client reads or closes its pipe, and notifications emitted during execution can still block it.
+
+While stdin remains open, workspace-control fences wait for terminal response write attempts to
+finish, including failed writes. The server retires an exact request-ID admission before publishing
+its terminal response, so a client may reuse the ID after observing that response.
 
 CLI ingress has a different transport lifetime: a broker daemon accepts one request per socket
 connection, and disconnecting that connection cancels its exact broker admission. MCP carries many
@@ -385,8 +390,10 @@ MCP Roots.
 `notifications/cancelled` cooperatively cancels active broker work. If cancellation wins the
 terminal race, no final response is emitted for that request. `lean_drop_workspace` is
 non-cancellable once admitted because partial cache eviction cannot be rolled back safely. Cache
-eviction is a full stream-order fence: previously admitted calls drain before the drop runs, while
-later calls wait for its terminal result and may then recreate the same descriptor.
+eviction is a full stream-order fence while stdin remains open: previously admitted calls drain
+before the drop runs, while later calls wait for its terminal result and may then recreate the same
+descriptor. After EOF, these fences wait for execution cleanup rather than terminal output, allowing
+admitted evictions and runtime teardown to finish even when a completed response blocks stdout.
 
 For both protocol families, the MCP coordinator binds each ordinary tool call to the exact request
 handle produced by broker admission. Cancellation before that binding prevents dispatch;

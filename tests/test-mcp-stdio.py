@@ -15,6 +15,8 @@ import threading
 import time
 from pathlib import Path
 
+from lib.process_watchdog import process_is_running
+
 from mcp_test_util import (
     MCP_LEGACY_PROTOCOL_VERSION,
     MCP_MODERN_PROTOCOL_VERSION,
@@ -247,11 +249,15 @@ class McpClient:
         )
         self.stdout_thread = None
         if drain_stdout:
-            self.stdout_thread = threading.Thread(target=self._drain_stdout, daemon=True)
-            self.stdout_thread.start()
+            self.start_stdout_reader()
         self.stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
         self.stderr_thread.start()
         self._record_event(f"process started pid={self.proc.pid}")
+
+    def start_stdout_reader(self):
+        require(self.stdout_thread is None, "MCP stdout reader is already running")
+        self.stdout_thread = threading.Thread(target=self._drain_stdout, daemon=True)
+        self.stdout_thread.start()
 
     def _drain_stdout(self):
         try:
@@ -3204,6 +3210,150 @@ def run_legacy_eof_teardown(repo_root, fixture_root, timeout):
             client.close()
 
 
+def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
+    # Keep stdout open but unread until runtime close finishes. Resuming the reader is cleanup,
+    # not the event that is allowed to unblock runtime teardown.
+    for queued_drop in (False, True):
+        with tempfile.TemporaryDirectory(prefix="lean-beam-mcp-blocked-eof-") as tmp:
+            project_root = Path(tmp) / "project"
+            pid_path = Path(tmp) / "file-worker.pid"
+            copy_project_fixture(fixture_root, project_root)
+            client = McpClient(
+                repo_root,
+                project_root,
+                timeout,
+                label=f"blocked-stdout-eof-drop-{queued_drop}",
+                server_trace=True,
+                drain_stdout=False,
+            )
+            blocked_id = "blocked-terminal-output"
+            waiting_id = "terminal-waiting-for-output-lock"
+            drop_id = "drop-behind-blocked-terminal"
+            try:
+                update_id = client.send_request(
+                    "tools/call",
+                    with_modern_metadata({
+                        "name": "lean_update",
+                        "arguments": {"path": "McpConcurrency.lean"},
+                    }),
+                )
+                ready, _, _ = select.select([client.proc.stdout], [], [], timeout)
+                require(ready, "blocked-output fixture did not receive its update response")
+                update_response = json.loads(client.proc.stdout.readline())
+                require(update_response.get("id") == update_id, update_response)
+                client.forget_request(update_id)
+                update_result = expect_result(update_response)
+                require(update_result.get("isError") is not True, update_result)
+                version = update_result.get("structuredContent", {}).get("version")
+                require(isinstance(version, int), update_result)
+
+                pid_literal = json.dumps(str(pid_path), ensure_ascii=False)
+                probe = (
+                    "#eval (do\n"
+                    f"  IO.FS.writeFile {pid_literal} (toString (← IO.Process.getPID))\n"
+                    "  pure (String.ofList (List.replicate (512 * 1024) 'x')) : IO String)"
+                )
+                client.send_request(
+                    "tools/call",
+                    with_modern_metadata({
+                        "name": "lean_run_at",
+                        "arguments": {
+                            "path": "McpConcurrency.lean",
+                            "version": version,
+                            "line": 2,
+                            "character": 0,
+                            "text": probe,
+                        },
+                    }),
+                    request_id=blocked_id,
+                )
+                deadline = time.monotonic() + timeout
+                while not any(
+                    "stdout write start kind=response" in line and blocked_id in line
+                    for line in client.stderr_lines
+                ):
+                    require(time.monotonic() < deadline, client._diagnostic_context())
+                    require(client.proc.poll() is None, client._diagnostic_context())
+                    time.sleep(0.02)
+                require(
+                    not any(
+                        "stdout write putStr done kind=response" in line and blocked_id in line
+                        for line in client.stderr_lines
+                    ),
+                    "large terminal response did not block in the unread pipe",
+                )
+                # The response-start trace follows completed evaluation, including the PID write.
+                pid = int(pid_path.read_text(encoding="utf-8"))
+                require(process_is_running(pid), "file worker exited before the stdout block")
+                client.send_request(
+                    "tools/call",
+                    with_modern_metadata({
+                        "name": "lean_run_at",
+                        "arguments": {
+                            "path": "McpConcurrency.lean",
+                            "version": version,
+                            "line": 2,
+                            "character": 0,
+                            "text": "#eval 42",
+                        },
+                    }),
+                    request_id=waiting_id,
+                )
+                deadline = time.monotonic() + timeout
+                while not any(
+                    "terminal response ready" in line and waiting_id in line
+                    for line in client.stderr_lines
+                ):
+                    require(time.monotonic() < deadline, client._diagnostic_context())
+                    require(client.proc.poll() is None, client._diagnostic_context())
+                    time.sleep(0.02)
+                if queued_drop:
+                    client.send_request(
+                        "tools/call",
+                        with_modern_metadata({
+                            "name": "lean_drop_workspace",
+                            "arguments": {"workspace": workspace_descriptor(project_root)},
+                        }),
+                        request_id=drop_id,
+                    )
+                client.close_input()
+                deadline = time.monotonic() + min(timeout, 10)
+                while not any("runtime close finished" in line for line in client.stderr_lines):
+                    require(
+                        time.monotonic() < deadline,
+                        "EOF runtime cleanup waited for blocked terminal output\n"
+                        + client._diagnostic_context(),
+                    )
+                    time.sleep(0.02)
+                require(not process_is_running(pid), "runtime close left its file worker running")
+
+                # Only now consume output. The in-flight frame and the response-order fence must
+                # remain valid; the queued non-cancellable drop must still commit after EOF.
+                client.start_stdout_reader()
+                require(client.wait_for_exit_after_eof(timeout) == 0, client._diagnostic_context())
+                client.stdout_thread.join(timeout=timeout)
+                require(not client.stdout_thread.is_alive(), "response reader did not finish")
+                expected_ids = [blocked_id, waiting_id] + ([drop_id] if queued_drop else [])
+                require(
+                    list(client.responses) == [request_id_key(key) for key in expected_ids],
+                    f"terminal delivery crossed a workspace-control fence: {list(client.responses)}",
+                )
+                result = expect_result(client.read_response(blocked_id))
+                require(result.get("isError") is not True, result)
+                require_success("blocked-output runAt", result.get("structuredContent", {}))
+                waiting = expect_result(client.read_response(waiting_id))
+                require(waiting.get("isError") is not True, waiting)
+                require_success("output-lock-waiting runAt", waiting.get("structuredContent", {}))
+                if queued_drop:
+                    dropped = expect_result(client.read_response(drop_id))
+                    require(dropped.get("isError") is not True, dropped)
+                    require(dropped.get("structuredContent", {}).get("dropped") is True, dropped)
+            finally:
+                if client.stdout_thread is None:
+                    client.start_stdout_reader()
+                client.close()
+
+
 def require_clean_exit_after_closed_stdout(client, message, label):
     try:
         client.proc.stdout.close()
@@ -3470,6 +3620,7 @@ def main():
     run_lifecycle_matrix(repo_root, fixture_root, args.timeout)
     run_blank_line_regression(repo_root, fixture_root, args.timeout)
     run_legacy_eof_teardown(repo_root, fixture_root, args.timeout)
+    run_blocked_stdout_eof_cleanup(repo_root, fixture_root, args.timeout)
     run_closed_stdout_regression(repo_root, fixture_root, args.timeout)
 
 

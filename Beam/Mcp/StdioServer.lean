@@ -94,15 +94,16 @@ private structure InFlightRequest where
   brokerId : String
   cancellationPolicy : ClientCancellationPolicy
   state : Std.Mutex InFlightState
+  executionDone : IO.Promise Unit
   done : IO.Promise Unit
 
 private structure RoutingState where
   nextBrokerId : Nat := 1
   -- `inFlight` is the client-ID routing surface. `admitted` retains exact generations through
-  -- terminal output so EOF shutdown and control fences can still await them after ID retirement.
+  -- terminal output so shutdown and control fences retain the exact admission after ID retirement.
   inFlight : Std.TreeMap RequestId InFlightRequest := {}
   admitted : Std.TreeMap String InFlightRequest := {}
-  controlBarrier? : Option (IO.Promise Unit) := none
+  controlBarrier? : Option InFlightRequest := none
   closing : Bool := false
 
 private inductive RequestRegistrationError where
@@ -123,12 +124,14 @@ private structure Coordinator where
   state : ServerState
   routing : Std.Mutex RoutingState
   output : OutputSink
+  closing : IO.Promise Unit
 
 private def Coordinator.create : IO Coordinator := do
   pure {
     state := ← ServerState.create
     routing := ← Std.Mutex.new {}
     output := ← OutputSink.create
+    closing := ← IO.Promise.new
   }
 
 private def Coordinator.registerRequest
@@ -141,6 +144,7 @@ private def Coordinator.registerRequest
     brokerId := ""
     cancellationPolicy
     state := ← Std.Mutex.new {}
+    executionDone := ← IO.Promise.new
     done := ← IO.Promise.new
   }
   coordinator.routing.atomically do
@@ -180,11 +184,14 @@ private def Coordinator.completeRequest
     modify fun routing =>
       { routing with admitted := routing.admitted.erase request.brokerId }
 
-private def InFlightRequest.resolveDone (request : InFlightRequest) : IO Unit := do
+private def resolvePromise (promise : IO.Promise Unit) : IO Unit := do
   try
-    request.done.resolve ()
+    promise.resolve ()
   catch _ =>
     pure ()
+
+private def InFlightRequest.resolveDone (request : InFlightRequest) : IO Unit :=
+  resolvePromise request.done
 
 private def InFlightRequest.isActive (request : InFlightRequest) : IO Bool := do
   request.state.atomically do
@@ -195,38 +202,45 @@ private def awaitPromise (label : String) (promise : IO.Promise Unit) : IO Unit 
     | throw <| IO.userError s!"{label} promise was dropped"
   pure ()
 
-private def resolvePromise (promise : IO.Promise Unit) : IO Unit := do
-  try
-    promise.resolve ()
-  catch _ =>
-    pure ()
+/-- Live control fences include delivery; EOF waits only for execution and resource cleanup. -/
+private def Coordinator.awaitRequestBoundary
+    (coordinator : Coordinator)
+    (request : InFlightRequest) : IO Unit := do
+  let some _ ← IO.waitAny [request.done.result?, coordinator.closing.result?]
+    | throw <| IO.userError "MCP request boundary promise was dropped"
+  let closing ← coordinator.routing.atomically do pure (← get).closing
+  if closing then
+    -- A delivery may finish while EOF is still marking the remaining admissions cancelled.
+    awaitPromise "MCP closing admission" coordinator.closing
+    awaitPromise s!"in-flight execution {request.id.label}" request.executionDone
+  else
+    awaitPromise s!"in-flight delivery {request.id.label}" request.done
 
 private def Coordinator.currentControlBarrier?
-    (coordinator : Coordinator) : IO (Option (IO.Promise Unit)) := do
+    (coordinator : Coordinator) : IO (Option InFlightRequest) := do
   coordinator.routing.atomically do
     pure (← get).controlBarrier?
 
 private structure ControlRequestFence where
-  previous? : Option (IO.Promise Unit)
-  done : IO.Promise Unit
+  previous? : Option InFlightRequest
   priorRequests : Array InFlightRequest
 
 private def Coordinator.pushControlBarrier
     (coordinator : Coordinator)
     (request : InFlightRequest) : IO ControlRequestFence := do
-  let done ← IO.Promise.new
   let (previous?, priorRequests) ← coordinator.routing.atomically do
     let routing ← get
     let priorRequests := routing.admitted.toList.filterMap (fun (_, other) =>
       if other.brokerId == request.brokerId then none else some other) |>.toArray
-    set { routing with controlBarrier? := some done }
+    set { routing with controlBarrier? := some request }
     pure (routing.controlBarrier?, priorRequests)
-  pure { previous?, done, priorRequests }
+  pure { previous?, priorRequests }
 
-private def awaitControlBarrier (barrier? : Option (IO.Promise Unit)) : IO Unit := do
+private def Coordinator.awaitControlBarrier
+    (coordinator : Coordinator) (barrier? : Option InFlightRequest) : IO Unit := do
   match barrier? with
   | none => pure ()
-  | some barrier => awaitPromise "MCP workspace control" barrier
+  | some barrier => coordinator.awaitRequestBoundary barrier
 
 private def InFlightRequest.sendIfActive
     (request : InFlightRequest)
@@ -245,10 +259,19 @@ private def InFlightRequest.bindBrokerRequest
     else
       pure false
 
+private def traceMcpSafely (message : String) : IO Unit := do
+  try
+    Internal.traceMcp message
+  catch _ =>
+    pure ()
+
 private def Coordinator.finishRequest
     (coordinator : Coordinator)
     (request : InFlightRequest)
-    (response : Json) : IO Unit := do
+    (response : Json)
+    (deliveryDependencies : Array (IO.Promise Unit) := #[]) : IO Unit := do
+  -- Execution has released its broker admission before terminal output can block.
+  resolvePromise request.executionDone
   try
     let sendResponse ← request.state.atomically do
       let current ← get
@@ -265,6 +288,9 @@ private def Coordinator.finishRequest
     -- an ID as soon as it observes that response; retaining the routing entry until after the write
     -- creates a race in which the new request is mistaken for a duplicate active request.
     coordinator.retireRequestId request
+    traceMcpSafely s!"terminal response ready id={request.id.label}"
+    for dependency in deliveryDependencies do
+      awaitPromise "MCP prior terminal delivery" dependency
     if sendResponse then
       coordinator.output.send response
   finally
@@ -278,43 +304,24 @@ private def Coordinator.finishRequest
       finally
         request.resolveDone
 
-private def traceMcpSafely (message : String) : IO Unit := do
-  try
-    Internal.traceMcp message
-  catch _ =>
-    pure ()
-
-/--
-Own one registered request through terminal completion.
-
-`after` belongs to the same ownership scope and runs after the request's terminal write attempt. In
-particular, a workspace-control fence is not released before the request is retired and its `done`
-promise is resolved.
--/
+/-- Own one registered request through execution cleanup and terminal delivery. -/
 private def Coordinator.runOwnedRequest
     (coordinator : Coordinator)
     (req : Request)
     (request : InFlightRequest)
     (work : IO Json)
-    (after : IO Unit := pure ()) : IO Unit := do
+    (deliveryDependencies : Array (IO.Promise Unit) := #[]) : IO Unit := do
+  let response ←
+    try
+      work
+    catch e =>
+      traceMcpSafely s!"request work failed id={req.id.label}: {e.toString}"
+      pure <| errorResponse req.id (RpcError.internalError e.toString)
   try
-    let response ←
-      try
-        work
-      catch e =>
-        traceMcpSafely s!"request work failed id={req.id.label}: {e.toString}"
-        pure <| errorResponse req.id (RpcError.internalError e.toString)
-    try
-      coordinator.finishRequest request response
-    catch e =>
-      if !Beam.Mcp.Stdio.isClosedOutputError e then
-        traceMcpSafely s!"request completion failed id={req.id.label}: {e.toString}"
-    pure ()
-  finally
-    try
-      after
-    catch e =>
-      traceMcpSafely s!"request finalizer failed id={req.id.label}: {e.toString}"
+    coordinator.finishRequest request response deliveryDependencies
+  catch e =>
+    if !Beam.Mcp.Stdio.isClosedOutputError e then
+      traceMcpSafely s!"request completion failed id={req.id.label}: {e.toString}"
 
 /-- Project a worker or setup failure through the registered request's single completion path. -/
 private def Coordinator.failOwnedRequest
@@ -322,10 +329,10 @@ private def Coordinator.failOwnedRequest
     (req : Request)
     (request : InFlightRequest)
     (error : IO.Error)
-    (after : IO Unit := pure ()) : IO Unit := do
+    (deliveryDependencies : Array (IO.Promise Unit) := #[]) : IO Unit := do
   traceMcpSafely s!"request work failed id={req.id.label}: {error.toString}"
   coordinator.runOwnedRequest req request
-    (pure <| errorResponse req.id (RpcError.internalError error.toString)) after
+    (pure <| errorResponse req.id (RpcError.internalError error.toString)) deliveryDependencies
 
 /-- Transfer a registered request to a worker, or complete it synchronously if task startup fails. -/
 private def Coordinator.spawnOwnedRequest
@@ -333,13 +340,13 @@ private def Coordinator.spawnOwnedRequest
     (req : Request)
     (request : InFlightRequest)
     (work : IO Json)
-    (after : IO Unit := pure ()) : IO Unit := do
+    (deliveryDependencies : Array (IO.Promise Unit) := #[]) : IO Unit := do
   try
     let _ ← IO.asTask (prio := Task.Priority.dedicated) do
-      coordinator.runOwnedRequest req request work after
+      coordinator.runOwnedRequest req request work deliveryDependencies
     pure ()
   catch e =>
-    coordinator.failOwnedRequest req request e after
+    coordinator.failOwnedRequest req request e deliveryDependencies
 
 private def InFlightRequest.markClientCancelled
     (request : InFlightRequest) : IO (Bool × Option Beam.Broker.RequestHandle) := do
@@ -383,23 +390,26 @@ private def Coordinator.beginClosing
     let requests := routing.admitted.toList.map Prod.snd |>.toArray
     set { routing with closing := true }
     pure requests
-  for request in requests do
-    request.cancel
+  try
+    for request in requests do
+      request.cancel
+  finally
+    -- Mark cancellable admissions before waking work queued behind a control fence.
+    resolvePromise coordinator.closing
   pure requests
 
-private def awaitRequestDone (request : InFlightRequest) : IO Unit := do
-  awaitPromise s!"in-flight request {request.id.label}" request.done
-
-private def awaitRequests (requests : Array InFlightRequest) : IO Unit := do
+private def Coordinator.awaitRequests
+    (coordinator : Coordinator) (requests : Array InFlightRequest) : IO Unit := do
   for request in requests do
-    awaitRequestDone request
+    coordinator.awaitRequestBoundary request
 
 private def Coordinator.closeTransport (coordinator : Coordinator) : IO Unit := do
   try
     let requests ← coordinator.beginClosing
-    awaitRequests requests
+    coordinator.awaitRequests requests
   finally
     coordinator.state.closeRuntime
+    traceMcpSafely "runtime close finished"
 
 private def Coordinator.admitToolRequest
     (coordinator : Coordinator)
@@ -441,9 +451,9 @@ private def Coordinator.toolRequestResponse
     (admitted : AdmittedRequestContext)
     (parsedParams : Except String CallToolParams)
     (request : InFlightRequest)
-    (barrier? : Option (IO.Promise Unit))
+    (barrier? : Option InFlightRequest)
     (initialProgress : Nat := 0) : IO Json := do
-  awaitControlBarrier barrier?
+  coordinator.awaitControlBarrier barrier?
   if ← request.isActive then
     coordinator.executeToolRequest opts req admitted parsedParams request initialProgress
   else
@@ -483,8 +493,9 @@ private def Coordinator.spawnToolRequest
     catch e =>
       coordinator.failOwnedRequest req request e
       return
-  coordinator.spawnOwnedRequest req request <|
-    coordinator.toolRequestResponse opts req admitted parsedParams request barrier?
+  coordinator.spawnOwnedRequest req request
+    (coordinator.toolRequestResponse opts req admitted parsedParams request barrier?)
+    (barrier?.toArray.map (·.done))
 
 private def Coordinator.handleControlToolRequest
     (coordinator : Coordinator)
@@ -519,9 +530,9 @@ private def Coordinator.handleControlToolRequest
                 coordinator.state req.id admitted params notifications
           | .error _ => pure none
         let run (initialProgress : Nat) : IO Json := do
-          -- A control operation is a full stream-order fence: work admitted before it drains,
-          -- while work admitted afterward waits on `done`.
-          awaitRequests fence.priorRequests
+          -- Live control fences include terminal delivery. After EOF only execution order
+          -- remains relevant, so blocked stdout cannot prevent an admitted eviction from running.
+          coordinator.awaitRequests fence.priorRequests
           coordinator.toolRequestResponse opts req admitted parsedParams request fence.previous?
             initialProgress
         match reporter? with
@@ -531,7 +542,7 @@ private def Coordinator.handleControlToolRequest
               run reporter.initialProgress
             finally
               finishReporterSafely req reporter.finish
-      coordinator.spawnOwnedRequest req request work (resolvePromise fence.done)
+      coordinator.spawnOwnedRequest req request work (fence.priorRequests.map (·.done))
 
 private def isWorkspaceControl : Except String CallToolParams → Bool
   | .ok params => params.name == .leanDropWorkspace
