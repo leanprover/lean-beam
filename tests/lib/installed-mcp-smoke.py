@@ -58,8 +58,13 @@ def smoke(server, project_root, source, *, modern, server_trace):
                 "name": "lean_sync",
                 "arguments": {"path": missing, "workspace": {"root": str(project_root)}},
             }))
+            if modern:
+                stdio.require_modern_result_envelope(failure, "missing-file lean_sync")
             stdio.require(failure.get("isError") is True, f"missing file was accepted: {failure}")
-            error = failure.get("structuredContent", {})
+            error = failure.get("structuredContent")
+            stdio.require(isinstance(error, dict), f"missing-file error missing structuredContent: {failure}")
+            # The broker currently projects filesystem read failures as internalError.
+            stdio.require(error.get("code") == "internalError", f"unexpected missing-file error code: {failure}")
             stdio.require(missing in error.get("message", ""), f"missing-file error omitted path: {failure}")
             client.close_input()
             code = client.wait_for_exit_after_eof(shutdown_timeout)

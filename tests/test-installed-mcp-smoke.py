@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import signal
 import tempfile
 import time
 import unittest
@@ -20,9 +19,21 @@ SERVER = '''#!/usr/bin/env python3
 import json
 import os
 import sys
+import threading
 import time
 
 mode = os.environ["BEAM_MCP_READER_TEST_MODE"]
+fixture_root = os.getcwd()
+
+def stop_with_fixture():
+    # The deadline exceeds the helper's three-second test bound. Normal checks must
+    # observe cleanup by the helper itself, before the fixture directory is removed.
+    deadline = time.monotonic() + 10
+    while os.path.isdir(fixture_root) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    os._exit(124)
+
+threading.Thread(target=stop_with_fixture, daemon=True).start()
 with open(os.environ["BEAM_MCP_READER_TEST_PID"], "a") as stream:
     stream.write(str(os.getpid()) + "\\n")
 if mode == "early-exit":
@@ -50,9 +61,13 @@ for line in sys.stdin:
         arguments = request["params"]["arguments"]
         assert arguments["workspace"]["root"] == os.getcwd()
         if arguments["path"] == "__beam_mcp_smoke_missing__.lean":
-            print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": complete({
+            result = complete({
                 "isError": mode != "missing-accepted", "structuredContent": {
-                    "code": "invalidInput", "message": "missing " + arguments["path"]}})}), flush=True)
+                    "code": "workerExited" if mode == "missing-wrong-code" else "internalError",
+                    "message": "missing " + arguments["path"]}})
+            if mode == "missing-invalid-result-type":
+                result["resultType"] = "incomplete"
+            print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
             continue
         assert arguments["path"] == "PositionEmptyLine.lean"
         notice = {"jsonrpc": "2.0", "method": "notifications/message",
@@ -116,29 +131,21 @@ class InstalledMcpSmokeReaderTest(unittest.TestCase):
                        BEAM_MCP_READER_TEST_PID=str(pid_path),
                        BEAM_MCP_SMOKE_TIMEOUT="0.2", BEAM_MCP_SMOKE_SHUTDOWN_TIMEOUT="1")
             started = time.monotonic()
-            try:
-                command = ["python3", str(REPO / "tests/lib/installed-mcp-smoke.py"), str(server), tmp]
-                if trace:
-                    command.append("--server-trace")
-                result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=3)
-                result.elapsed = time.monotonic() - started
-                self.assertTrue(pid_path.exists(), result.stderr)
-                pids = [int(line) for line in pid_path.read_text().splitlines()]
-                result.child_alive = False
-                for pid in pids:
-                    try:
-                        os.kill(pid, 0)
-                        result.child_alive = True
-                    except ProcessLookupError:
-                        pass
-                return result
-            finally:
-                if pid_path.exists():
-                    for line in pid_path.read_text().splitlines():
-                        try:
-                            os.kill(int(line), signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
+            command = ["python3", str(REPO / "tests/lib/installed-mcp-smoke.py"), str(server), tmp]
+            if trace:
+                command.append("--server-trace")
+            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=3)
+            result.elapsed = time.monotonic() - started
+            self.assertTrue(pid_path.exists(), result.stderr)
+            pids = [int(line) for line in pid_path.read_text().splitlines()]
+            result.child_alive = False
+            for pid in pids:
+                try:
+                    os.kill(pid, 0)
+                    result.child_alive = True
+                except ProcessLookupError:
+                    pass
+            return result
 
     def assert_smoke_passes(self, mode, *, trace=False):
         result = self.run_smoke(mode, trace=trace)
@@ -204,6 +211,15 @@ class InstalledMcpSmokeReaderTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing file was accepted", result.stderr)
         self.assertFalse(result.child_alive)
+
+    def test_missing_file_error_contract(self):
+        for mode, message in [("missing-wrong-code", "unexpected missing-file error code"),
+                              ("missing-invalid-result-type", "missing resultType")]:
+            with self.subTest(mode=mode):
+                result = self.run_smoke(mode)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(result.child_alive)
 
     def test_notifications_do_not_restart_deadline(self):
         result = self.run_smoke("notifications")
