@@ -26,8 +26,22 @@ inductive Endpoint where
   | tcp (port : UInt16)
   deriving Repr, BEq
 
+/-- Internal framing state. Only the consumed prefix advances; an exhausted buffer releases its bytes. -/
+structure Framing.Buffer where
+  private mk ::
+  private bytes : ByteArray
+  private offset : Nat
+  deriving BEq
+
+def Framing.Buffer.ofBytes (bytes : ByteArray) : Framing.Buffer :=
+  ⟨bytes, 0⟩
+
+/-- Copy the unread bytes, for inspecting framing ownership in deterministic tests. -/
+def Framing.Buffer.unreadBytes (buffer : Framing.Buffer) : ByteArray :=
+  buffer.bytes.extract buffer.offset buffer.bytes.size
+
 inductive Connection where
-  | tcp (client : TCP.Socket) (pending : IO.Ref ByteArray)
+  | tcp (client : TCP.Socket) (pending : IO.Ref Framing.Buffer)
 
 inductive Listener where
   | tcp (server : TCP.Socket)
@@ -106,7 +120,7 @@ def connect (endpoint : Endpoint) : IO Connection := do
       let client ← TCP.Socket.new
       let promise ← TCP.Socket.connect client addr
       waitTcpPromise promise "Beam daemon connection failed before TCP connect completed"
-      pure <| .tcp client (← IO.mkRef ByteArray.empty)
+      pure <| .tcp client (← IO.mkRef <| Framing.Buffer.ofBytes ByteArray.empty)
 
 private def abandonTcpSocket (client : TCP.Socket) : IO Unit := do
   try
@@ -129,7 +143,7 @@ private def connectTcpUsing
   let promise ← TCP.Socket.connect client (localhost port)
   match ← waitTcpPromiseWithStop promise shouldStop
       "Beam daemon connection failed before TCP connect completed" with
-  | .ok () => pure <| .ok (.tcp client (← IO.mkRef ByteArray.empty))
+  | .ok () => pure <| .ok (.tcp client (← IO.mkRef <| Framing.Buffer.ofBytes ByteArray.empty))
   | .error stopped =>
       abandonTcpSocket client
       pure <| .error stopped
@@ -179,7 +193,7 @@ def accept (listener : Listener) : IO Connection := do
   | .tcp server =>
       let promise ← TCP.Socket.accept server
       let client ← waitTcpPromise promise "Beam daemon listener closed before TCP accept completed"
-      pure <| .tcp client (← IO.mkRef ByteArray.empty)
+      pure <| .tcp client (← IO.mkRef <| Framing.Buffer.ofBytes ByteArray.empty)
 
 def closeConnection (conn : Connection) : IO Unit := do
   match conn with
@@ -240,32 +254,39 @@ private def receiveTcpUsing
 private def readAheadBytes : UInt64 := 4096
 
 private def receiveBuffered
-    (pending : IO.Ref ByteArray)
+    (pending : IO.Ref Framing.Buffer)
     (receive : UInt64 → IO (Except stop (Option ByteArray)))
     (shouldStop : IO (Option stop))
     (size : UInt64) : IO (Except stop (Option ByteArray)) := do
   let buffered ← pending.get
-  let chunk ← if buffered.isEmpty then do
+  let buffer ← if buffered.offset == buffered.bytes.size then do
     match ← receive (max size readAheadBytes) with
     | .error stopped => return .error stopped
     | .ok none => return .ok none
-    | .ok (some chunk) => pure chunk
+    | .ok (some chunk) => pure <| Framing.Buffer.ofBytes chunk
   else do
     -- Pending UV receives retain completion-first precedence. Buffered bytes have no pending
     -- promise: check the caller's stop condition before consuming them, including between frames.
     if let some stopped ← shouldStop then
       return .error stopped
     pure buffered
-  let count := min size.toNat chunk.size
-  pending.set (chunk.extract count chunk.size)
-  pure <| .ok (some (chunk.extract 0 count))
+  -- The private cursor always satisfies offset ≤ bytes.size. Do not copy the unread suffix on
+  -- each header byte; retain it until consumed, then drop the backing array entirely.
+  let endOffset := min (buffer.offset + size.toNat) buffer.bytes.size
+  pending.set <| if endOffset == buffer.bytes.size then
+    Framing.Buffer.ofBytes ByteArray.empty
+  else
+    { buffer with offset := endOffset }
+  let chunk := if buffer.offset == 0 && endOffset == buffer.bytes.size then buffer.bytes
+    else buffer.bytes.extract buffer.offset endOffset
+  pure <| .ok (some chunk)
 
 namespace Framing
 
 /-- Internal framing core, with injectable reads for deterministic chunk/receive-count tests.
 The buffer belongs to one connection and one receive owner; callers discard a stopped frame. -/
 def recvMsgUsing
-    (pending : IO.Ref ByteArray)
+    (pending : IO.Ref Buffer)
     (receive : UInt64 → IO (Except stop (Option ByteArray)))
     (shouldStop : IO (Option stop)) :
     IO (Except stop String) := do
@@ -304,14 +325,14 @@ def recvMsgUsing
 
 end Framing
 
-private def recvMsgTcp (client : TCP.Socket) (pending : IO.Ref ByteArray) : IO String := do
+private def recvMsgTcp (client : TCP.Socket) (pending : IO.Ref Framing.Buffer) : IO String := do
   match ← Framing.recvMsgUsing pending (receiveTcp client) (pure none) with
   | .ok msg => pure msg
   | .error stopped => nomatch stopped
 
 private def recvMsgTcpUntil
     (client : TCP.Socket)
-    (pending : IO.Ref ByteArray)
+    (pending : IO.Ref Framing.Buffer)
     (deadlineNanos : Nat) : IO (Option String) := do
   let shouldStop : IO (Option Unit) := do
     pure <| if (← IO.monoNanosNow) >= deadlineNanos then some () else none
@@ -321,7 +342,7 @@ private def recvMsgTcpUntil
 
 private def recvMsgTcpInterruptibly
     (client : TCP.Socket)
-    (pending : IO.Ref ByteArray)
+    (pending : IO.Ref Framing.Buffer)
     (interrupted : IO Bool) : IO (InterruptResult String) := do
   let shouldStop : IO (Option Unit) := do
     pure <| if ← interrupted then some () else none
@@ -331,7 +352,7 @@ private def recvMsgTcpInterruptibly
 
 private def recvMsgTcpInterruptiblyUntil
     (client : TCP.Socket)
-    (pending : IO.Ref ByteArray)
+    (pending : IO.Ref Framing.Buffer)
     (deadlineNanos : Nat)
     (interrupted : IO Bool) : IO (InterruptibleDeadlineResult String) := do
   let shouldStop : IO (Option WaitStop) := do

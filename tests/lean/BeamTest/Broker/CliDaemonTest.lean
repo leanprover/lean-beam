@@ -220,12 +220,12 @@ private inductive FrameStop where
   deriving BEq, Repr
 
 private structure FrameFixture where
-  pending : IO.Ref ByteArray
+  pending : IO.Ref Beam.Broker.Transport.Framing.Buffer
   chunks : IO.Ref (List ByteArray)
   requests : IO.Ref (Array UInt64)
 
 private def frameFixture (chunks : Array ByteArray) : IO FrameFixture := do
-  let pending ← IO.mkRef ByteArray.empty
+  let pending ← IO.mkRef <| Beam.Broker.Transport.Framing.Buffer.ofBytes ByteArray.empty
   let chunks ← IO.mkRef chunks.toList
   let requests ← IO.mkRef #[]
   pure { pending, chunks, requests }
@@ -268,7 +268,34 @@ private def checkBufferedFraming : IO Unit := do
     requireFrame fixture text
   require "ready frame burst should need one underlying receive"
     ((← fixture.requests.get) == #[4096])
-  require "burst should leave no unowned bytes" (← fixture.pending.get).isEmpty
+  require "consuming the burst should release its backing buffer"
+    ((← fixture.pending.get) == .ofBytes ByteArray.empty)
+
+  -- Coalesced frames span several lookahead fills; preserve every payload and receive bound.
+  let messages := (List.range 96).toArray.map fun i =>
+    s!"{i}:" ++ String.ofList (List.replicate 128 'x') ++ "λ🙂"
+  let burst := messages.foldl (fun bytes text => bytes ++ frameBytes text) ByteArray.empty
+  require "multi-fill fixture must cross the read-ahead boundary" (burst.size > 3 * 4096)
+  let fixture ← frameFixture #[burst]
+  for text in messages do
+    requireFrame fixture text
+  require "small coalesced frames should use bounded lookahead receives"
+    ((← fixture.requests.get) == Array.replicate ((burst.size + 4095) / 4096) 4096)
+  require "all refill storage should be released after consumption"
+    ((← fixture.pending.get) == .ofBytes ByteArray.empty)
+
+  -- Put the 4 KiB refill inside the next header, at its newline, and inside its UTF-8 payload.
+  for prefixSize in #[4086, 4087, 4088, 4089, 4090] do
+    let prefix := String.ofList (List.replicate prefixSize 'x')
+    let next := "λ🙂" ++ String.ofList (List.replicate 120 'y')
+    let fixture ← frameFixture #[frameBytes prefix ++ frameBytes next ++ frameBytes "tail"]
+    requireFrame fixture prefix
+    requireFrame fixture next
+    requireFrame fixture "tail"
+    require "boundary frames should use exactly two bounded refills"
+      ((← fixture.requests.get) == #[4096, 4096])
+    require "boundary frames must consume all buffered bytes"
+      ((← fixture.pending.get) == .ofBytes ByteArray.empty)
 
   -- Force every header/payload boundary, including splits inside multibyte UTF-8.
   let text := String.ofList (List.replicate 120 'x') ++ "λ🙂"
@@ -283,7 +310,7 @@ private def checkBufferedFraming : IO Unit := do
   let leftovers ← frameFixture #[frameBytes "first" ++ frameBytes "second"]
   requireFrame leftovers "first"
   require "next frame bytes must remain owned by the connection"
-    ((← leftovers.pending.get) == frameBytes "second")
+    ((← leftovers.pending.get).unreadBytes == frameBytes "second")
   requireFrame leftovers "second"
   require "next frame should not issue another receive" ((← leftovers.requests.get).size == 1)
 
@@ -294,6 +321,19 @@ private def checkBufferedFraming : IO Unit := do
   let headerBytes := s!"{largeText.toUTF8.size}\n".toUTF8.size
   require "large body should use one lookahead read and one full remaining-body read"
     ((← large.requests.get) == #[4096, (largeText.toUTF8.size - (4096 - headerBytes)).toUInt64])
+
+  -- A large-body receive must not absorb the following small frame, in either order.
+  for messages in #[#[largeText, "small", "λ🙂"], #["small", largeText, "tail"]] do
+    let bytes := messages.foldl (fun bytes text => bytes ++ frameBytes text) ByteArray.empty
+    let fixture ← frameFixture #[bytes]
+    for text in messages do
+      requireFrame fixture text
+    let precedingBytes := if messages[0]! == largeText then 0 else (frameBytes "small").size
+    let remaining := largeText.toUTF8.size - (4096 - precedingBytes - headerBytes)
+    require "mixed frames must retain full-body reads without consuming the next frame"
+      ((← fixture.requests.get) == #[4096, remaining.toUInt64, 4096])
+    require "mixed frames must release the exhausted buffer"
+      ((← fixture.pending.get) == .ofBytes ByteArray.empty)
 
   for (input, needle) in #[
       ("00000000000000000000\n", ""), -- exactly 20 header bytes: valid empty frame
@@ -331,7 +371,7 @@ private def checkBufferedFraming : IO Unit := do
       checks.modify (· + 1)
       pure <| if (← checks.get) == 2 then some stop else none
     requireFrameStop "stop before consuming a buffered payload" stop result
-    require "stopped buffered payload must remain intact" ((← body.pending.get) == "abcde".toUTF8)
+    require "stopped buffered payload must remain intact" ((← body.pending.get).unreadBytes == "abcde".toUTF8)
     let buffered ← frameFixture #[frameBytes "first" ++ frameBytes "second"]
     requireFrame buffered "first"
     let before ← buffered.pending.get
@@ -350,40 +390,76 @@ private def checkBufferedFraming : IO Unit := do
     .interrupted result
   require "only the buffered newline should invoke the stop check" ((← stopCalls.get) == 1)
 
-private def checkBufferedTcpStops : IO Unit := do
+private def withTcpPair
+    (act : Beam.Broker.Transport.Connection → Beam.Broker.Transport.Connection → IO Unit) : IO Unit := do
   withBrokerListener fun listener endpoint => do
     let accepted ← IO.asTask (prio := Task.Priority.dedicated) <|
       Beam.Broker.Transport.accept listener
-    let client ← Beam.Broker.Transport.connect endpoint
-    let server ← IO.ofExcept (← IO.wait accepted)
     try
-      -- A pending read is cancelled exactly; a subsequent fresh receive can still use the socket.
-      let deadline := (← IO.monoNanosNow) + 20 * 1000000
-      require "idle receive should time out"
-        (← Beam.Broker.Transport.recvMsgUntil client deadline).isNone
-      Beam.Broker.Transport.sendMsg server "first"
-      match ← Beam.Broker.Transport.recvMsgInterruptibly client (pure false) with
-      | .completed text => require "receive after cancelled UV read" (text == "first")
-      | .interrupted => throw <| IO.userError "unexpected interruption"
-      -- Explicitly seed ready leftovers so stop/deadline precedence is scheduling independent.
-      let .tcp _ pending := client
-      pending.set (frameBytes "buffered")
-      require "expired deadline must stop ready buffered data"
-        (← Beam.Broker.Transport.recvMsgUntil client 0).isNone
-      match ← Beam.Broker.Transport.recvMsgInterruptibly client (pure true) with
-      | .interrupted => pure ()
-      | .completed _ => throw <| IO.userError "buffered bytes bypassed interruption"
-      match ← Beam.Broker.Transport.recvMsgInterruptiblyUntil client 0 (pure true) with
-      | .interrupted => pure ()
-      | _ => throw <| IO.userError "interruption should precede deadline on buffered data"
-      match ← Beam.Broker.Transport.recvMsgInterruptiblyUntil client 0 (pure false) with
-      | .timedOut => pure ()
-      | _ => throw <| IO.userError "buffered data bypassed deadline"
-      require "buffered payload should remain available after stopped calls"
-        ((← Beam.Broker.Transport.recvMsg client) == "buffered")
+      let deadline := (← IO.monoNanosNow) + 5000 * 1000000
+      let .completed client ← Beam.Broker.Transport.connectUntil endpoint deadline
+        | throw <| IO.userError "TCP fixture connection timed out"
+      try
+        let server ← IO.ofExcept (← IO.wait accepted)
+        act client server
+      finally
+        Beam.Broker.Transport.closeConnection client
     finally
-      Beam.Broker.Transport.closeConnection client
-      Beam.Broker.Transport.closeConnection server
+      -- Even setup failure must cancel/join the accept and close any accepted connection.
+      Beam.Broker.Transport.closeListener listener
+      if let .ok server ← IO.wait accepted then
+        Beam.Broker.Transport.closeConnection server
+
+private def checkBufferedTcpStops : IO Unit := do
+  withTcpPair fun client server => do
+    -- With no bytes consumed, exercise raw UV cancellation independently of partial framing.
+    let deadline := (← IO.monoNanosNow) + 20 * 1000000
+    require "idle receive should time out"
+      (← Beam.Broker.Transport.recvMsgUntil client deadline).isNone
+    Beam.Broker.Transport.sendMsg server "first"
+    let deadline := (← IO.monoNanosNow) + 5000 * 1000000
+    match ← Beam.Broker.Transport.recvMsgInterruptiblyUntil client deadline (pure false) with
+    | .completed text => require "receive after cancelled UV read" (text == "first")
+    | _ => throw <| IO.userError "receive after cancelled UV read did not complete"
+    -- Explicitly seed ready leftovers so stop/deadline precedence is scheduling independent.
+    let .tcp _ pending := client
+    pending.set <| .ofBytes (frameBytes "buffered")
+    require "expired deadline must stop ready buffered data"
+      (← Beam.Broker.Transport.recvMsgUntil client 0).isNone
+    match ← Beam.Broker.Transport.recvMsgInterruptibly client (pure true) with
+    | .interrupted => pure ()
+    | .completed _ => throw <| IO.userError "buffered bytes bypassed interruption"
+    match ← Beam.Broker.Transport.recvMsgInterruptiblyUntil client 0 (pure true) with
+    | .interrupted => pure ()
+    | _ => throw <| IO.userError "interruption should precede deadline on buffered data"
+    match ← Beam.Broker.Transport.recvMsgInterruptiblyUntil client 0 (pure false) with
+    | .timedOut => pure ()
+    | _ => throw <| IO.userError "buffered data bypassed deadline"
+    -- These stops consumed zero bytes. This is not a partial-frame resumption guarantee.
+    let deadline := (← IO.monoNanosNow) + 5000 * 1000000
+    require "untouched buffered payload should remain available after stopped calls"
+      ((← Beam.Broker.Transport.recvMsgUntil client deadline) == some "buffered")
+
+  for partialFrame in #["12", "5\nab"] do
+    withTcpPair fun client _ => do
+      let .tcp _ pending := client
+      pending.set <| .ofBytes partialFrame.toUTF8
+      let pendingReadStops ← IO.mkRef 0
+      let deadline := (← IO.monoNanosNow) + 5000 * 1000000
+      let result ← Beam.Broker.Transport.recvMsgInterruptiblyUntil client deadline do
+        -- Buffered checks see a nonempty cursor. Only after the partial frame has been consumed
+        -- does receiveBuffered post the real UV read and poll this callback with an empty buffer.
+        if (← pending.get) == .ofBytes ByteArray.empty then
+          pendingReadStops.modify (· + 1)
+          pure true
+        else
+          pure false
+      match result with
+      | .interrupted => pure ()
+      | _ => throw <| IO.userError "partial frame did not stop at the pending UV receive"
+      require "partial-frame stop must reach exactly one pending UV read"
+        ((← pendingReadStops.get) == 1)
+      -- Discard this connection now: header/body bytes were consumed before the stop.
 
 private def withClosingBrokerEndpoint
     (act : Beam.Broker.Transport.Endpoint → IO α) : IO α := do
