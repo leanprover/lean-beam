@@ -358,6 +358,15 @@ first edit and save the Lean file with the client's normal file-editing tool. Th
 before another snapshot-bound operation, or call `lean_sync` when a diagnostics/readiness barrier is
 needed. Both commands read the current on-disk file; neither applies or recovers speculative text.
 
+`lean_todo` treats code actions differently from its other item kinds. For sorries, holes,
+diagnostics, and incomplete proofs, Beam scans the available document or snapshot information and
+filters it by the requested range. For `code_action` items, Beam forwards the range to Lean once;
+Lean selects one command snapshot using the range end and runs its code-action providers there.
+A range spanning several commands does not enumerate code actions for every command. Query a point
+inside the relevant tactic, hole, or diagnostic, or use a range wholly within one command. Providers
+can further restrict which actions apply, so an empty code-action result does not establish that
+the whole range or file has no actions.
+
 `lean_code_action_resolve` takes a `code_action` payload previously returned by `lean_todo`. Clients
 apply any returned LSP `WorkspaceEdit` themselves, then call `lean_update` or `lean_sync` again so
 Beam observes the edited file and reports the new version. Use `lean_sync` instead of `lean_update`

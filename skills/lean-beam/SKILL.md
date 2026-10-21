@@ -95,6 +95,7 @@ edits to the same document, close, worker restart, or daemon restart.
 For `todo --kind code_action`, query a point inside the relevant tactic, hole, or diagnostic, or a
 range within one command. Lean selects one command snapshot using the range end; broad ranges do
 not enumerate every command's actions, and an empty result is not a file-wide verdict.
+For a point query, use `lean-beam todo FILE VERSION LINE CHAR LINE CHAR --kind code_action`.
 
 ## run-at Rules
 
