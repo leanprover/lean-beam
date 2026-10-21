@@ -65,27 +65,37 @@ private def checkDelivery (name : String) : IO Unit :=
     sendSignal name
     IO.ofExcept (← awaitWaiter waiter)
     require s!"delivered {name} not visible to polling" (← watcher.interrupted)
-    -- The first waiter has completed, but the owner still owns its cleanup scope.
-    -- Another delivery must remain latched rather than terminate the owner.
-    sendSignal name
+    -- Waiting again observes the same latched stop, without requiring another signal.
     watcher.awaitInterrupt
-    require s!"repeated {name} lost the owner's stop" (← watcher.interrupted)
+    require s!"completed waiter lost the owner's {name} stop" (← watcher.interrupted)
 
-/-- Run in a child: the final signal must terminate it after every watcher has been released. -/
+-- The parent sends repeated signals while this scope remains open, then kills the fixture.
+-- Keeping teardown separate prevents a delayed test signal from racing restored default behavior.
+private def holdOwnerScope : IO Unit :=
+  Beam.Cli.withOwnerInterruptWatcher fun watcher => do
+    IO.println "owner watcher ready"
+    (← IO.getStdout).flush
+    watcher.awaitInterrupt
+    IO.println "owner stop latched"
+    (← IO.getStdout).flush
+    while true do IO.sleep 50
+
+/-- Run a child fixture: ordinary cases release their watchers; held scopes require parent cleanup. -/
 def child (mode : String) : IO Unit := do
   match mode with
   | "return" => checkReturn
-  | "throw" => checkThrow
+  | "throw-INT" | "throw-TERM" | "throw-HUP" => checkThrow
   | "signal-INT" => checkDelivery "INT"
   | "signal-TERM" => checkDelivery "TERM"
   | "signal-HUP" => checkDelivery "HUP"
+  | "owner-held" => holdOwnerScope
   | _ => throw <| IO.userError s!"unknown interrupt watcher test mode: {mode}"
   Beam.Cli.withRequestInterruptWatcher fun watcher => do
     require "a later watcher inherited an earlier interrupt" (!(← watcher.interrupted))
   IO.println "watcher cleanup complete"
   (← IO.getStdout).flush
   unless System.Platform.isWindows do
-    let name := if mode == "signal-TERM" then "TERM" else if mode == "signal-HUP" then "HUP" else "INT"
+    let name := if mode.endsWith "-TERM" then "TERM" else if mode.endsWith "-HUP" then "HUP" else "INT"
     sendSignal name
     throw <| IO.userError s!"watcher teardown did not restore default {name} behavior"
 

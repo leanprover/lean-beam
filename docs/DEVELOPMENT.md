@@ -909,8 +909,9 @@ completed-response rendering. `withOwnerInterruptWatcher` retains repeating SIGI
 SIGTERM/SIGHUP from before owner acquisition until after owner cleanup. Startup borrows the owner
 watcher rather than registering nested request handlers. The observation capability is valid during
 the enclosing callback; it does not enforce a linear lifetime. These CLI scopes own process-wide
-signal policy, not independently nestable library-local dispositions. libuv restores SIG_DFL when
-the last watcher stops, rather than restoring arbitrary previous dispositions.
+signal policy, not independently nestable library-local dispositions. On POSIX, libuv restores
+SIG_DFL when the last watcher stops, rather than restoring arbitrary previous dispositions.
+On Windows, stopping removes the watcher from libuv's console-handler dispatch tree.
 
 CLI interrupt watchers stop their signal handler with `Std.Internal.UV.Signal.stop`. The runtime
 already releases the pending promise in 4.33–4.35, although those releases' Lean API comments claim
@@ -919,14 +920,23 @@ An extra `Signal.cancel` call is not needed to release that wait. A failed `Sign
 subscription to stop: release the native object and propagate the start error. Calling `stop` after
 a failed start can double-release the loop reference on 4.33/4.34. The native watcher regression
 (`python3 tests/test-interrupt-watcher.py`, after `lake build beam-cli-daemon-test`) checks pending
-waiters on normal and exceptional exits. On POSIX it also checks INT/TERM/HUP delivery, repeated owner
-signals after the first waiter completes, isolation of a later watcher, default actions after
-teardown, and blocked stdout/stderr in the real CLI request/rendering paths. This cleanup does
+waiters on normal and exceptional exits. On POSIX it also checks INT/TERM/HUP delivery, retained stop
+observations after the first waiter completes, survival of repeated signals in a held owner scope,
+isolation of a later watcher, default actions after normal and exceptional teardown, and blocked
+stdout/stderr in the real CLI request/rendering paths. This cleanup does
 not require raising the minimum Lean version. The
 [support-window roadmap](STATUS.md#lean-support-window) records the remaining tradeoffs.
 
-Cancellation polling returns the stop before interruption diagnostics are printed. Owned-child
-termination/collection and recovery-fence updates likewise precede their cleanup diagnostics.
+Lean 4.33–4.35 retain an upstream race between one-shot callback completion and `Signal.stop`.
+The ownership-ordering fixes in [Lean #14793](https://github.com/leanprover/lean4/pull/14793) and
+[Lean #15523](https://github.com/leanprover/lean4/pull/15523) are present in the default 4.36.0-rc1.
+Passing lifecycle tests does not establish race-free one-shot teardown on the older targets;
+backporting those fixes or changing the supported-version floor is separate support-window work.
+
+Cancellation polling returns the stop before interruption diagnostics are printed. Forced owner
+cleanup attempts child termination and exit collection before printing its diagnostic. A stderr
+capture failure restores the recovery fence before printing the source-failure diagnostic. Other
+cleanup work can remain after these messages, so blocked diagnostics can delay finalization.
 `finally` runs when an action returns or throws; it cannot interrupt a blocked synchronous write.
 Owner shutdown therefore remains cooperative, and repeated ordinary signals do not force exit.
 

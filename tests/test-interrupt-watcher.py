@@ -36,13 +36,46 @@ class InterruptWatcherTest(unittest.TestCase):
         self.check_mode("return")
 
     def test_throw_releases_waiter_and_restores_sigint(self):
-        self.check_mode("throw")
+        self.check_mode("throw-INT")
+
+    @unittest.skipIf(sys.platform == "win32", "requires POSIX signal delivery")
+    def test_throw_restores_other_owner_signals(self):
+        for name in ["TERM", "HUP"]:
+            with self.subTest(signal=name):
+                self.check_mode("throw-" + name, getattr(signal, "SIG" + name))
 
     @unittest.skipIf(sys.platform == "win32", "requires POSIX signal delivery")
     def test_delivery_and_later_watcher_are_isolated(self):
         for name in ["INT", "TERM", "HUP"]:
             with self.subTest(signal=name):
                 self.check_mode("signal-" + name, getattr(signal, "SIG" + name))
+
+    @unittest.skipIf(sys.platform == "win32", "requires POSIX signal delivery")
+    def test_repeated_signals_leave_owner_scope_alive(self):
+        for termination in [signal.SIGINT, signal.SIGTERM, signal.SIGHUP]:
+            with self.subTest(signal=termination):
+                with subprocess.Popen(
+                    [str(self.binary.resolve()), "--interrupt-watcher", "owner-held"],
+                    cwd=REPO_ROOT, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                ) as child:
+                    try:
+                        self.assertTrue(select.select([child.stdout], [], [], 5)[0],
+                                        "owner watcher did not become ready")
+                        self.assertEqual(child.stdout.readline(), b"owner watcher ready\n")
+                        child.send_signal(termination)
+                        self.assertTrue(select.select([child.stdout], [], [], 5)[0],
+                                        "owner watcher did not latch the first signal")
+                        self.assertEqual(child.stdout.readline(), b"owner stop latched\n")
+                        child.send_signal(termination)
+                        # This is a survival check, not an acknowledgement or count of delivery.
+                        # The scope stays open until fixture cleanup; no signal can race teardown.
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            child.wait(timeout=0.2)
+                    finally:
+                        if child.poll() is None:
+                            child.kill()
+                        child.wait(timeout=5)
 
     def check_blocked_output(self, stream, termination, *, repeat=False):
         """A real request must remain terminable when its output consumer stops reading."""

@@ -238,6 +238,7 @@ lock/readiness waits observe the stop when they return, and blocked synchronous 
 operations can delay cleanup. Attached commands handle the first Ctrl-C while awaiting a request;
 another Ctrl-C can terminate a blocked client. Their TERM/HUP dispositions remain inherited, and
 completed response output uses the default Ctrl-C action.
+
 Help, version reporting, `doctor`, `status`, and `prune` can run without a live owner.
 MCP clients do not need a separate holder; the stdio MCP process owns its runtime session.
 For alternate session directories, status details, and abnormal-exit recovery, see
