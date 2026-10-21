@@ -17,6 +17,32 @@ suffix = ".exe" if os.name == "nt" else ""
 fixture = ROOT / ".lake/build/bin" / ("beam-installation-construction-test" + suffix)
 
 
+def check_hardlinked_output():
+    with tempfile.TemporaryDirectory(prefix="beam-staging-hardlink-") as temporary:
+        directory = Path(temporary)
+        cache = directory / "cache/artifacts/plugin"
+        cache.parent.mkdir(parents=True)
+        contents = bytes([0, 10, 13, 10, 26, 128, 255])
+        cache.write_bytes(contents)
+        source = directory / "build/plugin"
+        source.parent.mkdir()
+        os.link(cache, source)
+        assert source.samefile(cache), (source, cache)
+        assert source.stat().st_nlink == 2, (source, source.stat())
+        staged = directory / "staged payload/runtimes/0/plugin"
+        subprocess.run([fixture, "stage-output", source, staged], check=True, timeout=15)
+        assert staged.read_bytes() == contents, staged
+        assert not staged.samefile(source), (staged, source)
+        assert staged.stat().st_nlink == 1, (staged, staged.stat())
+        # A write to the staged copy must not change the build output or its cache alias.
+        staged.write_bytes(b"changed staged output")
+        assert source.read_bytes() == contents, source
+        assert cache.read_bytes() == contents, cache
+        assert source.samefile(cache), (source, cache)
+        assert source.stat().st_nlink == 2, (source, source.stat())
+    print("production staging preserves cache-linked inputs and creates an independent copy", flush=True)
+
+
 def check(prefix, environment):
     with tempfile.TemporaryDirectory(prefix=prefix) as temporary:
         directory = Path(temporary)
@@ -123,6 +149,7 @@ ensure_runtime_artifacts
     print("installer frontend uses a clean selected-SDK environment", flush=True)
 
 
+check_hardlinked_output()
 check_lake_environment()
 check_installer_environment()
 

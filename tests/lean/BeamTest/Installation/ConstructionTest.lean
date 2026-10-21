@@ -107,6 +107,9 @@ private def checkExistingConstructionRefused (directory : System.FilePath) : IO 
     require (!(← (root / "manifest.json").pathExists)) s!"construction published over an existing {kind}"
 
 def main (args : List String) : IO Unit := do
+  if let ["stage-output", source, destination] := args then
+    Construction.stageOutput source destination
+    return
   if let ["nonstandard-target", sdk, source, buildDir, staging] := args then
     let fingerprint ← fingerprintLeanInstallation sdk
     require ((← IO.FS.realPath fingerprint.leanLibDir) !=
