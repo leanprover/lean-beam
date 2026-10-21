@@ -143,7 +143,8 @@ lean-beam run-at "Foo.lean" <version-from-update> 18 0 $'  first | exact h1\n  |
 Do not expect the wrapper to turn `"first | exact h1 | exact h2"` into a properly line-broken block,
 or to add missing `\n` separators around the text.
 
-At a tactic position, send the body of a tactic block without an outer `by`. Beam parses it with
+At a tactic position, do not start the text with `by`: the probe already runs inside the proof.
+`by` inside the text (for example `have h : p := by simp`) works as usual. Beam parses the text with
 Lean's tactic-sequence grammar
 ([`Lean.Parser.Tactic.tacticSeq`](https://github.com/leanprover/lean4/blob/master/src/Lean/Parser/Term/Basic.lean)),
 counting columns within the text you send:
