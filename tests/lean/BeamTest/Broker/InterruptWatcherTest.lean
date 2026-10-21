@@ -4,7 +4,8 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: Emilio J. Gallego Arias
 -/
 
-import Beam.Cli.Broker
+import Beam.Cli.Commands
+import BeamTest.TestHarness
 
 namespace BeamTest.Broker.InterruptWatcherTest
 
@@ -80,8 +81,58 @@ private def holdOwnerScope : IO Unit :=
     (← IO.getStdout).flush
     while true do IO.sleep 50
 
+-- Resolve behind an explicit gate so cancellation is latched before acquisition returns.
+-- The task owns the real daemon; join it before asserting or disposing of its control directory.
+private def cancelledOwnerAcquisition : IO Unit := IO.FS.withTempDir fun temporary => do
+  let root ← IO.currentDir
+  let suffix := if System.Platform.isWindows then ".exe" else ""
+  let runtime : Beam.Runtime.Description := {
+    command := "lean", plugin := ← BeamTest.TestHarness.pluginPath
+    daemonBin := root / ".lake/build/bin" / ("beam-daemon-fixture" ++ suffix)
+    toolchain := "library fixture", identity := ⟨root, "library fixture"⟩
+  }
+  let control := temporary / "session"
+  let entered ← IO.Promise.new
+  let release ← IO.Promise.new
+  let stopped ← IO.mkRef false
+  let ready ← IO.mkRef false
+  let retained ← IO.mkRef (none : Option Beam.Cli.ProjectDaemonOwner)
+  let watcher : Beam.Cli.InterruptWatcher := {
+    interrupted := stopped.get, awaitInterrupt := pure ()
+  }
+  let task ← IO.asTask (prio := .dedicated) <|
+    Beam.Cli.withProjectDaemonOwner (fun _ => do
+      entered.resolve ()
+      let some _ ← IO.wait release.result?
+        | throw <| IO.userError "owner acquisition gate dropped"
+      pure { root, runtime }) root (some control) fun owner => do
+        retained.set (some owner)
+        Beam.Cli.runThenHoldUntilInterrupted watcher owner do
+          Beam.Cli.callBrokerQuiet watcher root owner.client Beam.Broker.Request.ensure
+          ready.set true
+          IO.println "unexpected readiness"
+  let outcome ← try
+      let some (some _) ← Beam.waitTaskWithTimeout entered.result? 2000
+        | throw <| IO.userError "owner acquisition did not reach its gate"
+      stopped.set true
+      release.resolve ()
+      IO.wait task
+    finally
+      stopped.set true
+      release.resolve ()
+      discard <| IO.wait task
+  require "cancelled acquisition published readiness" (!(← ready.get))
+  let some owner ← retained.get
+    | throw <| IO.userError "acquisition did not hand off an owned daemon"
+  require "cancelled acquisition did not reap its daemon" ((← owner.exitCode?) == some 0)
+  match ← Beam.Daemon.readRegistryAt (control / "beam-daemon.json") with
+  | .absent => pure ()
+  | _ => throw <| IO.userError "cancelled acquisition left a session descriptor"
+  IO.ofExcept outcome
+
 /-- Run a child fixture: ordinary cases release their watchers; held scopes require parent cleanup. -/
 def child (mode : String) : IO Unit := do
+  if mode == "owner-acquisition" then return ← cancelledOwnerAcquisition
   match mode with
   | "return" => checkReturn
   | "throw-INT" | "throw-TERM" | "throw-HUP" => checkThrow

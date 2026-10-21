@@ -184,7 +184,9 @@ private def recoverProjectSession (runtime : RuntimeAccess) (opts : CliOptions) 
       }
   printResponse <| Response.success <| toJson result
 
-private def runThenHoldUntilInterrupted
+/-- Initialize an acquired foreground owner, then hold it until shutdown.
+The caller owns the enclosing signal/owner scopes; initialization must reject pre-readiness stops. -/
+def runThenHoldUntilInterrupted
     (watcher : InterruptWatcher)
     (owner : ProjectDaemonOwner)
     (act : IO Unit) : IO Unit := do

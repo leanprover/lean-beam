@@ -77,6 +77,15 @@ class InterruptWatcherTest(unittest.TestCase):
                             child.kill()
                         child.wait(timeout=5)
 
+    def test_cancellation_during_owner_acquisition_fails_before_readiness(self):
+        result = subprocess.run(
+            [str(self.binary.resolve()), "--interrupt-watcher", "owner-acquisition"],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "", "cancelled owner published readiness")
+        self.assertIn("Beam request interrupted", result.stderr)
+
     def check_blocked_output(self, stream, termination, *, repeat=False):
         """A real request must remain terminable when its output consumer stops reading."""
         errors = []
