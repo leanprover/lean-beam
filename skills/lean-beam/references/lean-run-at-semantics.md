@@ -143,6 +143,14 @@ lean-beam run-at "Foo.lean" <version-from-update> 18 0 $'  first | exact h1\n  |
 Do not expect the wrapper to turn `"first | exact h1 | exact h2"` into a properly line-broken block,
 or to add missing `\n` separators around the text.
 
+Tactic text is parsed like the body of a `by` block, with columns counted within the text itself:
+each line at the first tactic's column starts a new tactic, `;` also separates tactics, and a more
+indented line continues the previous tactic. Start every tactic of a sequence at the same column:
+
+```bash
+printf 'intro a b\nomega\n' | lean-beam run-at "Foo.lean" <version-from-update> 18 2 --stdin
+```
+
 ## 5. Introducing Local Recursion In A Tactic Probe
 
 `lean-beam run-at`, `run-at-handle`, `run-with`, and `run-with-linear` reject newly introduced local

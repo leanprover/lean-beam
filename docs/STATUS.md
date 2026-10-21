@@ -93,7 +93,7 @@ The base request remains intentionally small:
 
 - one document
 - one position
-- one Lean command or tactic-block payload
+- one Lean command or tactic-sequence payload
 - no required command/tactic mode flag
 
 Request-level failures stay at the transport layer. Semantic Lean outcomes stay in the normal typed

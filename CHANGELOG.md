@@ -41,6 +41,15 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   An explicit root can be inspected after Lean project markers disappear; setup failures still
   produce a nonzero exit status.
 
+### Fixed
+
+- Parse tactic `runAt` text and handle continuations as a tactic sequence, as in the body of a
+  `by` block. Previously the text was one tactic with no indentation reference, so `simp⏎exact h`
+  and `simp; exact h` failed with `expected end of input`, and a line break could not end a
+  tactic's arguments: `intro a⏎omega` succeeded by introducing a hypothesis named `omega` without
+  running `omega`. A line at the first tactic's column now starts a new tactic; a more indented
+  line still continues the previous one.
+
 ### Removed
 
 - Remove `lean-beam-mcp --self-check`. Verify the configured MCP client with a normal `lean_sync`

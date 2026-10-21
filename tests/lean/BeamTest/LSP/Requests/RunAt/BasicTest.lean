@@ -62,6 +62,23 @@ def checkRunAtTacticPositions : ScenarioM Unit := do
     throw <| IO.userError s!"expected replacement type mismatch, got {(toJson diagnostics).compress}"
   closeDoc doc
 
+def checkRunAtTacticSequences : ScenarioM Unit := do
+  let doc ← openDoc "tests/scenario/docs/TacticPositionProof.lean"
+  syncDoc doc
+  let simpStart : Lean.Lsp.Position := { line := 1, character := 2 }
+
+  requireRunAtSolvesProof "newline-separated tactics" doc simpStart "simp\nexact h"
+  requireRunAtSolvesProof "semicolon-separated tactics" doc simpStart "simp; exact h"
+  requireRunAtSolvesProof "uniformly indented tactics" doc simpStart "  simp\n  exact h"
+  -- A more indented line still continues the previous tactic's arguments, as in a `by` block.
+  requireRunAtSolvesProof "indented argument continuation" doc simpStart
+    "revert a b\n  h\nintro a b\nsimp"
+  -- Parsed as one tactic, `intro a⏎omega` would introduce `b` under the name `omega` and succeed
+  -- without running `omega`, leaving the goal open.
+  requireRunAtSolvesProof "line break ends tactic arguments" doc { line := 4, character := 2 }
+    "intro a\nomega"
+  closeDoc doc
+
 def checkRunAtOneCommandOnly : ScenarioM Unit := do
   let doc ← openDoc "tests/lean/BeamTest/Fixtures/Deps/DepA.lean"
   syncDoc doc
@@ -191,6 +208,7 @@ def checkRunAtWithStandardLspInterference : ScenarioM Unit := do
 
 def run : ScenarioM Unit := do
   checkRunAtTacticPositions
+  checkRunAtTacticSequences
   checkRunAtOneCommandOnly
   checkRunAtTheoremSuccessOmitsSilentMessages
   checkRunAtTheoremProofFailure
