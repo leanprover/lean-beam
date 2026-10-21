@@ -135,13 +135,17 @@ private def checkToolDescriptors : IO Unit := do
       (projectedTool.key == "lean_" ++ op.key)
     require s!"shared Lean operation {repr op} should not contain MCP transport guidance"
       (!op.description.contains "tools/call" && !op.description.contains "progressToken")
-    require s!"projected MCP operation {repr op} should advertise MCP progress controls"
-      (projectedTool.descriptor.description.contains "tools/call" &&
-        projectedTool.descriptor.description.contains "_meta.progressToken")
+    require s!"projected MCP operation {repr op} should leave progress controls to instructions"
+      (!projectedTool.descriptor.description.contains "progressToken")
     let matchingTools := Beam.Mcp.ToolName.leanOperationTools.filter (fun tool =>
       tool == .leanOperation op)
     require s!"Lean operation {repr op} should have exactly one MCP tool"
       (matchingTools.size == 1)
+  -- Bound discovery text independently of how a client selects or caches tools. Shared guidance
+  -- belongs in the server instructions; raising this budget needs a reason.
+  let descriptionChars := Beam.Mcp.toolDescriptors.foldl (· + ·.description.length) 0
+  require s!"MCP tool descriptions total {descriptionChars} characters, over their 4500 budget"
+    (descriptionChars ≤ 4500)
   let some versionDesc := Beam.Mcp.toolDescriptors.find? (·.name == .beamVersion)
     | throw <| IO.userError "beam version descriptor is missing"
   let versionSchemaProperties ← requireObjVal "beam version schema" "properties" versionDesc.inputSchema

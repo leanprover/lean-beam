@@ -83,6 +83,11 @@ If a behavior is subtle, encode it in tests before optimizing it.
 The `lean-beam` skill is Lean-only. Rocq integration and its skill belong to the separate
 [rocq-beam](https://github.com/ejgallego/rocq-beam) project; do not introduce a shared skill layer between the projects.
 
+Keep the loaded `skills/lean-beam/SKILL.md` and MCP discovery text concise. Move optional workflow
+details to `skills/lean-beam/references/` and shared MCP guidance to server instructions. Each tool
+description must still make its effects and important limits clear when read on its own. Stay within
+the budgets enforced by `tests/test-skill-budget.py` and `BeamTest.Broker.McpProjectionTest`.
+
 ## Public Writing
 
 Docs, skill text, and PR descriptions should be readable without local worktree history or private

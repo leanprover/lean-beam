@@ -89,9 +89,9 @@ def Operation.key : Operation → String
 instance : ToJson Operation where
   toJson op := toJson op.key
 
-private def operationDescription : Operation → String
-  | .runAt => "Speculatively test one Lean command or tactic block at a file position without retaining follow-up state. Supplied text remains speculative and is not persisted as source. To keep the result, first edit and save the Lean file with the client's normal file-edit tool; only then call the sync operation."
-  | .runAtHandle => "Speculatively test one Lean command or tactic block at a file position. A successful result may include next_handle for follow-up execution. Supplied text remains speculative and is not persisted as source. To keep the result, first edit and save the Lean file with the client's normal file-edit tool; only then call the sync operation."
+private def operationDescription (syncOperation : String) : Operation → String
+  | .runAt => s!"Speculatively run one Lean command or tactic block at a file position. The text is not persisted as source and no follow-up state is kept. To keep a result, first edit and save the Lean file yourself, then call {syncOperation}."
+  | .runAtHandle => s!"Speculatively run one Lean command or tactic block at a file position. A successful result may include next_handle for exact follow-up execution. The text is not persisted as source. To keep a result, first edit and save the Lean file yourself, then call {syncOperation}."
   | .hover => "Inspect Lean hover information at a file position."
   | .signatureHelp => "Inspect Lean signature help at a file position."
   | .definition => "Find Lean definitions for the symbol at a file position."
@@ -101,8 +101,8 @@ private def operationDescription : Operation → String
   | .goals => "Inspect Lean goals before or after a file position."
   | .todo => "Inspect agent-actionable Lean todo items in a file range."
   | .codeActionResolve => "Resolve and return a Lean code action payload from the todo result. If it contains an LSP WorkspaceEdit, the client must apply it."
-  | .runWith => "Speculatively continue from a stored handle without consuming the parent handle. The continuation remains speculative and is not persisted as source. To keep the result, first edit and save the Lean file so it contains the complete accepted source; only then call the sync operation."
-  | .runWithLinear => "Speculatively continue from a stored handle and consume that handle on success or failure. The continuation remains speculative and is not persisted as source. To keep the result, first edit and save the Lean file so it contains the complete accepted source; only then call the sync operation."
+  | .runWith => s!"Speculatively continue from a stored handle without consuming it. The continuation is not persisted as source. To keep a result, first edit and save the Lean file so it contains the complete accepted source, then call {syncOperation}."
+  | .runWithLinear => s!"Speculatively continue from a stored handle and consume it on success or failure. The continuation is not persisted as source. To keep a result, first edit and save the Lean file so it contains the complete accepted source, then call {syncOperation}."
   | .release => "Release a stored Lean follow-up handle."
   | .update => "Read the current on-disk Lean source into the broker's LSP mirror and return its document version without waiting for diagnostics."
   | .sync => "Read the current on-disk Lean source into the broker's LSP mirror, wait for diagnostics and readiness, and return its document version. This never applies or recovers speculative text."
@@ -111,6 +111,7 @@ private def operationDescription : Operation → String
   | .closeSave => "Read and synchronize the current on-disk Lean source, write the same Lean/Lake build artifacts when possible, and close the tracked LSP document."
   | .close => "Close the tracked LSP document."
 
+/-- Transport-wide rule; MCP states it once in its server instructions. -/
 def sourceFileInvariant : String :=
   "Beam never applies source edits to `.lean` files on disk; the client applies source edits."
 
@@ -118,23 +119,18 @@ private def executesSuppliedLeanText : Operation → Bool
   | .runAt | .runAtHandle | .runWith | .runWithLinear => true
   | _ => false
 
-private def speculativeRecursionCaveat : String :=
-  "Tactic probes reject newly introduced local `let rec` definitions, even valid ones. Save the complete enclosing declaration and sync to validate it; edits invalidate stored handles. Complete command probes use Lean's normal termination checks."
+private def speculativeCaveat : String :=
+  "Tactic probes reject new local `let rec` definitions, even valid ones; save the enclosing declaration and sync instead. Probes are not an OS sandbox: Lean code may perform IO."
 
-private def speculativeIoCaveat : String :=
-  "Speculative execution isolates Beam's source and document state, but it is not an OS sandbox; Lean commands and project metaprogramming may perform IO."
-
-def Operation.behaviorDescription (operation : Operation) : String :=
+/-- Describe an operation, naming the transport's sync operation in the keep-a-result guidance. -/
+def Operation.description (operation : Operation) (syncOperation : String := "the sync operation") :
+    String :=
   String.intercalate " " <|
-    [operationDescription operation] ++
-      (if executesSuppliedLeanText operation then
-        [speculativeRecursionCaveat, speculativeIoCaveat] else [])
-
-def Operation.description (operation : Operation) : String :=
-  String.intercalate " " [operation.behaviorDescription, sourceFileInvariant]
+    [operationDescription syncOperation operation] ++
+      (if executesSuppliedLeanText operation then [speculativeCaveat] else [])
 
 private def pathField : String × Json :=
-  ("path", Beam.JsonSchema.string "Lean file path, relative to the server root unless absolute.")
+  ("path", Beam.JsonSchema.string "Lean file path, absolute or relative to the project root.")
 
 private def versionField : String × Json :=
   ("version", Beam.JsonSchema.natural "Document version returned by a successful update or sync operation for this file.")

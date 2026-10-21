@@ -322,19 +322,20 @@ private def requireSchemaRequiredFields
   require s!"{label} required fields" (required == toJson expected)
 
 private def checkToolDescriptionContracts (tools : Array Json) : IO Unit := do
-  let sourceFileInvariant :=
-    "Beam never applies source edits to `.lean` files on disk; the client applies source edits."
-  for operation in Beam.Lean.Operation.all do
-    let toolName := s!"lean_{operation.key}"
-    let description ← requireToolDescription tools toolName
-    require s!"{toolName} description should end with the source-file invariant"
-      (description.endsWith sourceFileInvariant)
+  -- Transport-wide rules live once in the server instructions, not in every tool description.
+  for rule in [Beam.Lean.sourceFileInvariant, "_meta.progressToken", "workspace descriptor"] do
+    require s!"MCP server instructions should state '{rule}'"
+      (Beam.Mcp.serverInstructions.contains rule)
+  for tool in tools do
+    let description ← IO.ofExcept <| tool.getObjValAs? String "description"
+    require "tool descriptions should not repeat transport-wide progress guidance"
+      (!description.contains "progressToken")
   for toolName in #["lean_run_at", "lean_run_at_handle", "lean_run_with", "lean_run_with_linear"] do
     let description ← requireToolDescription tools toolName
     require s!"{toolName} description should explain speculative file behavior"
       (description.contains "not persisted as source" &&
         description.contains "first edit and save the Lean file" &&
-        description.contains "only then call lean_sync")
+        description.contains "then call lean_sync")
     require s!"{toolName} description should state the speculative IO boundary"
       (description.contains "not an OS sandbox" && description.contains "may perform IO")
   let runAtHandleDescription ← requireToolDescription tools "lean_run_at_handle"
@@ -359,9 +360,6 @@ private def checkToolDescriptionContracts (tools : Array Json) : IO Unit := do
   let feedbackReportDescription ← requireToolDescription tools "beam_feedback_report"
   require "beam_feedback_report description should state the no-upload contract"
     (feedbackReportDescription.startsWith "Beam does not upload or submit feedback.")
-  require "beam_feedback_report description should advertise live-status tuning"
-    (feedbackReportDescription.contains "_meta.progressToken" &&
-      feedbackReportDescription.contains "one status log")
 
 private def checkToolsListShape : IO Unit := do
   let result := Beam.Mcp.toolsListResult
@@ -823,6 +821,7 @@ private def checkModernProtocol : IO Unit := do
   requireModernResultEnvelope "server/discover result" discover
   requireJsonInt "server/discover result" "ttlMs" (Int.ofNat Beam.Mcp.publicCacheTtlMs) discover
   requireJsonString "server/discover result" "cacheScope" "public" discover
+  requireJsonString "server/discover result" "instructions" Beam.Mcp.serverInstructions discover
   let supportedJson ← requireObjVal "server/discover result" "supportedVersions" discover
   let supported ← requireJsonArray "server/discover supportedVersions" supportedJson
   require "server/discover advertises exactly the modern per-request protocol revisions"
@@ -1044,6 +1043,7 @@ private def checkServerBasics : IO Unit := do
   let serverInfo ← requireObjVal "initialize result" "serverInfo" initResult
   requireJsonString "initialize serverInfo" "name" Beam.Mcp.serverName serverInfo
   requireJsonString "initialize serverInfo" "version" Beam.Mcp.serverVersion serverInfo
+  requireJsonString "initialize result" "instructions" Beam.Mcp.serverInstructions initResult
   let capabilities ← requireObjVal "initialize result" "capabilities" initResult
   discard <| requireObjVal "initialize capabilities" "logging" capabilities
   let toolsCapability ← requireObjVal "initialize capabilities" "tools" capabilities

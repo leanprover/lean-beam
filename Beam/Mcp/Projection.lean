@@ -140,10 +140,16 @@ def beamVersionDescription : String :=
 def beamStatsDescription : String :=
   "Return process-wide debug Beam broker runtime statistics for lazily cached workspaces."
 
-private def progressDiscovery (delayedActivity : String) : String :=
-  "For detailed live updates, clients can pass `tools/call` `_meta.progressToken`; without one, " ++
-    s!"Beam emits one status log when {delayedActivity} and the request's logging policy admits " ++
-    "notice-level events."
+/-- Rules shared by every tool, stated once instead of in each tool description. -/
+def serverInstructions : String :=
+  String.intercalate " " [
+    "Use an explicit local workspace descriptor on every workspace-bound Beam tool call.",
+    Beam.Lean.sourceFileInvariant,
+    "Edit and save files with your own tools, then call lean_update or lean_sync before version-bound queries.",
+    "For detailed live updates, clients can pass `tools/call` `_meta.progressToken`; without one,",
+    "Beam emits at most one `beam.status` notice when setup or a slow call is detected and the",
+    "request's logging policy admits notice-level events."
+  ]
 
 def beamFeedbackReportDescription : String :=
   String.intercalate " " [
@@ -151,8 +157,7 @@ def beamFeedbackReportDescription : String :=
     "Non-confidential output may contain project context and caller payloads, so review it before posting.",
     "Set confidential for non-public workspaces; confidential results retain caller-authored narrative",
     "except for HOME-path redaction and do not scan it for other secrets; never post them publicly.",
-    "A local evidence bundle is optional.",
-    progressDiscovery "collection is delayed"
+    "A local evidence bundle is optional."
   ]
 
 open Beam.JsonSchema in
@@ -223,8 +228,7 @@ def feedbackReportInputSchema : Json :=
 def dropWorkspaceDescription : String :=
   String.intercalate " " [
     "Evict one local Lean workspace cache and invalidate its retained proof handles.",
-    "A later request recreates it lazily.",
-    progressDiscovery "eviction is delayed"
+    "A later request recreates it lazily."
   ]
 
 open Beam.JsonSchema in
@@ -249,8 +253,6 @@ def toolNames : Array ToolName :=
   ToolName.all
 
 private def leanOperationProjectionGuidance : Beam.Lean.Operation → List String
-  | .runAt | .runAtHandle | .runWith | .runWithLinear =>
-      ["In MCP, this means: only then call lean_sync."]
   | .codeActionResolve =>
       ["Pass the CodeAction payload returned by lean_todo."]
   | _ => []
@@ -263,12 +265,8 @@ def ToolName.descriptor (tool : ToolName) : ToolDescriptor :=
     | .beamFeedbackReport => (beamFeedbackReportDescription, feedbackReportInputSchema)
     | .leanOperation op =>
         (String.intercalate " " <|
-          [op.behaviorDescription] ++
-          leanOperationProjectionGuidance op ++
-          [
-            progressDiscovery "setup or a long-running request is detected",
-            Beam.Lean.sourceFileInvariant
-          ], schemaWithWorkspace op.inputSchema)
+          [op.description (syncOperation := "lean_sync")] ++
+          leanOperationProjectionGuidance op, schemaWithWorkspace op.inputSchema)
     | .leanDropWorkspace => (dropWorkspaceDescription, dropWorkspaceInputSchema)
   { name := tool, description, inputSchema, annotations := tool.annotations }
 

@@ -404,10 +404,11 @@ operation directly to a Beam broker daemon.
 ## Progress And Diagnostic Logs
 
 For `tools/call`, clients may pass `params._meta.progressToken` as a string or integer. Progress
-updates for one request are monotonic and precede that request's final response. Every Lean
-operation tool description, plus `beam_feedback_report` and `lean_drop_workspace`, advertises this
-metadata so progress tuning is visible in `tools/list` even though MCP places it outside the tool's
-`arguments` object.
+updates for one request are monotonic and precede that request's final response. Because MCP
+places this metadata outside each tool's `arguments`, the server instructions (returned by both
+`initialize` and `server/discover`) advertise it once instead of repeating it in every tool
+description. The instructions also state the transport-wide workspace-descriptor and source-edit
+rules.
 
 When a broker-backed Lean operation, `beam_feedback_report`, or `lean_drop_workspace` has no
 progress token, fast calls remain quiet. If Lake setup is observed or the call is still pending

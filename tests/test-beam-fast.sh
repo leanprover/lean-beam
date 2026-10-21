@@ -21,6 +21,7 @@ bash scripts/check-daemon-safety.sh
 bash scripts/check-task-priority.sh
 python3 tests/test-runtime-boundary.py
 bash scripts/check-markdown-links.sh
+python3 tests/test-skill-budget.py
 python3 scripts/ci-toolchains.py > /dev/null
 python3 tests/test-toolchain-ci-matrix.py
 python3 tests/test-toolchain-registry.py

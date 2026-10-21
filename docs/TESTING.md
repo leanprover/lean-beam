@@ -534,6 +534,9 @@ SDK discovery, managed bundle resolution, or application startup. The fast suite
 `Construction.stageOutput`. It checks that the staged file has an independent inode and matching
 bytes, and that changing it leaves the build output and cache alias intact. The installation staging
 fixture also uses this production helper to copy its already-built outputs.
+`python3 tests/test-skill-budget.py` keeps `skills/lean-beam/SKILL.md` under 10,000 bytes, and
+`McpProjectionTest` keeps the combined MCP tool descriptions under 4,500 characters; both run in
+the fast suite.
 `python3 tests/test-mcp-application.py` runs discovery from independent frontend payloads copied
 from fresh and simulated cache-linked inputs. It retains the frontend's shared libraries but removes
 the installation manifest and target runtimes, and points `BEAM_HOME` at a missing directory.

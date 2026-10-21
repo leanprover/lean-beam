@@ -166,8 +166,8 @@ What is not a valid checkpoint target:
 - for completed broker operations, `lean-beam sync` keeps machine-readable JSON on stdout;
   interactive progress text goes to stderr, while selector, setup, or transport failures may exit
   nonzero with no JSON
-- every `lean-beam run-at` request is an isolated read-only probe against one on-disk document
-  version
+- every `lean-beam run-at` request probes one on-disk document version without changing its real
+  elaboration state; Lean code can still perform external IO
 - `lean-beam run-at-handle` is the same style of isolated probe, but asks Lean to retain follow-up
   state
 - `lean-beam run-with` preserves the current handle and branches from it
