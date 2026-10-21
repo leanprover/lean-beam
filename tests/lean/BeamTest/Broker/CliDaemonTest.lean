@@ -286,10 +286,10 @@ private def checkBufferedFraming : IO Unit := do
 
   -- Put the 4 KiB refill inside the next header, at its newline, and inside its UTF-8 payload.
   for prefixSize in #[4086, 4087, 4088, 4089, 4090] do
-    let prefix := String.ofList (List.replicate prefixSize 'x')
+    let leadingText := String.ofList (List.replicate prefixSize 'x')
     let next := "λ🙂" ++ String.ofList (List.replicate 120 'y')
-    let fixture ← frameFixture #[frameBytes prefix ++ frameBytes next ++ frameBytes "tail"]
-    requireFrame fixture prefix
+    let fixture ← frameFixture #[frameBytes leadingText ++ frameBytes next ++ frameBytes "tail"]
+    requireFrame fixture leadingText
     requireFrame fixture next
     requireFrame fixture "tail"
     require "boundary frames should use exactly two bounded refills"
