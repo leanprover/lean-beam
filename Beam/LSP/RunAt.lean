@@ -338,9 +338,15 @@ tactic's arguments; a bare `tactic` category parse has no saved position and wou
 `funext a b⏎simp` as `funext a b simp`.
 -/
 private def parseTacticSeqText (env : Environment) (text : String) : Except String Syntax :=
-  let p := Parser.andthenFn Parser.whitespace Parser.Tactic.tacticSeq.fn
   let ictx := Parser.mkInputContext text "<runAt>"
-  let s := p.run ictx { env, options := {} } (Parser.getTokenTable env) (Parser.mkParserState text)
+  let pmctx : Parser.ParserModuleContext := { env, options := {} }
+  let tokens := Parser.getTokenTable env
+  let leading := Parser.whitespace.run ictx pmctx tokens (Parser.mkParserState text)
+  -- `tacticSeq` tries `{ ... }` first, so blank text would otherwise report "expected '{'".
+  if leading.allErrors.isEmpty && ictx.atEnd leading.pos then
+    .error ((leading.mkEOIError ["tactic"]).toErrorMsg ictx)
+  else
+  let s := Parser.Tactic.tacticSeq.fn.run ictx pmctx tokens leading
   if !s.allErrors.isEmpty then
     .error (s.toErrorMsg ictx)
   else if ictx.atEnd s.pos then

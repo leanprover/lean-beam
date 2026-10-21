@@ -70,6 +70,9 @@ def checkRunAtTacticSequences : ScenarioM Unit := do
   requireRunAtSolvesProof "newline-separated tactics" doc simpStart "simp\nexact h"
   requireRunAtSolvesProof "semicolon-separated tactics" doc simpStart "simp; exact h"
   requireRunAtSolvesProof "uniformly indented tactics" doc simpStart "  simp\n  exact h"
+  requireRunAtSolvesProof "comments, blank lines, and nested bullets" doc simpStart
+    "-- note\nhave h2 : 1 = 1 ∧ 2 = 2 := by\n  constructor\n  · rfl\n  · rfl\n\nsimp\nexact h"
+  requireRunAtFailureMessage "comment-only text" doc simpStart "-- note" "expected tactic"
   -- A more indented line still continues the previous tactic's arguments, as in a `by` block.
   requireRunAtSolvesProof "indented argument continuation" doc simpStart
     "revert a b\n  h\nintro a b\nsimp"
@@ -77,6 +80,16 @@ def checkRunAtTacticSequences : ScenarioM Unit := do
   -- without running `omega`, leaving the goal open.
   requireRunAtSolvesProof "line break ends tactic arguments" doc { line := 4, character := 2 }
     "intro a\nomega"
+  -- Handle continuations parse their text the same way.
+  let minted ← requireRunAtResponseSuccess "mint sequence handle" <|
+    ← sendRunAt doc { line := 4, character := 2, text := "skip", storeHandle := true }
+  let some handle := minted.handle?
+    | throw <| IO.userError s!"expected a handle, got {(toJson minted).compress}"
+  let continued : Beam.LSP.RunAt.Result ←
+    awaitResponseAs (← runWithHandle doc handle { text := "intro a\nomega" })
+  unless continued.success && continued.proofState?.map (·.goals.isEmpty) == some true do
+    throw <| IO.userError
+      s!"runWith tactic sequence should solve the goal, got {(toJson continued).compress}"
   closeDoc doc
 
 def checkRunAtOneCommandOnly : ScenarioM Unit := do
