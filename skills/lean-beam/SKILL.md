@@ -99,6 +99,8 @@ not enumerate every command's actions, and an empty result is not a file-wide ve
   real edit and `sync`.
 - Pass the exact text Lean should parse, including indentation and newlines; prefer `--stdin` for
   multiline text. Beam does not re-indent.
+- At a tactic position, the text may be a tactic sequence: start each tactic at the same column, or
+  separate them with `;`. Do not start it with `by`; the probe already runs inside the proof.
 - `run-at` does not return full-file diagnostics; use `sync` after a real edit for those.
 - Tactic probes reject newly introduced local `let rec` definitions, even valid ones. Save the
   enclosing declaration and `sync` instead, or probe one complete declaration at a command position.
