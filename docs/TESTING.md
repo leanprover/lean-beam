@@ -525,8 +525,8 @@ cleanup, targeting only its owned POSIX process group or its Windows process tre
 Process creation is outside the wait deadline; cleanup has separate five-second bounds for the
 Windows tree-termination command and direct-child reaping. `python3 tests/test-process-watchdog.py`
 checks successful logging, nonzero exit, bounded returned output, and timeout with inherited output,
-a partial response, and actual descendant termination. Windows execution still needs qualification
-on a Windows runner.
+a partial response, and actual descendant termination. The `native-toolchain (windows-latest)`
+CI job runs this qualification before building the native distribution.
 
 `python3 tests/test-runtime-boundary.py` checks the transitive imports of shared identity,
 configuration, session, and MCP execution modules. It rejects dependencies on installation layout,
@@ -535,6 +535,13 @@ SDK discovery, managed bundle resolution, or application startup. The fast suite
 `Construction.stageOutput`. It checks that the staged file has an independent inode and matching
 bytes, and that changing it leaves the build output and cache alias intact. The installation staging
 fixture also uses this production helper to copy its already-built outputs.
+Its environment-policy check resolves the SDK once through the compiler named by `LEAN`, or
+`lean` on `PATH` when `LEAN` is absent. Bare compiler names are resolved against the supplied
+`PATH` before execution on both Windows and POSIX. Regression cases cover ordinary `PATH`
+selection, failure for an unusable compiler on `PATH`, explicit selection despite that unusable
+compiler, and failure without fallback when the explicit compiler is missing.
+For a focused run, use `lake build beam-installation-construction-test`, then
+`python3 tests/test-installation-construction.py`.
 `python3 tests/test-skill-budget.py` keeps `skills/lean-beam/SKILL.md` under 10,000 bytes, and
 `McpProjectionTest` keeps the combined MCP tool descriptions under 4,500 characters; both run in
 the fast suite.

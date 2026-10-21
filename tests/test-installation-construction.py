@@ -88,8 +88,55 @@ def check(prefix, environment):
             assert actual == artifact["hash"], artifact
 
 
-def check_lake_environment():
-    sdk = subprocess.check_output(["lean", "--print-prefix"], text=True).strip()
+def selected_sdk(environment):
+    compiler = environment.get("LEAN", "lean")
+    if not os.path.dirname(compiler):
+        # Windows subprocess lookup does not use PATH from the supplied environment.
+        found = shutil.which(compiler, path=environment.get("PATH", os.defpath))
+        if found is None:
+            raise FileNotFoundError(f"compiler not found on PATH: {compiler!r}")
+        compiler = found
+    prefix = subprocess.check_output([compiler, "--print-prefix"], cwd=ROOT,
+                                     env=environment, text=True).strip()
+    assert prefix, "selected compiler returned no SDK prefix"
+    return Path(prefix).resolve()
+
+
+def check_selected_sdk(sdk):
+    compiler = sdk / "bin" / ("lean" + suffix)
+    environment = dict(os.environ, LEAN_SYSROOT=str(sdk),
+                       PATH=str(sdk / "bin") + os.pathsep + os.environ["PATH"])
+    environment.pop("LEAN", None)
+    assert selected_sdk(environment) == sdk, "default selection ignored lean on PATH"
+    assert selected_sdk(dict(environment, LEAN="lean" + suffix)) == sdk, \
+        "explicit compiler name ignored PATH"
+    with tempfile.TemporaryDirectory(prefix="beam-selected-sdk-") as temporary:
+        directory = Path(temporary)
+        ambient = directory / ("lean" + suffix)
+        ambient.write_bytes(b"not a Lean executable\n")
+        ambient.chmod(0o755)
+        poisoned = dict(environment, PATH=str(directory) + os.pathsep + environment["PATH"])
+        found = shutil.which("lean" + suffix, path=poisoned["PATH"])
+        assert found and Path(found).resolve() == ambient.resolve(), (found, ambient)
+        for rejected in [poisoned, dict(poisoned, LEAN="lean" + suffix)]:
+            try:
+                selected_sdk(rejected)
+            except OSError:
+                pass
+            else:
+                raise AssertionError("unusable PATH compiler fell back to another compiler")
+        explicit = dict(poisoned, LEAN=str(compiler))
+        assert selected_sdk(explicit) == sdk, "explicit selection consulted ambient lean"
+        try:
+            selected_sdk(dict(environment, LEAN=str(directory / ("missing-lean" + suffix))))
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("missing explicit compiler fell back to lean on PATH")
+    print("construction SDK selection honors explicit compilers without ambient fallback", flush=True)
+
+
+def check_lake_environment(sdk):
     variables = ["LAKE_HOME", "LEAN_PATH", "LEAN_SRC_PATH", "LEAN_CC", "LEAN_AR", "LEAN_ABORT_ON_PANIC"]
     with tempfile.TemporaryDirectory(prefix="beam-construction-env-") as temporary:
         workspace = Path(temporary)
@@ -150,7 +197,9 @@ ensure_runtime_artifacts
 
 
 check_hardlinked_output()
-check_lake_environment()
+sdk = selected_sdk(os.environ)
+check_selected_sdk(sdk)
+check_lake_environment(sdk)
 check_installer_environment()
 
 if os.name == "nt":
