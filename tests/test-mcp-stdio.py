@@ -3217,6 +3217,7 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
         with tempfile.TemporaryDirectory(prefix="lean-beam-mcp-blocked-eof-") as tmp:
             project_root = Path(tmp) / "project"
             pid_path = Path(tmp) / "file-worker.pid"
+            queued_marker = Path(tmp) / "queued-sync-executed"
             copy_project_fixture(fixture_root, project_root)
             client = McpClient(
                 repo_root,
@@ -3229,6 +3230,21 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
             blocked_id = "blocked-terminal-output"
             waiting_id = "terminal-waiting-for-output-lock"
             drop_id = "drop-behind-blocked-terminal"
+            cancelled_id = "cancelled-sync-behind-drop"
+
+            def wait_for_trace(fragment, label, *, request_id=None, seconds=timeout):
+                deadline = time.monotonic() + seconds
+                while True:
+                    lines = tuple(client.stderr_lines)
+                    if any(
+                        fragment in line and (request_id is None or request_id in line)
+                        for line in lines
+                    ):
+                        return
+                    if time.monotonic() >= deadline or client.proc.poll() is not None:
+                        fail(label + "\n" + client._diagnostic_context())
+                    time.sleep(0.02)
+
             try:
                 update_id = client.send_request(
                     "tools/call",
@@ -3267,18 +3283,15 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                     }),
                     request_id=blocked_id,
                 )
-                deadline = time.monotonic() + timeout
-                while not any(
-                    "stdout write start kind=response" in line and blocked_id in line
-                    for line in client.stderr_lines
-                ):
-                    require(time.monotonic() < deadline, client._diagnostic_context())
-                    require(client.proc.poll() is None, client._diagnostic_context())
-                    time.sleep(0.02)
+                wait_for_trace(
+                    "stdout write start kind=response",
+                    "large terminal response did not reach its stdout write",
+                    request_id=blocked_id,
+                )
                 require(
                     not any(
                         "stdout write putStr done kind=response" in line and blocked_id in line
-                        for line in client.stderr_lines
+                        for line in tuple(client.stderr_lines)
                     ),
                     "large terminal response did not block in the unread pipe",
                 )
@@ -3299,14 +3312,11 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                     }),
                     request_id=waiting_id,
                 )
-                deadline = time.monotonic() + timeout
-                while not any(
-                    "terminal response ready" in line and waiting_id in line
-                    for line in client.stderr_lines
-                ):
-                    require(time.monotonic() < deadline, client._diagnostic_context())
-                    require(client.proc.poll() is None, client._diagnostic_context())
-                    time.sleep(0.02)
+                wait_for_trace(
+                    "terminal response ready",
+                    "second terminal response did not reach the output lock",
+                    request_id=waiting_id,
+                )
                 if queued_drop:
                     client.send_request(
                         "tools/call",
@@ -3316,23 +3326,41 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                         }),
                         request_id=drop_id,
                     )
-                client.close_input()
-                deadline = time.monotonic() + min(timeout, 10)
-                while not any("runtime close finished" in line for line in client.stderr_lines):
-                    require(
-                        time.monotonic() < deadline,
-                        "EOF runtime cleanup waited for blocked terminal output\n"
-                        + client._diagnostic_context(),
+                    marker_literal = json.dumps(str(queued_marker), ensure_ascii=False)
+                    (project_root / "QueuedAfterDrop.lean").write_text(
+                        "import Lean\nrun_cmd do\n"
+                        f'  IO.FS.writeFile {marker_literal} "executed\\n"\n',
+                        encoding="utf-8",
                     )
-                    time.sleep(0.02)
+                    queued_params = with_modern_metadata({
+                        "name": "lean_sync",
+                        "arguments": {"path": "QueuedAfterDrop.lean"},
+                    })
+                    client.send_request(
+                        "tools/call",
+                        queued_params,
+                        request_id=cancelled_id,
+                    )
+                client.close_input()
+                wait_for_trace(
+                    "runtime close finished",
+                    "EOF runtime cleanup waited for blocked terminal output",
+                    seconds=min(timeout, 10),
+                )
                 require(not process_is_running(pid), "runtime close left its file worker running")
+                require(not queued_marker.exists(), "EOF sync queued behind eviction executed")
 
                 # Only now consume output. The in-flight frame and the response-order fence must
                 # remain valid; the queued non-cancellable drop must still commit after EOF.
                 client.start_stdout_reader()
-                require(client.wait_for_exit_after_eof(timeout) == 0, client._diagnostic_context())
+                if client.wait_for_exit_after_eof(timeout) != 0:
+                    fail(client._diagnostic_context())
                 client.stdout_thread.join(timeout=timeout)
                 require(not client.stdout_thread.is_alive(), "response reader did not finish")
+                if queued_drop:
+                    require(not queued_marker.exists(), "cancelled EOF sync executed during drain")
+                    require(not client.response_ready(cancelled_id), "cancelled EOF sync responded")
+                    client.forget_request(cancelled_id)
                 expected_ids = [blocked_id, waiting_id] + ([drop_id] if queued_drop else [])
                 require(
                     list(client.responses) == [request_id_key(key) for key in expected_ids],
@@ -3348,6 +3376,19 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                     dropped = expect_result(client.read_response(drop_id))
                     require(dropped.get("isError") is not True, dropped)
                     require(dropped.get("structuredContent", {}).get("dropped") is True, dropped)
+                    # Prove the marker module is valid and observable when allowed to execute.
+                    control = McpClient(
+                        repo_root, project_root, timeout, label="queued-sync-positive-control"
+                    )
+                    try:
+                        result = expect_result(control.request("tools/call", queued_params))
+                        require(result.get("isError") is not True, result)
+                        require(
+                            queued_marker.read_text(encoding="utf-8") == "executed\n",
+                            "positive-control sync did not execute the marker module",
+                        )
+                    finally:
+                        control.close()
             finally:
                 if client.stdout_thread is None:
                     client.start_stdout_reader()

@@ -258,6 +258,8 @@ Keep these stdio invariants explicit:
 - ordinary calls may overlap; cache eviction is a full stream-order fence while stdin remains open
 - each admission has separate execution-cleanup and terminal-delivery completion signals; live
   control fences await delivery, while EOF switches them to execution cleanup before runtime close
+- EOF shutdown starts only once the reader observes it; protocol replies and admission errors
+  written on the reader can still block EOF observation, and in-work notifications can block cleanup
 - terminal delivery retains its own fence dependencies after EOF; execution cleanup resolves before
   waiting for those dependencies, so runtime close does not wait for serialized response writes
 - EOF marks cancellable admissions before waking control-fence waiters; admitted non-cancellable

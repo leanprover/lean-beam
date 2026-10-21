@@ -95,7 +95,7 @@ private structure InFlightRequest where
   cancellationPolicy : ClientCancellationPolicy
   state : Std.Mutex InFlightState
   executionDone : IO.Promise Unit
-  done : IO.Promise Unit
+  deliveryDone : IO.Promise Unit
 
 private structure RoutingState where
   nextBrokerId : Nat := 1
@@ -145,7 +145,7 @@ private def Coordinator.registerRequest
     cancellationPolicy
     state := ← Std.Mutex.new {}
     executionDone := ← IO.Promise.new
-    done := ← IO.Promise.new
+    deliveryDone := ← IO.Promise.new
   }
   coordinator.routing.atomically do
     let routing ← get
@@ -184,15 +184,6 @@ private def Coordinator.completeRequest
     modify fun routing =>
       { routing with admitted := routing.admitted.erase request.brokerId }
 
-private def resolvePromise (promise : IO.Promise Unit) : IO Unit := do
-  try
-    promise.resolve ()
-  catch _ =>
-    pure ()
-
-private def InFlightRequest.resolveDone (request : InFlightRequest) : IO Unit :=
-  resolvePromise request.done
-
 private def InFlightRequest.isActive (request : InFlightRequest) : IO Bool := do
   request.state.atomically do
     pure ((← get).phase == .active)
@@ -206,7 +197,7 @@ private def awaitPromise (label : String) (promise : IO.Promise Unit) : IO Unit 
 private def Coordinator.awaitRequestBoundary
     (coordinator : Coordinator)
     (request : InFlightRequest) : IO Unit := do
-  let some _ ← IO.waitAny [request.done.result?, coordinator.closing.result?]
+  let some _ ← IO.waitAny [request.deliveryDone.result?, coordinator.closing.result?]
     | throw <| IO.userError "MCP request boundary promise was dropped"
   let closing ← coordinator.routing.atomically do pure (← get).closing
   if closing then
@@ -214,7 +205,7 @@ private def Coordinator.awaitRequestBoundary
     awaitPromise "MCP closing admission" coordinator.closing
     awaitPromise s!"in-flight execution {request.id.label}" request.executionDone
   else
-    awaitPromise s!"in-flight delivery {request.id.label}" request.done
+    awaitPromise s!"in-flight delivery {request.id.label}" request.deliveryDone
 
 private def Coordinator.currentControlBarrier?
     (coordinator : Coordinator) : IO (Option InFlightRequest) := do
@@ -271,7 +262,7 @@ private def Coordinator.finishRequest
     (response : Json)
     (deliveryDependencies : Array (IO.Promise Unit) := #[]) : IO Unit := do
   -- Execution has released its broker admission before terminal output can block.
-  resolvePromise request.executionDone
+  request.executionDone.resolve ()
   try
     let sendResponse ← request.state.atomically do
       let current ← get
@@ -302,7 +293,7 @@ private def Coordinator.finishRequest
       try
         coordinator.completeRequest request
       finally
-        request.resolveDone
+        request.deliveryDone.resolve ()
 
 /-- Own one registered request through execution cleanup and terminal delivery. -/
 private def Coordinator.runOwnedRequest
@@ -395,7 +386,7 @@ private def Coordinator.beginClosing
       request.cancel
   finally
     -- Mark cancellable admissions before waking work queued behind a control fence.
-    resolvePromise coordinator.closing
+    coordinator.closing.resolve ()
   pure requests
 
 private def Coordinator.awaitRequests
@@ -495,7 +486,7 @@ private def Coordinator.spawnToolRequest
       return
   coordinator.spawnOwnedRequest req request
     (coordinator.toolRequestResponse opts req admitted parsedParams request barrier?)
-    (barrier?.toArray.map (·.done))
+    (barrier?.toArray.map (·.deliveryDone))
 
 private def Coordinator.handleControlToolRequest
     (coordinator : Coordinator)
@@ -542,7 +533,7 @@ private def Coordinator.handleControlToolRequest
               run reporter.initialProgress
             finally
               finishReporterSafely req reporter.finish
-      coordinator.spawnOwnedRequest req request work (fence.priorRequests.map (·.done))
+      coordinator.spawnOwnedRequest req request work (fence.priorRequests.map (·.deliveryDone))
 
 private def isWorkspaceControl : Except String CallToolParams → Bool
   | .ok params => params.name == .leanDropWorkspace

@@ -454,7 +454,10 @@ closed-output teardown, and rejects a proof handle carried across an MCP process
 blocks its writer, with another completed response waiting for the output lock. It checks successful
 runtime close and Lean file-worker termination before stdout reading resumes, both with and without
 an admitted workspace eviction queued behind those responses. Reading then resumes to check terminal
-response order and successful exit; the test does not require exit while stdout is blocked. The slow
+response order and successful exit. The eviction case also queues an ordinary sync request whose
+elaboration would write a marker: EOF must cancel it before execution, leaving no marker or response.
+A fresh MCP client then syncs that module to check that the marker fixture actually executes.
+The test does not require exit while stdout is blocked. The slow
 Beam suite runs
 `--scenario multi-toolchain-workspaces` after installing both fixture toolchains and verifies that
 one MCP process keeps both project-specific Lean sessions active.

@@ -175,14 +175,17 @@ dropping a workspace. Installation admission reads local metadata and paths, wit
 selector or compiler probes. Cancellation is checked around admission; rejected or cancelled reuse
 does not replace the retained runtime.
 
-Closing stdin or reaching EOF closes MCP request admission. The server cooperatively cancels active
-cancellable requests, waits for admitted executions and non-cancellable workspace evictions to
-finish, then closes the broker runtime and all remaining backend sessions. During this shutdown,
+Once the stdin reader observes EOF, the server closes MCP request admission, cooperatively cancels
+active cancellable requests, waits for admitted executions and non-cancellable workspace evictions
+to finish, then closes the broker runtime and all remaining backend sessions. During this shutdown,
 workspace-control execution fences preserve execution order without waiting for terminal response
 writes. Terminal responses retain their delivery dependencies across these fences after EOF.
-A completed execution's blocked terminal response therefore does not prevent backend teardown.
-This does not guarantee bounded process exit: synchronous stdout writes can remain blocked until
-the client reads or closes its pipe, and notifications emitted during execution can still block it.
+A completed worker's blocked terminal response therefore does not prevent backend teardown after
+EOF is observed. Protocol replies such as `ping` and some protocol or admission errors still write
+on the stdin reader itself. If one of these replies waits on blocked stdout, the reader cannot
+observe EOF until output resumes. Notifications emitted during execution can also block execution
+cleanup. Process exit has no fixed bound while synchronous stdout writes remain blocked; the client
+must read or close its pipe to release them.
 
 While stdin remains open, workspace-control fences wait for terminal response write attempts to
 finish, including failed writes. The server retires an exact request-ID admission before publishing
@@ -379,9 +382,12 @@ The server has one permanent stdin reader and one serialized stdout sink. Ordina
 overlap, and responses may arrive out of request order. Clients must correlate exact JSON-RPC IDs;
 string and numeric IDs are distinct.
 
-A request ID is owned from admission through terminal stdout flush. Reuse is valid in the modern
-family after that terminal point. A malformed second request using an ID that is still active is
-ignored so it cannot create two indistinguishable terminal responses for the same ID.
+A request ID routes to its exact admission until the server commits its terminal outcome, before
+publishing the response. The admission remains retained separately until its terminal write attempt
+finishes, so output ordering and cleanup still refer to that exact request generation. In the modern
+family, clients may safely reuse the ID after observing the response. A malformed second request
+using an ID that is still active is ignored so it cannot create two indistinguishable terminal
+responses for the same ID.
 
 The server never sends JSON-RPC requests to the client. Under the current protocol it emits only
 responses and request-related notifications. In particular, descriptor resolution never invokes
