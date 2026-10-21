@@ -188,6 +188,11 @@ Prefer the smallest command that matches the actual task:
   tactic position
 - use `lean-beam todo` when you want actionable items in a saved file range, such as sorries, holes,
   diagnostics, code actions, or incomplete proofs
+- for code actions, prefer a point inside the relevant tactic, hole, or diagnostic:
+  `lean-beam todo <file> <version> <line> <character> <line> <character> --kind code_action`.
+  A range wholly within one command can also be useful. Lean selects one command snapshot using
+  the range end; broad ranges do not scan every command for actions. An empty result reports only
+  that no code actions were returned for that query.
 - use `lean-beam run-at` when you want to try one speculative Lean snippet without editing the file
 - for a tactic replacement, probe at its first character after indentation to use its before-state;
   positions inside a simple tactic can use its after-state

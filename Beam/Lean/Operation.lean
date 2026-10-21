@@ -99,7 +99,7 @@ private def operationDescription : Operation → String
   | .documentSymbols => "List Lean document symbols for one synced file."
   | .workspaceSymbols => "Search Lean workspace symbols by query string."
   | .goals => "Inspect Lean goals before or after a file position."
-  | .todo => "Inspect agent-actionable Lean todo items in a file range."
+  | .todo => "Inspect agent-actionable Lean todo items in a file range. Code actions use one command snapshot selected by the range end; prefer a point inside the relevant syntax or a range within one command. An empty code-action result does not establish whole-range or whole-file completeness."
   | .codeActionResolve => "Resolve and return a Lean code action payload from the todo result. If it contains an LSP WorkspaceEdit, the client must apply it."
   | .runWith => "Speculatively continue from a stored handle without consuming the parent handle. The continuation remains speculative and is not persisted as source. To keep the result, first edit and save the Lean file so it contains the complete accepted source; only then call the sync operation."
   | .runWithLinear => "Speculatively continue from a stored handle and consume that handle on success or failure. The continuation remains speculative and is not persisted as source. To keep the result, first edit and save the Lean file so it contains the complete accepted source; only then call the sync operation."
