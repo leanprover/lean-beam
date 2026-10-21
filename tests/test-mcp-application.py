@@ -49,30 +49,34 @@ def main():
         stage(source)
         frontend = Path("libexec") / ("lean-beam-mcp" + EXE)
         source_executable = source / frontend
-        assert source_executable.stat().st_nlink == 1
+        source_links = source_executable.stat().st_nlink
+        assert source_links == 1, (source_executable, source_links)
         contents = source_executable.read_bytes()
         cache = directory / "cache/artifacts/mcp"
-        for state in ["fresh", "restored"]:
-            if state == "restored":
-                # Reproduce Lake's cache-first inode without touching the real build/cache.
+        for state in ["fresh", "simulated-cache-linked"]:
+            if state == "simulated-cache-linked":
+                # Model a cache-first inode, without running Lake's cache save/restore cycle.
                 cache.parent.mkdir(parents=True)
                 shutil.copy2(source_executable, cache)
                 source_executable.unlink()
                 os.link(cache, source_executable)
-                assert source_executable.stat().st_nlink == 2
+                source_links = source_executable.stat().st_nlink
+                assert source_links == 2, (state, source_executable, source_links)
             application = directory / state
             # Like construction, give the frontend and its private libraries independent files.
             # Darwin can otherwise resolve @loader_path against an executable's cache alias.
             shutil.copytree(source, application, ignore=shutil.ignore_patterns("runtimes"))
             executable = application / frontend
-            assert not executable.samefile(source_executable) and executable.stat().st_nlink == 1
+            assert not executable.samefile(source_executable), (state, executable, source_executable)
+            application_links = executable.stat().st_nlink
+            assert application_links == 1, (state, executable, application_links)
             # Discovery must work even when this application's installation cannot be admitted.
             (application / "manifest.json").unlink()
             check_discovery(executable, directory)
             assert not (application / "manifest.json").exists(), "discovery created an installation record"
             assert not (application / "runtimes").exists(), "discovery created target runtimes"
             assert source_executable.read_bytes() == contents, "application mutated its input"
-            if state == "restored":
+            if state == "simulated-cache-linked":
                 assert cache.read_bytes() == contents, "application mutated the cached input"
             print(f"MCP discovery without runtime admission passed: {state} input", flush=True)
 
