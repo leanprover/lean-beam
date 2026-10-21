@@ -335,6 +335,20 @@ which may be newer than the last live progress event. Keep these invariants exha
 `Beam.Broker.StreamMessage` and encode their exact wire behavior in `StreamContractTest`; do not
 promote this stream to an installed client API.
 
+Each TCP connection has one receive owner. Keep all framed reads on the same
+`Beam.Broker.Transport.Connection`, which retains unread bytes between frames; concurrent reads or
+raw socket reads would bypass that ownership. After a timeout, interruption, or framing error,
+discard the connection. A later receive does not resume a partially consumed frame. A completed
+socket read takes precedence over a stop check; buffered bytes check interruption and deadlines
+before consumption.
+
+The transport uses 4096-byte lookahead to amortize socket reads and polling waits across small
+frames. This is an internal tuning choice, independent of the frame-length limit and wire format.
+Large payloads still request their full remaining body. The cursor releases exhausted storage;
+lookahead bounds do not include the active payload or change the underlying polling interval.
+`beam-transport-test` covers framing, refill boundaries and pending-read cancellation without CLI
+or POSIX process fixtures, and runs in Fast and native platform qualification, including Windows.
+
 Lean/Lake root validation remains shared with the CLI. MCP descriptors use
 `Beam.Lean.Workspace.resolveRoot`, which requires absolute paths; ordinary `lean-beam` CLI paths use
 `resolveCliRoot`. The MCP executable itself has no startup-root option.

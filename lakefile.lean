@@ -262,6 +262,10 @@ lean_exe "beam-broker-open-docs-test" where
   srcDir := "tests/lean"
   root := `BeamTest.Broker.OpenDocsTest
 
+lean_exe "beam-transport-test" where
+  srcDir := "tests/lean"
+  root := `BeamTest.Broker.TransportTest
+
 lean_exe "beam-cli-daemon-test" where
   srcDir := "tests/lean"
   root := `BeamTest.Broker.CliDaemonTest

@@ -168,6 +168,7 @@ Additional Beam lanes:
 Current Beam coverage includes:
 
 - fast Beam daemon smoke, broker stream ordering, save-stream, wrapper-readiness codec checks,
+  buffered TCP framing and receive cancellation,
   backend-startup failure with provisional backend cleanup, tracked-diagnostic dedup,
   exact broker request-handle lifetime, identity-matched daemon-generation probes, terminal shutdown
   response delivery, shutdown after the requesting TCP client resets its connection, protocol tests,
@@ -630,12 +631,16 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
 - `toolchains`: registry validation and compatibility-matrix generation as described above
 - `macos-platform`: the combined macOS job described above
 - `native-toolchain`: [tests/test-native-toolchain.py](../tests/test-native-toolchain.py), including
-  execution of the portable `beam-backend-process-test` on every native platform, including Windows
+  execution of the portable `beam-backend-process-test` and `beam-transport-test` on every native
+  platform, including Windows
 - `lsp`: [tests/test-lsp.sh](../tests/test-lsp.sh)
 - `beam-fast`: [tests/test-beam-fast.sh](../tests/test-beam-fast.sh)
   also executes `beam-backend-process-test`. Run it alone with
   `lake build beam-backend-process-test` followed by `.lake/build/bin/beam-backend-process-test`
   (`.exe` on Windows). Its controlled process operations require no POSIX commands or real PIDs.
+  The framing, refill and TCP cancellation tests run with
+  `lake build beam-transport-test` followed by `.lake/build/bin/beam-transport-test`
+  (`.exe` on Windows); both Fast and native qualification execute them under a 30-second watchdog.
 - `mcp-conformance`: [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh)
 - `mcp-modern`: [tests/test-mcp-modern-sdk.sh](../tests/test-mcp-modern-sdk.sh) followed by
   [tests/test-mcp-modern-conformance.sh](../tests/test-mcp-modern-conformance.sh)
