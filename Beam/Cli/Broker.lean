@@ -373,8 +373,6 @@ private def requestBrokerResponseWithProgress
     (showProgress : Bool) : IO WrapperBrokerResponse := do
   let req ← prepareWrapperBrokerRequest client req
   let visibleClientRequestId? := req.clientRequestId?
-  if showProgress then
-    IO.eprintln <| annotateRequestMessage visibleClientRequestId? spec.startMsg
   let callbacks : StreamCallbacks := {
     onFileProgress := fun progress => do
       if showProgress then
@@ -384,7 +382,9 @@ private def requestBrokerResponseWithProgress
   }
   let waitMessage? := if showProgress then some spec.stillWaitingMsg else none
   let response ← withBrokerErrorContext root client do
-    withRequestInterruptWatcher fun watcher =>
+    withRequestInterruptWatcher fun watcher => do
+      if showProgress then
+        IO.eprintln <| annotateRequestMessage visibleClientRequestId? spec.startMsg
       awaitBrokerResponseWithInterrupts watcher client.endpoint client.identity req
         visibleClientRequestId? waitMessage? callbacks
   pure { response, visibleClientRequestId? }

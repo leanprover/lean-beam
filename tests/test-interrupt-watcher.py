@@ -86,6 +86,34 @@ class InterruptWatcherTest(unittest.TestCase):
         self.assertEqual(result.stdout, "", "cancelled owner published readiness")
         self.assertIn("Beam request interrupted", result.stderr)
 
+    @unittest.skipIf(sys.platform == "win32", "requires POSIX signal delivery")
+    def test_initial_progress_has_an_active_interrupt_watcher(self):
+        # Gate the actual rendering boundary, so the signal cannot miss the startup window.
+        # A listening socket keeps any connection racing signal delivery pending until cancellation.
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            with subprocess.Popen(
+                [str(self.binary.resolve()), "--blocked-output", "progress-start",
+                 str(listener.getsockname()[1])],
+                cwd=REPO_ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env=dict(os.environ, BEAM_PROGRESS="1"),
+            ) as child:
+                try:
+                    self.assertTrue(select.select([child.stdout], [], [], 5)[0],
+                                    "request did not reach its initial progress write")
+                    self.assertEqual(child.stdout.readline(), b"progress start reached\n")
+                    child.send_signal(signal.SIGINT)
+                    stdout, stderr = child.communicate(input=b"release\n", timeout=5)
+                    self.assertEqual(stdout, b"", stderr)
+                    self.assertNotEqual(child.returncode, 0, stderr)
+                    self.assertIn(b"interrupting broker request", stderr)
+                    self.assertIn(b"Beam request interrupted", stderr)
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                    child.wait(timeout=5)
+
     def check_blocked_output(self, stream, termination, *, repeat=False):
         """A real request must remain terminable when its output consumer stops reading."""
         errors = []

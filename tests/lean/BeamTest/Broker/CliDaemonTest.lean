@@ -1445,6 +1445,22 @@ def blockedOutput (stream : String) (port : UInt16) : IO Unit := do
   let root : System.FilePath := "/tmp"
   let client := projectDaemonClientForTest (.tcp port) root
   match stream with
+  | "progress-start" =>
+      let stderr ← IO.getStderr
+      let firstWrite ← IO.mkRef true
+      let gatedStderr := { stderr with putStr := fun text => do
+        if ← firstWrite.get then
+          firstWrite.set false
+          IO.println "progress start reached"
+          (← IO.getStdout).flush
+          -- The parent sends SIGINT before releasing the first progress write.
+          unless (← (← IO.getStdin).getLine) == "release\n" do
+            throw <| IO.userError "progress start gate was not released"
+        stderr.putStr text
+      }
+      IO.withStderr gatedStderr <|
+        Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
+          (Beam.Cli.syncWaitSpec "Main.lean")
   | "stdout" => Beam.Cli.callBroker root client Beam.Broker.Request.stats
   | "stdout-progress" | "stderr" =>
       Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
