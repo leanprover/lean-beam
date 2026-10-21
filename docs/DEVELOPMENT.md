@@ -805,6 +805,21 @@ Install manifests name fixed companions and complete targets through the shared 
 [Beam/Installation/Components.lean](../Beam/Installation/Components.lean), with references into one
 artifact inventory. The current formats and rejection of earlier incomplete records are documented
 in [COMPATIBILITY.md](COMPATIBILITY.md).
+
+Read-only client inspection is implemented by
+[Beam/Cli/ClientDoctor.lean](../Beam/Cli/ClientDoctor.lean). Its `Types` module owns the typed report
+and diagnostic exit status; `Locations` describes client-specific file candidates; `Parse` uses
+Lake's in-process TOML parser and the Lean JSON parser with JSONC comment/trailing-comma handling;
+`Inspect` reads bounded regular files, extracts Beam registrations, and reuses install metadata
+classification. Typed source roles drive config selection independently of display labels. MCP and
+skill states are recorded during inspection; rendering does not reconstruct state from finding
+codes. Human and JSON output share the typed report. Client config contents and parser/IO
+exception text are never used as diagnostic display strings. Client inspection does not source the
+shell installer or invoke client CLIs. The shell wrappers remain launchers and the installer
+retains ownership of config writes. Location formulas intentionally mirror the shell installer;
+keep their small cross-language contract covered by fake-home tests rather than introducing a
+second public location-query command or requiring a built CLI before installer prompts.
+
 Keep [Beam/Cli.lean](../Beam/Cli.lean) as the executable entry point: parse top-level options,
 select the installation adapter, and delegate to `runCommand`. Adapter selection does not validate
 a runtime. Runtime resolution happens at its consumer, after private control-directory validation

@@ -212,6 +212,22 @@ Current Beam coverage includes:
 - MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, installed smoke, released
   official-client interoperability, and external legacy/modern conformance coverage
 
+Read-only client inspection is covered by
+[tests/test-client-doctor.py](../tests/test-client-doctor.py), run by `tests/test-beam-fast.sh` after
+staging the shared installed test runtime. It exercises all five clients through the public wrapper with fake homes,
+installer home overrides, JSON/TOML/JSONC input, partial config layers, disabled registrations,
+installed-runtime metadata, cached Pi package manifests, OpenCode merging, compact/verbose output,
+and diagnostic exit codes. Filesystem snapshots detect writes,
+executable sentinels detect configured/client/toolchain command launches, and secret sentinels
+detect config or exception-text disclosure. For a direct run, build `Beam.LSP:shared`, `beam-cli`,
+`beam-daemon`, `lean-beam-mcp`, and `beam-installation-stage-fixture` first, then run
+`python3 tests/test-client-doctor.py`. It stages one same-compiler installation unless
+`BEAM_TEST_INSTALLATION` names an existing one. The install suite also runs
+[tests/test-client-doctor-installed.py](../tests/test-client-doctor-installed.py) against the published
+CLI after installing all five Lean skills and registering Codex, Claude, and Vibe MCP servers. It
+also repeats OpenCode skill installation and discovery with `XDG_CONFIG_HOME` set and
+`OPENCODE_CONFIG_DIR` unset, to catch drift between shell and Lean defaults.
+
 Run the Beam surface when the change touches broker protocol or transport, request/progress/diagnostics streams, daemon session or restart logic, wrapper CLI behavior, installation lookup or construction, install layout, `doctor`, save replay, save barriers, and MCP.
 
 For save-only work, use [tests/test-beam-save-olean.sh](../tests/test-beam-save-olean.sh) as the

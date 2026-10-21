@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Lean
 import Beam.Cli.Args
 import Beam.Cli.Broker
+import Beam.Cli.ClientDoctor
 import Beam.Cli.DaemonManager
 import Beam.Cli.Feedback
 import Beam.Cli.Info
@@ -231,9 +232,7 @@ private def sessionStatus (opts : CliOptions) : IO Unit := do
           (some blocker.statusDetail)
   printResponse <| Response.success (toJson result)
 
-def runCommand (installation : Installation) (opts : CliOptions) : IO Unit := do
-  IO.ofExcept <| (installation.admitCommand opts.args).mapError
-    (IO.userError ∘ CommandRejection.message)
+private def runCommandAction (installation : Installation) (opts : CliOptions) : IO Unit := do
   let home := installation.home
   let runtime := installation.runtime
   match opts.args with
@@ -407,5 +406,13 @@ def runCommand (installation : Installation) (opts : CliOptions) : IO Unit := do
       recoverProjectSession runtime opts args
   | _ =>
       throw <| IO.userError installation.usage
+
+/-- Dispatch commands with a diagnostic exit status without terminating the process inside helpers. -/
+def runCommand (installation : Installation) (opts : CliOptions) : IO UInt32 := do
+  IO.ofExcept <| (installation.admitCommand opts.args).mapError
+    (IO.userError ∘ CommandRejection.message)
+  match opts.args with
+  | "doctor" :: "clients" :: args => ClientDoctor.command opts args
+  | _ => runCommandAction installation opts; return 0
 
 end Beam.Cli
