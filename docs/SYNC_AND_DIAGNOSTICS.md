@@ -246,10 +246,12 @@ not an installed command-line interface or a supported machine protocol. Maintai
 ordering and correlation contract in the broker stream tests and
 [development guidance](DEVELOPMENT.md#internal-broker-stream-contract).
 
-The selected root chooses a workspace runtime; it is not a filesystem authorization boundary.
-Relative paths resolve below that root, while absolute paths may identify dependency sources. Beam
-can also execute Lean metaprogramming with IO, so callers that require filesystem isolation must
-sandbox the owner process itself.
+The selected root chooses a workspace runtime and bounds document admission. Relative and absolute
+paths must resolve inside its canonical root; symlink escapes are rejected before reading source
+contents or starting a document worker. To open an external file, select a workspace containing it.
+Normal Lean imports and navigation results remain available across that boundary. Lean
+metaprogramming can perform IO, so callers requiring OS filesystem isolation must sandbox the owner
+process itself.
 
 The wrapper's final stdout object may echo a caller-supplied `BEAM_REQUEST_ID` as a presentation
 convenience; internally generated cancellation IDs remain hidden. This decoration is not part of

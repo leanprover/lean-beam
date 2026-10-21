@@ -1527,6 +1527,55 @@ private def checkRuntimeAdmissionPolicy : IO Unit := do
     state.closeRuntime
     if ← parent.pathExists then IO.FS.removeDirAll parent
 
+private def checkDocumentAdmission : IO Unit := do
+  let base ← mkTempProjectRoot "lean-beam-mcp-document-admission"
+  let root := base / "workspace"
+  let outside := base / "Other.lean"
+  let state ← Beam.Mcp.Server.ServerState.create
+  try
+    IO.FS.createDirAll root
+    IO.FS.writeFile (root / "lean-toolchain") "fixture\n"
+    IO.FS.writeFile outside "def outsideFixture := 1\n"
+    let canonicalRoot ← Beam.resolveExistingPath root
+    let canonicalOutside ← Beam.resolveExistingPath outside
+    let opts : Beam.Mcp.Server.Options := {
+      resolveRuntime := fun _ _ => pure <| .ok {
+        command := (root / "must-not-start").toString
+        plugin := root / "must-not-load"
+        daemonBin := root / "must-not-run-helper"
+        toolchain := "admission fixture", identity := ⟨root, "admission fixture"⟩
+      }
+      admitRuntime := fun _ _ _ => pure (.ok ())
+    }
+    let notifications : Beam.Mcp.Server.NotificationSink := { send := fun _ => pure () }
+    initMcpSession state opts notifications
+    for (id, tool, fields) in #[
+        (2, "lean_sync", []),
+        (3, "lean_run_at", [("version", toJson (1 : Nat)), ("line", toJson (0 : Nat)),
+          ("character", toJson (0 : Nat)), ("text", toJson "#check Nat")])
+      ] do
+      let response ← handleRpcRequestWithNotifications state opts notifications
+        "external document admission" id "tools/call" <| some <| toolCallParams tool <|
+          withWorkspace root <| Json.mkObj (("path", toJson outside.toString) :: fields)
+      let result ← requireObjVal "external document response" "result" response
+      requireJsonBool "external document result" "isError" true result
+      let error ← requireObjVal "external document result" "structuredContent" result
+      requireJsonString "external document failure" "code" "invalidParams" error
+      requireJsonString "external document failure" "message"
+        s!"document '{canonicalOutside}' resolves outside workspace root '{canonicalRoot}'; select a workspace containing the document"
+        error
+    let workspaceId := (Beam.Workspace.Descriptor.ofRoot canonicalRoot).cacheKey
+    let workspaces ← legacyStatsWorkspaces state opts notifications "external document stats" 4
+    let stats ← requireObjVal "external document stats" workspaceId workspaces
+    let session ← requireObjVal "external document stats" "session" stats
+    requireJsonBool "external document session" "active" false session
+    let metrics ← requireObjVal "external document stats" "metrics" stats
+    require "MCP rejection starts no backend session"
+      ((← IO.ofExcept <| metrics.getObjValAs? Nat "sessionStarts") == 0)
+  finally
+    try state.closeRuntime
+    finally IO.FS.removeDirAll base
+
 private def checkIdempotentLifecycleTools : IO Unit := do
   let root ← mkTempProjectRoot "lean-beam-mcp-idempotent-lifecycle"
   let state ← Beam.Mcp.Server.ServerState.create
@@ -1762,6 +1811,7 @@ def main (args : List String) : IO Unit := do
   checkModernProtocol
   checkServerBasics
   checkRuntimeAdmissionPolicy
+  checkDocumentAdmission
   checkIdempotentLifecycleTools
   BeamTest.Broker.McpDropFailureTest.run
   checkDiagnosticLogForwarding

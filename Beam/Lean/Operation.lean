@@ -130,7 +130,8 @@ def Operation.description (operation : Operation) (syncOperation : String := "th
       (if executesSuppliedLeanText operation then [speculativeCaveat] else [])
 
 private def pathField : String × Json :=
-  ("path", Beam.JsonSchema.string "Lean file path, absolute or relative to the project root.")
+  ("path", Beam.JsonSchema.string
+    "Lean file path, absolute or relative, resolving inside the workspace root.")
 
 private def versionField : String × Json :=
   ("version", Beam.JsonSchema.natural "Document version returned by a successful update or sync operation for this file.")

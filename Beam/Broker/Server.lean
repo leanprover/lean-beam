@@ -1544,16 +1544,24 @@ private def ServerRuntime.withRequestSessionState
 
 /-- One bracket owns admission and cleanup across every document handler and asynchronous wait. -/
 private def withDocumentAdmission (server : ServerRuntime) (req : WorkspaceRequest)
-    (path? : Option String)
+    (payload : RequestPayload)
     (act : WorkspaceRequest → IO Response) : IO Response := do
-  let some path := path? | return ← act req
+  let some path := payload.documentPath? | return ← act req
   match ← ensureRequestNotCancelled req.cancelRef? with
   | .error failure => return failure.toResponse
   | .ok () => pure ()
   let root? ← server.withState do
     pure <| (getWorkspace? (← get) req.workspaceId).map (·.config.root)
   let some root := root? | return (requestWorkspaceChangedFailure req).toResponse
+  -- Plain close only cleans up tracked state, including after the source has disappeared.
+  let cleanupOnly := match payload with
+    | .close request => !request.saveArtifacts?.getD false
+    | _ => false
+  let root ← if cleanupOnly then pure root else resolveRoot root
   let path ← resolveDocumentPath root path
+  unless cleanupOnly || Beam.isCanonicalPathWithinRoot root path do
+    return (responseFailureFor .invalidParams
+      s!"document '{path}' resolves outside workspace root '{root}'; select a workspace containing the document").toResponse
   let admitted ← server.withRequestSessionState req do
     let some workspace := getWorkspace? (← get) req.workspaceId
       | return .error <| requestWorkspaceChangedFailure req
@@ -1825,7 +1833,8 @@ private def startTrackedDiagnosticsBarrierIO
     (diagnosticScope : DiagnosticScope := .errors)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
     (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none)
-    (reserveClose : Bool := false) :
+    (reserveClose : Bool := false)
+    (refresh : Bool := false) :
     IO (Except ResponseFailure StartedTrackedBarrier) := do
   let snapshot ←
     match ← readRequestSyncSnapshot server req with
@@ -1836,6 +1845,9 @@ private def startTrackedDiagnosticsBarrierIO
       let session ← match ← ensureSession req.workspaceId req.cancelRef? with
         | .error failure => return .error failure
         | .ok session => pure session
+      if refresh then
+        if let .error failure ← fenceDocument req then return .error failure
+      let session ← if refresh then closeFile session snapshot.uri else pure session
       let synced ← syncFileSnapshotDetailed session snapshot
       let session := synced.session
       let uri := synced.uri
@@ -2217,12 +2229,13 @@ private def handleSyncFileOp
     (req : WorkspaceRequest)
     (request : SyncFileRequest)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
-    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) :
+    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none)
+    (refresh : Bool := false) :
     HandlerM Response := do
   liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
   let diagnosticScope := request.diagnosticScope?.getD .errors
   let started ← liftFailureIO <| startTrackedDiagnosticsBarrierIO server req diagnosticScope
-    emitProgress? emitDiagnostic?
+    emitProgress? emitDiagnostic? (refresh := refresh)
   liftHandlerIO <| traceBroker
     s!"sync_file await barrier clientRequestId={optionLabel req.clientRequestId?} uri={started.document.uri} version={started.document.version}"
   liftHandlerIO <| propagatePendingCancellation started.document.session started.pending
@@ -2278,17 +2291,6 @@ private def closeTrackedFileIfOpen
         updateSession session
         pure (.ok ())
     | none => pure (.ok ())
-
-private def handleRefreshFileOp
-    (server : ServerRuntime)
-    (req : WorkspaceRequest)
-    (request : SyncFileRequest)
-    (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
-    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) :
-    HandlerM Response := do
-  liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
-  closeTrackedFileIfOpen server req
-  handleSyncFileOp server req request emitProgress? emitDiagnostic?
 
 private def handleUpdateFileOp
     (server : ServerRuntime)
@@ -2720,7 +2722,7 @@ private def handleRequestIO
       match ← validateRequestWorkspace server req cancelRef? with
       | .error failure => pure failure.toResponse
       | .ok workspaceReq =>
-          withDocumentAdmission server workspaceReq payload.documentPath? fun workspaceReq => do
+          withDocumentAdmission server workspaceReq payload fun workspaceReq => do
             if payload.op.usesSession then
               match ← admitWorkspaceUse server workspaceReq with
               | .error failure => return failure.toResponse
@@ -2752,7 +2754,8 @@ private def handleRequestIO
                   handleSyncFileOp server workspaceReq request emitProgress? emitDiagnostic?
             | .refreshFile request =>
                 runHandler <|
-                  handleRefreshFileOp server workspaceReq request emitProgress? emitDiagnostic?
+                  handleSyncFileOp server workspaceReq request emitProgress? emitDiagnostic?
+                    (refresh := true)
             | .close request =>
                 runHandler <|
                   handleCloseOp server workspaceReq request emitProgress? emitDiagnostic?

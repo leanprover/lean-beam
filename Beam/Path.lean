@@ -45,11 +45,12 @@ partial def resolvePathForCreation (path : System.FilePath) : IO System.FilePath
 def resolvePathAgainstRoot (root path : System.FilePath) : IO System.FilePath :=
   resolveExistingPath <| if path.isAbsolute then path else root / path
 
+private def canonicalPathKey (path : System.FilePath) : String :=
+  if System.Platform.isWindows then path.normalize.toString.toLower else path.toString
+
 /-- Compare already canonical recorded paths without consulting the filesystem, including cleanup. -/
 def sameCanonicalPath (left right : System.FilePath) : Bool :=
-  let key := fun (path : System.FilePath) =>
-    if System.Platform.isWindows then path.normalize.toString.toLower else path.toString
-  key left == key right
+  canonicalPathKey left == canonicalPathKey right
 
 /--
 Compare two filesystem paths after resolving their canonical spelling.
@@ -84,6 +85,16 @@ def pathRelativeToRoot? (root path : System.FilePath) : Option String := do
     some <| (pathStr.drop rootPrefix.length).toString
   else
     none
+
+/--
+Check containment of already canonical paths using the same platform identity as `sameCanonicalPath`.
+
+Resolve filesystem aliases before calling this function. The comparison does not change the path
+spelling retained for document identity or display.
+-/
+def isCanonicalPathWithinRoot (root path : System.FilePath) : Bool :=
+  (pathRelativeToRoot? (System.FilePath.mk <| canonicalPathKey root)
+    (System.FilePath.mk <| canonicalPathKey path)).isSome
 
 /--
 Return `path` relative to `root` when possible, otherwise return the original path spelling.
