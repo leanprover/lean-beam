@@ -204,7 +204,9 @@ not detect this configuration drift, so reusing a running session after such an 
 When Lean explicitly replies with `workerExited` or `workerCrashed`, Beam records the first error
 only for the session and accepted document revision that owned the request. Caller cancellation
 can change the returned error to `requestCancelled`; it does not erase the observed worker failure.
-Late replies cannot mark a replacement document or session as failed.
+Late replies cannot mark a replacement document or session as failed. This also applies when an
+ordinary source update was accepted before the error was recorded: the newer revision requires
+its own explicit error before Beam marks it as failed, even if it used the same worker.
 
 Ordinary operations on that failed document return its recorded worker error without dispatching
 another request to Lean. A fresh `update` or `sync` closes and reopens that document, using the
@@ -217,6 +219,11 @@ version and invalidates the checkpoint as usual. An update that reopens the work
 The internal broker's `open_docs` entry includes `workerError` while the failure is recorded and
 omits obsolete `fileProgress`. Its `checkpointed` field still describes the saved source/artifacts,
 not the health of the current worker. Worker recovery does not rewrite checkpoint artifacts.
+
+Recording one worker error does not supply replies for other already-dispatched requests. With an
+older Lean watchdog, those requests may remain pending until Lean replies or a fresh sync/refresh
+closes the old worker and releases its queued replies. Reliable completion of those queued requests
+requires the upstream routing correction.
 
 This behavior requires an explicit worker-error response. Generic fatal file progress also occurs
 for validly running workers with fatal elaboration diagnostics and is not evidence of worker exit.

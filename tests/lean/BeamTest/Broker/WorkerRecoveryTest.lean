@@ -30,6 +30,12 @@ private def session (server : ServerRuntime) : IO Session :=
 private def doc (server : ServerRuntime) (uri : String) : IO DocState := do
   DocumentState.requireDocState (← session server).docs uri
 
+private def waitUntil (label : String) (ready : IO Bool) : IO Unit := do
+  let deadline := (← IO.monoMsNow) + 20000
+  while !(← ready) do
+    require s!"{label} did not reach its gate" ((← IO.monoMsNow) < deadline)
+    IO.sleep 10
+
 private def runCase (description : Beam.Runtime.Description) (root : System.FilePath)
     (code : JsonRpc.ErrorCode) (cancelled useUpdate : Bool) : IO Unit := do
   IO.FS.createDirAll root
@@ -187,8 +193,13 @@ private def runRealExit (description : Beam.Runtime.Description) (root : System.
   finally
     server.close
 
+private inductive Replacement where
+  | reopen
+  | workspace
+  | change
+
 private def runLateError (description : Beam.Runtime.Description) (root : System.FilePath)
-    (replaceWorkspace : Bool) : IO Unit := do
+    (replacement : Replacement) : IO Unit := do
   IO.FS.createDirAll root
   IO.FS.writeFile (root / "Main.lean") "def mainValue : Nat := 42\n"
   let config := BrokerConfig.ofRuntime root description
@@ -217,20 +228,20 @@ private def runLateError (description : Beam.Runtime.Description) (root : System
       path := "Main.lean", version := 1, line := 0, character := 0, text := "#check Nat"
     })
     try
-      let deadline := (← IO.monoMsNow) + 20000
-      let mut pending? ← held.get
-      while pending?.isNone do
-        require "late-error request did not reach its gate" ((← IO.monoMsNow) < deadline)
-        IO.sleep 10
-        pending? ← held.get
-      let some pending := pending? | throw <| IO.userError "missing gated worker request"
-      if replaceWorkspace then
+      waitUntil "late-error request" ((·.isSome) <$> held.get)
+      let some pending ← held.get | throw <| IO.userError "missing gated worker request"
+      match replacement with
+      | .workspace =>
         match ← server.initWorkspaceWithConfig workspaceId config (some .reset) with
         | .ok _ => pure ()
         | .error failure => throw <| IO.userError failure.error.message
         discard <| result (← call server (.syncFile { path := "Main.lean" }))
-      else
+      | .reopen =>
         discard <| result (← call server (.refreshFile { path := "Main.lean" }))
+      | .change =>
+        -- Simulate a client saving new source while an older worker reply is withheld.
+        IO.FS.writeFile (root / "Main.lean") "def mainValue : Nat := 43\n"
+        discard <| result (← call server (.updateFile { path := "Main.lean" }))
       let uri := sessionUri (root / "Main.lean")
       let replacement ← doc server uri
       pending.resolveError .workerCrashed "late error from original worker"
@@ -251,6 +262,66 @@ private def runLateError (description : Beam.Runtime.Description) (root : System
   finally
     server.close
 
+/-- Recording one conclusive error does not fabricate replies for other in-flight requests.
+The controlled router releases the second reply on close, as an older watchdog may require. -/
+private def runQueuedReply (description : Beam.Runtime.Description) (root : System.FilePath) : IO Unit := do
+  IO.FS.createDirAll root
+  IO.FS.writeFile (root / "Main.lean") "def mainValue : Nat := 42\n"
+  let server ← ServerRuntime.create (BrokerConfig.ofRuntime root description) workspaceId
+  let held ← IO.mkRef (#[] : Array PendingRequest)
+  let tasks ← IO.mkRef (#[] : Array (Task (Except IO.Error Response)))
+  try
+    discard <| result (← call server (.syncFile { path := "Main.lean" }))
+    let original ← session server
+    server.withState do
+      let state ← get
+      let some workspace := state.workspaces.get? workspaceId
+        | throw <| IO.userError "missing queued-reply workspace"
+      let current := { original with stdin := { original.stdin with putStr := fun text => do
+        if text.contains runAtMethod && (← held.get).size < 2 then
+          let entries ← original.pending.snapshotEntries
+          require "queued-reply fixture expects one new pending request" (entries.size == 1)
+          let some (id, pending) := entries[0]?
+            | throw <| IO.userError "missing queued worker request"
+          discard <| original.pending.remove id
+          held.modify (·.push pending)
+          return
+        if text.contains "textDocument/didClose" then
+          if let some pending := (← held.get)[1]? then
+            pending.resolveError .contentModified "controlled old router reply on close"
+        original.stdin.putStr text
+      } }
+      set { state with workspaces := state.workspaces.insert workspaceId {
+        workspace with lean := { workspace.lean with session? := some current } } }
+    let payload : RequestPayload := .runAt {
+      path := "Main.lean", version := 1, line := 0, character := 0, text := "#check Nat"
+    }
+    let first ← IO.asTask (prio := .dedicated) <| call server payload
+    tasks.modify (·.push first)
+    waitUntil "first queued request" ((fun entries => entries.size == 1) <$> held.get)
+    let second ← IO.asTask (prio := .dedicated) <| call server payload
+    tasks.modify (·.push second)
+    waitUntil "second queued request" ((fun entries => entries.size == 2) <$> held.get)
+    let some pending := (← held.get)[0]? | throw <| IO.userError "missing first queued reply"
+    pending.resolveError .workerCrashed "controlled first worker error"
+    let failed ← IO.ofExcept first.get
+    require "first queued error reaches its caller"
+      (failed.error?.map (·.code) == some "workerCrashed")
+    let beforeRecovery ← Beam.waitTaskWithTimeout second 25
+    -- This is an observation of the current limitation, not a requirement that future
+    -- implementations leave it pending: only the controlled router has withheld a reply.
+    IO.println s!"worker recovery: second queued reply pending before recovery={beforeRecovery.isNone}"
+    discard <| result (← call server (.syncFile { path := "Main.lean" }))
+    let released ← IO.ofExcept second.get
+    require "queued request completes when its router supplies the close reply" released.error?.isSome
+    require "old queued reply does not invalidate the reopened document"
+      (← doc server (sessionUri (root / "Main.lean"))).workerError?.isNone
+  finally
+    for pending in ← held.get do
+      pending.resolveError .requestCancelled "release queued-reply fixture"
+    for task in ← tasks.get do discard <| IO.ofExcept task.get
+    server.close
+
 def run (description : Beam.Runtime.Description) (root : System.FilePath) : IO Unit := do
   for (name, code, cancelled, useUpdate) in [
       ("exited", JsonRpc.ErrorCode.workerExited, false, false),
@@ -260,9 +331,13 @@ def run (description : Beam.Runtime.Description) (root : System.FilePath) : IO U
     runCase description (root / name) code cancelled useUpdate
     IO.println s!"worker recovery: {name} passed"
   runRealExit description (root / "real-exit")
-  runLateError description (root / "late-document") false
+  runLateError description (root / "late-document") .reopen
   IO.println "worker recovery: late error after document reopening passed"
-  runLateError description (root / "late-workspace") true
+  runLateError description (root / "late-workspace") .workspace
   IO.println "worker recovery: late error after workspace replacement passed"
+  runLateError description (root / "late-change") .change
+  IO.println "worker recovery: late error after ordinary didChange passed"
+  runQueuedReply description (root / "queued-reply")
+  IO.println "worker recovery: withheld second reply released during recovery passed"
 
 end BeamTest.Broker.WorkerRecoveryTest
