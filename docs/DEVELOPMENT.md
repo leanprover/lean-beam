@@ -134,6 +134,8 @@ can remove only the attempt's backup paths on failure. Once every backup is prep
 can restore the complete original output set, including removing outputs recorded as originally
 absent. It needs no per-replacement progress journal. A failed restoration retains its backup;
 successful restoration also removes a backup left behind by a same-file rename.
+After publication commits, backup removal is best effort: a removal failure may leave backup
+files, but does not report the save as failed or prevent the broker from writing its Lake trace.
 
 ## Common Code Smells
 

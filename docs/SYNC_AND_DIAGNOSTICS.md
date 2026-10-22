@@ -119,8 +119,9 @@ configuration from `lakefile.lean` text and never batch-builds as part of `save`
 Before replacing checkpoint artifacts, Beam invalidates Lake's cached hashes for the outputs it
 writes so later incremental builds recheck their dependents. If publication fails, Beam attempts
 to restore the previous artifacts. Failed recovery reports both errors and retains the backups
-needed for recovery. These steps do not make the artifact family atomically visible or recover
-from process death.
+needed for recovery. After publication commits, backup cleanup is best effort; a cleanup failure
+may leave backup files without failing the save. These steps do not make the artifact family
+atomically visible or recover from process death.
 
 A snapshot with `compiler.postponeCompile` enabled, or with declarations still waiting for deferred
 compilation, is not a complete checkpoint. Its sync result has `readiness.saveReady: false` and

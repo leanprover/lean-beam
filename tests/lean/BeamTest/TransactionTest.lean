@@ -38,7 +38,8 @@ private def testCommit : IO Unit := do
   | .aborted .. => throw <| IO.userError "cleanup failure incorrectly aborted committed work"
   require "commit: wrong cleanup order or rollback ran" ((← events.get) == #[2, 1, 0])
 
-private def testAbort (fault : Fault) (changeState failRecovery : Bool) : IO Unit := do
+private def testAbort (fault : Fault) (changeState : Bool)
+    (expectedFailures : Array Nat) : IO Unit := do
   let state ← IO.mkRef (0 : Nat)
   let events ← IO.mkRef (#[] : Array Nat)
   let operation : EIO Fault Unit := do
@@ -48,12 +49,13 @@ private def testAbort (fault : Fault) (changeState failRecovery : Bool) : IO Uni
     state.set 0
     action events 0
   let outcome ← Beam.Transaction.run operation
-    (rollback := #[restore, action events 1 failRecovery, action events 2])
+    (rollback := #[restore, action events 1 (expectedFailures.contains 1),
+      action events 2 (expectedFailures.contains 2)])
     (cleanup := #[action events 99])
   match outcome with
   | .aborted error failures =>
       require "abort: lost original typed failure" (error == fault)
-      requireFailures "abort" failures (if failRecovery then #[1] else #[])
+      requireFailures "abort" failures expectedFailures
   | .committed .. => throw <| IO.userError "failed operation incorrectly committed"
   require "abort: rollback stopped early, ran out of order, or cleanup ran"
     ((← events.get) == #[2, 1, 0])
@@ -71,10 +73,11 @@ private def testEmpty : IO Unit := do
 /-- Recovery ordering and typed error preservation, independently of filesystem publication. -/
 def run : IO Unit := do
   testCommit
-  testAbort .operation false false
-  testAbort .operation true false
-  testAbort .operation true true
-  testAbort .cancelled true true
+  testAbort .operation false #[]
+  testAbort .operation true #[]
+  testAbort .operation true #[1]
+  testAbort .operation true #[2, 1]
+  testAbort .cancelled true #[2, 1]
   testEmpty
   IO.println "transaction scope tests passed"
 
