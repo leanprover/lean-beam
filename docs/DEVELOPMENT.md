@@ -755,9 +755,8 @@ coordinate on the same inode, while the kernel releases ownership when a process
 daemon control mutations use a bounded wait so a live but stuck wrapper process produces owner
 diagnostics instead of making another mutation wait silently; ordinary attachment does not take
 this lock.
-`BEAM_CONTROL_LOCK_TIMEOUT_MS` can shorten or lengthen that wait for local debugging. Bundle build
-locks intentionally keep the lower-level unbounded helper because another process may legitimately
-be compiling a helper bundle. The shell installer's `.install-lock` remains an atomic directory
+`BEAM_CONTROL_LOCK_TIMEOUT_MS` can shorten or lengthen that wait for local debugging.
+The shell installer's `.install-lock` remains an atomic directory
 compatibility boundary: it is never stale-reaped, and a crashed installer requires explicit
 operator recovery. Prune protects its owned directory before PID initialization and releases only
 the known PID file and empty lock directory. Unexpected contents remain untouched. Operation and
