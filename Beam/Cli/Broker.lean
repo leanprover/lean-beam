@@ -19,11 +19,20 @@ private def withBrokerErrorContext
     {α}
     (root : System.FilePath)
     (client : ProjectDaemonClient)
-    (action : IO (Except BrokerClientFailure α)) : IO α := do
+    (action : IO (Except BrokerClientFailure α))
+    (clientRequestId? : Option String := none) : CliM α := do
   match ← action with
   | .ok value => pure value
   | .error failure =>
-      throw <| IO.userError (← daemonFailureMessage root failure (some client.controlDir))
+      match failure with
+      | .interrupted => throw { CliFailure.cancelled with clientRequestId? }
+      | .streamCallback error => throw { CliFailure.internal error with clientRequestId? }
+      | _ =>
+          let message ← daemonFailureMessage root failure (some client.controlDir)
+          let code := match failure with
+            | .invalidResponse _ => "internalError"
+            | _ => "brokerUnavailable"
+          throw { CliFailure.make code message with clientRequestId? }
 
 structure BrokerWaitSpec where
   action : String
@@ -176,8 +185,6 @@ private def awaitBrokerResponseWithInterrupts
   finally
     stop.set true
     output.cancelOptional
-  if let .error .interrupted := result then
-    IO.eprintln <| annotateRequestMessage visibleClientRequestId? "beam: interrupting broker request"
   pure result
 
 private structure WrapperBrokerResponse where
@@ -189,10 +196,10 @@ private def requestBrokerResponseWithWatcher
     (root : System.FilePath)
     (client : ProjectDaemonClient)
     (req : Request)
-    (waitMessage? : Option (Nat → String) := none) : IO WrapperBrokerResponse := do
+    (waitMessage? : Option (Nat → String) := none) : CliM WrapperBrokerResponse := do
   let wrapperReq ← prepareWrapperBrokerRequest client req
   let visibleClientRequestId? := wrapperReq.clientRequestId?
-  let response ← withBrokerErrorContext root client do
+  let response ← withBrokerErrorContext root client (clientRequestId? := visibleClientRequestId?) do
     awaitBrokerResponseWithInterrupts watcher client.endpoint client.identity wrapperReq
       visibleClientRequestId? waitMessage?
   pure { response, visibleClientRequestId? }
@@ -200,35 +207,35 @@ private def requestBrokerResponseWithWatcher
 private def requestBrokerResponse
     (root : System.FilePath)
     (client : ProjectDaemonClient)
-    (req : Request) : IO WrapperBrokerResponse :=
-  withRequestInterruptWatcher fun watcher =>
-    requestBrokerResponseWithWatcher watcher root client req
+    (req : Request) : CliM WrapperBrokerResponse :=
+  ExceptT.mk <| withRequestInterruptWatcher fun watcher =>
+    (requestBrokerResponseWithWatcher watcher root client req).run
 
 /-- Send one wrapper request without printing or interpreting its response. -/
 def requestBroker
     (root : System.FilePath)
     (client : ProjectDaemonClient)
-    (req : Request) : IO Response := do
+    (req : Request) : CliM Response := do
   pure (← requestBrokerResponse root client req).response
 
 def callBroker
     (root : System.FilePath)
     (client : ProjectDaemonClient)
-    (req : Request) : IO Unit := do
+    (req : Request) : CliM Unit := do
   let result ← requestBrokerResponse root client req
+  failOnError result.response result.visibleClientRequestId?
   printResponse result.response result.visibleClientRequestId?
-  failOnError result.response
 
 /-- Prepare the owned session without printing its broker response as CLI readiness. -/
 def ensureProjectSession
     (watcher : InterruptWatcher)
     (root : System.FilePath)
-    (client : ProjectDaemonClient) : IO Unit := do
+    (client : ProjectDaemonClient) : CliM Unit := do
   let waitMessage? : Option (Nat → String) := if ← progressEnabled then
       some fun seconds => s!"beam: still preparing Lean workspace ({seconds}s)"
     else none
   let result ← requestBrokerResponseWithWatcher watcher root client Request.ensure waitMessage?
-  failOnError result.response
+  failOnError result.response result.visibleClientRequestId?
 
 private def syncReadinessSuffix (result : SyncFileResult) : String :=
   let readiness := result.readiness
@@ -430,13 +437,13 @@ private def requestBrokerResponseWithProgress
     (client : ProjectDaemonClient)
     (req : Request)
     (spec : BrokerWaitSpec)
-    (showProgress : Bool) : IO WrapperBrokerResponse := do
+    (showProgress : Bool) : CliM WrapperBrokerResponse := do
   let req ← prepareWrapperBrokerRequest client req
   let visibleClientRequestId? := req.clientRequestId?
   let formatProgress? := if showProgress then some spec.progressMsg else none
   let startMessage? := if showProgress then some spec.startMsg else none
   let waitMessage? := if showProgress then some spec.stillWaitingMsg else none
-  let response ← withBrokerErrorContext root client do
+  let response ← withBrokerErrorContext root client (clientRequestId? := visibleClientRequestId?) do
     withRequestInterruptWatcher fun watcher => do
       awaitBrokerResponseWithInterrupts watcher client.endpoint client.identity req
         visibleClientRequestId? waitMessage? formatProgress? true startMessage?
@@ -446,30 +453,27 @@ def callBrokerWithProgress
     (root : System.FilePath)
     (client : ProjectDaemonClient)
     (req : Request)
-    (spec : BrokerWaitSpec) : IO Unit := do
+    (spec : BrokerWaitSpec) : CliM Unit := do
   let showProgress ← progressEnabled
   let result ← requestBrokerResponseWithProgress root client req spec showProgress
   let resp := result.response
   let visibleClientRequestId? := result.visibleClientRequestId?
-  if showProgress then
-    IO.eprintln <| annotateRequestMessage visibleClientRequestId? (spec.completeMsg resp)
-  match responseErrorSummary? spec.action spec.failureBoundary resp with
-  | some note =>
-      IO.eprintln <| annotateRequestMessage visibleClientRequestId? note
-  | none =>
-      pure ()
-  match responseRecoveryHint? resp with
-  | some note =>
-      IO.eprintln <| annotateRequestMessage visibleClientRequestId? note
-  | none =>
-      pure ()
-  match spec.responseNote? resp with
-  | some note =>
-      IO.eprintln <| annotateRequestMessage visibleClientRequestId? note
-  | none =>
-      pure ()
-  maybeEmitLiteralBackslashNewlineHint visibleClientRequestId? req resp
+  if let .errorResult failure := resp then
+    let summary := (responseErrorSummary? spec.action spec.failureBoundary resp).getD failure.error.message
+    let hint := (responseRecoveryHint? resp).map ("; " ++ ·) |>.getD ""
+    throw { CliFailure.broker failure visibleClientRequestId? with
+      diagnostic? := some (summary ++ hint) }
+  -- Presentation failures cannot turn an already completed operation into a failed request.
+  let notes : IO Unit := do
+    if showProgress then
+      IO.eprintln <| annotateRequestMessage visibleClientRequestId? (spec.completeMsg resp)
+    match spec.responseNote? resp with
+    | some note =>
+        IO.eprintln <| annotateRequestMessage visibleClientRequestId? note
+    | none =>
+        pure ()
+    maybeEmitLiteralBackslashNewlineHint visibleClientRequestId? req resp
+  discard <| notes.toBaseIO
   printResponse resp visibleClientRequestId?
-  failOnError resp
 
 end Beam.Cli

@@ -18,9 +18,22 @@ private def _root_.Beam.Installation.admitControl (installation : Installation)
   unless Beam.sameCanonicalPath (System.FilePath.mk entry.installationRoot) installation.home do
     throw <| IO.userError s!"sessionInstallationMismatch: session belongs to Beam installation {entry.installationRoot}, not {installation.home}; use lean-beam from its owning installation or interrupt the original foreground owner. The owner and descriptor were preserved."
 
+private def installationFailure (failure : Beam.Installation.Failure) : CliFailure :=
+  match failure with
+  | .io error => .internal error
+  | _ => .setup failure.message
+
+private def runtimeFor (lookup : System.FilePath → IO (Except Beam.Installation.Failure Beam.Installation.RuntimeRef))
+    (root : System.FilePath) : CliM Beam.Runtime.Description := do
+  unless ← Beam.Project.hasLeanProject root do
+    throw <| .setup s!"could not resolve Lean project at {root}"
+  match ← lookup root with
+  | .ok reference => pure reference.description
+  | .error failure => throw <| installationFailure failure
+
 def _root_.Beam.Installation.runtime (installation : Installation) : RuntimeAccess := {
-  resolve := fun root => return { root, runtime := ← installation.projectRuntime root }
-  attachment := fun root => return (← installation.projectRuntime root).configHash root
+  resolve := fun root => return { root, runtime := ← runtimeFor installation.lookup root }
+  attachment := fun root => return (← runtimeFor installation.lookup root).configHash root
   control := installation.admitControl
 }
 
@@ -58,10 +71,10 @@ def compilerBuildInfo : Json := Json.mkObj [
 ]
 
 
-def _root_.Beam.Installation.doctorLines (installation : Installation) (root : System.FilePath) : IO (List String) := do
-  let observation ← IO.ofExcept <| (← installation.observe).mapError Installation.Failure.toIOError
+def _root_.Beam.Installation.doctorLines (installation : Installation) (root : System.FilePath) : CliM (List String) := do
+  let observation ← ExceptT.mk <| pure ((← installation.observe).mapError installationFailure)
   let identity := observation.identity { name := Beam.Version.cliName }
-  let runtime ← observation.projectRuntime root
+  let runtime ← runtimeFor observation.lookup root
   pure [
     "public command: lean-beam",
     s!"installation root: {installation.home}",

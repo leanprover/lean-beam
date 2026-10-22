@@ -1170,10 +1170,10 @@ private def finishOwnedProjectDaemon
             pure ()
 
 def withProjectDaemonOwner
-    (resolve : System.FilePath → IO DesiredConfig)
+    (resolve : System.FilePath → CliM DesiredConfig)
     (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none)
-    (act : ProjectDaemonOwner → IO α) : IO α := do
+    (act : ProjectDaemonOwner → CliM α) : CliM α := do
   let controlDir ← controlDirFor root explicitControlDir?
   -- Reject unsafe existing state before runtime selection, without creating session state for
   -- a rejected target. Acquisition below creates or revalidates the private directory.
@@ -1181,8 +1181,10 @@ def withProjectDaemonOwner
   let desired ← resolve root
   -- Allocate all fallible owner bookkeeping before the child and registry generation exist.
   let exitCodeRef ← IO.mkRef (none : Option UInt32)
-  let owned ← withProjectControl root (explicitControlDir? := some controlDir) fun control =>
-    startOwnedProjectDaemon control desired
+  let acquire : IO OwnedProjectDaemon :=
+    withProjectControl root (explicitControlDir? := some controlDir) fun control =>
+      startOwnedProjectDaemon control desired
+  let owned ← acquire
   try
     act {
       client := owned.client
@@ -1195,28 +1197,28 @@ def withProjectDaemonOwner
     finishOwnedProjectDaemon root controlDir owned exitCodeRef
 
 private def lookupProjectDaemon
-    (requirement : System.FilePath → IO String)
+    (requirement : System.FilePath → CliM String)
     (root : System.FilePath)
-    (explicitControlDir? : Option System.FilePath := none) : IO ProjectDaemonClient := do
+    (explicitControlDir? : Option System.FilePath := none) : CliM ProjectDaemonClient := do
   let control ← projectControl root explicitControlDir?
   match ← selectProjectControl root control with
   | .selected entry =>
       let expected ← requirement root
       unless entry.configHash == expected do
-        throw <| IO.userError <| configMismatchMessage root control.dir entry expected
+        throw <| CliFailure.setup <| configMismatchMessage root control.dir entry expected
       pure <| .ofSessionDescriptor entry control.dir
   | .absent =>
-      throw <| IO.userError (missingOwnerMessage root control.dir)
-  | .draining entry => throw <| IO.userError (drainingOwnerMessage root entry)
+      throw <| CliFailure.make "noLiveSession" (missingOwnerMessage root control.dir) 3
+  | .draining entry => throw <| CliFailure.setup (drainingOwnerMessage root entry)
   | .selectorMismatch entry =>
-      throw <| IO.userError <| sessionSelectorMismatchMessage root control.dir entry
+      throw <| CliFailure.setup <| sessionSelectorMismatchMessage root control.dir entry
   | .invalid problem =>
-      throw <| IO.userError <| (RegistryBlocker.invalid problem).message root control.dir
+      throw <| CliFailure.setup <| (RegistryBlocker.invalid problem).message root control.dir
 
 def withProjectDaemon
-    (requirement : System.FilePath → IO String)
+    (requirement : System.FilePath → CliM String)
     (root : System.FilePath)
-    (act : ProjectDaemonClient → IO α)
-    (explicitControlDir? : Option System.FilePath := none) : IO α := do
+    (act : ProjectDaemonClient → CliM α)
+    (explicitControlDir? : Option System.FilePath := none) : CliM α := do
   act (← lookupProjectDaemon requirement root explicitControlDir?)
 end Beam.Cli

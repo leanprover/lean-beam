@@ -90,10 +90,10 @@ def responseOutputJson (resp : Response) (clientRequestId? : Option String := no
 def printResponse (resp : Response) (clientRequestId? : Option String := none) : IO Unit := do
   IO.println <| Beam.orderedJsonPretty (responseOutputJson resp clientRequestId?)
 
-def failOnError (resp : Response) : IO Unit := do
+def failOnError (resp : Response) (clientRequestId? : Option String := none) : CliM Unit := do
   match resp with
   | .successResult .. => pure ()
-  | .errorResult failure => throw <| IO.userError failure.error.message
+  | .errorResult failure => throw <| CliFailure.broker failure clientRequestId?
 
 def printJsonLine (json : Json) : IO Unit := do
   IO.println <| Beam.orderedJsonPretty json
@@ -240,5 +240,24 @@ def syncFileProgressSuffix (progress? : Option SyncFileProgress) : String :=
   | none => ""
   | some progress =>
       s!", fp {SyncFileProgress.displayDetails progress (includeDoneTrue := false)}"
+
+def renderFailure (failure : CliFailure) : IO UInt32 := do
+  unless failure.responsePublished do
+    printResponse (.errorResult failure.failure) failure.clientRequestId?
+  let diagnostic := failure.diagnostic?.getD failure.failure.error.message
+  let diagnostic := String.intercalate "; " <|
+    (diagnostic.splitOn "\n").filter (fun line => !line.isEmpty)
+  let diagnostic := if diagnostic.startsWith "beam:" then diagnostic else "beam: " ++ diagnostic
+  IO.eprintln <| annotateRequestMessage failure.clientRequestId? diagnostic
+  if let some usage := failure.usage? then IO.eprintln usage
+  return failure.exitCode
+
+/-- Catch unexpected IO faults once; they are never reclassified as user input errors. -/
+def run (action : CliM Unit) : IO UInt32 := do
+  let outcome ← action.run.toBaseIO
+  match outcome with
+  | .ok (.ok ()) => pure 0
+  | .ok (.error failure) => renderFailure failure
+  | .error error => renderFailure (.internal error)
 
 end Beam.Cli

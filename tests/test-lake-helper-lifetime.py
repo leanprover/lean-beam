@@ -331,8 +331,11 @@ def through_cli(base, compiler, cli, dependency=None):
                         "normal stop must release the owner pipe and let the daemon exit gracefully"
                 elif scenario in signals:
                     owner.send_signal(signals[scenario])
-                    assert owner.wait(timeout=15) != 0, "interrupted cold serve reported success"
-                    assert stdout_path.stat().st_size == 0, "interrupted cold serve became ready"
+                    assert owner.wait(timeout=15) == 130, stderr_path.read_text(errors="replace")
+                    response = json.loads(stdout_path.read_text(encoding="utf-8"))
+                    assert response["ok"] is False, "interrupted cold serve became ready"
+                    assert response["error"]["code"] == "requestCancelled", response
+                    assert "uncaught exception:" not in stderr_path.read_text(errors="replace")
                     assert "forcing daemon termination" not in stderr_path.read_text(errors="replace"), \
                         "interruption must release the owner pipe and let the daemon exit gracefully"
                     assert invoke("status")["result"]["state"] == "absent", \

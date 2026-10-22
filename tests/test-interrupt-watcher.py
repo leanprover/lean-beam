@@ -82,8 +82,8 @@ class InterruptWatcherTest(unittest.TestCase):
             [str(self.binary.resolve()), "--interrupt-watcher", "owner-acquisition"],
             cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
         )
-        self.assertNotEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "", "cancelled owner published readiness")
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["error"]["code"], "requestCancelled")
         self.assertIn("Beam request interrupted", result.stderr)
 
     @unittest.skipIf(sys.platform == "win32", "requires POSIX signal delivery")
@@ -105,9 +105,8 @@ class InterruptWatcherTest(unittest.TestCase):
                     self.assertEqual(child.stdout.readline(), b"progress start reached\n")
                     child.send_signal(signal.SIGINT)
                     stdout, stderr = child.communicate(input=b"release\n", timeout=5)
-                    self.assertEqual(stdout, b"", stderr)
-                    self.assertNotEqual(child.returncode, 0, stderr)
-                    self.assertIn(b"interrupting broker request", stderr)
+                    self.assertEqual(json.loads(stdout)["error"]["code"], "requestCancelled")
+                    self.assertEqual(child.returncode, 130, stderr)
                     self.assertIn(b"Beam request interrupted", stderr)
                 finally:
                     if child.poll() is None:

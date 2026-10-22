@@ -155,10 +155,12 @@ reuse matching speculative execution rather than replaying it from scratch. Beam
 apply the source edit.
 
 Programmatic wrapper consumers invoke the same typed `lean-beam` operations as human callers and
-must check the process exit status before parsing stdout. Completed broker operations, including
-semantic failures, print final JSON; selector, setup, or transport failures can exit nonzero with a
-human-readable stderr diagnostic and no JSON. Clients that require structured live progress,
-diagnostics, and failures should use MCP. Beam does not install a raw generic broker client. A
+receive one final JSON response for completed broker operations and ordinary CLI failures, with
+human diagnostics on stderr. Broker failures retain their code and data; local usage errors exit
+`2`, a missing live owner exits `3`, and request interruption exits `130`. Unexpected faults remain
+`internalError`. Check the exit status and the command's output contract; see the
+[CLI error and exit contract](SETUP.md#use-beam-from-a-lean-project). Clients that require structured live
+progress and diagnostics should use MCP. Beam does not install a raw generic broker client. A
 foreground `lean-beam serve` process owns each wrapper daemon. Normal owner exit tears it down;
 abrupt owner loss closes the ownership pipe, requests cooperative shutdown, and leaves the session
 fenced for explicit recovery without imposing an independent hard shutdown deadline. Attaching
@@ -303,8 +305,8 @@ client protocol.
   blocked write; the daemon's
   connection-owned disconnect watcher cancels the exact admitted request without requiring a
   caller-supplied request ID and is joined when the handler completes. The interrupted client exits
-  nonzero without fabricating a terminal broker response on
-  stdout. `lean-beam cancel ID` remains the explicit cross-process cancellation surface.
+  `130` with a CLI `requestCancelled` JSON response on stdout; this reports client interruption,
+  not a broker acknowledgement or producer settlement. `lean-beam cancel ID` remains the explicit cross-process cancellation surface.
   [Cancellation is soft](#soft-cancellation); client exit does not establish backend settlement.
 - The foreground owner retains SIGINT and POSIX SIGTERM/SIGHUP handlers from acquisition through
   daemon cleanup, and its initial request borrows that same stop observation. Repeated signals remain

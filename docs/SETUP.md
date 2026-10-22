@@ -198,9 +198,10 @@ UTF-16 code units. To probe a tactic replacement, select its first character aft
 to use its before-state. See [Position Semantics](../skills/lean-beam/references/workflow-details.md#position-semantics)
 for the argument order and a before/after example.
 
-`lean-beam doctor` reports session state, recovery details, and recent daemon incident paths before
-inspecting Lean setup. The session report is flushed to stdout before any Lean setup probe; setup
-failures then appear on stderr and produce a nonzero exit status. Pass `--root PATH` to inspect a
+`lean-beam doctor` inspects session state, recovery details, and recent daemon incident paths before
+inspecting Lean setup. A successful inspection prints a human-readable report. If setup inspection
+fails, stdout contains one error JSON response with the partial session report in
+`error.data.diagnostics`; stderr contains a concise diagnostic. Pass `--root PATH` to inspect a
 known directory after its Lean project markers disappear, and `--session-dir PATH` when the session
 uses a separate control directory. Inspection preserves the session descriptor and incident files
 and does not start a session or build a bundle.
@@ -264,12 +265,26 @@ MCP clients do not need a separate holder; the stdio MCP process owns its runtim
 For alternate session directories, status details, and abnormal-exit recovery, see
 [Sessions And Recovery](#sessions-and-recovery).
 
-Machine clients should pass an explicit `--root`, invoke the typed wrapper operations, and check
-the process exit status before parsing stdout. Completed broker operations print final JSON,
-including typed semantic failures. Selector, setup, and transport failures can exit nonzero with a
-human-readable stderr diagnostic and no JSON. Use MCP when a client requires structured live
-progress, diagnostics, or failures; Beam intentionally does not expose its raw port, session
-capability, or generic broker request record as an installed client interface.
+Machine clients should pass an explicit `--root` and invoke the typed wrapper operations. Ordinary
+CLI failures print one `{ "ok": false, "error": { "code": "...", "message": "..." } }` response on
+stdout and a concise diagnostic on stderr. Broker error codes, data, and file progress are preserved.
+Local CLI codes include `setupError`, `brokerUnavailable`, `noLiveSession`, and `internalError`.
+Unexpected IO faults use `internalError`, rather than being classified as invalid arguments.
+
+| Exit status | Meaning |
+| --- | --- |
+| `0` | Completed command, explicit help, or version; inspect `result.success` for speculative Lean results. |
+| `1` | Broker, setup, transport, or unexpected internal failure. |
+| `2` | Local argument/input error (`invalidParams`), with short relevant usage on stderr. Empty invocation is an error. |
+| `3` | No live wrapper owner (`noLiveSession`); the error gives the exact `serve` command to keep running. |
+| `130` | Request interruption (`requestCancelled`); this does not establish that the producer has stopped. |
+
+A returned broker success remains success even if a signal arrives afterward. Once foreground
+`serve` has printed readiness, cooperative owner shutdown exits successfully; a later owner fault
+reports on stderr and exits nonzero without replacing that readiness response. Help, successful
+`doctor`, and `prune` use human-readable output. Check both the exit status and the command's output
+contract. Use MCP for structured live progress and diagnostics; Beam does not expose its raw port,
+session capability, or generic broker request record as an installed client interface.
 
 The `python3` line extracts `result.version` for shell examples. You can also copy that version
 number from the printed `lean-beam update` JSON.

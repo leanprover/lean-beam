@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Lean
 import Beam.Installation.StandaloneLayout
 import Beam.Path
+import Beam.Cli.Error
 
 open Lean Beam.Installation
 
@@ -107,7 +108,7 @@ private def parsePruneOptions (args : List String) : Except String PruneOptions 
     match arg with
     | "--apply" => opts := { opts with apply := true }
     | "-h" | "--help" => opts := { opts with help := true }
-    | _ => throw s!"{pruneUsage}\nunknown prune option: {arg}"
+    | _ => throw s!"unknown prune option: {arg}"
   pure opts
 
 private def fail (message : String) : IO α :=
@@ -223,14 +224,14 @@ private def applyPrune (ctx : PruneContext) (plan : PrunePlan) : IO Nat := do
       IO.println s!"removed runtime: {path}"
   pure removed
 
-def runPrune (home : System.FilePath) (args : List String) : IO Unit := do
-  let opts ← IO.ofExcept <| parsePruneOptions args
+def runPrune (home : System.FilePath) (args : List String) : CliM Unit := do
+  let opts ← ExceptT.mk <| pure ((parsePruneOptions args).mapError (fun message => CliFailure.usage message (some pruneUsage)))
   if opts.help then
     IO.println pruneHelp
     return
   let ctx ← resolvePruneContext home
   let lockDir := ctx.installRoot / ".install-lock"
-  EIO.toIO InstallLockFailure.toIOError <| withInstallLockTimeout lockDir 1000 do
+  let operation : IO Unit := EIO.toIO InstallLockFailure.toIOError <| withInstallLockTimeout lockDir 1000 do
     let selfPid ← IO.Process.getPID
     IO.FS.writeFile (lockDir / "pid") s!"{selfPid}\n"
     validatePruneContext ctx
@@ -245,5 +246,7 @@ def runPrune (home : System.FilePath) (args : List String) : IO Unit := do
           "prune stopped before completing the displayed plan; any removals reported above were applied"
         IO.eprintln "rerun `lean-beam prune` to preview the remaining paths"
         throw e
+
+  operation
 
 end Beam.Cli

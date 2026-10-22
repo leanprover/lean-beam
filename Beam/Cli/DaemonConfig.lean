@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Lean
 import Beam.Daemon.Protocol
 import Beam.Runtime
+import Beam.Cli.Error
 
 open Lean
 
@@ -40,8 +41,8 @@ def DesiredConfig.configHash (config : DesiredConfig) : String :=
 
 /-- Runtime effects selected by the application; callers retain control of when they run. -/
 structure RuntimeAccess where
-  resolve : System.FilePath → IO DesiredConfig
-  attachment : System.FilePath → IO String
+  resolve : System.FilePath → CliM DesiredConfig
+  attachment : System.FilePath → CliM String
   control : Beam.Daemon.SessionDescriptor → IO Unit
 
 end Beam.Cli

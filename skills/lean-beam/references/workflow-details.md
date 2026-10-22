@@ -163,9 +163,11 @@ What is not a valid checkpoint target:
   stderr; automated callers must check the process exit status before parsing stdout
 - if imported targets are stale or the Lean worker cannot finish that diagnostics barrier,
   `lean-beam sync` fails; do not treat a failed sync as safe to follow with `lean-beam save`
-- for completed broker operations, `lean-beam sync` keeps machine-readable JSON on stdout;
-  interactive progress text goes to stderr, while selector, setup, or transport failures may exit
-  nonzero with no JSON
+- `lean-beam sync` prints one final JSON response on stdout for completed operations and ordinary
+  CLI failures; diagnostics and progress go to stderr. Exit `2` means local usage/input error;
+  exit `3` (`noLiveSession`) includes the exact `serve` remedy; exit `130` (`requestCancelled`)
+  reports interruption without establishing producer settlement. Preserve broker failure codes and
+  data when deciding recovery; never treat failed sync as save-ready
 - every `lean-beam run-at` request probes one on-disk document version without changing its real
   elaboration state; Lean code can still perform external IO
 - `lean-beam run-at-handle` is the same style of isolated probe, but asks Lean to retain follow-up

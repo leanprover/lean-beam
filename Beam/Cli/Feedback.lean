@@ -53,29 +53,29 @@ private def help : String :=
     "  {\"title\":\"Daemon startup failure\",\"kind\":\"bug\",\"severity\":\"high\",\"summary\":\"Beam failed to start\",\"reproduction\":\"lean-beam run-at Demo.lean 1 0\",\"expected\":\"A response is returned.\",\"actual\":\"The daemon closed the connection.\"}"
   ]
 
-private def parseBundleMode (raw : String) : IO Beam.Feedback.BundleMode := do
+private def parseBundleMode (raw : String) : CliM Beam.Feedback.BundleMode := do
   match fromJson? (α := Beam.Feedback.BundleMode) (Json.str raw) with
   | .ok mode => pure mode
-  | .error err => throw <| IO.userError s!"invalid feedback bundle mode: {err}"
+  | .error err => throw <| CliFailure.usage s!"invalid feedback bundle mode: {err}"
 
-private partial def parseOptions (opts : Options) : List String → IO Options
+private partial def parseOptions (opts : Options) : List String → CliM Options
   | [] => pure opts
   | "--stdin" :: rest => do
       let text ← (← IO.getStdin).readToEnd
       parseOptions { opts with input? := some text } rest
   | "--input" :: path :: rest => do
-      let text ← IO.FS.readFile (System.FilePath.mk path)
+      let text ← readCliFile "--input" path
       parseOptions { opts with input? := some text } rest
-  | "--input" :: _ => throw <| IO.userError usage
+  | "--input" :: _ => throw <| CliFailure.usage "--input requires PATH" (some usage)
   | "--bundle" :: mode :: rest => do
       parseOptions { opts with bundle? := some (← parseBundleMode mode) } rest
-  | "--bundle" :: _ => throw <| IO.userError usage
+  | "--bundle" :: _ => throw <| CliFailure.usage "--bundle requires MODE" (some usage)
   | "--output-dir" :: path :: rest => do
       parseOptions { opts with outputDir? := some (System.FilePath.mk path) } rest
-  | "--output-dir" :: _ => throw <| IO.userError usage
+  | "--output-dir" :: _ => throw <| CliFailure.usage "--output-dir requires PATH" (some usage)
   | "--no-redact" :: rest =>
       parseOptions { opts with redact? := some false } rest
-  | _ => throw <| IO.userError usage
+  | args => throw <| CliFailure.usage s!"invalid feedback-report arguments: {String.intercalate " " args}" (some usage)
 
 private def confidentialIdentityJson : Json :=
   ({ name := Beam.Version.cliName } : Beam.Version.Identity).asJson
@@ -165,7 +165,7 @@ private def applyOverrides
     | some redact => { input with redact }
     | none => input
 
-def run (identity : IO Beam.Version.Identity) (cliOpts : CliOptions) (args : List String) : IO Unit := do
+def run (identity : IO Beam.Version.Identity) (cliOpts : CliOptions) (args : List String) : CliM Unit := do
   if args == ["--help"] || args == ["-h"] then
     IO.println help
     return
@@ -173,20 +173,20 @@ def run (identity : IO Beam.Version.Identity) (cliOpts : CliOptions) (args : Lis
   let inputText ←
     match opts.input? with
     | some text => pure text
-    | none => throw <| IO.userError help
+    | none => throw <| CliFailure.usage "feedback-report requires --stdin or --input PATH" (some usage)
   let json ←
     try
       parseJsonText "feedback input json" inputText
-    catch e =>
-      throw <| IO.userError s!"invalid feedback input: {inputShapeHelp}; {e.toString}"
+    catch failure =>
+      throw <| CliFailure.usage s!"invalid feedback input: {inputShapeHelp}; {failure.failure.error.message}"
   let input ←
     match fromJson? (α := Beam.Feedback.Input) json with
     | .ok input => pure input
-    | .error err => throw <| IO.userError s!"invalid feedback input: {err}"
+    | .error err => throw <| CliFailure.usage s!"invalid feedback input: {err}"
   let input ←
     match applyOverrides input opts with
     | .ok input => pure input
-    | .error err => throw <| IO.userError s!"invalid feedback input: {err}"
+    | .error err => throw <| CliFailure.usage s!"invalid feedback input: {err}"
   let needsRoot := !input.confidential || (input.bundle != .none && opts.outputDir?.isNone)
   let (root?, warnings) ←
     if needsRoot then
@@ -194,7 +194,7 @@ def run (identity : IO Beam.Version.Identity) (cliOpts : CliOptions) (args : Lis
         let root ← inspectionRoot cliOpts
         pure (some root, #[])
       catch e =>
-        pure (none, #[e.toString])
+        pure (none, #[e.failure.error.message])
     else
       pure (none, #[])
   let collection ←

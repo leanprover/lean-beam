@@ -128,6 +128,7 @@ else:
 print("Filesystem-root project discovery terminated with the expected result")
 PY
 
+run_quiet_test "CLI error boundary" python3 tests/test-cli-errors.py
 run_quiet_test "partial-setup doctor" python3 tests/test-beam-doctor.py
 run_quiet_test system-contracts python3 tests/test-system-contracts.py
 run_quiet_test transaction python3 tests/lib/process_watchdog.py \
@@ -144,7 +145,8 @@ run_quiet_test closing-model .lake/build/bin/beam-closing-model-test
 run_quiet_test publication-ownership .lake/build/bin/beam-publication-test
 run_quiet_test broker-open-docs .lake/build/bin/beam-broker-open-docs-test
 run_quiet_test worker-recovery python3 tests/test-worker-recovery.py
-run_quiet_test cli-daemon .lake/build/bin/beam-cli-daemon-test
+run_quiet_test cli-daemon python3 tests/lib/process_watchdog.py \
+  --timeout 90 -- .lake/build/bin/beam-cli-daemon-test
 run_quiet_test interrupt-watcher python3 tests/test-interrupt-watcher.py
 run_quiet_test feedback .lake/build/bin/beam-feedback-test
 run_quiet_test mcp-projection .lake/build/bin/beam-mcp-projection-test

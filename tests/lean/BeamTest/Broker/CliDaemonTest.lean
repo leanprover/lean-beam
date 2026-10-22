@@ -50,6 +50,24 @@ private def require (label : String) (cond : Bool) : IO Unit := do
   unless cond do
     throw <| IO.userError label
 
+private def cliValue (action : Beam.Cli.CliM α) : IO α := do
+  match ← action.run with
+  | .ok value => pure value
+  | .error failure => throw <| IO.userError s!"unexpected CLI failure: {failure.failure.error.code}: {failure.failure.error.message}"
+
+private def expectCliErrorMessage (label : String) (action : Beam.Cli.CliM α) : IO String := do
+  match ← action.run with
+  | .ok _ => throw <| IO.userError s!"{label}: expected CLI failure"
+  | .error failure => pure <| failure.failure.error.message ++ failure.usage?.getD ""
+
+private def expectUsageContains (label needle : String) (action : Beam.Cli.CliM α) : IO Unit := do
+  match ← action.run with
+  | .ok _ => throw <| IO.userError s!"{label}: expected usage failure"
+  | .error failure =>
+      require label (failure.exitCode == 2 && failure.failure.error.code == "invalidParams")
+      require s!"{label}: missing {needle}"
+        ((failure.failure.error.message ++ failure.usage?.getD "").contains needle)
+
 private def projectDaemonClientForTest
     (endpoint : Beam.Broker.Transport.Endpoint)
     (controlDir : System.FilePath) : Beam.Cli.ProjectDaemonClient := {
@@ -302,16 +320,18 @@ private def checkPlainBrokerTaskCancellation : IO Unit := do
     let serverTask ← IO.asTask (prio := Task.Priority.dedicated) <|
       serveDisconnectCancelledPlainRequest listener requestObserved
     let requestTask ← IO.asTask (prio := Task.Priority.dedicated) <|
-      Beam.Cli.requestBroker (System.FilePath.mk "/tmp")
-        (projectDaemonClientForTest endpoint (System.FilePath.mk "/tmp")) Beam.Broker.Request.stats
+      (Beam.Cli.requestBroker (System.FilePath.mk "/tmp")
+        (projectDaemonClientForTest endpoint (System.FilePath.mk "/tmp")) Beam.Broker.Request.stats).run
     let some _ ← IO.wait requestObserved.result?
       | throw <| IO.userError "plain wrapper request observation promise dropped"
     IO.cancel requestTask
     match ← IO.wait requestTask with
-    | .ok response =>
+    | .ok (.error failure) =>
+        require "plain wrapper cancellation must retain its code and exit status"
+          (failure.failure.error.code == "requestCancelled" && failure.exitCode == 130)
+    | .ok (.ok response) =>
         throw <| IO.userError s!"interrupted plain wrapper request returned {toJson response}"
-    | .error err =>
-        requireSubstring "interrupted plain wrapper request" "Beam request interrupted" err.toString
+    | .error err => throw err
     match ← IO.wait serverTask with
     | .ok () => pure ()
     | .error err => throw err
@@ -397,7 +417,7 @@ private def checkWrongGreetingProtectsRequest : IO Unit := do
   withBrokerListener fun listener endpoint => do
     let serverTask ← IO.asTask (prio := Task.Priority.dedicated) <|
       serveWrongDaemonGreeting listener
-    let msg ← expectIoErrorMessage "wrong daemon greeting" <|
+    let msg ← expectCliErrorMessage "wrong daemon greeting" <|
       Beam.Cli.requestBroker (System.FilePath.mk "/tmp")
         (projectDaemonClientForTest endpoint (System.FilePath.mk "/tmp")) {
           payload := .runAt {
@@ -674,11 +694,11 @@ private def checkSyncWaitSpecs : IO Unit := do
 
 private def checkCliRootParsing : IO Unit := do
   let missingRoot := System.FilePath.mk s!"/tmp/beam-cli-missing-root-{← IO.monoNanosNow}"
-  expectIoErrorContains
+  expectUsageContains
     "missing explicit CLI root should use the workspace error boundary"
     "workspace root does not resolve"
     (Beam.Cli.parseCliOptions {} ["--root", missingRoot.toString, "serve"])
-  expectIoErrorContains
+  expectUsageContains
     "relative session directory should be rejected"
     "--session-dir requires an absolute path"
     (Beam.Cli.parseCliOptions {} ["--session-dir", "relative-session", "status"])
@@ -688,7 +708,7 @@ private def checkCliRootParsing : IO Unit := do
     IO.FS.createDirAll control
     let expectedRoot ← Beam.resolveExistingPath root
     let expectedControl ← Beam.resolveExistingPath control
-    let opts ← Beam.Cli.parseCliOptions {} [
+    let opts ← cliValue <| Beam.Cli.parseCliOptions {} [
       "--root", root.toString,
       "--session-dir", control.toString,
       "stats"
@@ -697,7 +717,7 @@ private def checkCliRootParsing : IO Unit := do
     require "explicit session directory should remain an exact selection"
       (opts.explicitControlDir? == some expectedControl)
     require "global selectors should not leak into command arguments" (opts.args == ["stats"])
-    let literalSelectors ← Beam.Cli.parseCliOptions {} [
+    let literalSelectors ← cliValue <| Beam.Cli.parseCliOptions {} [
       "run-at", "Demo.lean", "1", "0", "0", "--",
       "--root", "/tmp/literal-root", "--session-dir", "/tmp/literal-session"
     ]
@@ -725,15 +745,15 @@ private def checkProjectRootSelection : IO Unit := do
     IO.FS.writeFile (rocqRoot / "_RocqProject") "\n"
     let expectedLeanRoot ← Beam.resolveExistingPath leanRoot
     require "Rocq project markers should not affect Lean root inference"
-      ((← Beam.Cli.inferInspectionRoot nested) == expectedLeanRoot)
+      ((← cliValue <| Beam.Cli.inferInspectionRoot nested) == expectedLeanRoot)
     let explicitLean ← Beam.resolveExistingPath leanRoot
     require "an explicit root should select the requested Lean workspace"
-      ((← Beam.Cli.inspectionRoot { explicitRoot? := some explicitLean }) == explicitLean)
+      ((← cliValue <| Beam.Cli.inspectionRoot { explicitRoot? := some explicitLean }) == explicitLean)
 
     IO.FS.writeFile (rocqRoot / "lean-toolchain") "leanprover/lean4:stable\n"
     let sharedRoot ← Beam.resolveExistingPath rocqRoot
     require "root inference should select the nearest Lean project"
-      ((← Beam.Cli.inferInspectionRoot rocqRoot) == sharedRoot)
+      ((← cliValue <| Beam.Cli.inferInspectionRoot rocqRoot) == sharedRoot)
   finally
     if ← root.pathExists then
       IO.FS.removeDirAll root
@@ -754,7 +774,7 @@ private def checkLeanOperationRequests : IO Unit := do
   requireRequestJson "runAt handle request should share the Lean operation adapter"
     (Beam.Cli.leanRunAtRequest path 12 4 2 "exact h" (storeHandle := true))
     (runAtInput.toBrokerRequest (storeHandle := true))
-  expectIoErrorContains "runAt missing text should fail at the CLI boundary"
+  expectUsageContains "runAt missing text should fail at the CLI boundary"
     "usage: lean-beam" (Beam.Cli.parseTextArg "run-at Demo.lean 12 4 2" [])
 
   let positionInput : Beam.Lean.PositionInput := {
@@ -810,7 +830,7 @@ private def checkLeanOperationRequests : IO Unit := do
   requireRequestJson "runWith linear request should share the Lean operation adapter"
     (Beam.Cli.leanRunWithRequest path sampleBrokerHandle "simp" (linear := true))
     (runWithInput.toBrokerRequest (linear := true))
-  expectIoErrorContains "runWith missing text should fail at the CLI boundary"
+  expectUsageContains "runWith missing text should fail at the CLI boundary"
     "usage: lean-beam" (Beam.Cli.parseTextArg "run-with Demo.lean HANDLE" [])
 
   requireRequestJson "release request should share the Lean operation adapter"
@@ -848,7 +868,7 @@ private def checkLeanOperationRequests : IO Unit := do
   require "close-save should preserve diagnostic scope" (closeSave.diagnosticScope? == some .all)
 
 private def checkDiagnosticScopeArgs : IO Unit := do
-  let parsers : Array (String × (List String → IO Beam.Broker.DiagnosticScope)) := #[
+  let parsers : Array (String × (List String → Beam.Cli.CliM Beam.Broker.DiagnosticScope)) := #[
     ("sync", Beam.Cli.parseLeanSyncArgs),
     ("refresh", Beam.Cli.parseLeanRefreshArgs),
     ("save", Beam.Cli.parseLeanSaveArgs),
@@ -856,16 +876,11 @@ private def checkDiagnosticScopeArgs : IO Unit := do
   ]
   for (label, parse) in parsers do
     require s!"{label} diagnostic scope should default to errors"
-      ((← parse []) == .errors)
+      ((← cliValue <| parse []) == .errors)
     require s!"{label} diagnostic scope should accept +all-diagnostics"
-      ((← parse ["+all-diagnostics"]) == .all)
-    let obsoleteRejected ←
-      try
-        discard <| parse ["+full"]
-        pure false
-      catch err =>
-        pure <| err.toString.contains "+all-diagnostics"
-    require s!"{label} diagnostic scope should reject obsolete +full" obsoleteRejected
+      ((← cliValue <| parse ["+all-diagnostics"]) == .all)
+    expectUsageContains s!"{label} diagnostic scope should reject obsolete +full"
+      "+all-diagnostics" (parse ["+full"])
 
 private def checkDaemonFailureContext : IO Unit := do
   let root := System.FilePath.mk s!"/tmp/beam-daemon-failure-context-{← IO.monoNanosNow}"
@@ -1231,13 +1246,13 @@ private def checkBrokerConnectionClosedIncident : IO Unit := do
         interrupted := pure true
         awaitInterrupt := pure ()
       }
-      let stoppedMsg ← expectIoErrorMessage "a latched stop must survive request handoff" <|
+      let stoppedMsg ← expectCliErrorMessage "a latched stop must survive request handoff" <|
         Beam.Cli.ensureProjectSession stopped root (projectDaemonClientForTest endpoint controlDir)
       requireSubstring "latched stop must cancel before consuming the broker connection"
         "Beam request interrupted" stoppedMsg
-      let msg ← expectIoErrorMessage "broker connection close should surface daemon failure" <|
-        Beam.Cli.withOwnerInterruptWatcher fun watcher =>
-          Beam.Cli.ensureProjectSession watcher root (projectDaemonClientForTest endpoint controlDir)
+      let msg ← expectCliErrorMessage "broker connection close should surface daemon failure" <|
+        ExceptT.mk <| Beam.Cli.withOwnerInterruptWatcher fun watcher =>
+          (Beam.Cli.ensureProjectSession watcher root (projectDaemonClientForTest endpoint controlDir)).run
       requireSubstring "broker connection close should preserve transport failure"
         "Beam daemon receive failed:" msg
       requireSubstring "broker connection close should include incident path"
@@ -1472,30 +1487,30 @@ private def withFirstStderrWrite (before : IO Unit) (action : IO α) : IO α := 
   IO.withStderr observed action
 
 /-- Run the real CLI request/rendering path against a parent-owned fake broker. -/
-def blockedOutput (stream : String) (port : UInt16) : IO Unit := do
+def blockedOutput (stream : String) (port : UInt16) : Beam.Cli.CliM Unit := do
   let root : System.FilePath := "/tmp"
   let client := projectDaemonClientForTest (.tcp port) root
   match stream with
   | "progress-start" =>
-      withFirstStderrWrite (do
+      ExceptT.mk <| withFirstStderrWrite (do
         IO.println "progress start reached"
         (← IO.getStdout).flush
         -- The parent sends SIGINT before releasing the first progress write.
         unless (← (← IO.getStdin).getLine) == "release\n" do
           throw <| IO.userError "progress start gate was not released") <|
-        Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
-          (Beam.Cli.syncWaitSpec "Main.lean")
+        (Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
+          (Beam.Cli.syncWaitSpec "Main.lean")).run
   | "stderr" =>
-      withFirstStderrWrite (do
+      ExceptT.mk <| withFirstStderrWrite (do
         IO.println "diagnostic write reached"
         (← IO.getStdout).flush) <|
-        Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
-          (Beam.Cli.syncWaitSpec "Main.lean")
+        (Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
+          (Beam.Cli.syncWaitSpec "Main.lean")).run
   | "stdout" => Beam.Cli.callBroker root client Beam.Broker.Request.stats
   | "stdout-progress" =>
       Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
         (Beam.Cli.syncWaitSpec "Main.lean")
-  | _ => throw <| IO.userError s!"unknown blocked output stream: {stream}"
+  | _ => throw <| Beam.Cli.CliFailure.usage s!"unknown blocked output stream: {stream}"
 
 def main : IO Unit := do
   checkSdkRuntimeAdmission
@@ -1531,13 +1546,30 @@ def main : IO Unit := do
 
 end BeamTest.Broker.CliDaemonTest
 
-def main (args : List String) : IO Unit :=
+def main (args : List String) : IO UInt32 :=
   match args with
-  | [] => BeamTest.Broker.CliDaemonTest.main
+  | [] => do BeamTest.Broker.CliDaemonTest.main; pure 0
   | ["--interrupt-watcher", mode] => BeamTest.Broker.InterruptWatcherTest.child mode
   | ["--blocked-output", stream, port] => do
       let some port := port.toNat?
         | throw <| IO.userError "invalid fixture port"
       unless port > 0 && port < 65536 do throw <| IO.userError "invalid fixture port"
-      BeamTest.Broker.CliDaemonTest.blockedOutput stream port.toUInt16
+      Beam.Cli.run <| BeamTest.Broker.CliDaemonTest.blockedOutput stream port.toUInt16
+  | ["--cli-error", "internal"] => Beam.Cli.run do
+      let action : IO Unit := throw <| IO.userError "fixture unexpected fault"
+      action
+  | ["--cli-error", "broker"] => Beam.Cli.run do
+      let failure : Beam.Broker.ResponseFailure := {
+        error := {
+          code := "fileChanged"
+          message := "fixture stale file"
+          data? := some (Json.mkObj [("version", toJson (7 : Nat))])
+        }
+        fileProgress? := some { updates := 9, done := false }
+      }
+      Beam.Cli.failOnError (.errorResult failure) (some "fixture-request")
+  | ["--cli-error", "semantic"] => Beam.Cli.run do
+      let response := Beam.Broker.Response.success (Json.mkObj [("success", toJson false)])
+      Beam.Cli.failOnError response
+      Beam.Cli.printResponse response
   | _ => throw <| IO.userError "unexpected CLI daemon test arguments"

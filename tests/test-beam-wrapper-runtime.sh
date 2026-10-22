@@ -100,12 +100,16 @@ expect_sigint_aborted() {
   local out_path="$2"
   local err_path="$3"
   local expected_client_request_id="$4"
-  if [ -s "$out_path" ]; then
-    echo "expected $label not to fabricate a terminal broker response after disconnect" >&2
-    cat "$out_path" >&2
-    cat "$err_path" >&2
-    exit 1
-  fi
+  python3 - "$out_path" "$expected_client_request_id" <<'PYJSON'
+import json
+import sys
+from pathlib import Path
+response = json.loads(Path(sys.argv[1]).read_text())
+assert response["ok"] is False, response
+assert response["error"]["code"] == "requestCancelled", response
+assert response.get("clientRequestId", "") == sys.argv[2], response
+assert "producer has stopped" in response["error"]["message"], response
+PYJSON
   if [ -n "$expected_client_request_id" ]; then
     if ! grep -q "beam\[$expected_client_request_id\]" "$err_path"; then
       echo "expected $label to preserve its explicit clientRequestId annotation" >&2
@@ -123,8 +127,7 @@ expect_sigint_aborted() {
     cat "$err_path" >&2
     exit 1
   fi
-  if ! grep -q 'interrupting broker request' "$err_path" ||
-      ! grep -q 'Beam request interrupted' "$err_path"; then
+  if ! grep -q 'Beam request interrupted' "$err_path"; then
     echo "expected $label to report bounded connection-owned interruption" >&2
     cat "$err_path" >&2
     exit 1
@@ -158,8 +161,8 @@ signal_owner_pid="$beam_wrapper_last_owner_pid"
     cat "$interrupt_err" >&2
     exit 1
   fi
-  if [ "$interrupt_status" = "0" ]; then
-    echo "expected wrapper run-at SIGINT path to exit non-zero after connection interruption" >&2
+  if [ "$interrupt_status" != "130" ]; then
+    echo "expected wrapper run-at SIGINT path to exit 130 after connection interruption" >&2
     cat "$interrupt_out" >&2
     cat "$interrupt_err" >&2
     exit 1
@@ -174,8 +177,8 @@ signal_owner_pid="$beam_wrapper_last_owner_pid"
     cat "$interrupt_anon_err" >&2
     exit 1
   fi
-  if [ "$interrupt_anon_status" = "0" ]; then
-    echo "expected anonymous wrapper run-at SIGINT path to exit non-zero after connection interruption" >&2
+  if [ "$interrupt_anon_status" != "130" ]; then
+    echo "expected anonymous wrapper run-at SIGINT path to exit 130 after connection interruption" >&2
     cat "$interrupt_anon_out" >&2
     cat "$interrupt_anon_err" >&2
     exit 1
@@ -326,8 +329,8 @@ PY
     cat "$interrupt_quiet_err" >&2
     exit 1
   fi
-  if [ "$interrupt_quiet_status" = "0" ]; then
-    echo "expected non-progress wrapper run-at SIGINT path to exit non-zero after connection interruption" >&2
+  if [ "$interrupt_quiet_status" != "130" ]; then
+    echo "expected non-progress wrapper run-at SIGINT path to exit 130 after connection interruption" >&2
     cat "$interrupt_quiet_out" >&2
     cat "$interrupt_quiet_err" >&2
     exit 1
@@ -343,8 +346,8 @@ PY
     cat "$interrupt_quiet_anon_err" >&2
     exit 1
   fi
-  if [ "$interrupt_quiet_anon_status" = "0" ]; then
-    echo "expected anonymous non-progress wrapper run-at SIGINT path to exit non-zero after connection interruption" >&2
+  if [ "$interrupt_quiet_anon_status" != "130" ]; then
+    echo "expected anonymous non-progress wrapper run-at SIGINT path to exit 130 after connection interruption" >&2
     cat "$interrupt_quiet_anon_out" >&2
     cat "$interrupt_quiet_anon_err" >&2
     exit 1
