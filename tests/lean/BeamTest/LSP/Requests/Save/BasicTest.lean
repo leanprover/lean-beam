@@ -37,6 +37,26 @@ private def requireCleanReadiness (label : String)
     throw <| IO.userError
       s!"{label}: expected clean file to omit save-blocking evidence, got {(toJson readiness).compress}"
 
+private def awaitSavedArtifacts (req : ReqHandle) : ScenarioM Beam.LSP.Save.SaveArtifactsResult := do
+  let completion : Beam.LSP.Save.SaveArtifactsCompletion ← awaitResponseAs req
+  match completion with
+  | .success result => pure result
+  | .failure code message =>
+      throw <| IO.userError s!"save handler failed with {(toJson code).compress}: {message}"
+
+private def expectSaveFailure (req : ReqHandle) (code : Lean.JsonRpc.ErrorCode)
+    (allowRoutingError : Bool := false) : ScenarioM Unit := do
+  let outcome ← awaitReq req
+  if allowRoutingError && outcome.errorCode?.isSome then
+    expectErrorContains req (Json.mkObj [("code", toJson (BeamTest.TestHarness.errorCodeName code))])
+    return
+  let completion : Beam.LSP.Save.SaveArtifactsCompletion ← awaitResponseAs req
+  match completion with
+  | .success _ => throw <| IO.userError "save handler unexpectedly succeeded"
+  | .failure actual _ =>
+      unless actual == code do
+        throw <| IO.userError s!"save handler returned {(toJson actual).compress}, expected {(toJson code).compress}"
+
 private def requireSavedArtifacts (label : String) (outDir : System.FilePath)
     (saved : Beam.LSP.Save.SaveArtifactsResult) : ScenarioM Unit := do
   if !saved.written then
@@ -119,7 +139,7 @@ def checkSaveArtifactsStaleVersion : ScenarioM Unit := do
     ileanFile := (outDir / "StaleVersion.ilean").toString
     cFile := (outDir / "StaleVersion.c").toString
   }
-  expectErrorContains staleVersionReq (Json.mkObj [("code", toJson "contentModified")])
+  expectSaveFailure staleVersionReq .contentModified
 
   closeDoc doc
 
@@ -135,7 +155,7 @@ def checkSaveArtifactsStaleHash : ScenarioM Unit := do
     ileanFile := (outDir / "StaleHash.ilean").toString
     cFile := (outDir / "StaleHash.c").toString
   }
-  expectErrorContains staleHashReq (Json.mkObj [("code", toJson "contentModified")])
+  expectSaveFailure staleHashReq .contentModified
 
   closeDoc doc
 
@@ -151,7 +171,7 @@ def checkSaveArtifactsWrite : ScenarioM Unit := do
     ileanFile := (outDir / "DepA.ilean").toString
     cFile := (outDir / "DepA.c").toString
   }
-  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs saveReq
+  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitSavedArtifacts saveReq
   requireSavedArtifacts "saveArtifacts" outDir saved
 
   closeDoc doc
@@ -184,7 +204,7 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
     ileanFile := (outDir / "ModuleArtifacts.ilean").toString
     cFile := (outDir / "ModuleArtifacts.c").toString
   }
-  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs saveReq
+  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitSavedArtifacts saveReq
   if !saved.written then
     throw <| IO.userError "saveArtifacts module family: expected written = true"
   expectFileExists "saveArtifacts module exported olean" (outDir / "ModuleArtifacts.olean")
@@ -209,7 +229,7 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
     ileanFile := (outDir / "ModuleArtifacts.ilean").toString
     cFile := (outDir / "ModuleArtifacts.c").toString
   }
-  expectErrorContains invalidPathReq (Json.mkObj [("code", toJson "internalError")])
+  expectSaveFailure invalidPathReq .internalError
   unless (← paths.mapM (fun path => liftM (IO.FS.readBinFile path))) == prior do
     throw <| IO.userError "invalid module artifact path changed prior artifacts"
   expectFileExists "saveArtifacts module ilean" (outDir / "ModuleArtifacts.ilean")
@@ -238,7 +258,7 @@ def checkDeferredCompilationReadiness : ScenarioM Unit := do
       ileanFile := paths[1]!.toString
       cFile := paths[2]!.toString
     }
-    expectErrorContains request (Json.mkObj [("code", toJson "invalidParams")])
+    expectSaveFailure request .invalidParams
     for path in paths do expectFileContents "deferred save" path "prior artifact"
     closeDoc doc
 
@@ -266,7 +286,7 @@ def checkSaveArtifactsFailurePreservesPriorArtifacts : ScenarioM Unit := do
     cFile := cFile.toString
     bcFile? := some (blockedParent / "DepA.bc").toString
   }
-  expectErrorContains saveReq (Json.mkObj [("code", toJson "internalError")])
+  expectSaveFailure saveReq .internalError
   expectFileContents "failed save replaced the prior olean artifact" oleanFile oldOlean
   expectFileContents "failed save replaced the prior ilean artifact" ileanFile oldIlean
   expectFileContents "failed save replaced the prior C artifact" cFile oldC
@@ -320,7 +340,7 @@ def checkConcurrentSameWorkerSavesPublishWholeSet : ScenarioM Unit := do
     ileanFile := (referenceDir / "Reference.ilean").toString
     cFile := (referenceDir / "Reference.c").toString
   }
-  let referenceSaved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs referenceReq
+  let referenceSaved : Beam.LSP.Save.SaveArtifactsResult ← awaitSavedArtifacts referenceReq
   unless referenceSaved.written do
     throw <| IO.userError "concurrent save reference was not written"
   let reference ← readArtifactSet referenceDir "Reference"
@@ -341,7 +361,7 @@ def checkConcurrentSameWorkerSavesPublishWholeSet : ScenarioM Unit := do
         cFile := (sharedDir / "Shared.olean").toString
       }
   for request in requests do
-    let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs request
+    let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitSavedArtifacts request
     unless saved.written do
       throw <| IO.userError "concurrent save request did not report written = true"
   let shared ← readArtifactSet sharedDir "Shared"
@@ -374,7 +394,7 @@ def checkSaveArtifactsRejectsSameDocumentEditRace : ScenarioM Unit := do
     insert := "-- concurrent edit while saveArtifacts is pending\n"
   }
 
-  expectErrorContains saveReq (Json.mkObj [("code", toJson "contentModified")])
+  expectSaveFailure saveReq .contentModified (allowRoutingError := true)
   closeDoc doc
 
 def checkSaveReadinessDocumentErrors : ScenarioM Unit := do
@@ -426,7 +446,7 @@ def checkSaveRequestsWithStandardLspInterference : ScenarioM Unit := do
   let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs readinessReq
   requireCleanReadiness "saveReadiness with LSP interference" readiness
 
-  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs saveReq
+  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitSavedArtifacts saveReq
   requireSavedArtifacts "saveArtifacts with LSP interference" outDir saved
 
   closeDoc saveDoc
@@ -469,7 +489,7 @@ def checkSaveRequestsWithMixedConcurrency : ScenarioM Unit := do
     let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs req
     requireCleanReadiness "saveReadiness mixed concurrency" readiness
   for (artifactDir, req) in artifactReqs do
-    let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs req
+    let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitSavedArtifacts req
     requireSavedArtifacts "saveArtifacts mixed concurrency" artifactDir saved
   for req in goalsPrevReqs do
     let goalsPrev : Beam.LSP.Lib.ProofState ← awaitResponseAs req

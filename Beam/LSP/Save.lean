@@ -28,7 +28,7 @@ namespace Beam.LSP.Save
 
 /--
 Internal broker-only request for saving the current elaborated document state to
-the Lake artifact locations expected by the workspace.
+the supplied private artifact destinations. The broker alone promotes canonical Lake outputs.
 
 This underpins the supported `save after sync` path. It is not part of the public
 `runAt` API.
@@ -45,7 +45,7 @@ API.
 -/
 def saveReadinessMethod : String := "$/beam/saveReadiness"
 
-/-- Canonical Lake companion outputs required when saving a `module` environment. -/
+/-- Supplied private companion destinations required when saving a `module` environment. -/
 structure ModuleArtifactPaths where
   oleanServerFile : String
   oleanPrivateFile : String
@@ -53,7 +53,8 @@ structure ModuleArtifactPaths where
   irSigFile : String
   deriving FromJson, Repr, ToJson
 
-/-- Internal request payload for artifact serialization from the current worker snapshot. -/
+/-- Internal request payload for artifact serialization from the current worker snapshot.
+The broker supplies per-attempt private destinations and alone promotes canonical Lake outputs. -/
 structure SaveArtifactsParams where
   textDocument : Lean.Lsp.TextDocumentIdentifier
   expectedVersion : Nat
@@ -83,6 +84,15 @@ structure SaveArtifactsResult where
   written : Bool := true
   version : Nat
   textHash : UInt64
+  deriving FromJson, ToJson
+
+/--
+Acknowledgement that the save handler and its cleanup have finished. A failure may follow artifact
+publication; it does not assert rollback. Routing and owner-loss errors use JSON-RPC errors instead.
+-/
+inductive SaveArtifactsCompletion where
+  | success (result : SaveArtifactsResult)
+  | failure (code : JsonRpc.ErrorCode) (message : String)
   deriving FromJson, ToJson
 
 /-- Diagnostic-shaped evidence for an error that participates in save-readiness. -/
@@ -234,7 +244,7 @@ private def stagedArtifactAt
 private def publishStagedArtifacts (artifacts : Array StagedArtifact)
     (hardLink : System.FilePath → System.FilePath → IO Unit := IO.FS.hardLink)
     (rename : System.FilePath → System.FilePath → IO Unit := IO.FS.rename) : IO Unit := do
-  -- Complete all checks that can be done without touching canonical outputs before the commit.
+  -- Complete all checks before changing the supplied artifact destinations.
   for artifact in artifacts do
     unless ← artifact.staged.pathExists do
       throw <| IO.userError s!"missing staged artifact: {artifact.staged}"
@@ -252,7 +262,7 @@ private def publishStagedArtifacts (artifacts : Array StagedArtifact)
     pure (artifact, existed)
   let backups := originals.filterMap fun (artifact, existed) =>
     if existed then some artifact else none
-  -- Preparation may fail halfway. Its rollback owns only backup names, never canonical outputs.
+  -- Preparation may fail halfway. Its rollback owns only backup names, never supplied outputs.
   let preparation ← Beam.Transaction.run (rollback := backups.map fun artifact =>
       removeFileIfExists artifact.backup) do
     for artifact in backups do hardLink artifact.target artifact.backup
@@ -279,14 +289,13 @@ private def publishStagedArtifacts (artifacts : Array StagedArtifact)
         else
           removeFileIfExists artifact.target)
       (cleanup := backups.map fun artifact => removeFileIfExists artifact.backup) do
-    -- Invalidate Lake's cached hashes for exactly the outputs being replaced. A removal failure
-    -- must recover the prepared backups before any canonical output can change.
-    for artifact in artifacts do removeFileIfExists (artifact.target.addExtension "hash")
+    -- The supported broker path supplies private destinations; canonical hash invalidation belongs
+    -- to broker promotion after the worker acknowledges completion.
     for artifact in artifacts do rename artifact.staged artifact.target
   match publication with
   | .committed () _ =>
-      -- Backup cleanup is best-effort after commit. Its failure must not omit the save trace
-      -- or turn a complete publication into a reported failure.
+      -- Backup cleanup is best-effort after commit. Its failure must not turn a complete
+      -- private artifact family into a reported publication failure.
       pure ()
   | .aborted error failures =>
       if failures.isEmpty then throw error
@@ -617,12 +626,22 @@ def saveCurrentArtifacts
 
 def handleSaveArtifacts
     (p : SaveArtifactsParams) :
-    RequestM (RequestTask SaveArtifactsResult) := do
-  let doc ← RequestM.readDoc
-  checkExpectedDocument doc p.expectedVersion p.expectedTextHash
-  let t := doc.reporter.bindCheap (fun _ => doc.cmdSnaps.waitAll)
-  RequestM.mapTaskCostly t fun (snaps, _) => do
-    saveCurrentArtifacts doc snaps p
+    RequestM (RequestTask SaveArtifactsCompletion) := do
+  try
+    let doc ← RequestM.readDoc
+    checkExpectedDocument doc p.expectedVersion p.expectedTextHash
+    let t := doc.reporter.bindCheap (fun _ => doc.cmdSnaps.waitAll)
+    let task ← RequestM.mapTaskCostly t fun (snaps, _) => do
+      saveCurrentArtifacts doc snaps p
+    -- Map the terminal task outcome, after saveCurrentArtifacts has run its finally cleanup.
+    -- FileWorker may still replace this response with requestCancelled; that bare error does
+    -- not acknowledge completion to the broker.
+    pure <| task.mapCheap fun
+      | .ok result => .ok (.success result)
+      | .error error => .ok (.failure error.code error.message)
+  catch error =>
+    -- Construction has not launched artifact work when readDoc or basis validation rejects.
+    pure <| RequestTask.pure (.failure error.code error.message)
 
 def handleSaveReadiness
     (p : SaveReadinessParams) :

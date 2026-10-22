@@ -148,6 +148,15 @@ lean_lib Beam where
 lean_lib BeamTest where
   srcDir := "tests/lean"
 
+/-- Non-shipped directed private-publication regression plugin. -/
+lean_lib BeamPrivateSaveGate where
+  srcDir := "tests/lean"
+  globs := #[.one `BeamPrivateSaveGate]
+  defaultFacets := #[`shared]
+
+lean_lib BeamModel where
+  srcDir := "model"
+
 lean_exe "beam-system-contract-test" where
   srcDir := "tests/lean"
   root := `BeamTest.SystemContractTest
@@ -262,6 +271,14 @@ lean_exe "beam-broker-pending-test" where
 lean_exe "beam-broker-document-state-test" where
   srcDir := "tests/lean"
   root := `BeamTest.Broker.DocumentStateTest
+
+lean_exe "beam-publication-test" where
+  srcDir := "tests/lean"
+  root := `BeamTest.Broker.PublicationTest
+
+lean_exe "beam-closing-model-test" where
+  srcDir := "tests/lean"
+  root := `BeamTest.Model.ClosingTest
 
 lean_exe "beam-broker-open-docs-test" where
   srcDir := "tests/lean"

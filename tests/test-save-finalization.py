@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Lean FRO LLC. All rights reserved.
 # Released under Apache 2.0 license as described in the file LICENSE.
-"""A completed checkpoint may finalize only the document acceptance it saved."""
+"""Private preparation preserves canonical checkpoints and exact finalization identity."""
 
 import argparse
 import concurrent.futures
@@ -18,8 +18,14 @@ from mcp_test_util import shared_lib_name
 
 REPO = Path(__file__).resolve().parent.parent
 WORKSPACE = "save-finalization-test"
-CASES = ["exact", "update", "reopen", "reopen-identical", "refresh-identical", "unchanged",
-         "save-update", "save-reopen", "save-reopen-identical", "absent", "drop", "before-dispatch"]
+REPLY_CASES = ["remote-invalid-params", "remote-owner-loss", "remote-cancelled",
+               "malformed-completion", "handler-failure", "cancelled-handler-failure"]
+OWNER_CASES = ["workspace-replace", "backend-restart", "distinct-runtime",
+               "delayed-admission", "uncertain-close", "uncertain-save", "rejected-close"] + REPLY_CASES
+CLOSING_CASES = ["exclusive", "preflight-exclusive", "cancel-close", "failed-close"]
+CASES = ["exact", "save-update", "save-reopen", "save-reopen-identical", "drop", "before-dispatch"]
+CASES += CLOSING_CASES
+CASES += OWNER_CASES
 SOURCE = "def bVal : Nat := 11\nexample : True := by\n  trivial\n"
 
 
@@ -59,6 +65,41 @@ def request(port, op, *, wait_seconds=45, **fields):
 def ok(response):
     assert response["ok"], response
     return response["result"]
+
+
+def artifact_paths(saved):
+    fields = ("olean", "ilean", "c", "trace", "oleanServer", "oleanPrivate", "ir", "irSig", "bc")
+    assert all(field in saved for field in fields[:4]), saved
+    return [Path(saved[field]) for field in fields if saved.get(field)]
+
+
+def checkpoint(saved):
+    return {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in artifact_paths(saved)}
+
+
+def assert_checkpoint_unchanged(prior):
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in prior} == prior
+
+
+def private_paths(spec):
+    assert all(isinstance(spec.get(field), str)
+               for field in ("oleanPath", "ileanPath", "cPath", "tracePath")), spec
+    return [Path(value) for field, value in spec.items()
+            if field.endswith("Path") and isinstance(value, str)]
+
+
+def assert_private_cleaned(spec):
+    for path in private_paths(spec):
+        assert path.parent.name.startswith(".beam-publication-"), path
+        assert not path.exists(), path
+        assert not path.parent.exists(), path.parent
+        assert not Path(str(path.parent) + ".claim").exists(), path.parent
+
+
+def assert_canonical_present(saved):
+    for path in artifact_paths(saved):
+        assert path.is_file(), path
+        assert not path.parent.name.startswith(".beam-publication-"), path
 
 
 def tracked(port):
@@ -111,95 +152,160 @@ def broker(base, lean, plugin, daemon, gate_operation):
                 proc.wait(timeout=5)
 
 
+def closing_case(base, case, lean, plugin, daemon):
+    operation = "prepare-save" if case == "preflight-exclusive" else "write-save-trace"
+    with broker(base, lean, plugin, daemon, operation) as (port, source):
+        initial = ok(request(port, "sync_file", path="Main.lean"))
+        seed = ok(request(port, "run_at", path="Main.lean", version=initial["version"],
+                          line=2, character=2, text="skip", storeHandle=True))
+        prior = checkpoint(ok(request(port, "save_olean", path="Main.lean")))
+        (base / "enabled").touch()
+        spec = None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(request, port, "close", path="Main.lean", saveArtifacts=True,
+                                      clientRequestId="closing-save")
+            try:
+                wait_until(lambda: (base / "entered").exists(), 35, "reserved close-save helper")
+                if operation == "write-save-trace":
+                    job = Path(json.loads((base / "entered").read_text())["job"])
+                    spec = json.loads((job / "request.json").read_text())
+                    assert all(path not in prior for path in private_paths(spec)), spec
+                conflicts = [
+                    ("update_file", {}), ("sync_file", {}), ("refresh_file", {}),
+                    ("close", {}), ("close", {"saveArtifacts": True}), ("save_olean", {}),
+                    ("hover", {"version": initial["version"], "line": 0, "character": 4}),
+                    ("run_with", {"handle": seed["handle"], "text": "skip"}),
+                    ("release", {"handle": seed["handle"]}),
+                ]
+                for op, fields in conflicts:
+                    response = request(port, op, path="Main.lean", wait_seconds=3, **fields)
+                    assert not response["ok"], (case, op, response)
+                    assert response["error"]["code"] == "contentModified", response
+                    assert response["error"]["data"]["reason"] == "documentClosing", response
+                assert tracked(port)["version"] == initial["version"]
+                # The reservation is per canonical document, not per workspace or save mutex.
+                (source.parent / "Other.lean").write_text("def other : Nat := 42\n")
+                ok(request(port, "sync_file", path="Other.lean", wait_seconds=10))
+                if case == "cancel-close":
+                    # The helper gate holds private preparation before canonical commit.
+                    assert_checkpoint_unchanged(prior)
+                    assert ok(request(port, "cancel", cancelRequestId="closing-save"))["cancelled"]
+                elif case == "failed-close":
+                    (base / "fail").touch()
+                else:
+                    (base / "release").touch()
+                response = pending.result(timeout=35)
+            finally:
+                (base / "release").touch()
+        (base / "response.json").write_text(json.dumps(response, indent=2) + "\n")
+        if case in ("cancel-close", "failed-close"):
+            assert not response["ok"], response
+            assert "saved" not in (response["error"].get("data") or {}), response
+            assert_checkpoint_unchanged(prior)
+            if case == "cancel-close":
+                assert response["error"]["code"] == "requestCancelled", response
+            assert tracked(port)["checkpointed"] is True, response
+            # Precommit failure releases admission and retains the live document/handle.
+            ok(request(port, "run_with", path="Main.lean", handle=seed["handle"], text="trivial"))
+            (base / "enabled").unlink()
+            ok(request(port, "close", path="Main.lean", saveArtifacts=True))
+        else:
+            result = ok(response)
+            assert result["closed"] is True, response
+            assert_canonical_present(result["saved"])
+            if spec:
+                assert_private_cleaned(spec)
+        assert tracked(port) is None
+        # A fresh caller is free to reopen after closure.
+        assert ok(request(port, "sync_file", path="Main.lean"))["version"] == 1
+    print(f"save finalization ({case}): passed", flush=True)
+
+
 def check_case(base, case, lean, plugin, daemon):
     base.mkdir()
+    if case in CLOSING_CASES:
+        closing_case(base, case, lean, plugin, daemon)
+        return
+    if case in OWNER_CASES:
+        project = base / "project"
+        project.mkdir()
+        (project / "lakefile.toml").write_text('name = "Main"\n[[lean_lib]]\nname = "Main"\n')
+        (project / "lean-toolchain").write_text((REPO / "lean-toolchain").read_text())
+        (project / "Main.lean").write_text(SOURCE)
+        subprocess.run([str(daemon), "--lean-cmd", str(lean), "--lean-plugin", str(plugin),
+                        "save-owner-test", case, str(project)], cwd=REPO, check=True, timeout=60,
+                       env=dict(os.environ, BEAM_TEST_SAVE_GATE_DIR=str(base),
+                                BEAM_TEST_SAVE_GATE_OP=(
+                                    "prepare-save" if case == "uncertain-save" or case in REPLY_CASES
+                                    else "write-save-trace")))
+        return
     before_dispatch = case == "before-dispatch"
     with broker(base, lean, plugin, daemon, "prepare-save" if before_dispatch else "write-save-trace") as (port, source):
         initial = ok(request(port, "sync_file", path="Main.lean"))
-        prior_artifacts = None
-        if before_dispatch:
-            saved = ok(request(port, "save_olean", path="Main.lean"))
-            prior_artifacts = {Path(saved[field]): (Path(saved[field]).read_bytes(), Path(saved[field]).stat().st_mtime_ns)
-                               for field in ["olean", "ilean", "c", "trace"]}
+        prior_artifacts = checkpoint(ok(request(port, "save_olean", path="Main.lean")))
         (base / "enabled").touch()
-        close_after = not case.startswith("save-")
+        close_after = case in ("exact", "drop")
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             pending = executor.submit(request, port, "close" if close_after else "save_olean",
                                       path="Main.lean", **({"saveArtifacts": True} if close_after else {}))
             try:
-                wait_until(lambda: (base / "entered").exists(), 35, "post-artifact trace helper")
+                wait_until(lambda: (base / "entered").exists(), 35, "save preparation helper")
                 job = Path(json.loads((base / "entered").read_text())["job"])
                 spec = json.loads((job / "request.json").read_text())
                 if not before_dispatch:
-                    assert all(Path(spec[field]).is_file() for field in ["oleanPath", "ileanPath", "cPath"]), spec
+                    assert all(path.is_file() for path in private_paths(spec)
+                               if path != Path(spec["tracePath"])), spec
                     assert not Path(spec["tracePath"]).exists(), spec
+                    assert all(path not in prior_artifacts for path in private_paths(spec)), spec
+                assert_checkpoint_unchanged(prior_artifacts)
                 version = initial["version"]
                 handle = None
                 if case == "drop":
                     ok(request(port, "drop_workspace"))
-                elif case == "absent":
-                    ok(request(port, "close", path="Main.lean"))
-                elif case not in ("exact", "unchanged"):
+                elif case != "exact":
                     if "reopen" in case or before_dispatch:
                         ok(request(port, "close", path="Main.lean"))
                     if "identical" not in case and not before_dispatch:
                         source.write_text(SOURCE.replace("11", "22"))
-                    update = ok(request(port, "refresh_file" if case == "refresh-identical" else "update_file",
-                                        path="Main.lean"))
+                    update = ok(request(port, "update_file", path="Main.lean"))
                     version = update["version"]
-                    assert version == (1 if "reopen" in case or case == "refresh-identical" or before_dispatch else 2), update
+                    assert version == (1 if "reopen" in case or before_dispatch else 2), update
                     # A fresh replacement context must survive refused old finalization.
                     seed = ok(request(port, "run_at", path="Main.lean", version=version,
                                       line=2, character=2, text="skip", storeHandle=True))
                     handle = seed["handle"]
                     assert tracked(port)["checkpointed"] is False
-                elif case == "unchanged":
-                    unchanged = ok(request(port, "sync_file", path="Main.lean"))
-                    assert unchanged["version"] == initial["version"]
                 (base / "release").touch()
                 response = pending.result(timeout=35)
             finally:
                 (base / "release").touch()
         (base / "response.json").write_text(json.dumps(response, indent=2) + "\n")
         print(f"save finalization ({case}): {json.dumps(response)}", flush=True)
-        if before_dispatch:
-            assert not response["ok"] and response["error"]["code"] == "contentModified", response
-            assert response["error"]["data"]["reason"] == "documentChanged", response
-            assert "saved" not in response["error"]["data"], "pre-dispatch refusal claimed a committed checkpoint"
-            assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in prior_artifacts} == prior_artifacts
-            assert not (base / "trace-entered").exists(), "stale basis reached trace publication"
-            assert tracked(port)["checkpointed"] is False
-            assert ok(request(port, "run_with", path="Main.lean", handle=handle, text="trivial"))["success"]
-        elif case in ("exact", "unchanged"):
-            assert ok(response)["closed"] is True
+        if case == "exact":
+            result = ok(response)
+            assert result["closed"] is True
+            assert_canonical_present(result["saved"])
+            assert_private_cleaned(spec)
             assert tracked(port) is None
         elif case == "drop":
             assert not response["ok"] and response["error"]["code"] == "workerExited", response
-            assert response["error"]["data"]["saved"]["version"] == initial["version"], response
+            assert "saved" not in (response["error"].get("data") or {}), response
+            assert "closed" not in (response["error"].get("data") or {}), response
             assert response["fileProgress"]["done"] is True
-            assert "closed" not in response["error"]["data"]
-        elif case == "absent":
-            assert not response["ok"] and response["error"]["code"] == "contentModified", response
-            data = response["error"]["data"]
-            assert data["closed"] is False and "currentVersion" not in data, data
-            assert data["saved"]["version"] == initial["version"]
-            assert tracked(port) is None
+            assert_checkpoint_unchanged(prior_artifacts)
         else:
-            if close_after:
-                assert not response["ok"] and response["error"]["code"] == "contentModified", response
-                data = response["error"]["data"]
-                assert data["reason"] == "savedDocumentChanged" and data["closed"] is False, data
-                assert data["saved"]["version"] == initial["version"] and data["currentVersion"] == version, data
-                assert response["fileProgress"]["done"] is True
-            else:
-                assert ok(response)["version"] == initial["version"]
+            assert not response["ok"] and response["error"]["code"] == "contentModified", response
+            assert response["error"]["data"]["reason"] == "documentChanged", response
+            assert "saved" not in (response["error"].get("data") or {}), response
+            assert_checkpoint_unchanged(prior_artifacts)
+            if before_dispatch:
+                assert not (base / "trace-entered").exists(), "stale basis reached trace preparation"
             current = tracked(port)
             assert current and current["version"] == version and not current["checkpointed"], current
             continued = ok(request(port, "run_with", path="Main.lean", handle=handle, text="trivial"))
             assert continued["success"], continued
-            assert source.read_text() == (SOURCE if "identical" in case else SOURCE.replace("11", "22"))
-        if not before_dispatch:
-            assert Path(spec["tracePath"]).is_file(), response
+            assert source.read_text() == (SOURCE if "identical" in case or before_dispatch
+                                          else SOURCE.replace("11", "22"))
     print(f"save finalization ({case}): passed", flush=True)
 
 

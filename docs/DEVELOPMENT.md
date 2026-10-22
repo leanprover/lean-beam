@@ -36,6 +36,17 @@ If the question is "how do I work on the repo safely and efficiently?", start he
 - `tests`: scenario-DSL coverage for LSP-level behavior, concurrent stress coverage, broker and
   wrapper regression suites, and install/runtime validation.
 
+Document acceptance owns the private construction of `DocState` and `DocumentBasis`; the LSP
+version is a projection of the accepted basis. Other modules use document transitions rather
+than constructing or rewriting document records.
+
+Pending document requests and saves carry an internal `DocumentRef` that captures the owning
+runtime, backend session, URI, and accepted basis together. Completion operations use that
+runtime and validate ownership under its state lock before changing current state. A reference
+does not prevent replacement or keep a document open. Committed checkpoint evidence survives
+refused finalization; see [the save contract](SYNC_AND_DIAGNOSTICS.md).
+These internal references have no public encoding and do not change numeric version arguments.
+
 ## Local Workflow
 
 Start from the repo root and prefer dedicated worktrees for new tasks:
@@ -134,8 +145,9 @@ can remove only the attempt's backup paths on failure. Once every backup is prep
 can restore the complete original output set, including removing outputs recorded as originally
 absent. It needs no per-replacement progress journal. A failed restoration retains its backup;
 successful restoration also removes a backup left behind by a same-file rename.
-After publication commits, backup removal is best effort: a removal failure may leave backup
-files, but does not report the save as failed or prevent the broker from writing its Lake trace.
+After publication to the supplied private destinations commits, worker backup cleanup is best
+effort: a cleanup failure may leave backup files without failing that completed worker publication.
+Canonical checkpoint publication remains the broker's responsibility.
 
 ## Common Code Smells
 
@@ -398,6 +410,11 @@ change: update [docs/TESTING.md](TESTING.md), run all affected local scripts, an
 with `actionlint`.
 
 ## Broker Server Boundaries
+
+The [exclusive close-save model](CLOSE_SAVE_MODEL.md) specifies the broker's implemented scoped
+document reservation, delayed-read admission, and committed checkpoint evidence. Its proofs and
+race traces validate the abstract model; runtime I/O, lifecycle, and publication guarantees also
+require integration tests.
 
 Keep [Beam/Broker/Server.lean](../Beam/Broker/Server.lean) focused on session lifecycle, request
 dispatch, cancellation, document sync, and save barriers. Pure metrics structures and JSON encoding

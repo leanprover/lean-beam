@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Broker.Protocol
 import Beam.Broker.Server
+import BeamTest.Broker.DocumentFixture
 import Lean
 
 open Lean
@@ -132,7 +133,8 @@ private def fakeSessionWithSyncedDoc
   let textMTime ← Lake.getFileMTime path
   let uri := Beam.Broker.sessionUri path
   let snapshot := Beam.Broker.DocumentState.FileSnapshot.ofText text textMTime (readSeq := 1)
-  let docs := ({} : Std.TreeMap String Beam.Broker.DocState).insert uri (snapshot.toDocState version)
+  let docs := ({} : Std.TreeMap String Beam.Broker.DocState).insert uri
+    (← DocumentFixture.accepted snapshot version)
   let session : Beam.Broker.Session := {
     workspaceId := fixtureWorkspaceId
     workspaceGeneration := 1

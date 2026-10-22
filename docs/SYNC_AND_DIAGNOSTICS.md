@@ -79,19 +79,62 @@ Example stale-version semantic response as printed by the wrapper on stdout:
 ```
 
 `lean-beam save` is `sync` plus a zero-build checkpoint for the synced Lake module. `lean-beam
-close-save` is `save` plus closing the tracked file afterward. Both commands return the sync verdict
+close-save` reserves that document, checkpoints it, and closes it. Both commands return the sync verdict
 they established before checkpointing: `save` under `result.sync`, and `close-save` under
 `result.saved.sync`. Document-error save failures include the blocking verdict under
 `error.data.sync`.
 
-After a checkpoint succeeds, finalization checks whether the same accepted document is still
-tracked. If it changed, closed, or reopened, `save` may return its historical
-checkpoint result but does not mark a replacement document checkpointed. `close-save` instead
-returns `contentModified` with `error.data.reason = "savedDocumentChanged"`, the committed save
-result under `error.data.saved`, and `error.data.closed = false`. `currentVersion` is included when
-the document remains tracked; it can equal the saved version after close/reopen. This request
-leaves any replacement document and its handles intact. Unchanged rereads retain the accepted
-document and do not prevent closure.
+Close-save reserves the canonical document when its source snapshot is accepted, before waiting
+for diagnostics or preparing the checkpoint. During preparation, competing document
+operations return `contentModified` with `error.data.reason = "documentClosing"`. This includes
+update, sync, refresh, save, close, and semantic or continuation requests that implicitly sync.
+Coordinate with the close-save caller before retrying these rejected operations.
+An operation accepted before reservation can affect the snapshot selected by close-save.
+
+Requests admitted before reservation but still awaiting source acceptance cannot resume after
+closure or failure cleanup: they return `documentClosing` while the reservation exists, or
+`documentAdmissionExpired` afterward, under the same `contentModified` code. Start a new request
+after coordinating with the owner. A fresh request may intentionally reopen a closed file.
+Already-dispatched semantic work may finish under its existing document and backend guards.
+Other documents remain admissible during preparation; saves still share the broker's existing
+publication mutex.
+
+The worker and Lake helper prepare per-attempt private outputs. After preparation completes, the
+broker validates the captured workspace generation, backend owner, accepted document basis, and
+cancellation state, then claims canonical publication. That final cancellation check is the cutoff:
+later cancellation cannot revoke the claim. During claimed publication, same-workspace document
+changes and owner teardown wait outside the global state mutex, then revalidate their captured
+identities. Unrelated workspace work, read-only state access, and cancellation marking remain
+reachable. The wait has no fixed filesystem-I/O bound.
+
+The broker prepares backups, removes the old trace, invalidates hashes for exactly the canonical
+artifact outputs it writes, and installs the new trace last. A failed commit attempts artifact
+restoration and trace removal; successful recovery leaves the trace absent, and recovery never
+reinstalls the old trace. Recovery failures are reported with the original failure and retain
+their backup evidence. After canonical publication commits, backup cleanup is best effort: a
+cleanup failure does not fail the checkpoint, and the broker retains the attempt's paths as cleanup
+evidence. This does not provide cross-process coordination or crash recovery.
+
+The reservation does not lock files on disk or other Beam processes. Workspace removal and
+backend failure can supersede it before publication is claimed. Failure and cancellation release
+the reservation after settling helper work. If an artifact request or final close has an uncertain
+backend outcome, Beam retires that backend; subsequent work must reacquire its document and
+continuation handles. Cancellation
+before the claim abandons private preparation; private writes do not commit a checkpoint. Later
+cancellation does not undo a committed checkpoint. The internal save handler acknowledges completion
+only after its task and staging cleanup finish, including when the handler rejects a document with
+Lean errors. An acknowledged failure leaves the document open, releases its reservation, and
+preserves other documents and continuation handles. Completion does not imply rollback: a handler
+failure can follow private artifact publication. Bare routing, watchdog, or cancellation errors without
+that acknowledgement remain uncertain, even if a JSON-RPC response was received.
+
+After a checkpoint succeeds, finalization still checks the exact accepted document. An ordinary
+`save` may return its historical checkpoint result after a concurrent change without marking the
+replacement checkpointed. Close-save retains a defensive `savedDocumentChanged` refusal if its
+document comparison fails: `error.data.saved` contains the committed checkpoint,
+`error.data.closed = false`, and `currentVersion` identifies a tracked replacement when present.
+The replacement and its handles remain intact. That receipt means the checkpoint succeeded;
+synchronize and save again if the new text needs a checkpoint.
 
 Other finalization failures after the artifacts and Lake trace have committed retain their
 original error code and message, add the checkpoint under `error.data.saved`, and preserve any
@@ -119,9 +162,8 @@ configuration from `lakefile.lean` text and never batch-builds as part of `save`
 Before replacing checkpoint artifacts, Beam invalidates Lake's cached hashes for the outputs it
 writes so later incremental builds recheck their dependents. If publication fails, Beam attempts
 to restore the previous artifacts. Failed recovery reports both errors and retains the backups
-needed for recovery. After publication commits, backup cleanup is best effort; a cleanup failure
-may leave backup files without failing the save. These steps do not make the artifact family
-atomically visible or recover from process death.
+needed for recovery. These steps do not make the artifact family atomically visible or recover
+from process death.
 
 A snapshot with `compiler.postponeCompile` enabled, or with declarations still waiting for deferred
 compilation, is not a complete checkpoint. Its sync result has `readiness.saveReady: false` and

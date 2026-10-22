@@ -36,7 +36,7 @@ initialize
     Beam.LSP.RunAt.handleReleaseHandle
   registerLspRequestHandler Save.saveArtifactsMethod
     Save.SaveArtifactsParams
-    Save.SaveArtifactsResult
+    Save.SaveArtifactsCompletion
     Save.handleSaveArtifacts
   registerLspRequestHandler Save.saveReadinessMethod
     Save.SaveReadinessParams

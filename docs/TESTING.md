@@ -56,6 +56,13 @@ remaining as the aggregate request-surface runner.
 
 ## Race-Test Discipline
 
+`lake build BeamModel` checks the independent specification library, including proofs for the
+[exclusive close-save model](CLOSE_SAVE_MODEL.md). `lake build beam-closing-model-test`
+builds that library and its scenario runner; `.lake/build/bin/beam-closing-model-test` runs the
+explicit transition schedules. The fast suite includes the runner and its library dependency.
+These checks validate the abstract model; the broker's runtime guarantees also require integration
+tests.
+
 Race and concurrency regressions should wait for observable state, not for guessed wall-clock
 delays. Prefer request IDs plus cancellation acknowledgements, wrapper progress text, registry
 files, non-empty response files, and Lean-side sentinel files that prove a slow command reached the
@@ -341,10 +348,12 @@ For a focused run, supply `--installation PATH --toolchain TOOLCHAIN`, optionall
 
 `lake exe beam-save-publication-test` separately exercises real filesystem publication with
 injected partial backup, partial replacement, first-replacement, and restoration failures, plus
-successful publication and a real hash-directory obstruction. It checks restored bytes, continued
-rollback, and retention of a failed-restoration backup. Fast, LSP, and native-toolchain suites run
-it; `--keep NEW-DIRECTORY` retains its filesystem evidence. Its transaction-helper checks also
-cover typed failures and commit-cleanup errors.
+successful publication. It checks restored bytes, continued rollback, and retention of a
+failed-restoration backup, with separate strict-unlink checks for missing files, regular files,
+and directories. Fast, LSP, and native-toolchain suites run it; `--keep NEW-DIRECTORY` retains its
+filesystem evidence. Its transaction-helper checks also cover typed failures and commit-cleanup
+errors. The broker's `beam-publication-test` covers a real obstruction at the last output hash and
+requires every output hash to be absent before the first canonical artifact replacement.
 
 Use [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) to validate one
 supported bundle lane at a time. The module-save case requires and removes the batch-produced IR

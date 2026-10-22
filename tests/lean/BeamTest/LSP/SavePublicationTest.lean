@@ -60,7 +60,6 @@ private def noBackups : Array (Option String) := #[none, none, none, none]
 private inductive Failure where
   | none
   | operations (faults : Array Operation)
-  | hashDirectory (index : Nat)
 
 private structure Case where
   name : String
@@ -85,14 +84,6 @@ private def runCase (base : FilePath) (test : Case) : IO Unit := do
   for (artifact, index) in artifacts.toList.zipIdx do
     IO.FS.writeFile (staged artifact) s!"new {index}"
     if let some old := oldContents[index]! then IO.FS.writeFile (target artifact) old
-  let hashObstruction? := match test.failure with
-    | .hashDirectory index => some ((root / s!"target-{index}").addExtension "hash")
-    | _ => none
-  if let .hashDirectory barrierIndex := test.failure then
-    for (artifact, index) in artifacts.toList.zipIdx do
-      if index < barrierIndex then
-        IO.FS.writeFile ((target artifact).addExtension "hash") s!"cached hash {index}"
-    if let some path := hashObstruction? then IO.FS.createDir path
   let faults := match test.failure with
     | .operations faults => faults
     | _ => #[]
@@ -122,11 +113,6 @@ private def runCase (base : FilePath) (test : Case) : IO Unit := do
   let actualTargets ← artifacts.mapM (fun artifact => contents? (target artifact))
   let actualBackups ← artifacts.mapM (fun artifact => contents? (backup artifact))
   let remainingStaging ← artifacts.mapM (fun artifact => (staged artifact).pathExists)
-  let remainingHashes ← artifacts.mapM (fun artifact =>
-    ((target artifact).addExtension "hash").pathExists)
-  let hashObstructionRemains ← match hashObstruction? with
-    | some path => path.isDir
-    | none => pure false
   let error? := match outcome with
     | .ok _ => none
     | .error error => some error.toString
@@ -135,8 +121,6 @@ private def runCase (base : FilePath) (test : Case) : IO Unit := do
     ("case", toJson test.name), ("targets", toJson actualTargets),
     ("backups", toJson actualBackups), ("remainingStaging", toJson remainingStaging),
     ("completed", toJson completed), ("faultsHit", toJson hits),
-    ("remainingHashes", toJson remainingHashes),
-    ("hashObstructionRemains", toJson hashObstructionRemains),
     ("error", toJson error?)
   ]
   IO.FS.writeFile (root / "result.json") (report.pretty ++ "\n")
@@ -159,17 +143,6 @@ private def runCase (base : FilePath) (test : Case) : IO Unit := do
             require s!"{test.name}: lost failure diagnostic for {reprStr operation}"
               (message.contains (injectedMessage operation))
       | .error error => throw error
-  | .hashDirectory barrierIndex =>
-      require s!"{test.name}: hash obstruction changed" hashObstructionRemains
-      for index in [:barrierIndex] do
-        require s!"{test.name}: preceding hash {index} was not invalidated" (!remainingHashes[index]!)
-      match outcome with
-      | .ok _ => throw <| IO.userError s!"{test.name}: publication ignored the hash obstruction"
-      | .error (.userError message) =>
-          throw <| IO.userError s!"{test.name}: expected a filesystem error, got: {message}"
-      | .error (.noFileOrDirectory ..) =>
-          throw <| IO.userError s!"{test.name}: existing hash directory reported absent"
-      | .error _ => pure ()
   for index in [:artifacts.size] do
     require s!"{test.name}: target {index} expected {reprStr (test.expectedTargets[index]!)}, got {reprStr (actualTargets[index]!)}"
       (actualTargets[index]! == test.expectedTargets[index]!)
@@ -185,11 +158,34 @@ private def runCase (base : FilePath) (test : Case) : IO Unit := do
         | .install _ => true
         | _ => false
   if test.noCompletedRestores then
-    require s!"{test.name}: backup preparation failure attempted canonical recovery" <|
+    require s!"{test.name}: backup preparation failure attempted supplied-output recovery" <|
       !completed.any fun operation => match operation with
         | .restore _ => true
         | _ => false
   IO.println s!"worker publication: {test.name} passed"
+
+private def checkRemoveFileIfExists (base : FilePath) : IO Unit := do
+  let root := base / "strict-remove"
+  IO.FS.createDirAll root
+  let missing := root / "missing"
+  (savePrivate% Beam.LSP.Save.removeFileIfExists) missing
+  require "strict removal created a missing file" (!(← missing.pathExists))
+  let file := root / "file"
+  IO.FS.writeFile file "owned file"
+  (savePrivate% Beam.LSP.Save.removeFileIfExists) file
+  require "strict removal retained a regular file" (!(← file.pathExists))
+  let directory := root / "directory"
+  IO.FS.createDir directory
+  let outcome ← ((savePrivate% Beam.LSP.Save.removeFileIfExists) directory).toBaseIO
+  match outcome with
+  | .ok () => throw <| IO.userError "strict removal accepted a directory"
+  | .error (.noFileOrDirectory ..) =>
+      throw <| IO.userError "strict removal reported an existing directory absent"
+  | .error (.userError message) =>
+      throw <| IO.userError s!"strict removal lost the typed filesystem error: {message}"
+  | .error _ => pure ()
+  require "strict removal changed the directory obstruction" (← directory.isDir)
+  IO.println "strict ENOENT removal checks passed"
 
 private def run (base : FilePath) : IO Unit := do
   -- Start with a genuine partial replacement, so the old journal must fail on restored bytes.
@@ -220,12 +216,7 @@ private def run (base : FilePath) : IO Unit := do
       .install 0, .install 1, .install 2, .install 3]
     expectedTargets := #[some "new 0", some "new 1", some "new 2", some "new 3"]
   }
-  runCase base {
-    -- Obstruct the last hash: even after earlier invalidations, no output may be replaced.
-    name := "hash-removal", failure := .hashDirectory 3
-    requiredCompleted := #[.backup 0, .backup 2, .backup 3], noCompletedInstalls := true
-    expectedRollback := #[.restore 3, .restore 2, .restore 0]
-  }
+  checkRemoveFileIfExists base
   BeamTest.TransactionTest.run
 
 /-- Non-shipped real-filesystem regression for the worker's private publication algorithm. -/

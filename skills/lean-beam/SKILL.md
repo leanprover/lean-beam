@@ -62,6 +62,15 @@ lean-beam save MyPkg/Sub/Module.lean
   already committed checkpoint of the earlier version; run `update` or `sync` and save again if
   needed.
 
+- `close-save` reserves the accepted document. On `contentModified` with reason `documentClosing`,
+  coordinate with its caller before issuing a new command; do not run an update/sync retry loop.
+  During claimed canonical publication, same-workspace changes wait for settlement.
+- `documentAdmissionExpired` means closure or backend replacement invalidated this request. After
+  coordination, issue a new request and reacquire handles if the backend was replaced.
+- Other postcommit failures also retain `error.data.saved`, with prior data under
+  `error.data.originalData`. An uncertain close does not assert `closed = false`; cancellation does
+  not undo a committed checkpoint.
+
 ## Choosing A Command
 
 | Need | Command |

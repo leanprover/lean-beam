@@ -12,7 +12,9 @@ import Beam.Broker.Server
 import Beam.Daemon.Startup
 import Beam.JsonPretty
 import BeamTest.Broker.ClientUtil
+import BeamTest.Broker.DocumentFixture
 import BeamTest.Broker.JsonAssert
+import BeamTest.Broker.PublicationClaimTest
 import Lean
 
 open Lean
@@ -1875,7 +1877,7 @@ private def checkFailedReaderAdmission : IO Unit := do
     let path := base / "Open.lean"
     IO.FS.writeFile path text
     let uri := sessionUri (← IO.FS.realPath path)
-    let doc := (DocumentState.FileSnapshot.ofText text default).toDocState 1
+    let doc ← BeamTest.Broker.DocumentFixture.accepted (DocumentState.FileSnapshot.ofText text default)
     withShutdownObservedSession failedId base (base / "failed-shutdown") .stall fun initial => do
       withShutdownObservedSession healthyId (base / "healthy") (base / "healthy-shutdown") .stall fun healthy => do
         let exitCode ← IO.mkRef (none : Option UInt32)
@@ -2718,6 +2720,7 @@ def main : IO Unit := do
   checkRequestBoundary
   checkWorkspaceRoutingFields
   checkWorkspaceLifecycleProtocol
+  PublicationClaimTest.run
   checkFixtureChildCleanupOnFailure
   checkFixtureCleanupRejectsWaitFailure
   checkLateWriteFailure .open

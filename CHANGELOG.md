@@ -8,6 +8,11 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Changed
 
+- Close-save reserves its accepted document through checkpointing and closure. During preparation,
+  competing document operations fail with `contentModified` / `documentClosing`; invalidated delayed
+  requests use `documentAdmissionExpired`. Callers coordinate retries after the closing request
+  finishes. Uncertain backend writes retire that backend before the close-save scope completes.
+  Completed save-handler rejections preserve unrelated documents and continuation handles.
 - Shrink the installed `lean-beam` skill from about 32 KB to under 10 KB by stating each workflow
   rule once. Installation, session internals, recovery, and feedback details move to the new
   `references/setup-and-recovery.md` and `references/feedback.md`. MCP tool descriptions drop

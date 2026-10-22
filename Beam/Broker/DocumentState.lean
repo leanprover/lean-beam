@@ -16,14 +16,15 @@ namespace Beam.Broker
 
 /-- Internal identity of an accepted document revision; never serialized to clients. -/
 structure DocumentBasis where
+  private mk ::
   version : Nat
-  acceptedSeq : Nat
+  private acceptedSeq : Nat
   deriving BEq, Repr
 
 structure DocState where
-  version : Nat
-  /-- Read sequence that opened or changed this document; unchanged reads preserve it. -/
-  acceptedBasisSeq : Nat := 0
+  private mk ::
+  /-- Only document acceptance constructs this value; unchanged reads preserve it. -/
+  private acceptedBasis : DocumentBasis
   /-- Saved source text without line-ending normalization; controls versions and freshness. -/
   rawSourceHash : UInt64
   /-- Hash of Lean's document text, with CRLF normalized to LF. -/
@@ -40,6 +41,9 @@ structure DocState where
   fileProgress? : Option SyncFileProgress := none
   /-- Broker event sequence of the latest successful sync barrier for this document. -/
   lastSyncEventSeq : Nat := 0
+
+def DocState.version (doc : DocState) : Nat :=
+  doc.acceptedBasis.version
 
 structure ModuleHistory where
   path : String
@@ -59,7 +63,7 @@ abbrev Docs := Std.TreeMap String DocState
 abbrev ModuleHistories := Std.TreeMap String ModuleHistory
 
 def basis (doc : DocState) : DocumentBasis :=
-  { version := doc.version, acceptedSeq := doc.acceptedBasisSeq }
+  doc.acceptedBasis
 
 inductive BasisMatch where
   | current
@@ -154,9 +158,8 @@ private def nextSnapshotSeq (docState : DocState) (snapshot : FileSnapshot) : Na
   if snapshot.readSeq == 0 then docState.syncSnapshotSeq else snapshot.readSeq
 
 /-- Initialize tracked state by copying all hash representations from the same snapshot. -/
-def FileSnapshot.toDocState (snapshot : FileSnapshot) (version : Nat) : DocState := {
-  version
-  acceptedBasisSeq := snapshot.readSeq
+private def FileSnapshot.toDocState (snapshot : FileSnapshot) (version : Nat) : DocState := {
+  acceptedBasis := { version, acceptedSeq := snapshot.readSeq }
   rawSourceHash := snapshot.rawSourceHash
   documentHash := snapshot.documentHash
   lakeTraceHash := snapshot.lakeTraceHash
