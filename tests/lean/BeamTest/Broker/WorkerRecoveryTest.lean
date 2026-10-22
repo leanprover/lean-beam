@@ -187,6 +187,70 @@ private def runRealExit (description : Beam.Runtime.Description) (root : System.
   finally
     server.close
 
+private def runLateError (description : Beam.Runtime.Description) (root : System.FilePath)
+    (replaceWorkspace : Bool) : IO Unit := do
+  IO.FS.createDirAll root
+  IO.FS.writeFile (root / "Main.lean") "def mainValue : Nat := 42\n"
+  let config := BrokerConfig.ofRuntime root description
+  let server ← ServerRuntime.create config workspaceId
+  let held ← IO.mkRef (none : Option PendingRequest)
+  try
+    discard <| result (← call server (.syncFile { path := "Main.lean" }))
+    let original ← session server
+    server.withState do
+      let state ← get
+      let some workspace := state.workspaces.get? workspaceId
+        | throw <| IO.userError "missing late-error workspace"
+      let current := { original with stdin := { original.stdin with putStr := fun text => do
+        if text.contains runAtMethod && (← held.get).isNone then
+          let entries ← original.pending.snapshotEntries
+          require "late-error fixture expects one pending request" (entries.size == 1)
+          let some (id, pending) := entries[0]?
+            | throw <| IO.userError "missing held worker request"
+          discard <| original.pending.remove id
+          held.set (some pending)
+        else original.stdin.putStr text
+      } }
+      set { state with workspaces := state.workspaces.insert workspaceId {
+        workspace with lean := { workspace.lean with session? := some current } } }
+    let request ← IO.asTask (prio := .dedicated) <| call server (.runAt {
+      path := "Main.lean", version := 1, line := 0, character := 0, text := "#check Nat"
+    })
+    try
+      let deadline := (← IO.monoMsNow) + 20000
+      let mut pending? ← held.get
+      while pending?.isNone do
+        require "late-error request did not reach its gate" ((← IO.monoMsNow) < deadline)
+        IO.sleep 10
+        pending? ← held.get
+      let some pending := pending? | throw <| IO.userError "missing gated worker request"
+      if replaceWorkspace then
+        match ← server.initWorkspaceWithConfig workspaceId config (some .reset) with
+        | .ok _ => pure ()
+        | .error failure => throw <| IO.userError failure.error.message
+        discard <| result (← call server (.syncFile { path := "Main.lean" }))
+      else
+        discard <| result (← call server (.refreshFile { path := "Main.lean" }))
+      let uri := sessionUri (root / "Main.lean")
+      let replacement ← doc server uri
+      pending.resolveError .workerCrashed "late error from original worker"
+      let response ← IO.ofExcept request.get
+      require "late worker error still reaches its original caller"
+        (response.error?.map (·.code) == some "workerCrashed")
+      let after ← doc server uri
+      require "late error cannot invalidate a replacement document or workspace"
+        (after.workerError?.isNone && DocumentState.basis after == DocumentState.basis replacement)
+      requireJsonBool "replacement remains usable after a late error" "success" true
+        (← result (← call server (.runAt {
+          path := "Main.lean", version := after.version, line := 0, character := 0, text := "#check Nat"
+        })))
+    finally
+      if let some pending ← held.get then
+        pending.resolveError .workerCrashed "release late-error fixture"
+      discard <| IO.ofExcept request.get
+  finally
+    server.close
+
 def run (description : Beam.Runtime.Description) (root : System.FilePath) : IO Unit := do
   for (name, code, cancelled, useUpdate) in [
       ("exited", JsonRpc.ErrorCode.workerExited, false, false),
@@ -196,5 +260,9 @@ def run (description : Beam.Runtime.Description) (root : System.FilePath) : IO U
     runCase description (root / name) code cancelled useUpdate
     IO.println s!"worker recovery: {name} passed"
   runRealExit description (root / "real-exit")
+  runLateError description (root / "late-document") false
+  IO.println "worker recovery: late error after document reopening passed"
+  runLateError description (root / "late-workspace") true
+  IO.println "worker recovery: late error after workspace replacement passed"
 
 end BeamTest.Broker.WorkerRecoveryTest
