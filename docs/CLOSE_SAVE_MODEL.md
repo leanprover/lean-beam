@@ -115,9 +115,13 @@ of the model, not a refinement proof for the broker or a termination guarantee.
 
 [AdmissionLaws.lean](../model/BeamModel/AdmissionLaws.lean) additionally imports the production
 pure component and proves that reservation rejects new admissions, release removes exactly its
-own entry and is idempotent, and every transition preserves allocation bounds. Successful
-admission allocates a capability different from all retained live or revoked capabilities.
-These are implementation laws; they still do not establish the broker's I/O behavior.
+own entry and is idempotent, and every transition preserves allocation bounds. Fencing followed by
+matching release leaves every same-URI permit stale; successful reservation followed by release
+has the same property. Retirement makes every permit stale. These three laws need no allocation
+validity, prior membership, or distinctness assumptions; reservation additionally requires its
+successful result. Successful admission allocates a capability different from all retained live or
+revoked capabilities under the existing allocation invariant. These are implementation laws;
+they still do not establish the broker's I/O behavior.
 
 [ClosingTest.lean](../tests/lean/BeamTest/Model/ClosingTest.lean) runs eleven explicit schedules:
 exclusive closure, delayed read versus intentional reopen, failure cleanup, retry on an unchanged
@@ -166,6 +170,15 @@ cancellation during its existing 30-second response wait. Its acknowledged succe
 the final publication guard still rejects a cancelled caller. Worker/channel failure or a helper
 timeout does not establish producer settlement and may retain the attempt's directories and claims.
 
+`Plan.ready` checks its phase, not producer completion. The sequencing obligation belongs to
+`saveOleanCore`: accept a successful typed worker result and validate its version/text hash, check
+caller cancellation, obtain successful private-trace helper completion, then call `Plan.ready`.
+Only afterward may the final owner/basis/cancellation guard claim promotion. The publication
+model's `workerComplete` and `traceComplete` actions represent these successful preparation
+boundaries. A typed worker failure establishes settlement for cleanup but does not authorize trace
+preparation or readiness. This correspondence is tested runtime sequencing, not a theorem about
+handler/helper I/O.
+
 After preparation completes, the broker validates the captured workspace generation, backend
 owner, accepted document basis, and cancellation state, then claims publication. That final
 cancellation check is the cutoff: later cancellation cannot revoke the claim. Same-workspace changes
@@ -186,18 +199,26 @@ crash recovery, and do not make the artifact family atomically visible.
 
 ## Mapping to the broker
 
-The runtime maps the abstract boundaries as follows:
+The table separates laws of production code from abstract specifications and runtime evidence.
+`Admission.*` names [direct-production laws](../model/BeamModel/AdmissionLaws.lean) of
+`DocumentAdmission`; `Closing.*` and `Publication.*` name the abstract law libraries above. **CI**
+means the named regression is wired into that suite, not that its I/O behavior is kernel-proved.
+**Opt-in** means a separate directed run. Execution and delivery have separate lifetimes under the
+[MCP transport contract](MCP_TRANSPORT_CONTRACT.md#2-execution-admission-and-delivery-have-different-lifetimes).
 
-| Model boundary | Integration obligation |
-| --- | --- |
-| Read permit | Capture before source reads and other asynchronous waits; retain it until admission |
-| Source acceptance | Preserve the existing `readSeq` ordering and file-change checks |
-| Reserve | Combine acceptance and reservation without an unlocked check/write gap |
-| Owner and accepted basis | Use the private runtime-bound document reference, including workspace/backend lifetime |
-| Competing operations | Cover implicit sync in semantic requests, explicit update/sync, refresh, save, and close |
-| Commit observation | Preserve `SaveOleanCompleted` evidence after artifact and trace acknowledgement |
-| Cleanup | Compare the lease against current owner state; no captured-state restoration |
-| Owner replacement | Allow drop and teardown to supersede preparation; settle claimed publication before owner changes |
+| Invariant | Theorem / proof scope | Production boundary | Regression / suite | Unproved bridge or assumption |
+| --- | --- | --- | --- | --- |
+| Delayed reads stay invalid after ordinary fence and matching cleanup | Production `Admission.fence_release_rejects_same_uri`; abstract `Closing.old_read_after_close` | `withDocumentAdmission`, `fenceDocument`, matching `finally` release | CI Fast: `AdmissionTest`, `SaveOwnerTest.delayedAdmission` | Permit capture precedes asynchronous source work; `readSeq` orders acceptance. |
+| Reservation excludes new work; older permits stay invalid after cleanup | Production `Admission.reserve_blocks_admission`, `reserve_release_rejects_same_uri`; abstract `Closing.old_read_after_release` | Source acceptance plus `fenceDocument(reserve := true)` in one state transition | CI Fast: `AdmissionTest`; `test-save-finalization.py` exclusive, failure, and cancellation cases | Every implicit/explicit document operation uses admission; the state transition remains atomic. |
+| Cleanup cannot release a different request | Production `Admission.release_preserves_other_entry`, `release_idempotent`; abstract `Closing.foreign_release_unchanged` | `withDocumentAdmission` releases its captured permit only in the matching workspace generation | CI Fast: `AdmissionTest` retry/old cleanup; `SaveOwnerTest` replacement cases | Workspace generation and captured permit are retained across waits, not recaptured. |
+| Retirement invalidates permits and old finalizers | Production `Admission.retire_rejects_permit`; abstract `Closing.old_lease_after_replacement` | Backend detach/retire, `DocumentRef.withCurrentDocument` and session identity checks | CI Fast: `AdmissionTest`; `SaveOwnerTest` backend/workspace replacement; `PublicationClaimTest` exited-owner schedule | Runtime owner freshness and exact basis checks implement the abstract owner identity. |
+| Allocation does not reuse retained capabilities | Production `Admission.admission_is_fresh` and transition `*_valid` laws | `State.admit` monotone `nextId`; workspace lifetime guards | CI Fast: `AdmissionTest` freshness/bounded-state schedules | `Admission.Valid` holds initially and is preserved; workspace replacement supplies a distinct lifetime. |
+| Successful worker preparation precedes trace completion and readiness | Abstract `Publication.trace_requires_worker_completion`, `run_valid` | `saveOleanCore`: accepted worker result → trace helper success → `Plan.ready` | CI Fast: `SaveOwnerTest` post-serialization cancellation, trace/prelaunch cases; `PublicationTest` missing trace | Typed acknowledgements establish settlement; phase changes follow this runtime order. `Plan.ready` alone does not prove it. |
+| Abandoned private work cannot regain canonical authority | Abstract `Publication.abandoned_run`, `not_ready_cannot_publish` | `Plan.ready`/`promote` phase guards and `dispose`; final captured owner/basis check | CI Fast: `beam-publication-test`, save owner-loss cases; opt-in: `test-private-save-publication.py` | Private attempts receive disjoint paths; no cross-process writer or crash model. |
+| Final owner/basis/cancellation validation claims publication before filesystem effects; affected owner changes wait | Abstract `Publication.stale_owner_cannot_publish` covers stale authority only; waiting is unmodeled | `withDocumentPublication`, `withPublicationAvailable`, release/signalling in `finally` | CI Fast: `PublicationClaimTest` real-rename gate, cancellation, teardown, and failure schedules | All affected mutations join the claim; no mutex/wait/liveness theorem. |
+| Canonical failure attempts recovery; successful rollback restores beforeimages; committed cleanup retains success | Filesystem behavior is unmodeled | `Publication.promote` backup transaction, exact hash invalidation, trace-last install, rollback/retention | CI Fast/native: `beam-publication-test`; CI Slow: installed checkpoint hash/replay tests | Filesystem rename/hard-link behavior, continued process execution, and no independent Beam/Lake writers. |
+| Known commit survives later finalization failure | Abstract `Closing.run_preserves_commit`, `finish_requires_ownership` | `SaveOleanCompleted` after promotion; `finalizeSavedResponse` preserves `saved` | CI Fast: `ClosingTest`; save finalization uncertain-close/receipt cases | A commit must first become known; the model does not recover receipts after process or delivery failure. |
+| Execution cleanup, accepted output, and physical delivery are distinct | Not modeled; [stdio coordinator](../Beam/Mcp/StdioServer.lean), [output writer](../Beam/Mcp/StdioOutput.lean) | `finishExecution` → `finishRequest`/`Slot.respond` → `deliveryTask`/`finishDelivery` | CI Fast: [McpRuntimeLifetimeTest](../tests/lean/BeamTest/Broker/McpRuntimeLifetimeTest.lean), `McpOutputTest`; CI Slow: [blocked-stdout close-save/drop/reopen](../tests/test-mcp-stdio.py) (`run_blocked_stdout_eof_cleanup`, live drop) | Bounded frame acceptance is not delivery; writer completion is not proof the client read the receipt. No model refinement or universal delivery guarantee. |
 
 [test-save-finalization.py](../tests/test-save-finalization.py) gates helper preparation and
 trace completion to check prompt conflict rejection, another document's admission, and release
@@ -269,8 +290,14 @@ workspace generation, and backend identity rather than prescribing their represe
 `observeCommit` is an external fact supplied by a completed publication, not an authorization
 check. It deliberately allows a commit observation after owner loss. The append-only receipt
 list is proof bookkeeping, not a proposal for a durable journal or unbounded production cache.
-The model proves preservation of a known receipt, not that all real commits are acknowledged or
-that a client receives the receipt. See the [caller-facing delivery limitation](SYNC_AND_DIAGNOSTICS.md#command-model).
+A known commit is broker evidence (`SaveOleanCompleted`) that canonical promotion succeeded.
+Accepted output means a bounded terminal frame has entered the output
+writer's in-memory state; it may be an output-limit error rather than the original rich response.
+Physical delivery means that writer's frame write/flush completed, not that the client consumed it.
+These are separate milestones: neither response acceptance nor delivery creates or rolls back a
+checkpoint. The model proves preservation of a known receipt, not that every real commit becomes
+known, fits an accepted response, or reaches a client. See the
+[caller-facing delivery limitation](SYNC_AND_DIAGNOSTICS.md#command-model).
 
 This model does not establish artifact-family coherence, coordination with other Beam processes
 or Lake writers, dependency freshness, backend delivery, global-lock freedom, crash recovery,

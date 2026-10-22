@@ -15,7 +15,8 @@ they do not import the runtime or its test fixtures. Production code does not im
   identity/basis validation. Canonical commit is atomic only in this model: it does not prove
   filesystem rollback, crash atomicity, sidecar correctness, or exclusion of other processes.
 - [AdmissionLaws](BeamModel/AdmissionLaws.lean) checks ownership and allocation laws of the
-  pure component actually used by the broker.
+  pure component actually used by the broker, including fence/reservation cleanup and retirement
+  invalidation, as well as allocation freshness.
 - [The design note](../docs/CLOSE_SAVE_MODEL.md) defines assumptions, current implementation
   gaps, and the mapping to broker regression tests.
 
@@ -35,3 +36,11 @@ lake build beam-closing-model-test
 
 A proved model property is not automatically a proved implementation property. Keep the
 implementation correspondence, environment assumptions, and unmodeled effects explicit.
+
+When a semantic change affects admission, ownership, cleanup, fencing, publication readiness/commit,
+cancellation, or response acceptance/delivery, review the
+[correspondence table](../docs/CLOSE_SAVE_MODEL.md#mapping-to-the-broker).
+Update the relevant model, proof, test, or correspondence entry. If the existing abstraction and
+evidence still apply, briefly explain why in the review. Routine refactors do not require a model
+or documentation edit.
+Keep abstract proofs, direct-production laws, runtime tests, and remaining assumptions distinct.
