@@ -660,7 +660,8 @@ private def handleBeamStats
           pure <| callToolResult result
 
 private def handleDropWorkspace
-    (workspace : ResolvedWorkspace) : Std.AtomicT RuntimeState IO (Except RpcError Json) := do
+    (state : ServerState)
+    (workspace : ResolvedWorkspace) : IO (Except RpcError Json) := do
   let resultJson (dropped invalidatedHandles : Bool) (reason? : Option String := none) : Json :=
     Json.mkObj <| [
       ("workspace", toJson workspace.descriptor),
@@ -669,22 +670,39 @@ private def handleDropWorkspace
     ] ++ match reason? with
       | some reason => [("reason", toJson reason)]
       | none => []
-  match ← get with
-  | .closed _ => pure (.error runtimeClosedError)
-  | .active none =>
-      pure <| .ok <| callToolResult <| resultJson false false (some "notFound")
-  | .active (some runtime) =>
-      try
-        match ← runtime.broker.dropWorkspace workspace.workspaceId with
-        | .ok dropped =>
-            pure <| .ok <| callToolResult <| resultJson dropped.dropped dropped.invalidatedHandles dropped.reason?
-        | .error failure =>
-            pure <| .ok <| callToolErrorResult <| ToolError.fromBrokerError failure.error
-      finally
-        -- Broker removal commits before detached-session cleanup, which may throw. Keep the
-        -- admission cache consistent with that committed state while preserving the cleanup error.
-        if (← runtime.broker.workspaceRoot? workspace.workspaceId).isNone then
-          set (RuntimeState.active (some { runtime with workspaces := runtime.workspaces.erase workspace.workspaceId }))
+  let captured : Except RpcError (Option (Beam.Broker.ServerRuntime × Option Nat)) ←
+      state.runtime.atomically do
+    match ← get with
+    | .closed _ => pure (.error runtimeClosedError)
+    | .active none => pure (.ok none)
+    | .active (some runtime) =>
+        pure <| .ok <| some (runtime.broker, runtime.workspaces[workspace.workspaceId]?.map (·.serial))
+  let runtime? ← match captured with
+    | .error error => return .error error
+    | .ok runtime? => pure runtime?
+  let some (broker, serial?) := runtime?
+    | return .ok <| callToolResult <| resultJson false false (some "notFound")
+  try
+    -- Detached-session cleanup can block. It must not retain the lock needed to close admission
+    -- and detach the runtime, including teardown of every other workspace after EOF.
+    match ← broker.dropWorkspace workspace.workspaceId with
+    | .ok dropped =>
+        pure <| .ok <| callToolResult <| resultJson dropped.dropped dropped.invalidatedHandles dropped.reason?
+    | .error failure =>
+        pure <| .ok <| callToolErrorResult <| ToolError.fromBrokerError failure.error
+  finally
+    -- Removal commits before cleanup, which may throw. Serials are allocated by ServerState and
+    -- never reused. Reconcile only that captured instance; late cleanup must neither erase a
+    -- recreated workspace nor reopen a closed session.
+    if let some serial := serial? then
+      if (← broker.workspaceRoot? workspace.workspaceId).isNone then
+        state.runtime.atomically do
+          match ← get with
+          | .active (some current) =>
+              if current.workspaces[workspace.workspaceId]?.any (·.serial == serial) then
+                set (RuntimeState.active (some { current with
+                  workspaces := current.workspaces.erase workspace.workspaceId }))
+          | .active none | .closed _ => pure ()
 
 private def serverIdentity
     (opts : Options)
@@ -858,7 +876,7 @@ def Internal.handleToolCall
       | .error err => return .ok <| callToolErrorResult err
     if initialProgress == 0 then
       emitProgress? progress? s!"{params.name.key}: preparing workspace eviction"
-    let result ← state.runtime.atomically <| handleDropWorkspace workspace
+    let result ← handleDropWorkspace state workspace
     Internal.traceMcp
       s!"tools/call workspace drop complete id={req.id.label} tool={params.name.key}"
     return result

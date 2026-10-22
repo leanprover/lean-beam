@@ -37,8 +37,7 @@ private def checkPermanentClosure : IO Unit := do
   let root : System.FilePath := "."
   let workspace := (mcpPrivate% Beam.Mcp.Server.ResolvedWorkspace.mk)
     (Beam.Workspace.Descriptor.ofRoot root) root "closed"
-  let dropped ← ((mcpPrivate% Beam.Mcp.Server.ServerState.runtime) state).atomically <|
-    (mcpPrivate% Beam.Mcp.Server.handleDropWorkspace) workspace
+  let dropped ← (mcpPrivate% Beam.Mcp.Server.handleDropWorkspace) state workspace
   match dropped with
   | .ok _ => throw <| IO.userError "closed session was mistaken for an absent workspace"
   | .error error =>
@@ -142,13 +141,21 @@ private def checkEvictionCleanupDuringEof : IO Unit :=
     let root := System.FilePath.mk s!"/tmp/beam-mcp-eviction-cutoff-{← IO.monoNanosNow}"
     let cleanupEntered ← IO.Promise.new
     let releaseCleanup ← IO.Promise.new
+    let otherTeardown ← IO.Promise.new
     let state := (stdioPrivate% Beam.Mcp.Server.Coordinator.state) coordinator
     IO.FS.createDirAll root
     let root ← Beam.resolveExistingPath root
     try
       IO.FS.writeFile (root / "lakefile.lean") "import Lake\nopen Lake DSL\npackage fixture\n"
       let workspaceId := (Beam.Workspace.Descriptor.ofRoot root).cacheKey
+      let otherRoot := root / "other"
+      IO.FS.createDirAll otherRoot
+      IO.FS.writeFile (otherRoot / "lakefile.lean") "import Lake\nopen Lake DSL\npackage other\n"
+      let otherId := (Beam.Workspace.Descriptor.ofRoot otherRoot).cacheKey
       let broker ← Beam.Broker.ServerRuntime.create { root } workspaceId
+      match ← broker.initWorkspaceWithConfig otherId { root := otherRoot } with
+      | .ok _ => pure ()
+      | .error failure => throw <| IO.userError failure.error.message
       IO.FS.writeFile (root / "empty-stderr") ""
       let capture ← IO.FS.withFile (root / "empty-stderr") .read fun source => do
         let capture ← Beam.Broker.startBackendStderrCapture source
@@ -167,12 +174,21 @@ private def checkEvictionCleanupDuringEof : IO Unit :=
         stdin := stream, stdout := stream, stderrCapture := capture
         pending := ← Beam.Broker.PendingRequestStore.create
       }
+      let otherProcess ← Beam.Broker.BackendProcess.create 0 (do
+        otherTeardown.resolve ()
+        pure (some 0)) (throw <| IO.userError "fixture must not signal the other observed exit")
+      let otherSession := { session with
+        workspaceId := otherId, root := otherRoot, sessionToken := "other-workspace"
+        proc := otherProcess, pending := ← Beam.Broker.PendingRequestStore.create }
       broker.state.atomically do
         let current ← get
         let some workspace := current.workspaces.get? workspaceId
           | throw <| IO.userError "eviction fixture lost its workspace"
         let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
-        set { current with workspaces := current.workspaces.insert workspaceId workspace }
+        let some other := current.workspaces.get? otherId
+          | throw <| IO.userError "eviction fixture lost its other workspace"
+        let other := { other with lean := { nextEpoch := 2, session? := some otherSession } }
+        set { current with workspaces := current.workspaces.insert workspaceId workspace |>.insert otherId other }
       let description : Beam.Runtime.Description := {
         command := "unused", plugin := root / "unused-plugin", daemonBin := root / "unused-daemon"
         toolchain := "eviction-cutoff", identity := ⟨root, "eviction-cutoff"⟩
@@ -180,8 +196,10 @@ private def checkEvictionCleanupDuringEof : IO Unit :=
       let owned := (mcpPrivate% Beam.Mcp.Server.OwnedRuntime.mk) broker <|
         ({} : Std.HashMap _ _).insert workspaceId
           ((mcpPrivate% Beam.Mcp.Server.OwnedWorkspace.mk) root description 0)
+        |>.insert otherId ((mcpPrivate% Beam.Mcp.Server.OwnedWorkspace.mk) otherRoot description 1)
       ((mcpPrivate% Beam.Mcp.Server.ServerState.runtime) state).atomically do
         set ((mcpPrivate% Beam.Mcp.Server.RuntimeState.active) (some owned))
+        (mcpPrivate% Beam.Mcp.Server.ServerState.nextWorkspaceInstance) state |>.set 2
       let request (id : String) := Json.mkObj [
         ("jsonrpc", .str "2.0"), ("id", .str id), ("method", .str "tools/call"),
         ("params", Json.mkObj [
@@ -208,6 +226,10 @@ private def checkEvictionCleanupDuringEof : IO Unit :=
       discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
       let closing ← IO.asTask ((stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator)
         Task.Priority.dedicated
+      let some (some _) ← Beam.waitTaskWithTimeout otherTeardown.result? 5000
+        | throw <| IO.userError "EOF teardown of the other workspace waited for drop cleanup"
+      require "drop cleanup remains gated while the other backend shuts down"
+        (!(← IO.hasFinished closing))
       releaseCleanup.resolve ()
       match ← IO.wait closing with
       | .error error => throw error
@@ -225,6 +247,11 @@ private def checkEvictionCleanupDuringEof : IO Unit :=
       let result ← requireObjVal "started eviction receipt" "result" response
       let content ← requireObjVal "started eviction receipt" "structuredContent" result
       requireJsonBool "started eviction preserves committed removal" "dropped" true content
+      let resolved := (mcpPrivate% Beam.Mcp.Server.ResolvedWorkspace.mk)
+        (Beam.Workspace.Descriptor.ofRoot root) root workspaceId
+      match ← (mcpPrivate% Beam.Mcp.Server.handleDropWorkspace) state resolved with
+      | .error error => require "late cleanup retains permanent closure" (error.code == -32600)
+      | .ok _ => throw <| IO.userError "late eviction cleanup reopened the closed runtime"
     finally
       releaseCleanup.resolve ()
       state.closeRuntime

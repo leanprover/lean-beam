@@ -249,27 +249,28 @@ The executable path is split into importable modules:
   coordination, cancellation, cache-control barriers, and serialized output
 - [Beam/Mcp/ServerMain.lean](../Beam/Mcp/ServerMain.lean): executable entry point
 
+The [MCP transport contract](MCP_TRANSPORT_CONTRACT.md) defines execution, delivery, cancellation,
+and shutdown ownership. Lake text-buffer integration is a separate planned follow-up.
+
 Keep these stdio invariants explicit:
 
-- only `runStdio` reads stdin
-- every stdout message passes through `OutputSink`
+- one dedicated input task reads stdin; one transport writer owns every stdout message
+- input handling, notifications, cancellation, and broker cleanup never wait for stdout capacity
 - the server emits no JSON-RPC requests to clients
-- request IDs preserve their string-versus-integer type and their original JSON spelling
+- request IDs preserve their string-versus-integer kind and their string or numeric value
 - ordinary calls may overlap; cache eviction is a full stream-order fence while stdin remains open
-- each admission has separate execution-cleanup and terminal-delivery completion signals; live
-  control fences await delivery, while EOF switches them to execution cleanup before runtime close
-- EOF shutdown starts only once the reader observes it; protocol replies and admission errors
-  written on the reader can still block EOF observation, and in-work notifications can block cleanup
-- terminal delivery retains its own fence dependencies after EOF; execution cleanup resolves before
-  waiting for those dependencies, so runtime close does not wait for serialized response writes
-- EOF marks cancellable admissions before waking control-fence waiters; admitted non-cancellable
-  evictions still run in execution order even if an earlier terminal write blocks stdout
-- once a request is registered, synchronous setup must either transfer it to an owned worker or
-  complete it terminally; execution completion is signalled before terminal output, and terminal
-  finalization retires the request and releases delivery waiters even after output failures
-- ordinary tool calls bind cancellation to the exact broker admission handle; do not reintroduce
-  request-ID polling between MCP and the broker
-- routing/output locks do not acquire setup, progress, or per-request locks
+- execution completion releases broker resources and is separate from terminal-delivery completion
+- EOF closes admission and starts backend teardown before joining execution; live delivery fences
+  switch to execution completion so an unread response cannot hold backend resources alive
+- queued evictions may be cancelled; started evictions retain a truthful terminal outcome
+- terminal acceptance and exact ID retirement share the cancellation cutoff; late publishers and
+  completions cannot affect another generation that reuses the same external request ID
+- once a request is registered, setup must either transfer it to a worker or complete it terminally
+- cancelled execution retains its output reservation until cleanup finishes; progress cannot consume
+  final-response capacity or displace required diagnostic notifications
+- ordinary tool calls bind cancellation to the exact broker admission handle
+- nested state locks flow routing → request → output; no physical output or broker cleanup runs
+  under these locks, and detached workspace cleanup runs outside the MCP runtime mutex
 - JSON-RPC envelopes and current-method parameter objects reject undeclared fields; protocol
   extensions belong in `_meta` or in a deliberately versioned schema change
 
