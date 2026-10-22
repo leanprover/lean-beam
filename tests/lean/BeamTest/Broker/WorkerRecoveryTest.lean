@@ -36,8 +36,13 @@ private def waitUntil (label : String) (ready : IO Bool) : IO Unit := do
     require s!"{label} did not reach its gate" ((← IO.monoMsNow) < deadline)
     IO.sleep 10
 
+private inductive Recovery where
+  | sync
+  | update
+  | refresh
+
 private def runCase (description : Beam.Runtime.Description) (root : System.FilePath)
-    (code : JsonRpc.ErrorCode) (cancelled useUpdate : Bool) : IO Unit := do
+    (code : JsonRpc.ErrorCode) (cancelled : Bool) (recovery : Recovery) : IO Unit := do
   IO.FS.createDirAll root
   IO.FS.writeFile (root / "lakefile.toml") "name = \"Main\"\n[[lean_lib]]\nname = \"Main\"\n"
   IO.FS.writeFile (root / "Main.lean") "def mainValue : Nat := 42\n"
@@ -123,13 +128,19 @@ private def runCase (description : Beam.Runtime.Description) (root : System.File
       discard <| requireObjVal "failed document" "workerError" file
       requireFieldAbsent "failed document" "fileProgress" file
       requireJsonBool "failure retains checkpoint association" "checkpointed" true file
-    discard <| result (← call server (if useUpdate then .updateFile { path := "Main.lean" }
-      else .syncFile { path := "Main.lean" }))
+    let recoveryRequest : RequestPayload := match recovery with
+      | .sync => .syncFile { path := "Main.lean" }
+      | .update => .updateFile { path := "Main.lean" }
+      | .refresh => .refreshFile { path := "Main.lean" }
+    discard <| result (← call server recoveryRequest)
     let recovered ← doc server uri
     require "fresh synchronization recovers only an explicitly failed worker"
       ((DocumentState.basis recovered != DocumentState.basis before) == workerFailure)
-    require "recovery retains same-source version and checkpoint"
-      (recovered.version == before.version && recovered.checkpointedVersion? == before.checkpointedVersion?)
+    let expectedCheckpoint := match recovery with
+      | .refresh => none
+      | .sync | .update => before.checkpointedVersion?
+    require "recovery retains same-source version and the command's checkpoint policy"
+      (recovered.version == before.version && recovered.checkpointedVersion? == expectedCheckpoint)
     require "recovery clears the recorded failure" recovered.workerError?.isNone
     require "recovery uses one close/open pair"
       ((← closes.get) == (if workerFailure then 1 else 0) &&
@@ -323,12 +334,13 @@ private def runQueuedReply (description : Beam.Runtime.Description) (root : Syst
     server.close
 
 def run (description : Beam.Runtime.Description) (root : System.FilePath) : IO Unit := do
-  for (name, code, cancelled, useUpdate) in [
-      ("exited", JsonRpc.ErrorCode.workerExited, false, false),
-      ("crashed", .workerCrashed, false, true),
-      ("cancelled", .workerCrashed, true, false),
-      ("ordinary-error", .contentModified, false, false)] do
-    runCase description (root / name) code cancelled useUpdate
+  for (name, code, cancelled, recovery) in [
+      ("exited", JsonRpc.ErrorCode.workerExited, false, Recovery.sync),
+      ("crashed", .workerCrashed, false, .update),
+      ("cancelled", .workerCrashed, true, .sync),
+      ("refresh-failed", .workerCrashed, false, .refresh),
+      ("ordinary-error", .contentModified, false, .sync)] do
+    runCase description (root / name) code cancelled recovery
     IO.println s!"worker recovery: {name} passed"
   runRealExit description (root / "real-exit")
   runLateError description (root / "late-document") .reopen
