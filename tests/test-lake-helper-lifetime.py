@@ -223,7 +223,8 @@ def through_cli(base, compiler, cli):
                         r"still preparing Lean workspace \((\d+)s\)",
                         stderr_path.read_text(encoding="utf-8"))]
                     assert waits and waits[-1] >= 30, "held serve must report elapsed waiting time"
-                    assert waits == sorted(set(waits)), waits
+                    assert waits[0] >= 5, waits
+                    assert all(later - earlier >= 5 for earlier, later in zip(waits, waits[1:])), waits
                     (root / "release").touch()
 
                     def ready():

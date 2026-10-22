@@ -103,7 +103,7 @@ private def awaitBrokerResponseWithInterrupts
       if let some waitMessage := waitMessage? then
         let seconds := ((← IO.monoNanosNow) - startedNanos) / 1000000000
         let previous ← lastReportedSeconds.get
-        if seconds > previous then
+        if seconds >= previous + 5 then
           lastReportedSeconds.set seconds
           emit <| waitMessage seconds
     pure interrupted
