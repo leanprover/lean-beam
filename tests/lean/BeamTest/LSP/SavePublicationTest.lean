@@ -240,3 +240,5 @@ def main (args : List String) : IO Unit := do
   | _ => throw <| IO.userError "usage: beam-save-publication-test [--keep NEW-DIRECTORY]"
 
 end BeamTest.LSP.SavePublicationTest
+
+def main := BeamTest.LSP.SavePublicationTest.main
