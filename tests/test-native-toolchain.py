@@ -331,6 +331,9 @@ def qualify(args, lean_prefix, scratch):
             else:
                 raise AssertionError(owner_log.read_text())
             # Document rejection must precede worker creation in the installed CLI too.
+            # serve deliberately ensures a backend session before accepting requests.
+            before = json.loads(call("stats").stdout)["result"]
+            assert before["session"]["openDocCount"] == 0, before
             external = scratch / "project with spaces-other"
             external.mkdir()
             outside = external / "Other.lean"
@@ -351,8 +354,8 @@ def qualify(args, lean_prefix, scratch):
                     assert "resolves outside workspace root" in failure["message"], failure
                     assert "select a workspace containing the document" in failure["message"], failure
             stats = json.loads(call("stats").stdout)["result"]
-            assert stats["session"]["active"] is False, stats
-            assert stats["metrics"]["sessionStarts"] == 0, stats
+            assert stats["session"] == before["session"], (before, stats)
+            assert stats["metrics"]["sessionStarts"] == before["metrics"]["sessionStarts"], (before, stats)
             updated = json.loads(call("update", "Demo.lean").stdout)
             version = updated["result"]["version"]
             probe = json.loads(call("run-at", "Demo.lean", str(version), tactic_line, "2", "trivial").stdout)
