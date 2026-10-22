@@ -89,6 +89,7 @@ private structure Pending where
 private inductive Phase where
   | accepting
   | draining
+  | finished
   | failed (error : IO.Error)
 
 private structure State where
@@ -118,7 +119,7 @@ def Slot.deliveryTask (slot : Slot) : Task (Option (Except IO.Error Unit)) := sl
 private def failState (error : IO.Error) : Std.AtomicT State IO (Option (Array Pending)) := do
   let current ← get
   match current.phase with
-  | .failed _ => pure none
+  | .failed _ | .finished => pure none
   | _ =>
       set { current with phase := .failed error, pending := {} }
       pure <| some <| current.pending.toArray.map Prod.snd
@@ -140,7 +141,7 @@ def Writer.reserve (writer : Writer) : IO Slot := do
     let current ← get
     match current.phase with
     | .failed error => throw error
-    | .draining => throw <| IO.userError "MCP output is draining"
+    | .draining | .finished => throw <| IO.userError "MCP output is draining"
     | .accepting =>
         if current.pending.size >= writer.limits.requests then
           let error := IO.userError "MCP output capacity exhausted"
@@ -275,7 +276,7 @@ private def Writer.take (writer : Writer) : IO (Option Delivery) :=
       let current ← get
       match current.phase with
       | .failed _ => pure true
-      | .draining => pure (current.pending.isEmpty || (select current).isSome)
+      | .draining | .finished => pure (current.pending.isEmpty || (select current).isSome)
       | .accepting => pure (select current).isSome)
     (do
       let current ← get
@@ -305,6 +306,16 @@ private partial def Writer.run (writer : Writer) (write : Frame → IO Unit) : I
     if let some done := done? then done.resolve (.ok ())
   writer.run write
 
+/-- Commit normal completion against concurrent failure and retain the first failed-state cause. -/
+private def Writer.settle (writer : Writer) : IO (Except IO.Error Unit) :=
+  writer.state.atomically do
+    let current ← get
+    match current.phase with
+    | .failed error => pure (.error error)
+    | _ =>
+        set { current with phase := .finished }
+        pure (.ok ())
+
 def start (write : Frame → IO Unit) (limits : Limits := {}) : IO Writer := do
   let writer : Writer := {
     limits, state := ← Std.Mutex.new {}, available := ← Std.Condvar.new
@@ -312,12 +323,9 @@ def start (write : Frame → IO Unit) (limits : Limits := {}) : IO Writer := do
   }
   try
     let _ ← IO.asTask (prio := Task.Priority.dedicated) do
-      let result ← try
-        writer.run write
-        pure (.ok ())
-      catch error =>
-        writer.fail error
-        pure (.error error)
+      try writer.run write
+      catch error => writer.fail error
+      let result ← writer.settle
       -- Every observer has a producer on normal completion too; a failure-only promise would be
       -- orphaned when the writer retires and could race successful completion with `none`.
       writer.outcome.resolve result

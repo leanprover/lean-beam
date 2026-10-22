@@ -78,6 +78,12 @@ private def checkRetiredWriterOutcome : IO Unit := do
   -- Drop the owner's writer/slot references before observing completion, as the EOF supervisor
   -- does after cleanup. Normal retirement must produce success, not an orphaned promise.
   requireSuccess (← awaitTask outcome)
+  let writer ← start fun _ => pure ()
+  writer.finish
+  requireSuccess (← awaitTask writer.outcomeTask)
+  writer.fail (IO.userError "late failure after success")
+  requireSuccess (← (outputPrivate% Beam.Mcp.StdioOutput.Writer.settle) writer)
+  requireSuccess (← awaitTask writer.finishedTask)
 
 private def checkReservationCapacity : IO Unit := do
   let entered ← IO.Promise.new
@@ -102,12 +108,13 @@ private def checkReservationCapacity : IO Unit := do
     writer.finish
     discard <| awaitTask writer.finishedTask
 
-private def checkFirstFailure : IO Unit := do
+private def checkFirstFailure (physicalFailure : Bool) : IO Unit := do
   let entered ← IO.Promise.new
   let release ← IO.Promise.new
   let writer ← start fun _ => do
     entered.resolve ()
     await release
+    if physicalFailure then throw <| IO.userError "later physical write failure"
   try
     let slot ← writer.reserve
     slot.respond (.str "blocked")
@@ -119,11 +126,19 @@ private def checkFirstFailure : IO Unit := do
     -- Pause the first failure between its locked transition and unlocked publication. A competing
     -- closer must not publish a different cause while the original owner is paused.
     writer.fail (IO.userError "later failure")
-    require "only the first failure owner may publish" (!(← IO.hasFinished writer.outcomeTask))
-    (outputPrivate% Beam.Mcp.StdioOutput.Writer.publishFailure) writer original pending
+    require "a competing failure cannot publish another cause" (!(← IO.hasFinished writer.outcomeTask))
+    -- Exercise successful settlement racing a committed-but-unpublished failure as well.
+    requireFailure "normal settlement cannot override committed failure"
+      (← (outputPrivate% Beam.Mcp.StdioOutput.Writer.settle) writer)
+    release.resolve ()
+    match ← awaitTask writer.finishedTask with
+    | .ok () => throw <| IO.userError "physical completion lost committed failure"
+    | .error error => require "physical completion retains first cause"
+        (error.toString.contains "first failure")
     match ← awaitTask writer.outcomeTask with
     | .ok () => throw <| IO.userError "failed session reported success"
     | .error error => require "session observes the first failure" (error.toString.contains "first failure")
+    (outputPrivate% Beam.Mcp.StdioOutput.Writer.publishFailure) writer original pending
     match ← awaitTask slot.deliveryTask with
     | .ok () => throw <| IO.userError "failed slot reported success"
     | .error error => require "delivery retains the same failure" (error.toString.contains "first failure")
@@ -251,7 +266,8 @@ def run : IO Unit := do
   checkBlockedWriter
   checkRetiredWriterOutcome
   checkReservationCapacity
-  checkFirstFailure
+  checkFirstFailure false
+  checkFirstFailure true
   checkNotificationBudgets
   checkDiagnosticOverflow { diagnosticRecords := 1 }
   checkDiagnosticOverflow { diagnosticBytes := 20 }
