@@ -94,9 +94,9 @@ private def document (session : Session) : IO (DocumentUri × DocumentBasis) := 
 private def outputPaths (outputs : LeanSaveOutputs) : Array FilePath :=
   #[outputs.oleanPath, outputs.ileanPath, outputs.cPath, outputs.tracePath]
 
-private def writeOutputs (outputs : LeanSaveOutputs) (tag : String) : IO Unit := do
-  for path in outputPaths outputs do
-    IO.FS.writeFile path (tag ++ path.fileName.getD "")
+private def writeOutputs (outputs canonical : LeanSaveOutputs) (tag : String) : IO Unit := do
+  for (path, target) in (outputPaths outputs).zip (outputPaths canonical) do
+    IO.FS.writeFile path (tag ++ target.fileName.getD "")
 
 private def readOutputs (outputs : LeanSaveOutputs) : IO (Array String) :=
   (outputPaths outputs).mapM IO.FS.readFile
@@ -146,11 +146,11 @@ private def checkSchedule (kind : Transition) (failPromotion : Bool := false) : 
       oleanPath := owner.root / "Main.olean", ileanPath := owner.root / "Main.ilean",
       cPath := owner.root / "Main.c", tracePath := owner.root / "Main.trace"
     }
-    writeOutputs outputs "old:"
+    writeOutputs outputs outputs "old:"
     for path in #[outputs.oleanPath, outputs.ileanPath, outputs.cPath] do
       IO.FS.writeFile (path.addExtension "hash") "old hash"
     let plan ← Publication.create outputs
-    writeOutputs plan.outputs "new:"
+    writeOutputs plan.outputs outputs "new:"
     plan.ready
     let .ok active ← ActiveRequestRegistry.register server.activeRequests (some "a") (some "publisher")
       | throw <| IO.userError "publication fixture could not register its publisher"

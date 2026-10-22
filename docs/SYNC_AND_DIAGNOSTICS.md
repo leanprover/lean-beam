@@ -108,9 +108,14 @@ This coordination is local to one broker: it does not lock source files on disk 
 independent Beam or Lake writers.
 
 Failure or cancellation before publication releases the reservation and preserves a healthy
-backend, its documents, and continuation handles. An unacknowledged preparation attempt may leave
-private files but cannot publish later. Failed backend delivery, including uncertain final close
-delivery, retires the captured backend; subsequent work must reacquire its documents and handles.
+backend, its documents, and continuation handles. During private serialization or trace preparation,
+Beam records caller cancellation and waits for the phase to finish before reporting it. Settled
+private outputs can then be removed without changing the checkpoint. An unacknowledged attempt may
+retain private files but cannot publish later. Backend loss or uncertain artifact-request or
+final-close delivery can retire the captured backend; subsequent work must reacquire its documents
+and handles. Abandoned preparation files may be removed manually only after all potential Beam and
+helper writers have stopped. Preserve backups from reported publication/recovery failures until
+they have been investigated and recovery is complete.
 Cancellation after publication begins does not undo a committed checkpoint. Implementation and
 recovery boundaries are documented in the [close-save model](CLOSE_SAVE_MODEL.md#publication-implementation).
 

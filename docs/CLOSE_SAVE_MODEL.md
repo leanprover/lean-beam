@@ -82,10 +82,11 @@ It does not restore a captured session, recreate a removed workspace, perform ba
 or roll back committed artifacts.
 
 The scope must cover typed failures, exceptions, and cooperative cancellation. A cancellation
-flag alone does not settle canonical publication or final close delivery. Private preparation may
-outlive reservation release after abandonment: its unique retained paths carry no publication
-authority. The model's `release` does not require those isolated private writes to have stopped;
-claimed canonical publication must settle before affected owner changes.
+flag alone does not settle canonical publication or final close delivery. Caller cancellation waits
+for the current private phase's acknowledgement. Genuine owner/channel loss may instead abandon
+private preparation with writers still uncertain: its retained paths carry no publication authority.
+The model's `release` does not require those isolated private writes to have stopped; claimed
+canonical publication must settle before affected owner changes.
 
 Likewise, successful `finish` abstracts successful close delivery plus broker removal.
 Ambiguous notification delivery is not modeled as success or rollback. Integration must retain
@@ -154,6 +155,16 @@ paths and module companion shape before writing. A temporary directory adapts `L
 fixed companion names to independently supplied paths; its cleanup finishes before the terminal
 handler acknowledgement. Serialization writes directly into the private destinations, so a failed
 or cancelled attempt may leave a partial family. The broker alone owns canonical publication.
+Every private output candidate ends in `.candidate`, including `.ilean` candidates, so Lean's recursive
+`.ilean` extension scan does not index retained preparation as canonical output.
+
+The internal artifact request omits the caller's cancellation reference. Cancellation is recorded
+by the public request registry but is not forwarded to the worker; the broker awaits its typed
+terminal completion before disposing acknowledged private paths. A cancellation check then rejects
+the save before starting trace preparation. The trace helper likewise runs without caller
+cancellation during its existing 30-second response wait. Its acknowledged success permits cleanup;
+the final publication guard still rejects a cancelled caller. Worker/channel failure or a helper
+timeout does not establish producer settlement and may retain the attempt's directories and claims.
 
 After preparation completes, the broker validates the captured workspace generation, backend
 owner, accepted document basis, and cancellation state, then claims publication. That final
@@ -193,10 +204,10 @@ trace completion to check prompt conflict rejection, another document's admissio
 after helper failure or cancellation. The native
 [SaveOwnerTest](../tests/lean/BeamTest/Broker/SaveOwnerTest.lean) pauses an admitted request before
 source reading, then checks that it cannot reopen a closed document or disturb a fresh reopening.
-It also injects failures after real artifact-request writes, flushes, immediate propagated
-cancellation writes, and close writes, checking that the captured backend terminates before the
-response and that a committed checkpoint receipt survives. Artifact-request and cancellation
-write schedules cover both save variants. A worker readiness rejection must instead preserve the
+It also injects failures after real artifact-request writes, flushes, and close writes, checking
+that the captured backend terminates before the
+response and that a committed checkpoint receipt survives. Artifact-request write and flush
+schedules cover both save variants. A worker readiness rejection must instead preserve the
 prior artifact, open document, and unrelated handles,
 then permit a repaired document to close-save on the same backend. Injected replies check that bare
 `invalidParams`, `contentModified`, and `requestCancelled` errors and malformed success payloads
@@ -205,10 +216,10 @@ variants, while retaining every private directory and claim. Typed handler failu
 cleanup, including when local cancellation changes the public error. These are protocol-boundary
 injections, not a live watchdog termination reproduction.
 
-`DocumentRef.withSettledEffect` tracks uncertain backend delivery around artifact dispatch and its
-immediate propagated cancellation write, and around final closure. A failed protected write forces
+`DocumentRef.withSettledEffect` tracks uncertain backend delivery around artifact dispatch and final
+closure. A failed protected write forces
 termination through the captured backend's shared owner; detachment revokes that backend's
-outstanding admissions. Successful artifact-request and cancellation writes clear the guard before
+outstanding admissions. Successful artifact-request delivery clears the guard before
 awaiting or decoding the response. A concurrent workspace drop cannot make retirement target a
 replacement backend. The internal `$/beam/saveArtifacts` response is a typed completion
 acknowledgement carrying either success or a handler failure. It is constructed
@@ -217,14 +228,26 @@ The broker decodes this result before allowing private-path disposal, then prese
 failure with the existing error, readiness, progress, and cancellation rules. Completion establishes
 that owned work finished, not that no artifacts were written or that a checkpoint was committed.
 
+The four post-serialization cancellation schedules in `SaveOwnerTest` hold the real worker's reply,
+accept public cancellation, and prove that close-save reservations remain held while a sibling
+continuation progresses. On release, ordinary save and close-save, with and without module companions, must
+report cancellation, preserve canonical bytes/mtimes/hash caches and the healthy owner, and remove
+every private directory and claim. The trace-helper cancellation schedule similarly releases real
+helper work before asserting cleanup. These checks do not prove cleanup after arbitrary daemon
+shutdown or channel loss.
+
 Bare JSON-RPC errors, including watchdog owner-loss errors, do not acknowledge handler completion.
-Lean's file worker can also replace the acknowledgement with `requestCancelled` after private serialization;
-that response leaves private producer completion uncertain. Error codes never establish completion.
+Caller cancellation is not forwarded to this private request, while other worker invalidation can
+still prevent its acknowledgement. Error codes never establish completion.
 Missing or malformed acknowledgement retains the isolated private paths and claims without retiring
 a healthy backend. The separate publication model's `abandoned_run` law covers arbitrary late
 private writes and completions without canonical commits. The pending store keeps its ordinary
 typed failures without save-specific reply provenance. General blocked-I/O and
 unconfirmed-termination behavior remain lifecycle limitations, not properties proved by this model.
+Abandoned preparation directories and their `.claim` files may be removed manually only after all
+possible worker/helper writers have stopped; this implementation has no background reaper.
+Retained beforeimages after a reported publication/recovery failure must be investigated and used
+for recovery before deletion. Stopping writers alone does not make that recovery evidence disposable.
 
 Already-dispatched semantic requests are not represented here. They may finish under their
 existing basis/lifetime guards, but must not reopen a closed document or acquire new work through

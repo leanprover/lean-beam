@@ -60,6 +60,7 @@ run_quiet_test "defensive validation Git isolation" bash tests/test-validate-def
 
 run_quiet_lake_build \
   Beam.LSP:shared \
+  BeamPrivateSaveGate:shared \
   beam-cli \
   beam-daemon \
   beam-daemon-fixture \

@@ -28,8 +28,9 @@ private def expectNoHashes (outputs : LeanSaveOutputs) : IO Unit := do
     if ← path.pathExists then
       throw <| IO.userError s!"publication retained output hash: {path}"
 
-private def writeFamily (outputs : LeanSaveOutputs) (text : String) : IO Unit := do
-  for path in paths outputs do IO.FS.writeFile path (text ++ path.fileName.getD "")
+private def writeFamily (outputs canonical : LeanSaveOutputs) (text : String) : IO Unit := do
+  for (path, target) in (paths outputs).zip (paths canonical) do
+    IO.FS.writeFile path (text ++ target.fileName.getD "")
 
 private def readFamily (outputs : LeanSaveOutputs) : IO (Array String) :=
   (paths outputs).mapM IO.FS.readFile
@@ -52,7 +53,7 @@ private def checkBeforeReplacement (stage : FailureStage) : IO Unit := IO.FS.wit
   writeHashes canonical
   let priorHashes ← readHashes canonical
   let plan ← Publication.create canonical
-  writeFamily plan.outputs "candidate:"
+  writeFamily plan.outputs canonical "candidate:"
   let faults ← IO.mkRef (0 : Nat)
   let restored ← IO.mkRef (#[] : Array FilePath)
   let failedPath := if stage == .preparing then canonical.cPath else canonical.oleanPath
@@ -114,7 +115,7 @@ private def checkBeforeReplacement (stage : FailureStage) : IO Unit := IO.FS.wit
       throw <| IO.userError "failed canonical commit restored the prior trace"
     expectNoHashes canonical
   unless (← readFamily plan.outputs) ==
-      (paths plan.outputs).map (fun path => "candidate:" ++ path.fileName.getD "") do
+      (paths canonical).map (fun path => "candidate:" ++ path.fileName.getD "") do
     throw <| IO.userError "boundary failure consumed a candidate before the first replacement"
   for path in #[plan.outputs.oleanPath, plan.outputs.cPath] do
     if ← (path.addExtension "previous").pathExists then
@@ -130,9 +131,9 @@ private def checkCommittedCleanupFailure : IO Unit := IO.FS.withTempDir fun root
     oleanPath := root / "Cleanup.olean", ileanPath := root / "Cleanup.ilean",
     cPath := root / "Cleanup.c", tracePath := root / "Cleanup.trace"
   }
-  writeFamily canonical "old:"
+  writeFamily canonical canonical "old:"
   let plan ← Publication.create canonical
-  writeFamily plan.outputs "new:"
+  writeFamily plan.outputs canonical "new:"
   let backup := plan.outputs.oleanPath.addExtension "previous"
   let faults ← IO.mkRef (0 : Nat)
   let removeFile := fun path => do
@@ -148,7 +149,7 @@ private def checkCommittedCleanupFailure : IO Unit := IO.FS.withTempDir fun root
       (paths canonical).map (fun path => "new:" ++ path.fileName.getD "") do
     throw <| IO.userError "backup cleanup failure changed the committed checkpoint"
   -- Refill consumed candidates so the retry exercises authority, not the file precheck.
-  writeFamily plan.outputs "retry:"
+  writeFamily plan.outputs canonical "retry:"
   expectFailure "committed cleanup failure regained readiness" plan.ready
   expectFailure "committed cleanup failure regained promotion authority" plan.promote
   unless (← readFamily canonical) ==
@@ -175,7 +176,7 @@ private def checkRollback (failRestore : Bool) : IO Unit := IO.FS.withTempDir fu
   let traceHash := canonical.tracePath.addExtension "hash"
   IO.FS.writeFile traceHash "preserved trace hash"
   let plan ← Publication.create canonical
-  writeFamily plan.outputs "new:"
+  writeFamily plan.outputs canonical "new:"
   let cBackup := plan.outputs.cPath.addExtension "previous"
   let traceBackup := plan.outputs.tracePath.addExtension "previous"
   let publicationError : IO.Error :=
@@ -247,7 +248,7 @@ private def checkRollback (failRestore : Bool) : IO Unit := IO.FS.withTempDir fu
   unless (← IO.FS.readFile traceHash) == "preserved trace hash" do
     throw <| IO.userError "rollback changed the excluded trace hash"
   -- Refill every consumed candidate so a retry reaches the phase guard, not a file precheck.
-  writeFamily plan.outputs "retry:"
+  writeFamily plan.outputs canonical "retry:"
   let existing := #[canonical.oleanPath, canonical.cPath]
   let afterRollback ← existing.mapM IO.FS.readFile
   expectFailure "failed publication regained readiness" plan.ready
@@ -280,7 +281,7 @@ def main : IO Unit := IO.FS.withTempDir fun root => do
     irSigPath? := some (root / "Main.ir.sig"), cPath := root / "Main.c",
     bcPath? := some (root / "Main.bc"), tracePath := root / "Main.trace"
   }
-  writeFamily canonical "prior:"
+  writeFamily canonical canonical "prior:"
   writeHashes canonical
   let prior ← readFamily canonical
   let priorHashes ← readHashes canonical
@@ -289,9 +290,12 @@ def main : IO Unit := IO.FS.withTempDir fun root => do
   for path in preserved do IO.FS.writeFile path ("preserved:" ++ path.toString)
   let preservedHashes ← preserved.mapM IO.FS.readFile
   let abandoned ← Publication.create canonical
+  for candidate in paths abandoned.outputs do
+    unless candidate.toString.endsWith ".candidate" do
+      throw <| IO.userError "private candidate retained an indexable artifact extension"
   abandoned.dispose false
   -- Simulate a genuinely late producer after the broker has returned its failure.
-  writeFamily abandoned.outputs "late:"
+  writeFamily abandoned.outputs canonical "late:"
   expectFailure "abandoned preparation regained authority" abandoned.ready
   expectFailure "abandoned plan promoted late outputs" abandoned.promote
   unless (← readFamily canonical) == prior do
@@ -301,7 +305,7 @@ def main : IO Unit := IO.FS.withTempDir fun root => do
   let replacement ← Publication.create canonical
   unless replacement.outputs.oleanPath != abandoned.outputs.oleanPath do
     throw <| IO.userError "publication attempts reused private paths"
-  writeFamily replacement.outputs "next:"
+  writeFamily replacement.outputs canonical "next:"
   replacement.ready
   replacement.promote
   let committed ← readFamily canonical
@@ -315,7 +319,7 @@ def main : IO Unit := IO.FS.withTempDir fun root => do
   abandoned.dispose true
   writeHashes canonical
   let invalid ← Publication.create canonical
-  writeFamily invalid.outputs "invalid:"
+  writeFamily invalid.outputs canonical "invalid:"
   IO.FS.removeFile invalid.outputs.tracePath
   invalid.ready
   expectFailure "missing trace was accepted" invalid.promote
@@ -329,7 +333,7 @@ def main : IO Unit := IO.FS.withTempDir fun root => do
   IO.FS.removeFile blockedHash
   IO.FS.createDir blockedHash
   let blocked ← Publication.create canonical
-  writeFamily blocked.outputs "blocked:"
+  writeFamily blocked.outputs canonical "blocked:"
   blocked.ready
   let outcome : Except IO.Error Unit ←
     try blocked.promote *> pure (.ok ()) catch error => pure (.error error)
@@ -342,7 +346,7 @@ def main : IO Unit := IO.FS.withTempDir fun root => do
       (artifactPaths canonical).map (fun path => "next:" ++ path.fileName.getD "") do
     throw <| IO.userError "hash unlink failure replaced canonical artifact bytes"
   unless (← readFamily blocked.outputs) ==
-      (paths blocked.outputs).map (fun path => "blocked:" ++ path.fileName.getD "") do
+      (paths canonical).map (fun path => "blocked:" ++ path.fileName.getD "") do
     throw <| IO.userError "hash unlink failure occurred after a candidate was renamed"
   if ← canonical.tracePath.pathExists then
     throw <| IO.userError "hash unlink failure retained the old trace"
@@ -355,7 +359,7 @@ def main : IO Unit := IO.FS.withTempDir fun root => do
   -- Missing output caches are harmless, including after an aborted publication.
   expectNoHashes canonical
   let uncached ← Publication.create canonical
-  writeFamily uncached.outputs "uncached:"
+  writeFamily uncached.outputs canonical "uncached:"
   uncached.ready
   uncached.promote
   unless (← readFamily canonical) ==

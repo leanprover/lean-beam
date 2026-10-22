@@ -469,6 +469,8 @@ print(json.loads(os.environ["BEAM_JSON_PAYLOAD"])["result"]["saved"]["ilean"])
 PY
 )"
   saved_ilean="${ilean_path}.before-blocked-save"
+  saved_trace="${trace_path}.before-blocked-save"
+  cp "$trace_path" "$saved_trace"
   mv "$ilean_path" "$saved_ilean"
   mkdir "$ilean_path"
   blocked_save_out="$(mktemp "$tmp2/blocked-save-out-XXXXXX")"
@@ -480,17 +482,17 @@ PY
     cat "$blocked_save_err" >&2
     exit 1
   fi
-  if [ -e "$trace_path" ] || [ -L "$trace_path" ]; then
-    echo "expected failed artifact publication to leave the prior trace invalidated" >&2
+  if [ ! -f "$trace_path" ] || [ -L "$trace_path" ] || ! cmp -s "$trace_path" "$saved_trace"; then
+    echo "expected preflight directory rejection to preserve the prior trace" >&2
     cat "$blocked_save_out" >&2
     cat "$blocked_save_err" >&2
     exit 1
   fi
   rmdir "$ilean_path"
   mv "$saved_ilean" "$ilean_path"
-  rm -f "$blocked_save_out" "$blocked_save_err"
+  rm -f "$blocked_save_out" "$blocked_save_err" "$saved_trace"
   if ! beam --root "$tmp2" save SaveSmoke/B.lean > /dev/null; then
-    echo "expected save to republish the trace after the artifact target is restored" >&2
+    echo "expected save to complete after the artifact target is restored" >&2
     exit 1
   fi
   if [ ! -f "$trace_path" ]; then

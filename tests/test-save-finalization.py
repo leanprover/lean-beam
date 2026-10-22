@@ -19,13 +19,16 @@ from mcp_test_util import shared_lib_name
 REPO = Path(__file__).resolve().parent.parent
 WORKSPACE = "save-finalization-test"
 REPLY_CASES = ["remote-invalid-params", "remote-owner-loss", "remote-cancelled",
-               "malformed-completion", "handler-failure", "cancelled-handler-failure"]
+               "malformed-completion", "handler-failure", "cancelled-handler-failure", "cancelled-remote-owner-loss"]
 REPLY_CASES += ["ordinary-" + case for case in REPLY_CASES]
 WRITE_CASES = [prefix + case for prefix in ("", "ordinary-")
-               for case in ("uncertain-save", "uncertain-save-flush", "uncertain-cancel-write")]
+               for case in ("uncertain-save", "uncertain-save-flush")]
+WORKER_CANCEL_CASES = [prefix + "cancel-prepared-" + operation
+                       for prefix in ("", "module-") for operation in ("save", "close")]
 OWNER_CASES = ["workspace-replace", "backend-restart", "distinct-runtime",
-               "delayed-admission", "uncertain-close", "rejected-close"] + REPLY_CASES + WRITE_CASES
-CLOSING_CASES = ["exclusive", "preflight-exclusive", "cancel-close", "failed-close"]
+               "delayed-admission", "uncertain-close", "rejected-close"] + REPLY_CASES + WRITE_CASES + WORKER_CANCEL_CASES
+CLOSING_CASES = ["exclusive", "preflight-exclusive", "cancel-before-dispatch", "cancel-close",
+                 "cancel-failed-close", "failed-close"]
 CASES = ["exact", "save-update", "save-reopen", "save-reopen-identical", "drop", "before-dispatch"]
 CASES += CLOSING_CASES
 CASES += OWNER_CASES
@@ -156,7 +159,7 @@ def broker(base, lean, plugin, daemon, gate_operation):
 
 
 def closing_case(base, case, lean, plugin, daemon):
-    operation = "prepare-save" if case == "preflight-exclusive" else "write-save-trace"
+    operation = "prepare-save" if case in ("preflight-exclusive", "cancel-before-dispatch") else "write-save-trace"
     with broker(base, lean, plugin, daemon, operation) as (port, source):
         initial = ok(request(port, "sync_file", path="Main.lean"))
         seed = ok(request(port, "run_at", path="Main.lean", version=initial["version"],
@@ -189,10 +192,20 @@ def closing_case(base, case, lean, plugin, daemon):
                 # The reservation is per canonical document, not per workspace or save mutex.
                 (source.parent / "Other.lean").write_text("def other : Nat := 42\n")
                 ok(request(port, "sync_file", path="Other.lean", wait_seconds=10))
-                if case == "cancel-close":
+                if case in ("cancel-close", "cancel-failed-close", "cancel-before-dispatch"):
                     # The helper gate holds private preparation before canonical commit.
                     assert_checkpoint_unchanged(prior)
                     assert ok(request(port, "cancel", cancelRequestId="closing-save"))["cancelled"]
+                    if case != "cancel-before-dispatch":
+                        try:
+                            pending.result(timeout=.1)
+                        except concurrent.futures.TimeoutError:
+                            pass
+                        else:
+                            raise AssertionError("cancelled trace helper completed before explicit release")
+                    if case == "cancel-failed-close":
+                        (base / "fail").touch()
+                    (base / "release").touch()
                 elif case == "failed-close":
                     (base / "fail").touch()
                 else:
@@ -201,12 +214,18 @@ def closing_case(base, case, lean, plugin, daemon):
             finally:
                 (base / "release").touch()
         (base / "response.json").write_text(json.dumps(response, indent=2) + "\n")
-        if case in ("cancel-close", "failed-close"):
+        if case in ("cancel-close", "cancel-failed-close", "cancel-before-dispatch", "failed-close"):
             assert not response["ok"], response
             assert "saved" not in (response["error"].get("data") or {}), response
             assert_checkpoint_unchanged(prior)
-            if case == "cancel-close":
+            if case in ("cancel-close", "cancel-failed-close", "cancel-before-dispatch"):
                 assert response["error"]["code"] == "requestCancelled", response
+            if spec and case == "cancel-close":
+                assert_private_cleaned(spec)
+            if spec and case == "cancel-failed-close":
+                for path in private_paths(spec):
+                    assert path.parent.is_dir(), path
+                    assert Path(str(path.parent) + ".claim").is_file(), path
             assert tracked(port)["checkpointed"] is True, response
             # Precommit failure releases admission and retains the live document/handle.
             ok(request(port, "run_with", path="Main.lean", handle=seed["handle"], text="trivial"))
@@ -232,15 +251,21 @@ def check_case(base, case, lean, plugin, daemon):
     if case in OWNER_CASES:
         project = base / "project"
         project.mkdir()
-        (project / "lakefile.toml").write_text('name = "Main"\n[[lean_lib]]\nname = "Main"\n')
+        worker_cancel = case in WORKER_CANCEL_CASES
+        plugin_args = ("moreGlobalServerArgs = " + json.dumps([f"--plugin={plugin}"]) + "\n"
+                       if worker_cancel else "")
+        (project / "lakefile.toml").write_text('name = "Main"\n' + plugin_args + '[[lean_lib]]\nname = "Main"\n')
         (project / "lean-toolchain").write_text((REPO / "lean-toolchain").read_text())
-        (project / "Main.lean").write_text(SOURCE)
-        subprocess.run([str(daemon), "--lean-cmd", str(lean), "--lean-plugin", str(plugin),
+        (project / "Main.lean").write_text(("module\npublic " if case.startswith("module-") else "") + SOURCE)
+        selected_plugin = plugin.with_name(plugin.name.replace("Beam_LSP", "BeamPrivateSaveGate")) if worker_cancel else plugin
+        subprocess.run([str(daemon), "--lean-cmd", str(lean), "--lean-plugin", str(selected_plugin),
                         "save-owner-test", case, str(project)], cwd=REPO, check=True, timeout=60,
                        env=dict(os.environ, BEAM_TEST_SAVE_GATE_DIR=str(base),
                                 BEAM_TEST_SAVE_GATE_OP=(
                                     "prepare-save" if case in WRITE_CASES or case in REPLY_CASES
-                                    else "write-save-trace")))
+                                    else "write-save-trace"),
+                                BEAM_PRIVATE_EFFECT_GATE=str(base) if worker_cancel else "",
+                                BEAM_PRIVATE_EFFECT_PHASE="after-serialization" if worker_cancel else ""))
         return
     before_dispatch = case == "before-dispatch"
     with broker(base, lean, plugin, daemon, "prepare-save" if before_dispatch else "write-save-trace") as (port, source):

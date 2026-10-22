@@ -2118,7 +2118,7 @@ private def saveOleanCore
     -- A cancellation after readiness/spec computation must not invalidate a valid trace.
     withFailureProgress barrierProgress? <| liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
     let saveResult ← started.document.withSettledEffect fun uncertain => do
-      let (session, saveRequest) ← withFailureProgress barrierProgress? <|
+      let saveRequest ← withFailureProgress barrierProgress? <|
         started.document.withCurrentDocument fun current => do
           match ← ensureRequestNotCancelled req.cancelRef? with
           | .error failure => return .error failure
@@ -2126,16 +2126,13 @@ private def saveOleanCore
           -- Validate the producer's basis under the state lock. Canonical files and their
           -- trace remain untouched until completed preparation reaches broker promotion.
           producersSettled.set false
-          -- Failed request or immediate cancellation delivery can leave the backend stream
-          -- uncertain. Both save variants retire that captured owner on write failure.
+          -- Caller cancellation is deferred until private serialization acknowledges completion.
+          -- A failed request write still leaves backend delivery uncertain for both save variants.
           uncertain.set true
           let (current, saveRequest) ← startRequestJsonTrackedDetailed current method params
             (clientRequestId? := req.clientRequestId?)
-            (cancelRef? := req.cancelRef?)
           updateSession current
-          pure <| .ok (current, saveRequest)
-      withFailureProgress barrierProgress? <|
-        liftHandlerIO <| propagatePendingCancellation session saveRequest
+          pure <| .ok saveRequest
       -- Successful delivery ends backend uncertainty. Missing or malformed completion can
       -- retain private candidates, but cannot authorize canonical publication.
       liftHandlerIO <| uncertain.set false
@@ -2155,7 +2152,9 @@ private def saveOleanCore
         match ← withFailureProgress barrierProgress? <|
             liftHandlerIO saveRequest.awaitOutcome with
         | .ok pending => pure pending
-        | .error failure => throw <| presentFailure failure
+        | .error failure =>
+            let failure ← liftHandlerIO <| RequestCancellation.backendFailure req.cancelRef? failure
+            throw <| presentFailure failure
       let completion : Beam.LSP.Save.SaveArtifactsCompletion ←
         withFailureProgress barrierProgress? <| liftHandlerIO <| decodeResponseAs pending.result
       -- Only this method's typed acknowledgement establishes that its owned task has finished.
@@ -2175,9 +2174,17 @@ private def saveOleanCore
       throw <| (responseFailureFor .internalError
         s!"save_olean saved text hash {saveResult.textHash}, expected synced hash {started.documentHash}")
         |>.withOptionalFileProgress barrierProgress?
+    withFailureProgress barrierProgress? <| liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
     liftHandlerIO <| producersSettled.set false
-    withFailureProgress barrierProgress? <| liftBrokerFailureIO <|
-      writeLeanSaveTrace privateSpec { cancelRef? := req.cancelRef? }
+    -- Defer caller cancellation through the helper's existing bounded trace wait, so a normal
+    -- cancellation can dispose the private outputs after their producer has actually finished.
+    withFailureProgress barrierProgress? do
+      match ← liftHandlerIO <| writeLeanSaveTrace privateSpec with
+      | .ok () => pure ()
+      | .error failure =>
+          let failure ← liftHandlerIO <|
+            RequestCancellation.backendFailure req.cancelRef? failure.toResponseFailure
+          throw failure
     liftHandlerIO <| producersSettled.set true
     liftHandlerIO plan.ready
     withFailureProgress barrierProgress? <| liftFailureIO <|

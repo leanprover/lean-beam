@@ -12,7 +12,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   competing document operations fail with `contentModified` / `documentClosing`; invalidated delayed
   requests use `documentAdmissionExpired`. Callers coordinate retries after the closing request
   finishes. Private preparation failures preserve a healthy backend and its documents and
-  continuation handles; uncertain backend delivery still retires the captured owner. The broker
+  continuation handles. Caller cancellation waits for private serialization or trace preparation
+  to finish so acknowledged private files can be removed; true channel loss can still retain them.
+  Uncertain artifact-request or final-close delivery can retire the captured owner. The broker
   alone publishes canonical checkpoints after preparation and final document/cancellation checks.
 - Shrink the installed `lean-beam` skill from about 32 KB to under 10 KB by stating each workflow
   rule once. Installation, session internals, recovery, and feedback details move to the new

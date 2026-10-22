@@ -77,7 +77,7 @@ def create (canonical : LeanSaveOutputs) : IO Plan := do
       directories.modify (·.push directory)
       let some name := target.fileName
         | throw <| IO.userError s!"save publication target has no file name: {target}"
-      let candidate := directory / name
+      let candidate := directory / (name ++ ".candidate")
       artifacts.modify (·.push { candidate, target, backup := FilePath.mk (candidate.toString ++ ".previous") })
       pure candidate
     pure {
