@@ -1547,7 +1547,7 @@ private def checkDocumentAdmission : IO Unit := do
       }
       admitRuntime := fun _ _ _ => pure (.ok ())
     }
-    let notifications : Beam.Mcp.Server.NotificationSink := { send := fun _ => pure () }
+    let notifications : Beam.Mcp.Server.NotificationSink := { send := fun _ _ => pure () }
     initMcpSession state opts notifications
     for (id, tool, fields) in #[
         (2, "lean_sync", []),
