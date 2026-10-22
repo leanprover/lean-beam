@@ -60,13 +60,14 @@ run_quiet_test "defensive validation Git isolation" bash tests/test-validate-def
 
 run_quiet_lake_build \
   Beam.LSP:shared \
+  BeamPrivateSaveGate:shared \
   beam-cli \
   beam-daemon \
   beam-daemon-fixture \
   beam-lake-helper-client-fixture \
   lean-beam-mcp \
   beam-system-contract-test \
-  beam-save-publication-test \
+  beam-transaction-test \
   beam-prune-lock-test \
   BeamTest.SystemTimeTest \
   BeamTest.Broker.StreamDedupTest \
@@ -76,6 +77,8 @@ run_quiet_lake_build \
   beam-broker-protocol-test \
   beam-broker-pending-test \
   beam-broker-document-state-test \
+  beam-closing-model-test \
+  beam-publication-test \
   beam-broker-open-docs-test \
   beam-daemon-smoke-test \
   beam-sync-concurrency-test \
@@ -127,8 +130,8 @@ PY
 
 run_quiet_test "partial-setup doctor" python3 tests/test-beam-doctor.py
 run_quiet_test system-contracts python3 tests/test-system-contracts.py
-run_quiet_test save-publication python3 tests/lib/process_watchdog.py \
-  --timeout 30 -- .lake/build/bin/beam-save-publication-test
+run_quiet_test transaction python3 tests/lib/process_watchdog.py \
+  --timeout 30 -- .lake/build/bin/beam-transaction-test
 run_quiet_test prune-lock python3 tests/lib/process_watchdog.py \
   --timeout 30 -- .lake/build/bin/beam-prune-lock-test
 run_quiet_test backend-process .lake/build/bin/beam-backend-process-test
@@ -137,6 +140,8 @@ run_quiet_test broker-transport python3 tests/lib/process_watchdog.py \
 run_quiet_test broker-protocol .lake/build/bin/beam-broker-protocol-test
 run_quiet_test broker-pending .lake/build/bin/beam-broker-pending-test
 run_quiet_test broker-document-state .lake/build/bin/beam-broker-document-state-test
+run_quiet_test closing-model .lake/build/bin/beam-closing-model-test
+run_quiet_test publication-ownership .lake/build/bin/beam-publication-test
 run_quiet_test broker-open-docs .lake/build/bin/beam-broker-open-docs-test
 run_quiet_test cli-daemon .lake/build/bin/beam-cli-daemon-test
 run_quiet_test interrupt-watcher python3 tests/test-interrupt-watcher.py
@@ -151,8 +156,9 @@ run_quiet_test installation-entrypoints python3 tests/test-installation-entrypoi
 run_quiet_test lake-helper-lifetime python3 tests/lib/process_watchdog.py \
   --timeout 180 -- python3 tests/test-lake-helper-lifetime.py
 run_quiet_test lake-save-preflight python3 tests/test-lake-save-preflight.py
+# Additional gated cancellation schedules need aggregate headroom under load; case deadlines stay bounded.
 run_quiet_test save-finalization python3 tests/lib/process_watchdog.py \
-  --timeout 180 -- python3 tests/test-save-finalization.py
+  --timeout 240 -- python3 tests/test-save-finalization.py
 run_quiet_test mcp-protocol python3 tests/lib/process_watchdog.py \
   --timeout "${BEAM_MCP_PROTOCOL_TEST_WATCHDOG_SECONDS:-240}" -- \
   .lake/build/bin/beam-mcp-protocol-test

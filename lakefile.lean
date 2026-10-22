@@ -133,8 +133,7 @@ target beamControlDirObj (pkg) : FilePath := buildNativeObject pkg "control_dir"
 target beamProcessJobObj (pkg) : FilePath := buildNativeObject pkg "process_job"
 
 lean_lib Beam.LSP where
-  -- Lean loads this plugin without the broker library; embed its neutral transaction dependency.
-  globs := #[.andSubmodules `Beam.LSP, .one `Beam.Transaction]
+  globs := #[.andSubmodules `Beam.LSP]
   defaultFacets := #[`shared]
   -- Darwin otherwise records the absolute build path as the dylib install name, so identical
   -- sources built in different directories would differ. The plugin is only loaded by path.
@@ -148,6 +147,15 @@ lean_lib Beam where
 lean_lib BeamTest where
   srcDir := "tests/lean"
 
+/-- Non-shipped directed private-publication regression plugin. -/
+lean_lib BeamPrivateSaveGate where
+  srcDir := "tests/lean"
+  globs := #[.one `BeamPrivateSaveGate]
+  defaultFacets := #[`shared]
+
+lean_lib BeamModel where
+  srcDir := "model"
+
 lean_exe "beam-system-contract-test" where
   srcDir := "tests/lean"
   root := `BeamTest.SystemContractTest
@@ -160,9 +168,9 @@ lean_exe "beam-lsp-test" where
   srcDir := "tests/lean"
   root := `BeamTest.LSP.TestRunner
 
-lean_exe "beam-save-publication-test" where
+lean_exe "beam-transaction-test" where
   srcDir := "tests/lean"
-  root := `BeamTest.LSP.SavePublicationTest
+  root := `BeamTest.TransactionTest
 
 lean_exe "beam-lsp-scenario-test" where
   srcDir := "tests/lean"
@@ -266,6 +274,14 @@ lean_exe "beam-broker-pending-test" where
 lean_exe "beam-broker-document-state-test" where
   srcDir := "tests/lean"
   root := `BeamTest.Broker.DocumentStateTest
+
+lean_exe "beam-publication-test" where
+  srcDir := "tests/lean"
+  root := `BeamTest.Broker.PublicationTest
+
+lean_exe "beam-closing-model-test" where
+  srcDir := "tests/lean"
+  root := `BeamTest.Model.ClosingTest
 
 lean_exe "beam-broker-open-docs-test" where
   srcDir := "tests/lean"

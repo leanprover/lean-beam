@@ -52,8 +52,11 @@ lean-beam save MyPkg/Sub/Module.lean
 - Every version-bound command needs the version from the latest `update` or `sync`. On
   `contentModified` with `error.data.reason = "documentVersionMismatch"`, retry with
   `error.data.acceptedVersion` or run `update` again; never guess a version.
+- Cancellation is soft: interrupting the client does not prove backend work has stopped. Active
+  preparation may finish before cleanup; cancellation does not undo committed effects. Do not remove
+  temporary files solely because the client exited.
 - `refresh` is `close` plus `sync`: use it when a tracked file needs a fresh basis after an upstream
-  dependency changed. `close-save` is `save` plus close.
+  dependency changed.
 - `save` checkpoints only that module. It does not validate importers, and it records the Lean
   server's environment, which can differ from batch elaboration. Modules with batch-only
   `moreLeanArgs` fail with `saveUnsupportedSetup`; move shared `-D` settings to `leanOptions`, or
@@ -61,6 +64,15 @@ lean-beam save MyPkg/Sub/Module.lean
 - If `close-save` fails with `error.data.reason = "savedDocumentChanged"`, `error.data.saved` is an
   already committed checkpoint of the earlier version; run `update` or `sync` and save again if
   needed.
+
+- `close-save` reserves the accepted document. On `contentModified` with reason `documentClosing`,
+  coordinate with its caller before issuing a new command; do not run an update/sync retry loop.
+  During claimed canonical publication, same-workspace changes wait for settlement.
+- `documentAdmissionExpired` means closure or backend replacement invalidated this request. After
+  coordination, issue a new request and reacquire handles if the backend was replaced.
+- Other postcommit failures also retain `error.data.saved`, with prior data under
+  `error.data.originalData`. An uncertain close does not assert `closed = false`; cancellation does
+  not undo a committed checkpoint.
 
 ## Choosing A Command
 

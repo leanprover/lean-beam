@@ -361,6 +361,36 @@
       "pointer": "tests/lean/BeamTest/LSP/Requests/Save/BasicTest.lean#checkSaveArtifactsWrite"
     },
     {
+      "id": "saveArtifacts.module-family",
+      "method": "$/beam/saveArtifacts",
+      "coverage": ["isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/Save/BasicTest.lean#checkSaveArtifactsWriteModuleFamily"
+    },
+    {
+      "id": "saveArtifacts.partial-private-failure",
+      "method": "$/beam/saveArtifacts",
+      "coverage": ["isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/Save/BasicTest.lean#checkSaveArtifactsPartialPrivateFailure"
+    },
+    {
+      "id": "saveArtifacts.invalid-output-shape",
+      "method": "$/beam/saveArtifacts",
+      "coverage": ["isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/Save/BasicTest.lean#checkSaveArtifactsInvalidShape"
+    },
+    {
+      "id": "saveArtifacts.cancellation",
+      "method": "$/beam/saveArtifacts",
+      "coverage": ["isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/Save/BasicTest.lean#checkSaveArtifactsCancellation"
+    },
+    {
+      "id": "saveArtifacts.disjoint-attempts",
+      "method": "$/beam/saveArtifacts",
+      "coverage": ["mixed-concurrency"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/Save/BasicTest.lean#checkConcurrentDisjointPrivateSaves"
+    },
+    {
       "id": "saveArtifacts.stale-version",
       "method": "$/beam/saveArtifacts",
       "coverage": ["stale-version"],

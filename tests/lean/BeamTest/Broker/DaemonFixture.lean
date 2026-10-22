@@ -7,6 +7,8 @@ Author: Emilio J. Gallego Arias
 import Beam.Broker.Server
 import Beam.Broker.LakeHelperMain
 import BeamTest.TestHarness
+import BeamTest.Broker.SaveOwnerTest
+import BeamTest.Broker.PrivatePublicationTest
 
 private structure Fixture where
   command : String := "lean"
@@ -38,6 +40,8 @@ private def gateHelper (args : List String) : IO Unit := do
   IO.FS.rename (gateDirectory / "entered.tmp") (gateDirectory / "entered")
   let deadline := (← IO.monoMsNow) + 25000
   repeat
+    if ← (gateDirectory / "fail").pathExists then
+      throw <| IO.userError "controlled save helper failure"
     if ← (gateDirectory / "release").pathExists then return
     if (← IO.monoMsNow) >= deadline then
       throw <| IO.userError "save-finalization helper gate timed out"
@@ -55,6 +59,10 @@ def main (args : List String) : IO Unit := do
     toolchain := "library fixture", identity := ⟨(← IO.currentDir), "library fixture"⟩
   }
   match fixture.args with
+  | ["private-publication-test", root] =>
+      BeamTest.Broker.PrivatePublicationTest.run description (← Beam.resolveExistingPath root)
+  | ["save-owner-test", case, root] =>
+      BeamTest.Broker.SaveOwnerTest.run description (← Beam.resolveExistingPath root) case
   | "lake-helper" :: helperArgs =>
       Beam.Broker.LakeHelperMain.main (do
         gateHelper helperArgs

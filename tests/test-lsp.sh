@@ -12,7 +12,6 @@ lake build Beam.LSP:shared > /dev/null
 lake build BeamTest > /dev/null
 lake build BeamTest.Fixtures.Deps.DepA > /dev/null
 python3 tests/lsp-coverage/check.py
-lake exe beam-save-publication-test
 
 run_case() {
   local name="$1"

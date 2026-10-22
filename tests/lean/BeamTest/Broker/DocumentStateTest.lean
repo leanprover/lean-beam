@@ -6,20 +6,27 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Broker.DocumentState
 import BeamTest.Broker.JsonAssert
+import BeamTest.Broker.DocumentFixture
 
 open Beam.Broker
 open BeamTest.Broker.JsonAssert
 
 namespace BeamTest.Broker.DocumentStateTest
 
-private def mkDoc (version : Nat := 1) (moduleName? : Option String := none) : DocState := {
-  version
-  rawSourceHash := 0
-  documentHash := 0
-  lakeTraceHash := default
-  textMTime := default
-  moduleName?
-}
+/-- error: invalid {...} notation, constructor for `DocumentBasis` is marked as private -/
+#guard_msgs in
+example : DocumentBasis := { version := 1, acceptedSeq := 1 }
+
+/-- error: invalid {...} notation, constructor for `DocState` is marked as private -/
+#guard_msgs in
+example (doc : DocState) : DocState := { doc with rawSourceHash := 0 }
+
+private def mkDoc (version : Nat := 1) (moduleName? : Option String := none)
+    (rawSourceHash : UInt64 := 0) : IO DocState :=
+  DocumentFixture.accepted {
+    rawSourceHash, documentHash := rawSourceHash, lakeTraceHash := default
+    textMTime := default, moduleName?
+  } version
 
 private def checkTrackedModuleName : IO Unit := do
   let root := System.FilePath.mk "/workspace"
@@ -32,7 +39,7 @@ private def checkTrackedModuleName : IO Unit := do
 
 private def checkRecordFileProgress : IO Unit := do
   let uri := "file:///workspace/Foo.lean"
-  let docs : DocumentState.Docs := Std.TreeMap.empty.insert uri (mkDoc)
+  let docs : DocumentState.Docs := Std.TreeMap.empty.insert uri (← mkDoc)
   let docs := DocumentState.recordFileProgress docs uri (some { updates := 2, done := false })
   let some doc := docs.get? uri
     | throw <| IO.userError "recordFileProgress erased existing doc"
@@ -64,14 +71,9 @@ private def checkSyncFileDecisionOpen : IO Unit := do
 
 private def checkSyncFileDecisionUnchanged : IO Unit := do
   let uri := "file:///workspace/Foo.lean"
-  let docs : DocumentState.Docs :=
-    Std.TreeMap.empty.insert uri {
-      (mkDoc 5 (some "OldFoo")) with
-      rawSourceHash := 10
-      checkpointedVersion? := some 5
-      fileProgress? := some { updates := 2, done := true }
-      lastSyncEventSeq := 8
-    }
+  let docs : DocumentState.Docs := Std.TreeMap.empty.insert uri (← mkDoc 5 (some "OldFoo") 10)
+  let docs := (DocumentState.markSavedVersion docs {} uri 5 "Foo.lean" 8).docs
+  let docs := DocumentState.recordFileProgress docs uri (some { updates := 2, done := true })
   let decision := DocumentState.syncFileDecision docs uri (mkSnapshot 10 (some "Foo"))
   require "syncFileDecision unchanged has no LSP action" (decision.action == .unchanged)
   require "syncFileDecision unchanged preserves version" (decision.version == 5)
@@ -85,14 +87,9 @@ private def checkSyncFileDecisionUnchanged : IO Unit := do
 
 private def checkSyncFileDecisionChange : IO Unit := do
   let uri := "file:///workspace/Foo.lean"
-  let docs : DocumentState.Docs :=
-    Std.TreeMap.empty.insert uri {
-      (mkDoc 5 (some "OldFoo")) with
-      rawSourceHash := 10
-      checkpointedVersion? := some 5
-      fileProgress? := some { updates := 2, done := true }
-      lastSyncEventSeq := 8
-    }
+  let docs : DocumentState.Docs := Std.TreeMap.empty.insert uri (← mkDoc 5 (some "OldFoo") 10)
+  let docs := (DocumentState.markSavedVersion docs {} uri 5 "Foo.lean" 8).docs
+  let docs := DocumentState.recordFileProgress docs uri (some { updates := 2, done := true })
   let decision := DocumentState.syncFileDecision docs uri (mkSnapshot 11 (some "Foo"))
   require "syncFileDecision changed emits change action" (decision.action == .change)
   require "syncFileDecision changed bumps version" (decision.version == 6)
@@ -106,7 +103,7 @@ private def checkSyncFileDecisionChange : IO Unit := do
 
 private def checkMarkSyncedVersion : IO Unit := do
   let uri := "file:///workspace/Foo.lean"
-  let docs : DocumentState.Docs := Std.TreeMap.empty.insert uri (mkDoc 3 (some "Foo"))
+  let docs : DocumentState.Docs := Std.TreeMap.empty.insert uri (← mkDoc 3 (some "Foo"))
   let result := DocumentState.markSyncedVersion docs {} uri 3 "Foo.lean" 7
   require "markSyncedVersion applies matching version" result.applied
   let some doc := result.docs.get? uri
@@ -120,10 +117,7 @@ private def checkMarkSyncedVersion : IO Unit := do
   require "markSyncedVersion does not count initial text as a change"
     (history.lastTextChangeEventSeq == 0)
 
-  let changedDocs := result.docs.insert uri {
-    (mkDoc 4 (some "Foo")) with
-    rawSourceHash := 11
-  }
+  let changedDocs := result.docs.insert uri (← mkDoc 4 (some "Foo") 11)
   let changed := DocumentState.markSyncedVersion changedDocs result.moduleHistory uri 4 "Foo.lean" 8
   require "markSyncedVersion applies changed version" changed.applied
   let some changedHistory := changed.moduleHistory.get? "Foo"
@@ -133,10 +127,7 @@ private def checkMarkSyncedVersion : IO Unit := do
   require "markSyncedVersion records text change event seq"
     (changedHistory.lastTextChangeEventSeq == 8)
 
-  let unchangedDocs := changed.docs.insert uri {
-    (mkDoc 5 (some "Foo")) with
-    rawSourceHash := 11
-  }
+  let unchangedDocs := changed.docs.insert uri (← mkDoc 5 (some "Foo") 11)
   let unchanged := DocumentState.markSyncedVersion unchangedDocs changed.moduleHistory uri 5 "Foo.lean" 9
   require "markSyncedVersion applies unchanged text version" unchanged.applied
   let some unchangedHistory := unchanged.moduleHistory.get? "Foo"
@@ -170,7 +161,7 @@ private def checkLineEndingVersion : IO Unit := do
 
 private def checkMarkSavedVersion : IO Unit := do
   let uri := "file:///workspace/Foo.lean"
-  let docs : DocumentState.Docs := Std.TreeMap.empty.insert uri (mkDoc 4 (some "Foo"))
+  let docs : DocumentState.Docs := Std.TreeMap.empty.insert uri (← mkDoc 4 (some "Foo"))
   let result := DocumentState.markSavedVersion docs {} uri 4 "Foo.lean" 9
   require "markSavedVersion applies matching version" result.applied
   let some doc := result.docs.get? uri
@@ -196,18 +187,26 @@ private def checkAcceptedBasis : IO Unit := do
   let opened := DocumentState.syncFileDecision {} uri { mkSnapshot 10 with readSeq := 1 }
   let original ← DocumentState.requireDocState opened.docs uri
   let originalBasis := DocumentState.basis original
-  require "open captures its acceptance sequence" (originalBasis == ⟨1, 1⟩)
+  require "open captures its accepted version" (originalBasis.version == 1)
   let unchanged := DocumentState.syncFileDecision opened.docs uri { mkSnapshot 10 with readSeq := 3 }
   let unchangedDoc ← DocumentState.requireDocState unchanged.docs uri
   require "unchanged read advances ordering without changing basis"
     (unchangedDoc.syncSnapshotSeq == 3 && DocumentState.basis unchangedDoc == originalBasis)
   let changed := DocumentState.syncFileDecision unchanged.docs uri { mkSnapshot 20 with readSeq := 5 }
   let changedDoc ← DocumentState.requireDocState changed.docs uri
-  require "change renews accepted basis" (DocumentState.basis changedDoc == ⟨2, 5⟩)
+  require "change renews accepted basis"
+    (changedDoc.version == 2 && DocumentState.basis changedDoc != originalBasis)
   let superseded := DocumentState.syncFileDecision changed.docs uri { mkSnapshot 30 with readSeq := 4 }
   let supersededDoc ← DocumentState.requireDocState superseded.docs uri
   require "superseded read preserves actual accepted basis"
-    (DocumentState.basis supersededDoc == ⟨2, 5⟩ && supersededDoc.rawSourceHash == 20)
+    (DocumentState.basis supersededDoc == DocumentState.basis changedDoc &&
+     supersededDoc.rawSourceHash == 20)
+  let reverted := DocumentState.syncFileDecision changed.docs uri { mkSnapshot 10 with readSeq := 6 }
+  let revertedDoc ← DocumentState.requireDocState reverted.docs uri
+  require "accepted A to B to A does not revive A's identity"
+    (revertedDoc.rawSourceHash == original.rawSourceHash &&
+     DocumentState.basis revertedDoc != originalBasis &&
+     DocumentState.matchBasis reverted.docs uri originalBasis == .superseded (some 3))
   let reopened := DocumentState.syncFileDecision (superseded.docs.erase uri) uri
     { mkSnapshot 10 with readSeq := 7 }
   let reopenedDoc ← DocumentState.requireDocState reopened.docs uri

@@ -82,3 +82,5 @@ def run : IO Unit := do
   IO.println "transaction scope tests passed"
 
 end BeamTest.TransactionTest
+
+def main := BeamTest.TransactionTest.run

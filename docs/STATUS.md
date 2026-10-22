@@ -87,6 +87,24 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 - repo-local regression coverage around isolation, stale state, cancellation, and handle invalidation
 - broker, wrapper, install, MCP, and CI coverage described in [docs/TESTING.md](TESTING.md)
 
+## Soft Cancellation
+
+Request cancellation in Beam is currently **soft (cooperative)**: it asks an operation to stop at a
+safe boundary. It does not guarantee immediate interruption, rollback, or completion within a fixed
+time. Lean must poll for interruption, and active serialization, helper work, or synchronous I/O may
+need to finish before the operation can release its resources. A client may stop waiting before
+backend work has settled; cancellation alone is not evidence that its files are safe to remove.
+
+An operation that has crossed its commit boundary may still complete successfully. Cancellation
+does not undo a committed checkpoint. Close-save can retain its document reservation while private
+preparation settles; coordinate with its caller rather than repeatedly retrying conflicting work.
+See the [save contract](SYNC_AND_DIAGNOSTICS.md#command-model) and
+[MCP cancellation and shutdown rules](MCP.md#concurrency-cancellation-and-shutdown) for exact outcomes.
+
+Forced process termination and backend/channel failures are separate lifecycle events. More
+responsive cancellation remains a future improvement; callers should not rely on stronger stopping
+guarantees today.
+
 ## Operational Notes
 
 The base request remains intentionally small:
@@ -287,7 +305,7 @@ client protocol.
   caller-supplied request ID and is joined when the handler completes. The interrupted client exits
   nonzero without fabricating a terminal broker response on
   stdout. `lean-beam cancel ID` remains the explicit cross-process cancellation surface.
-  Cancellation is cooperative; prompt stopping depends on inner elaboration polling interruption.
+  [Cancellation is soft](#soft-cancellation); client exit does not establish backend settlement.
 - The foreground owner retains SIGINT and POSIX SIGTERM/SIGHUP handlers from acquisition through
   daemon cleanup, and its initial request borrows that same stop observation. Repeated signals remain
   latched without forcing exit. Lock/readiness waits can defer observation; synchronous output or

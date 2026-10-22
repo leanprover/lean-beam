@@ -21,9 +21,6 @@ private def depAFixture : String :=
 private def moduleArtifactsFixture : String :=
   "tests/lean/BeamTest/Fixtures/Save/ModuleArtifacts.lean"
 
-private def requestCancelledJson : Json :=
-  Json.mkObj [("code", toJson "requestCancelled")]
-
 private def staleTextHash (text : String) : UInt64 :=
   if hash text == 0 then 1 else 0
 
@@ -36,6 +33,26 @@ private def requireCleanReadiness (label : String)
   unless readiness.blockingDiagnostics.isEmpty && readiness.blockingCommandMessages.isEmpty do
     throw <| IO.userError
       s!"{label}: expected clean file to omit save-blocking evidence, got {(toJson readiness).compress}"
+
+private def awaitSavedArtifacts (req : ReqHandle) : ScenarioM Beam.LSP.Save.SaveArtifactsResult := do
+  let completion : Beam.LSP.Save.SaveArtifactsCompletion ← awaitResponseAs req
+  match completion with
+  | .success result => pure result
+  | .failure code message =>
+      throw <| IO.userError s!"save handler failed with {(toJson code).compress}: {message}"
+
+private def expectSaveFailure (req : ReqHandle) (code : Lean.JsonRpc.ErrorCode)
+    (allowRoutingError : Bool := false) : ScenarioM Unit := do
+  let outcome ← awaitReq req
+  if allowRoutingError && outcome.errorCode?.isSome then
+    expectErrorContains req (Json.mkObj [("code", toJson (BeamTest.TestHarness.errorCodeName code))])
+    return
+  let completion : Beam.LSP.Save.SaveArtifactsCompletion ← awaitResponseAs req
+  match completion with
+  | .success _ => throw <| IO.userError "save handler unexpectedly succeeded"
+  | .failure actual _ =>
+      unless actual == code do
+        throw <| IO.userError s!"save handler returned {(toJson actual).compress}, expected {(toJson code).compress}"
 
 private def requireSavedArtifacts (label : String) (outDir : System.FilePath)
     (saved : Beam.LSP.Save.SaveArtifactsResult) : ScenarioM Unit := do
@@ -119,7 +136,7 @@ def checkSaveArtifactsStaleVersion : ScenarioM Unit := do
     ileanFile := (outDir / "StaleVersion.ilean").toString
     cFile := (outDir / "StaleVersion.c").toString
   }
-  expectErrorContains staleVersionReq (Json.mkObj [("code", toJson "contentModified")])
+  expectSaveFailure staleVersionReq .contentModified
 
   closeDoc doc
 
@@ -135,7 +152,7 @@ def checkSaveArtifactsStaleHash : ScenarioM Unit := do
     ileanFile := (outDir / "StaleHash.ilean").toString
     cFile := (outDir / "StaleHash.c").toString
   }
-  expectErrorContains staleHashReq (Json.mkObj [("code", toJson "contentModified")])
+  expectSaveFailure staleHashReq .contentModified
 
   closeDoc doc
 
@@ -144,15 +161,20 @@ def checkSaveArtifactsWrite : ScenarioM Unit := do
   let depAText ← IO.FS.readFile depAFixture
   let outDir ← mkTmpDir "beam-save-request-surface"
 
+  let bcFile? := if Lean.Internal.hasLLVMBackend () then some (outDir / "DepA.bc") else none
+  if bcFile?.isNone then
+    IO.eprintln "saveArtifacts ordinary bitcode: unsupported (toolchain has no LLVM backend)"
   let saveReq ← sendSaveArtifacts doc {
     expectedVersionOverride? := some 1
     expectedTextHashOverride? := some (hash depAText)
     oleanFile := (outDir / "DepA.olean").toString
     ileanFile := (outDir / "DepA.ilean").toString
     cFile := (outDir / "DepA.c").toString
+    bcFile? := bcFile?.map (·.toString)
   }
-  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs saveReq
+  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitSavedArtifacts saveReq
   requireSavedArtifacts "saveArtifacts" outDir saved
+  if let some bcFile := bcFile? then expectFileExists "saveArtifacts ordinary bitcode" bcFile
 
   closeDoc doc
 
@@ -171,54 +193,38 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
   let text ← IO.FS.readFile moduleArtifactsFixture
   let outDir ← mkTmpDir "beam-save-module-family"
 
+  -- The broker supplies each companion in its own private directory. Exercise that layout.
+  let paths := #[outDir / "module" / "ModuleArtifacts.olean",
+    outDir / "server" / "ModuleArtifacts.olean.server",
+    outDir / "private" / "ModuleArtifacts.olean.private", outDir / "ir" / "ModuleArtifacts.ir",
+    outDir / "signature" / "ModuleArtifacts.ir.sig", outDir / "ilean" / "ModuleArtifacts.ilean",
+    outDir / "c" / "ModuleArtifacts.c"]
+  let bcFile? := if Lean.Internal.hasLLVMBackend () then some (outDir / "bc" / "ModuleArtifacts.bc")
+    else none
+  if bcFile?.isNone then
+    IO.eprintln "saveArtifacts module bitcode: unsupported (toolchain has no LLVM backend)"
   let saveReq ← sendSaveArtifacts doc {
     expectedVersionOverride? := some 1
     expectedTextHashOverride? := some (hash text)
-    oleanFile := (outDir / "ModuleArtifacts.olean").toString
+    oleanFile := paths[0]!.toString
     moduleArtifacts? := some {
-      oleanServerFile := (outDir / "ModuleArtifacts.olean.server").toString
-      oleanPrivateFile := (outDir / "ModuleArtifacts.olean.private").toString
-      irFile := (outDir / "ModuleArtifacts.ir").toString
-      irSigFile := (outDir / "ModuleArtifacts.ir.sig").toString
+      oleanServerFile := paths[1]!.toString
+      oleanPrivateFile := paths[2]!.toString
+      irFile := paths[3]!.toString
+      irSigFile := paths[4]!.toString
     }
-    ileanFile := (outDir / "ModuleArtifacts.ilean").toString
-    cFile := (outDir / "ModuleArtifacts.c").toString
+    ileanFile := paths[5]!.toString
+    cFile := paths[6]!.toString
+    bcFile? := bcFile?.map (·.toString)
   }
-  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs saveReq
-  if !saved.written then
-    throw <| IO.userError "saveArtifacts module family: expected written = true"
-  expectFileExists "saveArtifacts module exported olean" (outDir / "ModuleArtifacts.olean")
-  expectFileExists "saveArtifacts module server olean" (outDir / "ModuleArtifacts.olean.server")
-  expectFileExists "saveArtifacts module private olean" (outDir / "ModuleArtifacts.olean.private")
-  expectFileExists "saveArtifacts module IR" (outDir / "ModuleArtifacts.ir")
-  expectFileExists "saveArtifacts module IR signature" (outDir / "ModuleArtifacts.ir.sig")
-  let paths := #[outDir / "ModuleArtifacts.olean", outDir / "ModuleArtifacts.olean.server",
-    outDir / "ModuleArtifacts.olean.private", outDir / "ModuleArtifacts.ir",
-    outDir / "ModuleArtifacts.ir.sig", outDir / "ModuleArtifacts.ilean", outDir / "ModuleArtifacts.c"]
-  let prior ← paths.mapM (fun path => liftM (IO.FS.readBinFile path))
-  let invalidPathReq ← sendSaveArtifacts doc {
-    expectedVersionOverride? := some 1
-    expectedTextHashOverride? := some (hash text)
-    oleanFile := (outDir / "ModuleArtifacts.olean").toString
-    moduleArtifacts? := some {
-      oleanServerFile := (outDir / "ModuleArtifacts.olean.server").toString
-      oleanPrivateFile := (outDir / "ModuleArtifacts.olean.private").toString
-      irFile := (outDir / "ModuleArtifacts.ir").toString
-      irSigFile := outDir.toString
-    }
-    ileanFile := (outDir / "ModuleArtifacts.ilean").toString
-    cFile := (outDir / "ModuleArtifacts.c").toString
-  }
-  expectErrorContains invalidPathReq (Json.mkObj [("code", toJson "internalError")])
-  unless (← paths.mapM (fun path => liftM (IO.FS.readBinFile path))) == prior do
-    throw <| IO.userError "invalid module artifact path changed prior artifacts"
-  expectFileExists "saveArtifacts module ilean" (outDir / "ModuleArtifacts.ilean")
-  expectFileExists "saveArtifacts module C" (outDir / "ModuleArtifacts.c")
-  let entries ← outDir.readDir
-  if entries.any (fun entry =>
-      entry.fileName.contains ".beam-tmp-" || entry.fileName.contains ".beam-save-tmp-") then
-    throw <| IO.userError
-      s!"saveArtifacts module family: temporary artifacts leaked: {entries.map (·.fileName)}"
+  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitSavedArtifacts saveReq
+  unless saved.written && saved.version == 1 && saved.textHash == hash text do
+    throw <| IO.userError "saveArtifacts module family returned the wrong completion"
+  for path in paths do expectFileExists "saveArtifacts module family" path
+  if let some bcFile := bcFile? then expectFileExists "saveArtifacts module bitcode" bcFile
+  let entries ← (outDir / "module").readDir
+  if entries.any (·.fileName.startsWith ".beam-save-tmp-") then
+    throw <| IO.userError "module filename adapter left temporary files"
 
   closeDoc doc
 
@@ -238,121 +244,108 @@ def checkDeferredCompilationReadiness : ScenarioM Unit := do
       ileanFile := paths[1]!.toString
       cFile := paths[2]!.toString
     }
-    expectErrorContains request (Json.mkObj [("code", toJson "invalidParams")])
+    expectSaveFailure request .invalidParams
     for path in paths do expectFileContents "deferred save" path "prior artifact"
     closeDoc doc
 
-def checkSaveArtifactsFailurePreservesPriorArtifacts : ScenarioM Unit := do
-  let doc ← openDoc depAFixture
-  let text ← IO.FS.readFile depAFixture
-  let outDir ← mkTmpDir "beam-save-atomic-failure"
-  let oleanFile := outDir / "DepA.olean"
-  let ileanFile := outDir / "DepA.ilean"
-  let cFile := outDir / "DepA.c"
+def checkSaveArtifactsPartialPrivateFailure : ScenarioM Unit := do
+  let doc ← openDoc moduleArtifactsFixture
+  let outDir ← mkTmpDir "beam-save-private-failure"
+  let paths := #[outDir / "ModuleArtifacts.olean", outDir / "ModuleArtifacts.olean.server",
+    outDir / "ModuleArtifacts.olean.private", outDir / "ModuleArtifacts.ir",
+    outDir / "ModuleArtifacts.ir.sig", outDir / "ModuleArtifacts.ilean"]
   let blockedParent := outDir / "blocked-parent"
-  let oldOlean := "prior olean artifact"
-  let oldIlean := "prior ilean artifact"
-  let oldC := "prior C artifact"
-  IO.FS.writeFile oleanFile oldOlean
-  IO.FS.writeFile ileanFile oldIlean
-  IO.FS.writeFile cFile oldC
   IO.FS.writeFile blockedParent "not a directory"
-
-  let saveReq ← sendSaveArtifacts doc {
-    expectedVersionOverride? := some 1
-    expectedTextHashOverride? := some (hash text)
-    oleanFile := oleanFile.toString
-    ileanFile := ileanFile.toString
+  let cFile := blockedParent / "ModuleArtifacts.c"
+  let request ← sendSaveArtifacts doc {
+    oleanFile := paths[0]!.toString
+    moduleArtifacts? := some {
+      oleanServerFile := paths[1]!.toString
+      oleanPrivateFile := paths[2]!.toString
+      irFile := paths[3]!.toString
+      irSigFile := paths[4]!.toString
+    }
+    ileanFile := paths[5]!.toString
     cFile := cFile.toString
-    bcFile? := some (blockedParent / "DepA.bc").toString
   }
-  expectErrorContains saveReq (Json.mkObj [("code", toJson "internalError")])
-  expectFileContents "failed save replaced the prior olean artifact" oleanFile oldOlean
-  expectFileContents "failed save replaced the prior ilean artifact" ileanFile oldIlean
-  expectFileContents "failed save replaced the prior C artifact" cFile oldC
+  expectSaveFailure request .internalError
+  -- Failure may leave private outputs; only the broker can publish a canonical checkpoint.
+  for path in paths do
+    expectFileExists "partial private output" path
+    if (← IO.FS.readBinFile path).isEmpty then
+      throw <| IO.userError s!"private preparation did not finish the earlier output: {path}"
+  expectFileContents "blocked private parent" blockedParent "not a directory"
   let entries ← outDir.readDir
-  if entries.any (fun entry =>
-      entry.fileName.contains ".beam-tmp-" || entry.fileName.contains ".beam-save-tmp-" ||
-        entry.fileName.contains ".beam-backup-") then
-    throw <| IO.userError
-      s!"failed save leaked staging artifacts: {entries.map (·.fileName)}"
-
+  if entries.any (·.fileName.startsWith ".beam-save-tmp-") then
+    throw <| IO.userError "failed private preparation left module adapter scratch files"
   closeDoc doc
 
-def checkSaveArtifactsCancellationPreservesPriorArtifacts : ScenarioM Unit := do
+def checkSaveArtifactsInvalidShape : ScenarioM Unit := do
+  let outDir ← mkTmpDir "beam-save-private-shape"
+  let ordinary ← openDoc depAFixture
+  let duplicate ← sendSaveArtifacts ordinary {
+    oleanFile := (outDir / "duplicate").toString
+    ileanFile := (outDir / "duplicate").toString
+    cFile := (outDir / "DepA.c").toString
+  }
+  expectSaveFailure duplicate .internalError
+  let extraCompanions ← sendSaveArtifacts ordinary {
+    oleanFile := (outDir / "DepA.olean").toString
+    moduleArtifacts? := some {
+      oleanServerFile := (outDir / "DepA.olean.server").toString
+      oleanPrivateFile := (outDir / "DepA.olean.private").toString
+      irFile := (outDir / "DepA.ir").toString
+      irSigFile := (outDir / "DepA.ir.sig").toString
+    }
+    ileanFile := (outDir / "DepA.ilean").toString
+    cFile := (outDir / "DepA.c").toString
+  }
+  expectSaveFailure extraCompanions .internalError
+  closeDoc ordinary
+  let moduleDoc ← openDoc moduleArtifactsFixture
+  let missingCompanions ← sendSaveArtifacts moduleDoc {
+    oleanFile := (outDir / "ModuleArtifacts.olean").toString
+    ileanFile := (outDir / "ModuleArtifacts.ilean").toString
+    cFile := (outDir / "ModuleArtifacts.c").toString
+  }
+  expectSaveFailure missingCompanions .internalError
+  unless (← outDir.readDir).isEmpty do
+    throw <| IO.userError "invalid private output shape wrote artifact files"
+  closeDoc moduleDoc
+
+def checkSaveArtifactsCancellation : ScenarioM Unit := do
   let doc ← openDoc "tests/scenario/docs/PartialProgress.lean"
-  let outDir ← mkTmpDir "beam-save-atomic-cancellation"
-  let oleanFile := outDir / "PartialProgress.olean"
-  let ileanFile := outDir / "PartialProgress.ilean"
-  let cFile := outDir / "PartialProgress.c"
-  let oldOlean := "prior olean artifact"
-  let oldIlean := "prior ilean artifact"
-  let oldC := "prior C artifact"
-  IO.FS.writeFile oleanFile oldOlean
-  IO.FS.writeFile ileanFile oldIlean
-  IO.FS.writeFile cFile oldC
-
-  let saveReq ← sendSaveArtifacts doc {
-    oleanFile := oleanFile.toString
-    ileanFile := ileanFile.toString
-    cFile := cFile.toString
+  let outDir ← mkTmpDir "beam-save-private-cancellation"
+  let request ← sendSaveArtifacts doc {
+    oleanFile := (outDir / "PartialProgress.olean").toString
+    ileanFile := (outDir / "PartialProgress.ilean").toString
+    cFile := (outDir / "PartialProgress.c").toString
   }
-  cancelReq saveReq
-  expectErrorContains saveReq requestCancelledJson
-  expectFileContents "cancelled save replaced the prior olean artifact" oleanFile oldOlean
-  expectFileContents "cancelled save replaced the prior ilean artifact" ileanFile oldIlean
-  expectFileContents "cancelled save replaced the prior C artifact" cFile oldC
-  let entries ← outDir.readDir
-  if entries.any (fun entry =>
-      entry.fileName.contains ".beam-save-tmp-" || entry.fileName.contains ".beam-backup-") then
-    throw <| IO.userError
-      s!"cancelled save leaked staging artifacts: {entries.map (·.fileName)}"
-
+  cancelReq request
+  expectErrorContains request (Json.mkObj [("code", toJson "requestCancelled")])
+  -- Cancellation may leave private files; the request makes no rollback guarantee.
   closeDoc doc
 
-def checkConcurrentSameWorkerSavesPublishWholeSet : ScenarioM Unit := do
+def checkConcurrentDisjointPrivateSaves : ScenarioM Unit := do
   let doc ← openDoc depAFixture
-  let referenceDir ← mkTmpDir "beam-save-concurrent-reference"
-  let sharedDir ← mkTmpDir "beam-save-concurrent-shared"
-
-  let referenceReq ← sendSaveArtifacts doc {
-    oleanFile := (referenceDir / "Reference.olean").toString
-    ileanFile := (referenceDir / "Reference.ilean").toString
-    cFile := (referenceDir / "Reference.c").toString
-  }
-  let referenceSaved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs referenceReq
-  unless referenceSaved.written do
-    throw <| IO.userError "concurrent save reference was not written"
-  let reference ← readArtifactSet referenceDir "Reference"
-  let rotatedReference := #[reference[2]!, reference[0]!, reference[1]!]
-
-  let requests ← (List.range 8).mapM fun index =>
-    if index % 2 == 0 then
-      sendSaveArtifacts doc {
-        oleanFile := (sharedDir / "Shared.olean").toString
-        ileanFile := (sharedDir / "Shared.ilean").toString
-        cFile := (sharedDir / "Shared.c").toString
-      }
-    else
-      -- Use a distinct whole-set layout while keeping every request in this document's worker.
-      sendSaveArtifacts doc {
-        oleanFile := (sharedDir / "Shared.ilean").toString
-        ileanFile := (sharedDir / "Shared.c").toString
-        cFile := (sharedDir / "Shared.olean").toString
-      }
-  for request in requests do
-    let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs request
-    unless saved.written do
-      throw <| IO.userError "concurrent save request did not report written = true"
-  let shared ← readArtifactSet sharedDir "Shared"
-  unless shared == reference || shared == rotatedReference do
-    throw <| IO.userError "same-worker concurrent saves published a mixed artifact set"
-  let entries ← sharedDir.readDir
-  if entries.any (fun entry =>
-      entry.fileName.contains ".beam-save-tmp-" || entry.fileName.contains ".beam-backup-") then
-    throw <| IO.userError
-      s!"same-worker concurrent saves leaked staging artifacts: {entries.map (·.fileName)}"
-
+  let outDir ← mkTmpDir "beam-save-disjoint-attempts"
+  let requests ← (List.range 4).mapM fun index => do
+    let directory := outDir / s!"attempt-{index}"
+    let request ← sendSaveArtifacts doc {
+      oleanFile := (directory / "DepA.olean").toString
+      ileanFile := (directory / "DepA.ilean").toString
+      cFile := (directory / "DepA.c").toString
+    }
+    pure (directory, request)
+  for (directory, request) in requests do
+    let saved ← awaitSavedArtifacts request
+    requireSavedArtifacts "disjoint private save" directory saved
+  let reference ← readArtifactSet (outDir / "attempt-0") "DepA"
+  for (directory, _) in requests do
+    unless (← readArtifactSet directory "DepA") == reference do
+      throw <| IO.userError "disjoint private attempts produced different artifact families"
+    unless (← directory.readDir).size == 3 do
+      throw <| IO.userError "disjoint private attempt left unexpected files"
   closeDoc doc
 
 def checkSaveArtifactsRejectsSameDocumentEditRace : ScenarioM Unit := do
@@ -374,7 +367,7 @@ def checkSaveArtifactsRejectsSameDocumentEditRace : ScenarioM Unit := do
     insert := "-- concurrent edit while saveArtifacts is pending\n"
   }
 
-  expectErrorContains saveReq (Json.mkObj [("code", toJson "contentModified")])
+  expectSaveFailure saveReq .contentModified (allowRoutingError := true)
   closeDoc doc
 
 def checkSaveReadinessDocumentErrors : ScenarioM Unit := do
@@ -426,7 +419,7 @@ def checkSaveRequestsWithStandardLspInterference : ScenarioM Unit := do
   let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs readinessReq
   requireCleanReadiness "saveReadiness with LSP interference" readiness
 
-  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs saveReq
+  let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitSavedArtifacts saveReq
   requireSavedArtifacts "saveArtifacts with LSP interference" outDir saved
 
   closeDoc saveDoc
@@ -469,7 +462,7 @@ def checkSaveRequestsWithMixedConcurrency : ScenarioM Unit := do
     let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs req
     requireCleanReadiness "saveReadiness mixed concurrency" readiness
   for (artifactDir, req) in artifactReqs do
-    let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitResponseAs req
+    let saved : Beam.LSP.Save.SaveArtifactsResult ← awaitSavedArtifacts req
     requireSavedArtifacts "saveArtifacts mixed concurrency" artifactDir saved
   for req in goalsPrevReqs do
     let goalsPrev : Beam.LSP.Lib.ProofState ← awaitResponseAs req
@@ -518,9 +511,10 @@ def run : ScenarioM Unit := do
   checkSaveArtifactsWrite
   checkSaveArtifactsWriteModuleFamily
   checkDeferredCompilationReadiness
-  checkSaveArtifactsFailurePreservesPriorArtifacts
-  checkSaveArtifactsCancellationPreservesPriorArtifacts
-  checkConcurrentSameWorkerSavesPublishWholeSet
+  checkSaveArtifactsPartialPrivateFailure
+  checkSaveArtifactsInvalidShape
+  checkSaveArtifactsCancellation
+  checkConcurrentDisjointPrivateSaves
   checkSaveArtifactsRejectsSameDocumentEditRace
   checkSaveReadinessDocumentErrors
   checkSaveRequestsWithStandardLspInterference

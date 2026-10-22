@@ -7,6 +7,9 @@ Beam never applies source edits to `.lean` files on disk; the client applies sou
 commands below read saved source into Beam's LSP mirror or write Lean/Lake build artifacts; none is
 a source-editing command.
 
+All requests follow Beam's current [soft cancellation policy](STATUS.md#soft-cancellation).
+Cancellation may wait for active work to settle and does not undo committed effects.
+
 ## Command Model
 
 `lean-beam update` is the cheap on-disk edit observation for a Lean file. It reads the current file,
@@ -79,7 +82,7 @@ Example stale-version semantic response as printed by the wrapper on stdout:
 ```
 
 `lean-beam save` is `sync` plus a zero-build checkpoint for the synced Lake module. `lean-beam
-close-save` is `save` plus closing the tracked file afterward. Both commands return the sync verdict
+close-save` reserves that document, checkpoints it, and closes it. Both commands return the sync verdict
 they established before checkpointing: `save` under `result.sync`, and `close-save` under
 `result.saved.sync`. Document-error save failures include the blocking verdict under
 `error.data.sync`.
@@ -92,20 +95,63 @@ publication authority after execution and cleanup finish, and does not delay a w
 later broker work. A stdout write attempt is not client acknowledgement. See the
 [MCP transport contract](MCP_TRANSPORT_CONTRACT.md) for output limits and cancellation cutoffs.
 
-After a checkpoint succeeds, finalization checks whether the same accepted document is still
-tracked. If it changed, closed, or reopened, `save` may return its historical
-checkpoint result but does not mark a replacement document checkpointed. `close-save` instead
-returns `contentModified` with `error.data.reason = "savedDocumentChanged"`, the committed save
-result under `error.data.saved`, and `error.data.closed = false`. `currentVersion` is included when
-the document remains tracked; it can equal the saved version after close/reopen. This request
-leaves any replacement document and its handles intact. Unchanged rereads retain the accepted
-document and do not prevent closure.
+Close-save reserves the canonical document when its source snapshot is accepted, before waiting
+for diagnostics or preparing the checkpoint. During preparation, competing document
+operations return `contentModified` with `error.data.reason = "documentClosing"`. This includes
+update, sync, refresh, save, close, and semantic or continuation requests that implicitly sync.
+Coordinate with the close-save caller before retrying these rejected operations.
+An operation accepted before reservation can affect the snapshot selected by close-save.
+
+Requests admitted before reservation but still awaiting source acceptance cannot resume after
+closure or failure cleanup: they return `documentClosing` while the reservation exists, or
+`documentAdmissionExpired` afterward, under the same `contentModified` code. Start a new request
+after coordinating with the owner. A fresh request may intentionally reopen a closed file.
+Already-dispatched semantic work may finish under its existing document and backend guards.
+Other documents remain admissible during preparation. Within one process, saves serialize their
+sync/readiness work, private artifact and trace preparation, canonical publication, and private-file
+cleanup across workspaces. Final close follows outside that serialization. Cancellation can wait
+for the active private phase to finish or for an earlier save to release the serialization.
+
+Preparation uses isolated private files, leaving the canonical checkpoint unchanged on failure.
+After preparation, Beam rechecks the accepted document and cancellation before starting canonical
+publication. That final cancellation check is the cutoff: later cancellation cannot revoke the
+publication attempt. Same-workspace document changes and owner teardown wait for publication to
+settle. Unrelated workspace work, read-only state access, and cancellation remain reachable; the
+wait has no fixed filesystem-I/O bound.
+This coordination is local to one broker: it does not lock source files on disk or coordinate
+independent Beam or Lake writers.
+
+Failure or cancellation before publication releases the reservation and preserves a healthy
+backend, its documents, and continuation handles. During private serialization or trace preparation,
+Beam records caller cancellation and waits for the phase to finish before reporting it. Settled
+private outputs can then be removed without changing the checkpoint. An unacknowledged attempt may
+retain private files but cannot publish later. Backend loss or uncertain artifact-request or
+final-close delivery can retire the captured backend; subsequent work must reacquire its documents
+and handles. Abandoned preparation files may be removed manually only after all potential Beam and
+helper writers have stopped. Preserve backups from reported publication/recovery failures until
+they have been investigated and recovery is complete.
+Cancellation after publication begins does not undo a committed checkpoint. Implementation and
+recovery boundaries are documented in the [close-save model](CLOSE_SAVE_MODEL.md#publication-implementation).
+
+After a checkpoint succeeds, finalization still checks the exact accepted document. An ordinary
+`save` may return its historical checkpoint result after a concurrent change without marking the
+replacement checkpointed. Close-save retains a defensive `savedDocumentChanged` refusal if its
+document comparison fails: `error.data.saved` contains the committed checkpoint,
+`error.data.closed = false`, and `currentVersion` identifies a tracked replacement when present.
+The replacement and its handles remain intact. That receipt means the checkpoint succeeded;
+synchronize and save again if the new text needs a checkpoint.
 
 Other finalization failures after the artifacts and Lake trace have committed retain their
 original error code and message, add the checkpoint under `error.data.saved`, and preserve any
 original error data under `error.data.originalData`. They do not assert `closed = false` when
 notification delivery may have failed. MCP passes this error data through with the broker field
 names, including `sourceHash` inside `saved`; successful MCP save results use snake_case.
+
+Preserving this receipt in the broker does not guarantee that an MCP client receives it.
+Cancellation or transport failure can prevent delivery; the
+[MCP transport contract](MCP_TRANSPORT_CONTRACT.md)
+also permits an output-limit error after execution. A missing receipt does not establish that the
+checkpoint failed. There is no receipt journal or recovery protocol.
 
 Zero-build checkpointing writes artifacts from the accepted Lean server state without rerunning
 batch compilation. It supports structured Lake `leanOptions`, dynamic libraries, and plugins
@@ -126,10 +172,9 @@ configuration from `lakefile.lean` text and never batch-builds as part of `save`
 
 Before replacing checkpoint artifacts, Beam invalidates Lake's cached hashes for the outputs it
 writes so later incremental builds recheck their dependents. If publication fails, Beam attempts
-to restore the previous artifacts. Failed recovery reports both errors and retains the backups
-needed for recovery. After publication commits, backup cleanup is best effort; a cleanup failure
-may leave backup files without failing the save. These steps do not make the artifact family
-atomically visible or recover from process death.
+to restore the previous artifacts; successful recovery leaves the final trace absent. Failed recovery
+reports both errors and retains the backups needed for recovery. These steps do not make the artifact
+family atomically visible or recover from process death.
 
 A snapshot with `compiler.postponeCompile` enabled, or with declarations still waiting for deferred
 compilation, is not a complete checkpoint. Its sync result has `readiness.saveReady: false` and

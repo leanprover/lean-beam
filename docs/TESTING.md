@@ -56,6 +56,13 @@ remaining as the aggregate request-surface runner.
 
 ## Race-Test Discipline
 
+`lake build BeamModel` checks the independent specification library, including proofs for the
+[exclusive close-save model](CLOSE_SAVE_MODEL.md). `lake build beam-closing-model-test`
+builds that library and its scenario runner; `.lake/build/bin/beam-closing-model-test` runs the
+explicit transition schedules. The fast suite includes the runner and its library dependency.
+These checks validate the abstract model; the broker's runtime guarantees also require integration
+tests.
+
 Race and concurrency regressions should wait for observable state, not for guessed wall-clock
 delays. Prefer request IDs plus cancellation acknowledgements, wrapper progress text, registry
 files, non-empty response files, and Lean-side sentinel files that prove a slow command reached the
@@ -346,12 +353,15 @@ before owner shutdown. Hash-removal errors must preserve canonical bytes and lea
 For a focused run, supply `--installation PATH --toolchain TOOLCHAIN`, optionally `--case CASE`;
 `--keep NEW-DIRECTORY` retains the evidence and requires a directory that does not yet exist.
 
-`lake exe beam-save-publication-test` separately exercises real filesystem publication with
-injected partial backup, partial replacement, first-replacement, and restoration failures, plus
-successful publication and a real hash-directory obstruction. It checks restored bytes, continued
-rollback, and retention of a failed-restoration backup. Fast, LSP, and native-toolchain suites run
-it; `--keep NEW-DIRECTORY` retains its filesystem evidence. Its transaction-helper checks also
-cover typed failures and commit-cleanup errors.
+`lake exe beam-transaction-test` checks reverse recovery order, typed original and recovery errors,
+and commit-cleanup failures. Fast and native-toolchain suites run it. The broker's
+`beam-publication-test` runs in Fast and native-toolchain suites and owns real-filesystem backup,
+replacement, restoration, and cleanup-failure coverage. It checks a real obstruction at the last
+output hash and requires all output hashes to be absent before the first canonical replacement.
+LSP save scenarios check complete
+ordinary and module families, partial private preparation failure, invalid output shapes, and
+concurrent disjoint attempts. Optional bitcode checks run when the compiler has an LLVM backend;
+otherwise the scenarios explicitly report that bitcode is unsupported.
 
 Use [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) to validate one
 supported bundle lane at a time. The module-save case requires and removes the batch-produced IR

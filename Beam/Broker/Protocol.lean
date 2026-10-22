@@ -305,6 +305,27 @@ structure Request where
   clientRequestId? : Option String := none
   daemonCapability? : Option String := none
 
+/-- Every operation that can synchronize or close a document shares its admission boundary. -/
+def RequestPayload.documentPath? : RequestPayload → Option String
+  | .updateFile r => some r.path
+  | .syncFile r => some r.path
+  | .refreshFile r => some r.path
+  | .close r => some r.path
+  | .runAt r => some r.path
+  | .hover r => some r.path
+  | .signatureHelp r => some r.path
+  | .definition r => some r.path
+  | .references r => some r.path
+  | .documentSymbols r => some r.path
+  | .codeActionResolve r => some r.path
+  | .saveOlean r => some r.path
+  | .goals r => some r.path
+  | .todo r => some r.path
+  | .runWith r => some r.path
+  | .release r => some r.path
+  | .ensure | .openDocs | .cancel _ | .workspaceSymbols _ | .initWorkspace _
+  | .listWorkspaces | .dropWorkspace | .stats | .shutdown => none
+
 def RequestPayload.op : RequestPayload → Op
   | .ensure => .ensure
   | .openDocs => .openDocs
