@@ -330,6 +330,29 @@ def qualify(args, lean_prefix, scratch):
                 time.sleep(0.1)
             else:
                 raise AssertionError(owner_log.read_text())
+            # Document rejection must precede worker creation in the installed CLI too.
+            external = scratch / "project with spaces-other"
+            external.mkdir()
+            outside = external / "Other.lean"
+            outside.write_text("def outsideFixture : Nat := 1\n")
+            escape = project / "outside-link"
+            if os.name == "nt":
+                run(["cmd", "/d", "/c", "mklink", "/J", escape, external], env=env)
+            else:
+                escape.symlink_to(external, target_is_directory=True)
+            for path in [str(outside), "../project with spaces-other/Other.lean",
+                         "outside-link/Other.lean"]:
+                for operation in [("sync", path), ("refresh", path),
+                                  ("run-at", path, "1", "0", "0", "#check Nat")]:
+                    rejected = call(*operation, ok=False)
+                    assert rejected.returncode != 0, rejected
+                    failure = json.loads(rejected.stdout)["error"]
+                    assert failure["code"] == "invalidParams", failure
+                    assert "resolves outside workspace root" in failure["message"], failure
+                    assert "select a workspace containing the document" in failure["message"], failure
+            stats = json.loads(call("stats").stdout)["result"]
+            assert stats["session"]["active"] is False, stats
+            assert stats["metrics"]["sessionStarts"] == 0, stats
             updated = json.loads(call("update", "Demo.lean").stdout)
             version = updated["result"]["version"]
             probe = json.loads(call("run-at", "Demo.lean", str(version), tactic_line, "2", "trivial").stdout)

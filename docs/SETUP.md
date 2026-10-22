@@ -426,6 +426,12 @@ first ordinary Lean tool lazily creates or reuses the runtime for the canonical 
 server process can serve several roots because every relevant request identifies its own workspace.
 There is no connection-wide current or default workspace.
 
+Document paths, whether relative or absolute, must resolve inside that workspace root. A path into
+another project or a symlink that escapes the root fails with `invalidParams` before Beam reads its
+contents or starts a document worker. Select a workspace containing the file instead; with the
+wrapper, use `lean-beam --root /path/to/other/project …`. Ordinary Lean dependency imports and
+navigation results can still refer to external sources.
+
 To evict one cached runtime after project-configuration changes, call `lean_drop_workspace` with:
 
 ```json

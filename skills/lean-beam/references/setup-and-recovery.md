@@ -85,6 +85,11 @@ Optional online references: the
 
 ## MCP Workspaces
 
+Document paths must resolve inside the selected workspace, including after following symlinks.
+On `invalidParams` saying the document resolves outside the workspace root, select a workspace
+containing the file (`lean-beam --root /path/to/project …`, or that MCP `workspace.root`) and retry.
+Do not retry the same external path against the old root. Normal dependency imports remain usable.
+
 MCP workspace-bound tools carry an explicit local workspace descriptor on every call. Dropping a
 workspace (`lean_drop_workspace`) evicts only its cached runtime and handles; it does not refresh
 the MCP server binary. Keep the canonical descriptor a result echoes, so a cached runtime can still
