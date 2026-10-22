@@ -269,7 +269,8 @@ workspace generation, and backend identity rather than prescribing their represe
 `observeCommit` is an external fact supplied by a completed publication, not an authorization
 check. It deliberately allows a commit observation after owner loss. The append-only receipt
 list is proof bookkeeping, not a proposal for a durable journal or unbounded production cache.
-The model proves preservation of a known receipt, not that all real commits are acknowledged.
+The model proves preservation of a known receipt, not that all real commits are acknowledged or
+that a client receives the receipt. See the [caller-facing delivery limitation](SYNC_AND_DIAGNOSTICS.md#command-model).
 
 This model does not establish artifact-family coherence, coordination with other Beam processes
 or Lake writers, dependency freshness, backend delivery, global-lock freedom, crash recovery,

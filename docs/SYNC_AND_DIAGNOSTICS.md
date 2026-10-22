@@ -99,7 +99,10 @@ closure or failure cleanup: they return `documentClosing` while the reservation 
 `documentAdmissionExpired` afterward, under the same `contentModified` code. Start a new request
 after coordinating with the owner. A fresh request may intentionally reopen a closed file.
 Already-dispatched semantic work may finish under its existing document and backend guards.
-Other documents remain admissible during preparation. Saves serialize checkpoint publication.
+Other documents remain admissible during preparation. Within one process, saves serialize their
+sync/readiness work, private artifact and trace preparation, canonical publication, and private-file
+cleanup across workspaces. Final close follows outside that serialization. Cancellation can wait
+for the active private phase to finish or for an earlier save to release the serialization.
 
 Preparation uses isolated private files, leaving the canonical checkpoint unchanged on failure.
 After preparation, Beam rechecks the accepted document and cancellation before starting canonical
@@ -135,6 +138,12 @@ original error code and message, add the checkpoint under `error.data.saved`, an
 original error data under `error.data.originalData`. They do not assert `closed = false` when
 notification delivery may have failed. MCP passes this error data through with the broker field
 names, including `sourceHash` inside `saved`; successful MCP save results use snake_case.
+
+Preserving this receipt in the broker does not guarantee that an MCP client receives it.
+Cancellation or transport failure can prevent delivery; the
+[bounded-output delivery contract proposed in #326](https://github.com/leanprover/lean-beam/blob/24c40266b7f8302903aaf7751a6d627155115e48/docs/MCP_TRANSPORT_CONTRACT.md)
+also permits an output-limit error after execution. A missing receipt does not establish that the
+checkpoint failed. There is no receipt journal or recovery protocol.
 
 Zero-build checkpointing writes artifacts from the accepted Lean server state without rerunning
 batch compilation. It supports structured Lake `leanOptions`, dynamic libraries, and plugins
