@@ -133,7 +133,8 @@ target beamControlDirObj (pkg) : FilePath := buildNativeObject pkg "control_dir"
 target beamProcessJobObj (pkg) : FilePath := buildNativeObject pkg "process_job"
 
 lean_lib Beam.LSP where
-  globs := #[.andSubmodules `Beam.LSP]
+  -- Lean loads this plugin without the broker library; embed its neutral transaction dependency.
+  globs := #[.andSubmodules `Beam.LSP, .one `Beam.Transaction]
   defaultFacets := #[`shared]
   -- Darwin otherwise records the absolute build path as the dylib install name, so identical
   -- sources built in different directories would differ. The plugin is only loaded by path.
