@@ -2421,7 +2421,8 @@ private def heldSourceWriter
 /-- A controlled LSP channel records document operations and answers the real sync barrier. -/
 private def withDocumentAdmissionSession
     (root : System.FilePath)
-    (act : ServerRuntime → IO.Ref (Array (String × Json)) → IO Unit) : IO Unit := do
+    (act : ServerRuntime → IO.Ref (Array (String × Json)) → IO Unit)
+    (replyBarrier : PendingRequest → Json → IO Unit := PendingRequest.resolveResponse) : IO Unit := do
   let workspaceId := "document-admission"
   let runtime ← ServerRuntime.create { root } workspaceId
   try
@@ -2467,7 +2468,7 @@ private def withDocumentAdmissionSession
                 textHash := hash document.text.crlfToLf
               }
             }
-            PendingRequest.resolveResponse pending (toJson barrier)
+            replyBarrier pending (toJson barrier)
         else if method == "exit" then
           initial.stdin.putStr "\n"
       } }
@@ -2582,8 +2583,14 @@ private def checkDocumentAdmissionBeforeRead : IO Unit := do
     try runtime.close
     finally IO.FS.removeDirAll base
 
-/-- Refresh keeps its admitted identity and cannot close a newer accepted source read. -/
-private def checkRefreshAdmittedIdentity (newerUpdate : Bool := false) : IO Unit := do
+private inductive RefreshRace where
+  | retargetAlias
+  | newerUpdate
+  | pendingSync
+  deriving BEq
+
+/-- Refresh keeps its admitted identity and preserves newer accepted reads and their live permits. -/
+private def checkRefreshAdmittedIdentity (race : RefreshRace := .retargetAlias) : IO Unit := do
   let base := System.FilePath.mk s!"/tmp/beam-refresh-admitted-identity-{← IO.monoNanosNow}"
   IO.FS.createDirAll (base / "workspace")
   let root ← Beam.resolveExistingPath (base / "workspace")
@@ -2592,15 +2599,36 @@ private def checkRefreshAdmittedIdentity (newerUpdate : Bool := false) : IO Unit
   let outside := base / "Outside.lean"
   let writerReady := base / "writer-ready"
   let releaseWriter := base / "release-writer"
+  let newerRead := race != .retargetAlias
+  let heldBarrier ← Std.Mutex.new
+    (race == .pendingSync, none : Bool × Option (PendingRequest × Json))
+  let barrierEntered ← IO.Promise.new
+  let releaseBarrier : IO Unit := do
+    let held? ← heldBarrier.atomically do
+      let (_, pending?) ← get
+      set (false, none)
+      pure pending?
+    if let some (pending, result) := held? then pending.resolveResponse result
+  let newerTask? ← IO.mkRef (none : Option (Task (Except IO.Error Response)))
   try
     let result ← IO.Process.output { cmd := "mkfifo", args := #[fifo.toString] }
     require "refresh fixture creates its owned FIFO" (result.exitCode == 0)
     admissionSymlink fifo alias
     IO.FS.writeFile outside "def outsideFixture := 2\n"
-    withDocumentAdmissionSession root fun runtime writes => do
+    withDocumentAdmissionSession root (replyBarrier := fun pending result => do
+      let hold ← heldBarrier.atomically do
+        let (armed, _) ← get
+        if armed then set (false, some (pending, result))
+        pure armed
+      if hold then
+        barrierEntered.resolve ()
+      else
+        pending.resolveResponse result) fun runtime writes => do
       let newerDoc ← IO.mkRef (none : Option DocState)
+      let newerPermit? ← IO.mkRef (none : Option DocumentAdmission.Permit)
       let uri := sessionUri (← Beam.resolveExistingPath fifo)
-      let prior := (DocumentState.FileSnapshot.ofText "def prior := 0\n" default).toDocState 1
+      let prior ← BeamTest.Broker.DocumentFixture.accepted <|
+        DocumentState.FileSnapshot.ofText "def prior := 0\n" default
       runtime.state.atomically do
         let state ← get
         let some workspace := state.workspaces.get? "document-admission"
@@ -2608,7 +2636,9 @@ private def checkRefreshAdmittedIdentity (newerUpdate : Bool := false) : IO Unit
         let some session := workspace.lean.session?
           | throw <| IO.userError "refresh fixture session is missing"
         let session := { session with docs := session.docs.insert uri prior }
-        let workspace := { workspace with lean := { workspace.lean with session? := some session } }
+        let workspace := { workspace with
+          nextFileSnapshotSeq := prior.syncSnapshotSeq + 1
+          lean := { workspace.lean with session? := some session } }
         set { state with workspaces := state.workspaces.insert "document-admission" workspace }
       withFixtureChild (heldSourceWriter fifo writerReady releaseWriter) fun _ writer => do
         let task ← IO.asTask (prio := Task.Priority.dedicated) <| runtime.dispatchRequest {
@@ -2618,15 +2648,31 @@ private def checkRefreshAdmittedIdentity (newerUpdate : Bool := false) : IO Unit
         try
           require "refresh fixture reached its admitted read" (← waitForPath writerReady)
           require "refresh does not close before its source read completes" (← writes.get).isEmpty
-          if newerUpdate then
+          if newerRead then
             -- The old read keeps the FIFO inode; a newer read observes the replacement file.
             IO.FS.removeFile fifo
             IO.FS.writeFile fifo "def newestFixture : Nat := 2\n"
-            let updated ← runtime.dispatchRequest {
-              workspaceId? := some "document-admission"
-              payload := .updateFile { path := fifo.toString }
-            }
-            require "a newer source read completes while refresh is held" updated.ok
+            if race == .pendingSync then
+              let newer ← IO.asTask (prio := .dedicated) <| runtime.dispatchRequest {
+                workspaceId? := some "document-admission"
+                payload := .syncFile { path := fifo.toString }
+              }
+              newerTask?.set (some newer)
+              let some (some ()) ← Beam.waitTaskWithTimeout barrierEntered.result? 5000
+                | throw <| IO.userError "newer sync did not reach its diagnostics barrier"
+              newerPermit?.set <| some <| ← runtime.state.atomically do
+                let some workspace := (← get).workspaces.get? "document-admission"
+                  | throw <| IO.userError "pending-sync fixture workspace is missing"
+                let some (permit, phase) := workspace.documents.entries.head?
+                  | throw <| IO.userError "pending sync has no admission permit"
+                require "newer sync retains a live permit" (phase == .reading && permit.uri == uri)
+                pure permit
+            else
+              let updated ← runtime.dispatchRequest {
+                workspaceId? := some "document-admission"
+                payload := .updateFile { path := fifo.toString }
+              }
+              require "a newer source read completes while refresh is held" updated.ok
             newerDoc.set <| ← runtime.state.atomically do
               let state ← get
               pure <| state.workspaces.get? "document-admission"
@@ -2640,12 +2686,15 @@ private def checkRefreshAdmittedIdentity (newerUpdate : Bool := false) : IO Unit
           require "refresh of the admitted source succeeds" response.ok
           let sent ← writes.get
           let expected :=
-            if newerUpdate then
+            if race == .pendingSync then
+              #["textDocument/didChange", "textDocument/didSave", diagnosticsBarrierMethod,
+                diagnosticsBarrierMethod]
+            else if newerRead then
               #["textDocument/didChange", "textDocument/didSave", diagnosticsBarrierMethod]
             else
               #["textDocument/didClose", "textDocument/didOpen", diagnosticsBarrierMethod]
           require "refresh only closes its current admitted source read" (sent.map Prod.fst == expected)
-          if newerUpdate then
+          if newerRead then
             let some newer ← newerDoc.get
               | throw <| IO.userError "refresh fixture lost its newer document"
             let current ← runtime.state.atomically do
@@ -2658,20 +2707,101 @@ private def checkRefreshAdmittedIdentity (newerUpdate : Bool := false) : IO Unit
               (DocumentState.basis current == DocumentState.basis newer &&
                 current.rawSourceHash == newer.rawSourceHash &&
                 current.syncSnapshotSeq == newer.syncSnapshotSeq)
+          if let some permit ← newerPermit?.get then
+            runtime.state.atomically do
+              let some workspace := (← get).workspaces.get? "document-admission"
+                | throw <| IO.userError "pending-sync fixture workspace is missing"
+              require "stale refresh does not revoke the newer pending sync"
+                ((workspace.documents.check permit).isOk)
+            let some newer ← newerTask?.get
+              | throw <| IO.userError "pending-sync fixture lost its task"
+            require "newer sync still awaits its controlled barrier" (!(← IO.hasFinished newer))
+            releaseBarrier
+            let some (.ok response) ← Beam.waitTaskWithTimeout newer 5000
+              | throw <| IO.userError "newer sync did not complete after its barrier"
+            require "newer sync succeeds after stale refresh" response.ok
+            runtime.state.atomically do
+              let some workspace := (← get).workspaces.get? "document-admission"
+                | throw <| IO.userError "pending-sync fixture workspace is missing"
+              require "refresh and newer sync release their own permits"
+                workspace.documents.entries.isEmpty
           for (method, message) in sent do
             let params ← IO.ofExcept <| message.getObjVal? "params"
             if method == diagnosticsBarrierMethod then
               require "refresh barrier retains the admitted canonical URI"
-                (params == toJson (WaitForDiagnosticsParams.mk uri (if newerUpdate then 2 else 1)))
+                (params == toJson (WaitForDiagnosticsParams.mk uri (if newerRead then 2 else 1)))
             else
               let document ← IO.ofExcept <| params.getObjVal? "textDocument"
               require "refresh retains the admitted canonical URI"
                 ((← IO.ofExcept <| document.getObjValAs? String "uri") == uri)
         finally
+          releaseBarrier
           IO.FS.writeFile releaseWriter "release"
           cleanupFixtureChild writer
           let some _ ← Beam.waitTaskWithTimeout task 5000
             | throw <| IO.userError "refresh fixture left a source read running"
+          if let some newer ← newerTask?.get then
+            let some _ ← Beam.waitTaskWithTimeout newer 5000
+              | throw <| IO.userError "refresh fixture left a newer sync running"
+  finally IO.FS.removeDirAll base
+
+private def checkRefreshFencesOlderRead : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-refresh-older-read-{← IO.monoNanosNow}"
+  IO.FS.createDirAll base
+  let root ← Beam.resolveExistingPath base
+  let path := root / "Refresh.lean"
+  let writerReady := root / "writer-ready"
+  let releaseWriter := root / "release-writer"
+  try
+    let result ← IO.Process.output { cmd := "mkfifo", args := #[path.toString] }
+    require "older-read fixture creates its owned FIFO" (result.exitCode == 0)
+    withDocumentAdmissionSession root fun runtime writes => do
+      withFixtureChild (heldSourceWriter path writerReady releaseWriter) fun _ writer => do
+        let older ← IO.asTask (prio := .dedicated) <| runtime.dispatchRequest {
+          workspaceId? := some "document-admission"
+          payload := .updateFile { path := path.toString }
+        }
+        try
+          require "older source read reaches its admitted stream" (← waitForPath writerReady)
+          IO.FS.removeFile path
+          IO.FS.writeFile path "def refreshedFixture : Nat := 2\n"
+          require "current refresh completes while an older read is held" (← runtime.dispatchRequest {
+            workspaceId? := some "document-admission"
+            payload := .refreshFile { path := path.toString }
+          }).ok
+          let before ← runtime.state.atomically do
+            let some workspace := (← get).workspaces.get? "document-admission"
+              | throw <| IO.userError "older-read fixture workspace is missing"
+            let some session := workspace.lean.session?
+              | throw <| IO.userError "older-read fixture session is missing"
+            DocumentState.requireDocState session.docs (sessionUri path)
+          let sent ← writes.get
+          IO.FS.writeFile releaseWriter "release"
+          let some (.ok response) ← Beam.waitTaskWithTimeout older 5000
+            | throw <| IO.userError "older admitted read did not finish"
+          let some error := response.error?
+            | throw <| IO.userError "old admission survived refresh"
+          require "current refresh rejects the older admission" (error.code == "contentModified")
+          requireJsonString "refresh retains a typed admission failure" "reason"
+            "documentAdmissionExpired" (← requireErrorData "older refresh admission" error)
+          require "older read sends no document operations after refresh" ((← writes.get) == sent)
+          runtime.state.atomically do
+            let some workspace := (← get).workspaces.get? "document-admission"
+              | throw <| IO.userError "older-read fixture workspace is missing"
+            let some session := workspace.lean.session?
+              | throw <| IO.userError "older-read fixture session is missing"
+            let current ← DocumentState.requireDocState session.docs (sessionUri path)
+            require "older read preserves the refreshed basis and contents"
+              (DocumentState.basis current == DocumentState.basis before &&
+                current.rawSourceHash == before.rawSourceHash &&
+                current.syncSnapshotSeq == before.syncSnapshotSeq)
+            require "refresh and old-read scopes release their own permits"
+              workspace.documents.entries.isEmpty
+        finally
+          IO.FS.writeFile releaseWriter "release"
+          cleanupFixtureChild writer
+          let some _ ← Beam.waitTaskWithTimeout older 5000
+            | throw <| IO.userError "older-read fixture left a source read running"
   finally IO.FS.removeDirAll base
 
 private def checkWorkspaceSnapshotResetIsolation : IO Unit := do
@@ -3047,7 +3177,9 @@ def main : IO Unit := do
   checkDocumentAdmission
   checkDocumentAdmissionBeforeRead
   checkRefreshAdmittedIdentity
-  checkRefreshAdmittedIdentity true
+  checkRefreshAdmittedIdentity .newerUpdate
+  checkRefreshAdmittedIdentity .pendingSync
+  checkRefreshFencesOlderRead
   checkWorkspaceSnapshotResetIsolation
   checkCompletedRequestResetIsolation
   checkSessionCloseAdmission
