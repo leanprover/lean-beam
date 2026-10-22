@@ -913,6 +913,9 @@ structure UpdateFileResult where
   deriving Inhabited, FromJson, ToJson, BEq, Repr
 
 structure CancelResult where
+  /-- Whether a matching active request was marked for cancellation.
+  This acknowledgement does not establish execution or cleanup settlement;
+  see the [soft cancellation contract](../../docs/STATUS.md#soft-cancellation). -/
   cancelled : Bool
   deriving FromJson, ToJson
 
