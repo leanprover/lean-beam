@@ -56,7 +56,7 @@ lean-beam save MyPkg/Sub/Module.lean
   preparation may finish before cleanup; cancellation does not undo committed effects. Do not remove
   temporary files solely because the client exited.
 - `refresh` is `close` plus `sync`: use it when a tracked file needs a fresh basis after an upstream
-  dependency changed. `close-save` is `save` plus close.
+  dependency changed.
 - `save` checkpoints only that module. It does not validate importers, and it records the Lean
   server's environment, which can differ from batch elaboration. Modules with batch-only
   `moreLeanArgs` fail with `saveUnsupportedSetup`; move shared `-D` settings to `leanOptions`, or

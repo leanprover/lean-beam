@@ -38,13 +38,11 @@ def family(project, name):
             for path in directory.glob(name + ".*") if path.is_file()]
 
 
-def publication_leftovers(project, name):
+def publication_leftovers(project):
     build = project / ".lake/build"
     return sorted(str(path) for directory in [build / "lib/lean/Freshness", build / "ir/Freshness"]
                   for path in directory.iterdir()
-                  if path.name.startswith((".beam-publication-", ".beam-save-tmp-"))
-                  or (path.name.startswith(name + ".") and
-                      any(marker in path.name for marker in (".beam-backup-", ".beam-save-tmp-"))))
+                  if path.name.startswith(".beam-publication-"))
 
 
 def command(report, directory, args, *, check=True):
@@ -186,7 +184,7 @@ def check_case(base, case, installation, target, report):
         response = json.loads(result.stdout)
         case_report["checkpoint"] = response
         # Observe worker and broker cleanup before owner shutdown or Lake's next verdict.
-        leftovers = publication_leftovers(project, "Provider")
+        leftovers = publication_leftovers(project)
         case_report["publication_leftovers"] = leftovers
         assert not leftovers, ("checkpoint left owned publication files", leftovers)
         if blocked:

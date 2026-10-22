@@ -257,13 +257,6 @@ private def writeTraceAtomically
       pure ()
     throw e
 
-/-- Remove metadata for the prior artifact family before a new family can be published. -/
-def invalidateLeanSaveTrace (spec : LeanSaveSpec) : IO Unit := do
-  if ← spec.tracePath.isDir then
-    throw <| IO.userError s!"Lake save trace path is a directory: {spec.tracePath}"
-  if ← spec.tracePath.pathExists then
-    IO.FS.removeFile spec.tracePath
-
 private def writeLeanSaveTraceWithMetadata
     (request : LakeHelperWriteTraceRequest) : IO Unit := do
   let metadata : BuildMetadata ← IO.ofExcept <| fromJson? request.traceMetadata

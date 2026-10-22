@@ -21,7 +21,9 @@ private structure Artifact where
   target : FilePath
   backup : FilePath
 
-/-- One broker-owned publication attempt. Producers receive only `outputs`, never this authority. -/
+/-- One broker-owned publication attempt. Producers receive only `outputs`, never this authority.
+The lifecycle has one sequential owner: promotion must finish before disposal. This is not a
+concurrent lifecycle API. -/
 structure Plan where
   private mk ::
   outputs : LeanSaveOutputs
