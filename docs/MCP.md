@@ -174,10 +174,10 @@ one cached workspace but does not end the stdio session.
 Loading a Lean server's Lake configuration currently holds the broker's shared state lock.
 A slow or hung load can therefore block broker-backed tool calls, workspace admission, and stats
 for other workspaces in the same MCP process. This loading step has no fixed response deadline.
-Cancel the stalled request with `notifications/cancelled`, or close/restart the MCP server to
-release it. `lean_drop_workspace` waits for earlier requests and does not itself interrupt a
-stalled load. This is a current concurrency limitation; workspaces are not isolated from each
-other's cold-load latency.
+Send `notifications/cancelled` to request [soft cancellation](STATUS.md#soft-cancellation).
+Active loading may need to settle before its resources can be released. `lean_drop_workspace`
+waits for earlier requests and does not itself interrupt a stalled load. This is a current
+concurrency limitation; workspaces are not isolated from each other's cold-load latency.
 
 Reuse admission observes the selected installation outside the server-wide runtime mutex. The
 server checks the retained workspace instance again before dispatch and when binding the broker

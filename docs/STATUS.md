@@ -306,8 +306,10 @@ client protocol.
   connection-owned disconnect watcher cancels the exact admitted request without requiring a
   caller-supplied request ID and is joined when the handler completes. The interrupted client exits
   `130` with a CLI `requestCancelled` JSON response on stdout; this reports client interruption,
-  not a broker acknowledgement or producer settlement. `lean-beam cancel ID` remains the explicit cross-process cancellation surface.
-  [Cancellation is soft](#soft-cancellation); client exit does not establish backend settlement.
+  not a broker acknowledgement or producer settlement. `lean-beam cancel ID` remains the explicit
+  cross-process cancellation surface. A `cancelled: true` result acknowledges that a matching active
+  request was marked for [soft cancellation](#soft-cancellation); it does not confirm request
+  completion or backend settlement.
 - The foreground owner retains SIGINT and POSIX SIGTERM/SIGHUP handlers from acquisition through
   daemon cleanup, and its initial request borrows that same stop observation. Repeated signals remain
   latched without forcing exit. Lock/readiness waits can defer observation; synchronous output or
