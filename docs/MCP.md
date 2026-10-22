@@ -385,7 +385,8 @@ The server never sends JSON-RPC requests to the client. Under the current protoc
 responses and request-related notifications. In particular, descriptor resolution never invokes
 MCP Roots.
 
-`notifications/cancelled` cooperatively cancels active broker work. If cancellation wins the
+`notifications/cancelled` requests [soft cancellation](STATUS.md#soft-cancellation) of active broker
+work; it does not establish that the work or its cleanup has finished. If cancellation wins the
 terminal race, no final response is emitted for that request. `lean_drop_workspace` is
 non-cancellable once admitted because partial cache eviction cannot be rolled back safely. Cache
 eviction is a full stream-order fence: previously admitted calls drain before the drop runs, while

@@ -7,6 +7,9 @@ Beam never applies source edits to `.lean` files on disk; the client applies sou
 commands below read saved source into Beam's LSP mirror or write Lean/Lake build artifacts; none is
 a source-editing command.
 
+All requests follow Beam's current [soft cancellation policy](STATUS.md#soft-cancellation).
+Cancellation may wait for active work to settle and does not undo committed effects.
+
 ## Command Model
 
 `lean-beam update` is the cheap on-disk edit observation for a Lean file. It reads the current file,

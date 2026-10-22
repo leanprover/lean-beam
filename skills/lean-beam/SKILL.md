@@ -52,6 +52,9 @@ lean-beam save MyPkg/Sub/Module.lean
 - Every version-bound command needs the version from the latest `update` or `sync`. On
   `contentModified` with `error.data.reason = "documentVersionMismatch"`, retry with
   `error.data.acceptedVersion` or run `update` again; never guess a version.
+- Cancellation is soft: interrupting the client does not prove backend work has stopped. Active
+  preparation may finish before cleanup; cancellation does not undo committed effects. Do not remove
+  temporary files solely because the client exited.
 - `refresh` is `close` plus `sync`: use it when a tracked file needs a fresh basis after an upstream
   dependency changed. `close-save` is `save` plus close.
 - `save` checkpoints only that module. It does not validate importers, and it records the Lean

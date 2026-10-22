@@ -51,6 +51,21 @@ Each request should behave like an isolated sandbox:
 - never leak internal mutable state through the base API
 - discard derived execution state unless the request explicitly stores a follow-up handle
 
+## Cancellation Policy
+
+Request cancellation is currently **soft (cooperative)** across Beam. Observe it at safe boundaries;
+do not promise immediate interruption, rollback, or a universal completion deadline. An active
+effect may need to settle before the request releases its resources or reports cancellation.
+
+- cancellation signalling or a cancelled response is not proof that a producer has stopped
+- retain ownership and cleanup obligations until settlement is established
+- respect each operation's commit boundary; cancellation cannot undo a committed effect
+- do not terminate a healthy shared backend solely to make request cancellation immediate
+- treat forced shutdown and genuine delivery failure separately from ordinary cancellation
+
+More responsive cancellation is future work, not a current guarantee or a reason to weaken safety.
+See the [current caller contract](docs/STATUS.md#soft-cancellation).
+
 ## Testing Priorities
 
 Tests matter more than cleverness.
