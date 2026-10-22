@@ -28,6 +28,44 @@ theorem release_removes_own_entry (state : State) (permit : Permit) (phase : Pha
     (permit, phase) ∉ (state.release permit).entries := by
   simp [State.release]
 
+private theorem check_stale_of_same_uri_revoked (state : State) (permit : Permit)
+    (h : ∀ entry ∈ state.entries, entry.1.uri = permit.uri → entry.2 = .revoked) :
+    state.check permit = .error .stale := by
+  have hc : state.isClosing permit.uri = false := by
+    simp only [State.isClosing, List.any_eq_false]
+    intro entry he
+    by_cases hu : entry.1.uri = permit.uri
+    · simp [hu, h entry he hu]
+    · simp [hu]
+  unfold State.check
+  cases hf : state.entries.find? (fun entry => entry.1 == permit) with
+  | none => simp [hc]
+  | some entry =>
+    have hp : entry.1 = permit := by simpa using List.find?_some hf
+    have hr := h entry (List.mem_of_find?_eq_some hf) (congrArg Permit.uri hp)
+    rcases entry with ⟨other, phase⟩
+    cases phase <;> simp_all
+
+/-- Fencing survives matching scope cleanup; it cannot revive an older same-URI permit. -/
+theorem fence_release_rejects_same_uri (state : State) (owner permit : Permit)
+    (huri : permit.uri = owner.uri) :
+    ((state.fence owner).release owner).check permit = .error .stale := by
+  apply check_stale_of_same_uri_revoked
+  intro entry he hu
+  obtain ⟨hm, hn⟩ := List.mem_filter.mp he
+  obtain ⟨⟨other, phase⟩, _, rfl⟩ := List.mem_map.mp hm
+  have hne : other ≠ owner := by simpa using hn
+  change other.uri = permit.uri at hu
+  simp [hu.trans huri, hne]
+
+/-- Backend retirement revokes every outstanding permit, independently of its former phase. -/
+theorem retire_rejects_permit (state : State) (permit : Permit) :
+    state.retire.check permit = .error .stale := by
+  apply check_stale_of_same_uri_revoked
+  intro entry he _
+  obtain ⟨⟨other, phase⟩, _, rfl⟩ := List.mem_map.mp he
+  rfl
+
 theorem reserve_blocks_admission (state next : State) (permit : Permit)
     (h : state.reserve permit = .ok next) :
     next.admit permit.uri = .error .closing := by
@@ -40,6 +78,21 @@ theorem reserve_blocks_admission (state next : State) (permit : Permit)
       simp [hc] at h
       subst next
       simp [State.admit, State.isClosing]
+
+/-- Releasing a successful close reservation does not revive earlier same-URI admissions. -/
+theorem reserve_release_rejects_same_uri (state next : State) (owner permit : Permit)
+    (hreserve : state.reserve owner = .ok next) (huri : permit.uri = owner.uri) :
+    (next.release owner).check permit = .error .stale := by
+  unfold State.reserve at hreserve
+  split at hreserve
+  · simp at hreserve
+  · cases hc : state.check owner with
+    | error _ => simp [hc] at hreserve
+    | ok _ =>
+      simp [hc] at hreserve
+      subst next
+      simpa [State.release, State.fence, List.filter_filter] using
+        fence_release_rejects_same_uri state owner permit huri
 
 /-- Allocation cannot reuse a capability still retained by a live or revoked scope. -/
 def Valid (state : State) : Prop :=
