@@ -45,13 +45,7 @@ private def projectControlLockTimeoutMs : IO Nat := do
           "invalid BEAM_CONTROL_LOCK_TIMEOUT_MS value '0': expected a positive timeout"
       pure timeoutMs
 
-/--
-Run `act` while holding the per-project daemon control lock.
-
-Project control operations should fail with owner diagnostics instead of waiting forever behind a
-live but stuck wrapper process. Longer bundle build locks intentionally use the lower-level
-unbounded lock helper.
--/
+/-- Paths for a project's daemon control directory and registry record. -/
 private structure ProjectControl where
   dir : System.FilePath
   registry : System.FilePath
@@ -90,7 +84,8 @@ it. The directory is ready before Beam creates its lock or any capability-bearin
 private def preparePrivateControlDir (dir : System.FilePath) : IO Unit := do
   Beam.ensurePrivateDir "Beam session directory" dir
 
-/-- Supply project registry mutation only for the dynamic extent of the project control lock. -/
+/-- Supply project registry mutation only while holding the project control lock, with a bounded
+wait for acquisition. -/
 private def withProjectControl
     (root : System.FilePath)
     (act : ProjectControl → IO α)

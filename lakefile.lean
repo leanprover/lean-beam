@@ -152,6 +152,10 @@ lean_exe "beam-system-contract-test" where
   srcDir := "tests/lean"
   root := `BeamTest.SystemContractTest
 
+lean_exe "beam-prune-lock-test" where
+  srcDir := "tests/lean"
+  root := `BeamTest.Installation.PruneLockTest
+
 lean_exe "beam-lsp-test" where
   srcDir := "tests/lean"
   root := `BeamTest.LSP.TestRunner

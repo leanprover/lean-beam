@@ -219,6 +219,8 @@ What is not a valid checkpoint target:
 - `BEAM_PROGRESS` controls stderr progress output for slow calls
 - by default, progress prints when stderr is a TTY
 - set `BEAM_PROGRESS=1` to force progress output in scripts or CI
+- `serve` reports elapsed preparation time when progress is enabled; its stdout readiness result
+  appears only after workspace preparation completes
 - `BEAM_REQUEST_ID=<id>` attaches optional request metadata to the broker request
 - the final stdout JSON echoes it as `clientRequestId`
 - streamed stderr progress/diagnostic lines are annotated as `beam[<id>]: ...`

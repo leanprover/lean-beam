@@ -227,9 +227,15 @@ Replace `Foo.lean` and the coordinates with a saved file and position in your pr
 The guard skips JSON parsing and probes when `update` fails; read its stderr diagnostic first.
 
 `lean-beam serve` is the only wrapper command that starts a project session. Its
-inherited ownership pipe defines the session lifetime: interrupt the holder, or run
-`lean-beam --root ROOT stop`, to close the daemon and its backend processes. Lean queries and file
-operations attach to an existing owner and report the exact `serve` command when no session exists.
+loading notice goes to stderr. While preparation is pending, elapsed waiting messages appear at
+five-second intervals and follow the normal progress setting: enabled on a terminal, forced with
+`BEAM_PROGRESS=1` when stderr is
+redirected, or disabled with `BEAM_PROGRESS=0`. These messages report liveness, not a percentage.
+The running-session JSON appears on stdout only after preparation completes.
+
+Interrupt the foreground process, or run `lean-beam --root ROOT stop`, to close the daemon and its
+backend processes. Lean queries and file operations attach to an existing owner and report the exact
+`serve` command when no session exists.
 
 The foreground owner handles Ctrl-C and, on POSIX, SIGTERM and SIGHUP from acquisition through
 cleanup. A signal received during startup remains latched; repeated signals do not bypass cleanup.
@@ -626,10 +632,14 @@ to an old generation after the launcher's `current` link changes. Pruning coordi
 installer's atomic-directory lock and refuses symlinked or unmarked runtime directories. A crashed
 installer fails closed and requires explicit recovery rather than automatic stale-lock removal.
 
+Prune acquires the install lock before planning or removing runtimes. A lock-acquisition failure
+leaves all runtimes in place.
+
 Apply is incremental rather than transactional: Beam validates and removes one displayed path at a
-time and reports each successful removal immediately. If a later path fails validation or its lock
-cannot be acquired, earlier reported removals remain applied. Resolve the reported error and rerun
-`lean-beam prune` to preview what remains.
+time and reports each successful removal immediately. If validation or removal of a later path
+fails, earlier reported removals remain applied. A lock-release error also leaves completed removals
+applied and is reported to the caller. Resolve the reported error and rerun `lean-beam prune` to
+preview what remains.
 
 If reinstalling reports that an existing runtime does not match its payload hash, stop active Beam
 agents and MCP clients first. Move only the exact reported runtime directory out of

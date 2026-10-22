@@ -213,7 +213,7 @@ private def serveProject
       (explicitControlDir? := opts.explicitControlDir?) fun owner =>
       runThenHoldUntilInterrupted watcher owner do
         IO.eprintln "beam: loading Lake workspace configuration..."
-        callBrokerQuiet watcher root owner.client <| Request.ensure
+        ensureProjectSession watcher root owner.client
         if (← watcher.interrupted) || (← IO.checkCanceled) then
           throw <| IO.userError "Beam startup interrupted before readiness"
         printResponse <| Response.success <| toJson <|

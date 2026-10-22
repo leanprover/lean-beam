@@ -210,7 +210,10 @@ Current Beam coverage includes:
   complete immutable installation reuse, incomplete-manifest rejection,
   `doctor`, installed-state pruning, and installed MCP wrapper coverage
   in [tests/test-beam-install.sh](../tests/test-beam-install.sh), with focused prune safety and
-  invalid-runtime identity cases in [tests/test-beam-prune.sh](../tests/test-beam-prune.sh)
+  invalid-runtime identity cases in [tests/test-beam-prune.sh](../tests/test-beam-prune.sh).
+  Fast and native SDK qualification also run `beam-prune-lock-test` for cleanup before and after
+  PID initialization, immediate reacquisition, untouched contending locks, and preservation of
+  typed operation and cleanup failures without recursively deleting unexpected contents.
 - MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, installed smoke, released
   official-client interoperability, and external legacy/modern conformance coverage
 
@@ -257,6 +260,10 @@ against the actual staged daemon and a non-shipped helper client. A fresh public
 holds Lake evaluation behind a latch for over 31 seconds, then releases it and checks completed
 `sync` progress and save readiness. Before release, stderr must explain that configuration is
 loading while stdout contains no readiness result. CLI interruption and owner loss exercise cold-load cleanup.
+With `BEAM_PROGRESS=1`, the same held `serve` must emit increasing elapsed waiting messages for
+at least 30 seconds before release, with no reminder before five seconds and at least five seconds
+between reminders. This reuses the existing hold rather than adding another slow
+test scenario.
 Normal stop must report acknowledged shutdown without a warning, and both stop and interruption
 must release the owner pipe without forced daemon termination. The foreground owner still has
 the same 15-second exit assertion.

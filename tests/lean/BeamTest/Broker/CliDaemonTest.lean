@@ -1212,14 +1212,12 @@ private def checkBrokerConnectionClosedIncident : IO Unit := do
         awaitInterrupt := pure ()
       }
       let stoppedMsg ← expectIoErrorMessage "a latched stop must survive request handoff" <|
-        Beam.Cli.callBrokerQuiet stopped root (projectDaemonClientForTest endpoint controlDir)
-          Beam.Broker.Request.stats
+        Beam.Cli.ensureProjectSession stopped root (projectDaemonClientForTest endpoint controlDir)
       requireSubstring "latched stop must cancel before consuming the broker connection"
         "Beam request interrupted" stoppedMsg
       let msg ← expectIoErrorMessage "broker connection close should surface daemon failure" <|
-        Beam.Cli.withRequestInterruptWatcher fun watcher =>
-          Beam.Cli.callBrokerQuiet watcher root (projectDaemonClientForTest endpoint controlDir)
-            Beam.Broker.Request.stats
+        Beam.Cli.withOwnerInterruptWatcher fun watcher =>
+          Beam.Cli.ensureProjectSession watcher root (projectDaemonClientForTest endpoint controlDir)
       requireSubstring "broker connection close should preserve transport failure"
         "Beam daemon receive failed:" msg
       requireSubstring "broker connection close should include incident path"
@@ -1447,6 +1445,22 @@ def blockedOutput (stream : String) (port : UInt16) : IO Unit := do
   let root : System.FilePath := "/tmp"
   let client := projectDaemonClientForTest (.tcp port) root
   match stream with
+  | "progress-start" =>
+      let stderr ← IO.getStderr
+      let firstWrite ← IO.mkRef true
+      let gatedStderr := { stderr with putStr := fun text => do
+        if ← firstWrite.get then
+          firstWrite.set false
+          IO.println "progress start reached"
+          (← IO.getStdout).flush
+          -- The parent sends SIGINT before releasing the first progress write.
+          unless (← (← IO.getStdin).getLine) == "release\n" do
+            throw <| IO.userError "progress start gate was not released"
+        stderr.putStr text
+      }
+      IO.withStderr gatedStderr <|
+        Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
+          (Beam.Cli.syncWaitSpec "Main.lean")
   | "stdout" => Beam.Cli.callBroker root client Beam.Broker.Request.stats
   | "stdout-progress" | "stderr" =>
       Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats

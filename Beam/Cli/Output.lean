@@ -95,7 +95,7 @@ def annotateRequestMessage (clientRequestId? : Option String) (msg : String) : S
   match clientRequestId? with
   | some clientRequestId =>
       if msg.startsWith "beam:" then
-        s!"beam[{clientRequestId}]:" ++ (msg.drop 6).toString
+        s!"beam[{clientRequestId}]:" ++ (msg.drop 5).toString
       else
         s!"beam[{clientRequestId}]: {msg}"
   | none =>
