@@ -3452,7 +3452,7 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                     )
                     require(artifact.is_file(), "save did not commit its artifact before delivery")
                     require(
-                        artifact.with_suffix(".olean.trace").is_file(),
+                        artifact.with_suffix(".trace").is_file(),
                         "save did not commit its Lake trace before delivery",
                     )
                     client.send_request(
