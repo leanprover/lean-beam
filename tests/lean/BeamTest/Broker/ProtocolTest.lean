@@ -2511,6 +2511,11 @@ private def checkDocumentAdmission : IO Unit := do
         let canonical ← Beam.resolvePathAgainstRoot root (System.FilePath.mk path)
         for request in documentAdmissionRequests "document-admission" path do
           requireDocumentBoundaryFailure root canonical (← cold.dispatchRequest request)
+      require "plain close permits cleanup without opening an external document"
+        (← cold.dispatchRequest {
+          workspaceId? := some "document-admission"
+          payload := .close { path := outside.toString }
+        }).ok
       let stats ← requireResponseResult "rejected document stats" <|
         ← cold.dispatchRequest { Request.stats with workspaceId? := some "document-admission" }
       let session ← requireObjVal "rejected document stats" "session" stats
@@ -2531,6 +2536,11 @@ private def checkDocumentAdmission : IO Unit := do
       for request in documentAdmissionRequests "document-admission" outside.toString do
         requireDocumentBoundaryFailure root (← Beam.resolveExistingPath outside)
           (← runtime.dispatchRequest request)
+      require "plain close remains harmless for an untracked external path"
+        (← runtime.dispatchRequest {
+          workspaceId? := some "document-admission"
+          payload := .close { path := outside.toString }
+        }).ok
       require "rejected document requests do not write to an existing session"
         ((← writes.get).map Prod.fst == #["textDocument/didOpen"])
       let dependencyRoot := root / ".lake" / "packages" / "dependency"

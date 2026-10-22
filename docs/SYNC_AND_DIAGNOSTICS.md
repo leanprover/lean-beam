@@ -32,6 +32,9 @@ path or failed source read leaves the existing document open. If a newer source 
 while the refresh was reading, the refresh uses that newer snapshot without closing it. Refresh is
 therefore not equivalent to issuing `close` followed by `sync` as separate commands.
 
+Plain `close` performs cleanup without reading source contents and remains available after the
+source path disappears. It does not open a new document or start a Lean backend.
+
 The returned document `version` is the snapshot token for broker, MCP, and wrapper callers.
 Position- or range-bound operations reject missing or stale versions; clients can obtain the
 version from `lean-beam update`, the internal broker `update_file` operation, or MCP `lean_update`.
@@ -252,8 +255,9 @@ not an installed command-line interface or a supported machine protocol. Maintai
 ordering and correlation contract in the broker stream tests and
 [development guidance](DEVELOPMENT.md#internal-broker-stream-contract).
 
-The selected root chooses a workspace runtime and bounds document admission. Relative and absolute
-paths must resolve inside its canonical root; symlink escapes are rejected before reading source
+The selected root chooses a workspace runtime and bounds document admission. Paths used to read or
+open documents must resolve inside its canonical root, whether relative or absolute; symlink escapes
+are rejected before reading source
 contents or starting a document worker. To open an external file, select a workspace containing it.
 Normal Lean imports and navigation results remain available across that boundary. Lean
 metaprogramming can perform IO, so callers requiring OS filesystem isolation must sandbox the owner

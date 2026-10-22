@@ -102,8 +102,9 @@ This is deliberately a local-only descriptor. Remote workspaces and same-source 
 mirrors need a broader Source/Workspace split and a transport-safe descriptor; they are not modeled
 as client-chosen aliases for local roots.
 
-The descriptor selects the Lean runtime, toolchain and document root. Relative and absolute `path`
-values must resolve inside the canonical workspace root. Beam rejects an external target, including
+The descriptor selects the Lean runtime, toolchain and document root. Paths used to read or open a
+document, whether relative or absolute, must resolve inside the canonical workspace root. Beam
+rejects an external target, including
 a symlink that escapes the root, before reading its contents or opening a document worker. Select
 that target's own workspace to open it. Normal Lean imports and navigation results may still refer
 to external dependencies.
