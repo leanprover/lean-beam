@@ -89,14 +89,20 @@ def resolveError
     (data? : Option Json := none) : IO Unit :=
   pending.resolveFailure (backendResponseFailure code message data?)
 
+/-- Observe the backend result before applying caller cancellation, so its owner can record a
+worker failure even when that caller was cancelled. -/
+def awaitRawOutcome (pending : PendingRequest) : IO (Except ResponseFailure PendingResult) := do
+  let some outcome ← IO.wait pending.promise.result?
+    | throw <| IO.userError "pending broker request promise dropped"
+  pure outcome
+
 /--
 Await the pending request, giving its already-marked cancellation identity precedence over a
 concurrent backend failure while preserving observations attached to that failure. A completed
 backend success remains successful.
 -/
 def awaitOutcome (pending : PendingRequest) : IO (Except ResponseFailure PendingResult) := do
-  let some outcome ← IO.wait pending.promise.result?
-    | throw <| IO.userError "pending broker request promise dropped"
+  let outcome ← pending.awaitRawOutcome
   match outcome with
   | .ok result => pure (.ok result)
   | .error failure =>

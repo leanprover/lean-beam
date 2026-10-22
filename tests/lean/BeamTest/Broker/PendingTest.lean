@@ -335,12 +335,41 @@ private def checkPendingOutcomeCancellationPrecedence : IO Unit := do
   cancelRef.set true
   let successPending ← mkPending (cancelRef? := some cancelRef)
   successPending.promise.resolve (.ok { result := Json.mkObj [("completed", toJson true)] })
+  match ← successPending.awaitRawOutcome with
+  | .error _ => throw <| IO.userError "raw completed success became cancellation"
+  | .ok result =>
+      requireJsonBool "raw completed success" "completed" true result.result
   match ← successPending.awaitOutcome with
   | .error failure =>
       throw <| IO.userError
         s!"completed backend success lost to later cancellation: {(toJson failure.toResponse).compress}"
   | .ok result =>
       requireJsonBool "completed backend success remains authoritative" "completed" true result.result
+
+private def checkPendingRawWorkerError : IO Unit := do
+  let cancelRef ← IO.mkRef false
+  let progress : SyncFileProgress := { updates := 3, done := false }
+  let pending ← mkPending (cancelRef? := some cancelRef) (progress? := some progress)
+  pending.resolveError .workerCrashed "worker ended"
+    (some <| Json.mkObj [("detail", toJson "preserved")])
+  cancelRef.set true
+  match ← pending.awaitRawOutcome with
+  | .ok _ => throw <| IO.userError "raw worker failure became success"
+  | .error failure =>
+      let error ← requireFailureCode "raw worker error" "workerCrashed" failure
+      require "raw worker message changed" (error.message == "worker ended")
+      let some data := error.data? | throw <| IO.userError "raw worker data lost"
+      requireJsonString "raw worker data" "detail" "preserved" data
+      require "raw worker progress lost" (failure.fileProgress? == some progress)
+  match ← pending.awaitOutcome with
+  | .ok _ => throw <| IO.userError "cancelled worker failure became success"
+  | .error failure =>
+      discard <| requireFailureCode "worker caller cancellation" "requestCancelled" failure
+      require "worker cancellation progress lost" (failure.fileProgress? == some progress)
+  match ← pending.awaitRawOutcome with
+  | .ok _ => throw <| IO.userError "presentation mutated shared outcome"
+  | .error failure =>
+      discard <| requireFailureCode "shared worker error after presentation" "workerCrashed" failure
 
 private def checkPendingResolveError : IO Unit := do
   let expectedProgress : SyncFileProgress := { updates := 4, done := false }
@@ -568,6 +597,7 @@ def main : IO Unit := do
   checkPendingStoreClosedAdmission
   checkPendingStoreCloseRace
   checkPendingOutcomeCancellationPrecedence
+  checkPendingRawWorkerError
   checkPendingResolveError
   checkSyncFileProgressDisplay
   checkSyncFileProgressLines
