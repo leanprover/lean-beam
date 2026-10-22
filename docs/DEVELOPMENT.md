@@ -116,6 +116,25 @@ include those files when reporting installation size.
 - keep destructive cleanup scoped to owned temp or worktree paths
 - if Lean reports stale or rebuild trouble unexpectedly, stop and surface it explicitly
 
+## Transactional I/O
+
+Use `Beam.Transaction.run` to execute an operation with prepared rollback and commit-cleanup
+actions. It attempts every recovery action in reverse order and retains typed errors with their
+action indices. A failed operation retains both its original error and any rollback errors. A
+committed operation stays committed when cleanup fails; its cleanup errors are returned separately.
+There is no unconditional cleanup after rollback, because failed recovery may need its backups.
+
+The caller owns isolation, the cancellation boundary, and the beforeimages needed for recovery.
+Rollback must be valid even if the operation changed nothing or completed only part of its work.
+Acquisition can use the same helper with a separate rollback plan. The helper does not provide
+process-crash recovery or make multiple filesystem changes atomically visible.
+
+Worker artifact publication uses two such scopes under its publication lock. Backup preparation
+can remove only the attempt's backup paths on failure. Once every backup is prepared, publication
+can restore the complete original output set, including removing outputs recorded as originally
+absent. It needs no per-replacement progress journal. A failed restoration retains its backup;
+successful restoration also removes a backup left behind by a same-file rename.
+
 ## Common Code Smells
 
 - do not stringify typed errors or responses and later parse the rendered exception text to recover
@@ -854,6 +873,9 @@ the default caches, use `LAKE_CACHE_DIR= bash tests/test-beam-fast.sh` (or the r
 keep artifact caches local to each build workspace. The save/checkpoint regression
 suite uses separate fixture packages and disables their artifact caches so a Lake replay cannot
 masquerade as a Beam-written artifact.
+`tests/test-beam-checkpoint-hashes.py` instead gives each case a private `LAKE_CACHE_DIR`; that
+isolates its cache rather than disabling it. Its first unchanged-consumer build is an ordinary
+incremental build, with no intervening cache repair or forced rebuild.
 
 Lake may hard-link executables to its artifact cache. On macOS, dyld can identify that inode by its
 cache path, so a raw cached frontend may fail to find its sibling `lib/lean` libraries. Construction

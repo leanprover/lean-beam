@@ -116,6 +116,12 @@ Save target resolution delegates to Lake's workspace loader for the
 project's real `lakefile.lean` or `lakefile.toml`; the broker does not synthesize fallback Lake
 configuration from `lakefile.lean` text and never batch-builds as part of `save`.
 
+Before replacing checkpoint artifacts, Beam invalidates Lake's cached hashes for the outputs it
+writes so later incremental builds recheck their dependents. If publication fails, Beam attempts
+to restore the previous artifacts. Failed recovery reports both errors and retains the backups
+needed for recovery. These steps do not make the artifact family atomically visible or recover
+from process death.
+
 A snapshot with `compiler.postponeCompile` enabled, or with declarations still waiting for deferred
 compilation, is not a complete checkpoint. Its sync result has `readiness.saveReady: false` and
 `readiness.reason: "deferredCompilation"`, even when elaboration has no errors. `save` and

@@ -329,6 +329,23 @@ without a feature-availability skip. The wrapper test checks both Lake options a
 `compiler.postponeCompile`: sync must report the unsupported readiness reason, both save commands
 must reject the checkpoint, and every prior artifact and the Lake trace must remain unchanged.
 
+The slow suite runs [tests/test-beam-checkpoint-hashes.py](../tests/test-beam-checkpoint-hashes.py)
+against its constructed installation. It covers `save`, `close-save`, both commands with module
+companions, and both commands with an output-hash removal error. After weakening a provider's
+theorem, the first ordinary incremental consumer build must reject the unchanged consumer; no
+clean, forced build, or hash repair precedes that verdict. The fixture checks invalidation of
+written output hashes, preservation of unrelated hashes, and removal of backup/staging paths
+before owner shutdown. Hash-removal errors must preserve canonical bytes and leave no final trace.
+For a focused run, supply `--installation PATH --toolchain TOOLCHAIN`, optionally `--case CASE`;
+`--keep NEW-DIRECTORY` retains the evidence and requires a directory that does not yet exist.
+
+`lake exe beam-save-publication-test` separately exercises real filesystem publication with
+injected partial backup, partial replacement, first-replacement, and restoration failures, plus
+successful publication and a real hash-directory obstruction. It checks restored bytes, continued
+rollback, and retention of a failed-restoration backup. Fast, LSP, and native-toolchain suites run
+it; `--keep NEW-DIRECTORY` retains its filesystem evidence. Its transaction-helper checks also
+cover typed failures and commit-cleanup errors.
+
 Use [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) to validate one
 supported bundle lane at a time. The module-save case requires and removes the batch-produced IR
 signature, edits `SaveSmoke.ModuleB`, and saves it through `close-save`. It checks the complete artifact

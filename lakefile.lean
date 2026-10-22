@@ -155,6 +155,10 @@ lean_exe "beam-lsp-test" where
   srcDir := "tests/lean"
   root := `BeamTest.LSP.TestRunner
 
+lean_exe "beam-save-publication-test" where
+  srcDir := "tests/lean"
+  root := `BeamTest.LSP.SavePublicationTest
+
 lean_exe "beam-lsp-scenario-test" where
   srcDir := "tests/lean"
   root := `BeamTest.LSP.ScenarioRunner
