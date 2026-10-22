@@ -1535,7 +1535,7 @@ private def checkIdempotentLifecycleTools : IO Unit := do
     copySaveProjectFixture root
     let opts ← mcpOptionsWithPlugin
     let notifications : Beam.Mcp.Server.NotificationSink := {
-      send := fun _ => pure ()
+      send := fun _ _ => pure ()
     }
     initMcpSession state opts notifications
 
@@ -1612,7 +1612,7 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     let opts ← mcpOptionsWithPlugin
     let notificationsRef ← IO.mkRef #[]
     let notifications : Beam.Mcp.Server.NotificationSink := {
-      send := fun notification =>
+      send := fun _ notification =>
         notificationsRef.modify fun seen => seen.push notification
     }
     initMcpSession state opts notifications

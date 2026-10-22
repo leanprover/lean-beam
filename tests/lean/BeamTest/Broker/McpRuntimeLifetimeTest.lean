@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 -/
 
 import Beam.Mcp.Server
+import Beam.Mcp.StdioServer
 import BeamTest.Broker.JsonAssert
 
 open Lean
@@ -21,7 +22,7 @@ private def checkPermanentClosure : IO Unit := do
   state.closeRuntime
   state.closeRuntime
   let resolutions ← IO.mkRef (0 : Nat)
-  let opts : Options := {
+  let opts : Beam.Mcp.Server.Options := {
     resolveRuntime := fun _ _ => do
       resolutions.modify (· + 1)
       throw <| IO.userError "closed MCP runtime must not resolve another installation"
@@ -34,9 +35,8 @@ private def checkPermanentClosure : IO Unit := do
       require "closed admission reports session closure" (error.code == -32600)
   require "closed runtime rejects before installation resolution" ((← resolutions.get) == 0)
   let root : System.FilePath := "."
-  let workspace : (mcpPrivate% Beam.Mcp.Server.ResolvedWorkspace) := {
-    root, descriptor := Beam.Workspace.Descriptor.ofRoot root, workspaceId := "closed"
-  }
+  let workspace := (mcpPrivate% Beam.Mcp.Server.ResolvedWorkspace.mk)
+    (Beam.Workspace.Descriptor.ofRoot root) root "closed"
   let dropped ← ((mcpPrivate% Beam.Mcp.Server.ServerState.runtime) state).atomically <|
     (mcpPrivate% Beam.Mcp.Server.handleDropWorkspace) workspace
   match dropped with
@@ -58,7 +58,7 @@ private def checkSharedCleanupFailure : IO Unit := do
     | .error error =>
         require "each closer receives the retained outcome"
           (error.toString.contains "shared MCP cleanup failure")
-  let result ← try
+  let result : Except IO.Error Unit ← try
     state.closeRuntime
     pure (.ok ())
   catch error => pure (.error error)
@@ -66,8 +66,176 @@ private def checkSharedCleanupFailure : IO Unit := do
   | .ok () => throw <| IO.userError "repeated close forgot its cleanup failure"
   | .error _ => pure ()
 
+-- Exercise coordinator ownership directly with a transport-only writer. No production test hooks,
+-- subprocess timing, client pipe scheduling, or extra test entry point is needed for these cutoffs.
+local macro "stdioPrivate% " name:ident : term =>
+  pure <| mkIdent (mkPrivateNameCore `Beam.Mcp.StdioServer name.getId)
+
+private def withCoordinator
+    (test : (stdioPrivate% Beam.Mcp.Server.Coordinator) → IO.Ref (Array String) → IO Unit) : IO Unit := do
+  let frames ← IO.mkRef (#[] : Array String)
+  let writer ← Beam.Mcp.StdioOutput.start fun frame => frames.modify (·.push frame.text)
+  let coordinator := (stdioPrivate% Beam.Mcp.Server.Coordinator.mk)
+    (← ServerState.create)
+    (← Std.Mutex.new ((stdioPrivate% Beam.Mcp.Server.RoutingState.mk) 1 {} {} none false))
+    writer (← IO.Promise.new)
+  try test coordinator frames
+  finally
+    writer.fail (IO.userError "coordinator fixture cleanup")
+    ((stdioPrivate% Beam.Mcp.Server.Coordinator.state) coordinator).closeRuntime
+    discard <| IO.wait writer.finishedTask
+
+private def registerFixture
+    (coordinator : (stdioPrivate% Beam.Mcp.Server.Coordinator)) (id : String)
+    (protectStarted : Bool := false) : IO (stdioPrivate% Beam.Mcp.Server.InFlightRequest) := do
+  let policy := if protectStarted then (stdioPrivate% Beam.Mcp.Server.ClientCancellationPolicy.protectStarted)
+    else (stdioPrivate% Beam.Mcp.Server.ClientCancellationPolicy.cooperative)
+  let .ok request ← (stdioPrivate% Beam.Mcp.Server.Coordinator.registerRequest)
+      coordinator (.string id) policy
+    | throw <| IO.userError "coordinator fixture could not register its request"
+  pure request
+
+private def checkQueuedEviction (closeBeforeFence : Bool) : IO Unit :=
+  withCoordinator fun coordinator frames => do
+    let prior ← registerFixture coordinator "prior"
+    let drop ← registerFixture coordinator "queued-drop" true
+    let fence ← (stdioPrivate% Beam.Mcp.Server.Coordinator.pushControlBarrier) coordinator drop
+    let later ← registerFixture coordinator "later"
+    if closeBeforeFence then discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator prior (.str "prior")
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitRequests) coordinator
+      ((stdioPrivate% Beam.Mcp.Server.ControlRequestFence.priorRequests) fence)
+    -- The second variant closes after the fence is satisfied but before execution ownership.
+    if !closeBeforeFence then discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
+    require "EOF prevents queued eviction from acquiring execution ownership"
+      (!(← (stdioPrivate% Beam.Mcp.Server.Coordinator.startExecution) coordinator drop))
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator drop (.str "must not be delivered")
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitControlBarrier) coordinator (some drop)
+    require "later work stays cancelled after the eviction fence settles"
+      (!(← (stdioPrivate% Beam.Mcp.Server.Coordinator.startExecution) coordinator later))
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator later (.str "must not be delivered")
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
+    let expected := if closeBeforeFence then #[] else #["\"prior\"\n"]
+    require "queued eviction and later work emit no terminal response" ((← frames.get) == expected)
+
+private def checkStartedEviction : IO Unit :=
+  withCoordinator fun coordinator frames => do
+    let drop ← registerFixture coordinator "started-drop" true
+    require "eviction acquires execution ownership while admission is open"
+      (← (stdioPrivate% Beam.Mcp.Server.Coordinator.startExecution) coordinator drop)
+    discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
+    require "started eviction remains active through client cancellation"
+      (← (stdioPrivate% Beam.Mcp.Server.InFlightRequest.isActive) drop)
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator drop (.str "started outcome")
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitRequestBoundary) coordinator drop
+    let some result ← IO.wait ((stdioPrivate% Beam.Mcp.Server.InFlightRequest.output) drop).deliveryTask
+      | throw <| IO.userError "started eviction fixture dropped delivery"
+    match result with
+    | .error error => throw error
+    | .ok () => pure ()
+    require "started eviction retains its terminal outcome after EOF"
+      ((← frames.get) == #["\"started outcome\"\n"])
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
+
+private def checkEvictionCleanupDuringEof : IO Unit :=
+  withCoordinator fun coordinator frames => do
+    let root := System.FilePath.mk s!"/tmp/beam-mcp-eviction-cutoff-{← IO.monoNanosNow}"
+    let cleanupEntered ← IO.Promise.new
+    let releaseCleanup ← IO.Promise.new
+    let state := (stdioPrivate% Beam.Mcp.Server.Coordinator.state) coordinator
+    IO.FS.createDirAll root
+    let root ← Beam.resolveExistingPath root
+    try
+      IO.FS.writeFile (root / "lakefile.lean") "import Lake\nopen Lake DSL\npackage fixture\n"
+      let workspaceId := (Beam.Workspace.Descriptor.ofRoot root).cacheKey
+      let broker ← Beam.Broker.ServerRuntime.create { root } workspaceId
+      IO.FS.writeFile (root / "empty-stderr") ""
+      let capture ← IO.FS.withFile (root / "empty-stderr") .read fun source => do
+        let capture ← Beam.Broker.startBackendStderrCapture source
+        discard <| capture.awaitCompletion
+        pure capture
+      let process ← Beam.Broker.BackendProcess.create 0 (do
+        -- The broker removed workspace membership before calling detached-session cleanup.
+        cleanupEntered.resolve ()
+        let some _ ← IO.wait releaseCleanup.result?
+          | throw <| IO.userError "eviction cleanup release was dropped"
+        pure (some 0)) (throw <| IO.userError "fixture must not signal an observed exit")
+      let stream ← IO.getStdin
+      let session : Beam.Broker.Session := {
+        workspaceId, workspaceGeneration := 1, root, epoch := 1
+        sessionToken := "eviction-cutoff", proc := process
+        stdin := stream, stdout := stream, stderrCapture := capture
+        pending := ← Beam.Broker.PendingRequestStore.create
+      }
+      broker.state.atomically do
+        let current ← get
+        let some workspace := current.workspaces.get? workspaceId
+          | throw <| IO.userError "eviction fixture lost its workspace"
+        let workspace := { workspace with lean := { nextEpoch := 2, session? := some session } }
+        set { current with workspaces := current.workspaces.insert workspaceId workspace }
+      let description : Beam.Runtime.Description := {
+        command := "unused", plugin := root / "unused-plugin", daemonBin := root / "unused-daemon"
+        toolchain := "eviction-cutoff", identity := ⟨root, "eviction-cutoff"⟩
+      }
+      let owned := (mcpPrivate% Beam.Mcp.Server.OwnedRuntime.mk) broker <|
+        ({} : Std.HashMap _ _).insert workspaceId
+          ((mcpPrivate% Beam.Mcp.Server.OwnedWorkspace.mk) root description 0)
+      ((mcpPrivate% Beam.Mcp.Server.ServerState.runtime) state).atomically do
+        set ((mcpPrivate% Beam.Mcp.Server.RuntimeState.active) (some owned))
+      let request (id : String) := Json.mkObj [
+        ("jsonrpc", .str "2.0"), ("id", .str id), ("method", .str "tools/call"),
+        ("params", Json.mkObj [
+          ("name", .str "lean_drop_workspace"),
+          ("arguments", Json.mkObj [("workspace", toJson (Beam.Workspace.Descriptor.ofRoot root))]),
+          ("_meta", Json.mkObj [
+            ("io.modelcontextprotocol/protocolVersion", .str Beam.Mcp.protocolVersion),
+            ("io.modelcontextprotocol/clientCapabilities", Json.mkObj []),
+            ("io.modelcontextprotocol/clientInfo", Json.mkObj [("name", .str "eviction-cutoff"), ("version", .str "0")])
+          ])
+        ])
+      ]
+      let .ok incoming := Beam.Mcp.Incoming.fromJson? (request "started")
+        | throw <| IO.userError "invalid eviction fixture request"
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.handleIncoming) coordinator {} incoming
+      let some _ ← IO.wait cleanupEntered.result?
+        | throw <| IO.userError "eviction fixture never entered detached cleanup"
+      require "workspace removal commits before cleanup gate" (← broker.workspaceRoot? workspaceId).isNone
+      let .ok later := Beam.Mcp.Incoming.fromJson? (request "later")
+        | throw <| IO.userError "invalid later eviction fixture request"
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.handleIncoming) coordinator {} later
+      -- Deterministic EOF after removal, before cleanup completion. Runtime close joins the same
+      -- cleanup rather than inventing notFound or suppressing the protected operation's receipt.
+      discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
+      let closing ← IO.asTask ((stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator)
+        Task.Priority.dedicated
+      releaseCleanup.resolve ()
+      match ← IO.wait closing with
+      | .error error => throw error
+      | .ok () => pure ()
+      let writer := (stdioPrivate% Beam.Mcp.Server.Coordinator.output) coordinator
+      let some result ← IO.wait writer.finishedTask
+        | throw <| IO.userError "eviction fixture dropped writer completion"
+      match result with
+      | .error error => throw error
+      | .ok () => pure ()
+      let responses ← frames.get
+      require "only the started eviction responds after EOF" (responses.size == 1)
+      let response ← IO.ofExcept <| (Json.parse responses[0]!).mapError IO.userError
+      requireJsonString "started eviction receipt" "id" "started" response
+      let result ← requireObjVal "started eviction receipt" "result" response
+      let content ← requireObjVal "started eviction receipt" "structuredContent" result
+      requireJsonBool "started eviction preserves committed removal" "dropped" true content
+    finally
+      releaseCleanup.resolve ()
+      state.closeRuntime
+      IO.FS.removeDirAll root
+
 def run : IO Unit := do
   checkPermanentClosure
   checkSharedCleanupFailure
+  checkQueuedEviction true
+  checkQueuedEviction false
+  checkStartedEviction
+  checkEvictionCleanupDuringEof
 
 end BeamTest.Broker.McpRuntimeLifetimeTest

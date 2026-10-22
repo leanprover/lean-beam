@@ -90,7 +90,7 @@ def ServerState.closeRuntime (state : ServerState) : IO Unit := do
     match ← get with
     | .closed completion => pure (none, completion, false)
     | .active owned? =>
-        set (.closed cleanup)
+        set (RuntimeState.closed cleanup)
         pure (owned?, cleanup, true)
   if first then
     let result ← try
@@ -104,8 +104,13 @@ def ServerState.closeRuntime (state : ServerState) : IO Unit := do
   | .ok () => pure ()
   | .error error => throw error
 
+/-- Delivery policy is selected by the producer, never inferred from a JSON envelope. -/
+inductive NotificationDelivery where
+  | required
+  | replaceableProgress
+
 structure NotificationSink where
-  send : Json → IO Unit := fun _ => pure ()
+  send : NotificationDelivery → Json → IO Unit := fun _ _ => pure ()
 
 private inductive LogPolicy where
   | legacy (state : ServerState)
@@ -126,7 +131,10 @@ private def notifierFor
   { logPolicy, sink := notifications }
 
 private def Notifier.send (notifier : Notifier) (json : Json) : IO Unit :=
-  notifier.sink.send json
+  notifier.sink.send .required json
+
+private def Notifier.progress (notifier : Notifier) (json : Json) : IO Unit :=
+  notifier.sink.send .replaceableProgress json
 
 /-- Application effects supplied at the process boundary; no installation discovery lives here. -/
 structure Options where
@@ -432,7 +440,7 @@ def Internal.createPreDispatchReporter?
   let notifier := notifierFor state admitted notifications
   match params.progressToken? with
   | some progressToken =>
-      notifier.send <| progressNotification progressToken 1
+      notifier.progress <| progressNotification progressToken 1
         (some s!"{params.name.key}: preparing workspace eviction")
       pure <| some { initialProgress := 1, stop := pure () }
   | none =>
@@ -536,7 +544,7 @@ private def ensureRuntimeForWorkspace
           | .error failure => return .error <| RpcError.invalidRequest failure.error.message
           | .ok _ =>
               let workspace ← freshWorkspace state root description
-              set (.active (some { runtime with workspaces := runtime.workspaces.insert workspaceId workspace }))
+              set (RuntimeState.active (some { runtime with workspaces := runtime.workspaces.insert workspaceId workspace }))
               return .ok (runtime.broker, workspace, false)
       | .active none =>
           let context : Beam.Runtime.Admission := { isCancelled }
@@ -548,7 +556,7 @@ private def ensureRuntimeForWorkspace
           | .error error => return .error error
           | .ok broker =>
               let workspace ← freshWorkspace state root description
-              set (.active (some ({ broker, workspaces := ({} : Std.HashMap _ _).insert workspaceId workspace } : OwnedRuntime)))
+              set (RuntimeState.active (some ({ broker, workspaces := ({} : Std.HashMap _ _).insert workspaceId workspace } : OwnedRuntime)))
               return .ok (broker, workspace, false)
   let (broker, captured, reused) ← match candidate with
     | .error error => return .error error
@@ -676,7 +684,7 @@ private def handleDropWorkspace
         -- Broker removal commits before detached-session cleanup, which may throw. Keep the
         -- admission cache consistent with that committed state while preserving the cleanup error.
         if (← runtime.broker.workspaceRoot? workspace.workspaceId).isNone then
-          set (.active (some { runtime with workspaces := runtime.workspaces.erase workspace.workspaceId }))
+          set (RuntimeState.active (some { runtime with workspaces := runtime.workspaces.erase workspace.workspaceId }))
 
 private def serverIdentity
     (opts : Options)
@@ -836,7 +844,7 @@ def Internal.handleToolCall
     match parsedParams with
     | .ok params => pure params
     | .error err => return .error <| RpcError.invalidParams err
-  let progress? ← ProgressEmitter.create? params.progressToken? notifier.send initialProgress
+  let progress? ← ProgressEmitter.create? params.progressToken? notifier.progress initialProgress
   Internal.traceMcp
     s!"tools/call start id={req.id.label} tool={params.name.key} progressToken={params.progressToken?.isSome}"
   match params.name.validateInputFields params.arguments with

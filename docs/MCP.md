@@ -175,17 +175,24 @@ dropping a workspace. Installation admission reads local metadata and paths, wit
 selector or compiler probes. Cancellation is checked around admission; rejected or cancelled reuse
 does not replace the retained runtime.
 
-Once the stdin reader observes EOF, the server closes MCP request admission, cooperatively cancels
-active cancellable requests, waits for admitted executions and non-cancellable workspace evictions
-to finish, then closes the broker runtime and all remaining backend sessions. During this shutdown,
-workspace-control execution fences preserve execution order without waiting for terminal response
-writes. Terminal responses retain their delivery dependencies across these fences after EOF.
-A completed worker's blocked terminal response therefore does not prevent backend teardown after
-EOF is observed. Protocol replies such as `ping` and some protocol or admission errors still write
-on the stdin reader itself. If one of these replies waits on blocked stdout, the reader cannot
-observe EOF until output resumes. Notifications emitted during execution can also block execution
-cleanup. Process exit has no fixed bound while synchronous stdout writes remain blocked; the client
-must read or close its pipe to release them.
+The transport reserves bounded output capacity before accepting a request. One writer owns stdout;
+the input reader and request workers enqueue messages without waiting for the client to read.
+Required diagnostic notifications retain their order. Progress updates may replace an older unsent
+update, and obsolete progress is removed when the final response is accepted. Required diagnostics
+precede that response. Output exhaustion, an oversized frame, or a write failure closes the session
+and starts backend cleanup; responses are never truncated. The internal limits are 32 retained
+requests, an 8 MiB final response per request, 256 KiB and 64 pending required notifications per
+request, and one replaceable progress notification of at most 64 KiB per request. Encoded frame
+sizes include envelope metadata and diagnostic labels. Cancelled requests retain their slot until
+execution cleanup finishes. These limits are not client settings.
+
+Once the stdin reader observes EOF, the server closes admission and cancels cooperative requests,
+including workspace evictions still queued behind a control fence. It starts broker runtime closure
+before joining outstanding execution, since backend closure may itself release a request. A started
+eviction is protected from client cancellation and must retain a truthful result. Accepted responses
+can continue draining while backend cleanup proceeds. A blocked protocol reply, parse error, or
+progress write cannot prevent this teardown. Process exit has no fixed bound while synchronous
+stdout writes remain blocked; the client must read or close its pipe to release them.
 
 While stdin remains open, workspace-control fences wait for terminal response write attempts to
 finish, including failed writes. The server retires an exact request-ID admission before publishing
@@ -395,11 +402,13 @@ MCP Roots.
 
 `notifications/cancelled` cooperatively cancels active broker work. If cancellation wins the
 terminal race, no final response is emitted for that request. `lean_drop_workspace` is
-non-cancellable once admitted because partial cache eviction cannot be rolled back safely. Cache
+cancellable while queued. After it acquires execution ownership, it is protected from client
+cancellation because partial cache eviction cannot be rolled back safely. Cache
 eviction is a full stream-order fence while stdin remains open: previously admitted calls drain
 before the drop runs, while later calls wait for its terminal result and may then recreate the same
 descriptor. After EOF, these fences wait for execution cleanup rather than terminal output, allowing
-admitted evictions and runtime teardown to finish even when a completed response blocks stdout.
+started evictions and runtime teardown to finish even when a completed response blocks stdout.
+Registration or a progress notification alone does not grant execution ownership.
 
 For both protocol families, the MCP coordinator binds each ordinary tool call to the exact request
 handle produced by broker admission. Cancellation before that binding prevents dispatch;
@@ -430,10 +439,13 @@ suppress it by raising `logging/setLevel` above `notice`. Modern clients receive
 request's
 `_meta["io.modelcontextprotocol/logLevel"]` admits `notice`.
 
-With a progress token, Beam emits one contextual preparation update followed by meaningful,
-throttled Lake setup and Lean file-progress changes. It does not send separate generic `starting`,
-`preparing`, and `running` updates, and it streams at most one terminal `done=true` file-progress
-event. Final sync, refresh, save, and close-save results contain `document_progress` for clients that
+With a progress token, Beam offers a contextual preparation update followed by meaningful,
+throttled Lake setup and Lean file-progress changes. The writer retains only the latest unsent
+update per request and removes obsolete progress when accepting the final response. A fast call
+may therefore return without a progress notification; clients must use the final result for its
+outcome. Beam does not produce separate generic `starting`, `preparing`, and `running` updates,
+and it offers at most one terminal `done=true` file-progress event. Final sync, refresh, save, and
+close-save results contain `document_progress` for clients that
 do not retain notifications. It is the latest observation available when the response is constructed
 and may therefore be newer than the last throttled notification or reused from already-observed
 document state. Other tools, including `lean_run_at`, do not inherit this final metadata.
