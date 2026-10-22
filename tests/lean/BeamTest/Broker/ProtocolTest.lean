@@ -2643,7 +2643,7 @@ private def checkRefreshAdmittedIdentity (race : RefreshRace := .retargetAlias) 
   let releaseBarrier : IO Unit := do
     let held? ← heldBarrier.atomically do
       let (_, pending?) ← get
-      set (false, none)
+      set (false, (none : Option (PendingRequest × Json)))
       pure pending?
     if let some (pending, result) := held? then pending.resolveResponse result
   let newerTask? ← IO.mkRef (none : Option (Task (Except IO.Error Response)))
