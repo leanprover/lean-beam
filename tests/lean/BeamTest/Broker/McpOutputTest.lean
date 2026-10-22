@@ -133,8 +133,8 @@ private def checkFirstFailure (physicalFailure : Bool) : IO Unit := do
     release.resolve ()
     match ← awaitTask writer.finishedTask with
     | .ok () => throw <| IO.userError "physical completion lost committed failure"
-    | .error error => require "physical completion retains first cause"
-        (error.toString.contains "first failure")
+    | .error error =>
+        require "physical completion retains first cause" (error.toString.contains "first failure")
     match ← awaitTask writer.outcomeTask with
     | .ok () => throw <| IO.userError "failed session reported success"
     | .error error => require "session observes the first failure" (error.toString.contains "first failure")
