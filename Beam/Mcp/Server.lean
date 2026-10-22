@@ -106,7 +106,7 @@ def ServerState.closeRuntime (state : ServerState) : IO Unit := do
 
 /-- Delivery policy is selected by the producer, never inferred from a JSON envelope. -/
 inductive NotificationDelivery where
-  | required
+  | diagnostic
   | replaceableProgress
 
 structure NotificationSink where
@@ -131,7 +131,7 @@ private def notifierFor
   { logPolicy, sink := notifications }
 
 private def Notifier.send (notifier : Notifier) (json : Json) : IO Unit :=
-  notifier.sink.send .required json
+  notifier.sink.send .diagnostic json
 
 private def Notifier.progress (notifier : Notifier) (json : Json) : IO Unit :=
   notifier.sink.send .replaceableProgress json

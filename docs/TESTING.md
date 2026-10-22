@@ -469,6 +469,15 @@ simultaneous cold first use of distinct roots, stateless multi-root isolation, p
 cache evictions with ordering on both sides of the global fence, lazy recreation, and EOF cancellation and
 teardown. The full stdio suite also checks modern request-ID reuse, synchronous and workspace-control
 closed-output teardown, and rejects a proof handle carried across an MCP process restart.
+`run_output_limit_isolation` exceeds the 8 MiB response limit while another workspace executes;
+only the oversized request receives an output-limit error, and the session remains usable.
+`run_admission_overload` sends 40 calls while the first 32 are gated, requires eight individual busy
+errors before releasing the gate, then checks all admitted results and a later protocol request.
+`run_diagnostic_overflow` syncs 150 errors behind a blocked writer, resumes reading one message
+every 20 ms, and requires a retained diagnostic prefix, an explicit omission count, and continued
+session usability. `BeamTest.Broker.McpOutputTest` deterministically fills the separate rejection
+reserve, verifies backpressure without session failure, and drains output to resume admission.
+Complete rejection saturation intentionally delays stdin cancellation and EOF observation.
 `run_blocked_stdout_eof_cleanup` holds stdout open and unread while a completed 512 KiB response
 blocks its writer, with another completed response, a protocol reply, and a protocol error waiting
 for delivery. It checks successful runtime close and Lean file-worker termination before stdout
@@ -480,7 +489,7 @@ that module to check that the marker fixture actually executes.
 `BeamTest.Broker.McpRuntimeLifetimeTest` additionally gates a started eviction after workspace
 removal commits. EOF must begin teardown of another workspace before that gate opens; the eviction
 retains its committed result, and its late cleanup cannot reopen the closed MCP session.
-The test does not require exit while stdout is blocked. The slow
+The test stays below full rejection saturation and does not require exit while stdout is blocked. The slow
 Beam suite runs
 `--scenario multi-toolchain-workspaces` after installing both fixture toolchains and verifies that
 one MCP process keeps both project-specific Lean sessions active.

@@ -175,23 +175,41 @@ dropping a workspace. Installation admission reads local metadata and paths, wit
 selector or compiler probes. Cancellation is checked around admission; rejected or cancelled reuse
 does not replace the retained runtime.
 
-The transport reserves bounded output capacity before accepting a request. One writer owns stdout;
-the input reader and request workers enqueue messages without waiting for the client to read.
-Required diagnostic notifications retain their order. Progress updates may replace an older unsent
-update, and obsolete progress is removed when the final response is accepted. Required diagnostics
-precede that response. Output exhaustion, an oversized frame, or a write failure closes the session
-and starts backend cleanup; responses are never truncated. The internal limits are 32 retained
-requests, an 8 MiB final response per request, 256 KiB and 64 pending required notifications per
-request, and one replaceable progress notification of at most 64 KiB per request. Encoded frame
-sizes include envelope metadata and diagnostic labels. Cancelled requests retain their slot until
-execution cleanup finishes. These limits are not client settings.
+The transport reserves space for a small terminal error before accepting work. One writer owns
+stdout. Execution admission is released after operation cleanup, independently of pending delivery.
+At most 32 execution admissions are unfinished at once. Normal output shares a 64 MiB budget;
+each admission reserves 4 KiB from it, and an encoded successful response may use up to 8 MiB.
+These frame budgets include envelope metadata, the newline, and retained diagnostic labels.
+They do not bound broker computation, input decoding, or result construction.
+
+If a completed result exceeds its frame limit or cannot fit the shared output budget, that request
+receives JSON-RPC error `-32023`. Its `data.operationMayHaveCompleted` is `true`: the response could
+not be delivered, but effects such as a committed save are not undone. Do not blindly retry an
+operation that may have effects. Admission overload instead produces error `-32024` before the
+request executes; the client may retry after pending work/output drains. Neither condition closes
+other requests or workspaces.
+
+Busy replies and unowned protocol errors use a separate 256 KiB reserve, enough for 64 small
+replies. If this reserve also fills, the input reader waits for output space without holding
+coordinator locks. Admitted workers and the writer continue. Cancellation and EOF later in stdin
+are delayed until input resumes. These limits are internal, not client settings. An envelope whose
+ID cannot fit even the reserved error reply is outside these transport limits.
+
+Diagnostic and status log notifications preserve a bounded prefix: at most 256 KiB and 64 pending
+records per request, also charged to shared output storage. After overflow, later omissions are
+counted. The final result reports them in `result._meta["lean-beam/output"].diagnosticsOmitted`;
+a JSON-RPC error reports them in `error.data["lean-beam/output"].diagnosticsOmitted`. Retained logs
+precede the response. Progress has one replaceable pending notification of at most 64 KiB; oversized
+or obsolete progress may be discarded. Responses are never truncated. Cancelled execution retains
+its small terminal reservation until cleanup finishes.
 
 Once the stdin reader observes EOF, the server closes admission and cancels cooperative requests,
 including workspace evictions still queued behind a control fence. It starts broker runtime closure
 before joining outstanding execution, since backend closure may itself release a request. A started
 eviction is protected from client cancellation and must retain a truthful result. Accepted responses
 can continue draining while backend cleanup proceeds. A blocked protocol reply, parse error, or
-progress write cannot prevent this teardown. Process exit has no fixed bound while synchronous
+progress write cannot prevent this teardown after EOF is observed. Complete rejection-reserve
+saturation can delay observing EOF as described above. Process exit has no fixed bound while synchronous
 stdout writes remain blocked; the client must read or close its pipe to release them.
 
 While stdin remains open, workspace-control fences wait for terminal response write attempts to

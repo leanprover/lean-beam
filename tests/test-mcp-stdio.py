@@ -198,6 +198,7 @@ class McpClient:
         label="mcp-client",
         server_trace=False,
         drain_stdout=True,
+        stdout_read_delay=0,
         extra_env=None,
         server_command=None,
         shutdown_timeout=5,
@@ -247,6 +248,7 @@ class McpClient:
             encoding="utf-8",
             bufsize=1,
         )
+        self.stdout_read_delay = stdout_read_delay
         self.stdout_thread = None
         if drain_stdout:
             self.start_stdout_reader()
@@ -262,6 +264,8 @@ class McpClient:
     def _drain_stdout(self):
         try:
             for line in self.proc.stdout:
+                if self.stdout_read_delay:
+                    time.sleep(self.stdout_read_delay)
                 try:
                     message = json.loads(line)
                 except json.JSONDecodeError as err:
@@ -3200,6 +3204,135 @@ def run_legacy_eof_teardown(repo_root, fixture_root, timeout):
             client.close()
 
 
+def run_output_limit_isolation(repo_root, fixture_root, timeout):
+    with tempfile.TemporaryDirectory(prefix="lean-beam-mcp-output-limits-") as tmp:
+        root = Path(tmp) / "project"
+        peer = Path(tmp) / "peer"
+        copy_project_fixture(fixture_root, root)
+        copy_project_fixture(fixture_root, peer)
+        client = McpClient(repo_root, root, timeout, label="output-limit-isolation")
+        try:
+            update = expect_result(client.modern_request("tools/call", {
+                "name": "lean_update", "arguments": {"path": "McpConcurrency.lean"},
+            }))["structuredContent"]
+            peer_update = expect_result(client.modern_request("tools/call", {
+                "name": "lean_update", "arguments": {
+                    "path": "McpConcurrency.lean", "workspace": workspace_descriptor(peer),
+                },
+            }))["structuredContent"]
+            # The MCP tool result carries both text content and structured content, so this
+            # 5 MiB value exceeds the 8 MiB encoded-response limit without costly list printing.
+            large = client.send_request("tools/call", with_modern_metadata({
+                "name": "lean_run_at", "arguments": {
+                    "path": "McpConcurrency.lean", "version": update["version"],
+                    "line": 2, "character": 0,
+                    "text": "#eval String.ofList (List.replicate (5 * 1024 * 1024) 'x')",
+                },
+            }), request_id="oversized-result")
+            other = client.send_request("tools/call", with_modern_metadata({
+                "name": "lean_run_at", "arguments": {
+                    "path": "McpConcurrency.lean", "version": peer_update["version"],
+                    "workspace": workspace_descriptor(peer),
+                    "line": 2, "character": 0, "text": "#eval 42",
+                },
+            }), request_id="unaffected-peer")
+            limited = client.read_response(large)
+            expect_error_code(limited, -32023)
+            require(limited["error"]["data"].get("operationMayHaveCompleted") is True, limited)
+            result = expect_result(client.read_response(other))
+            require_success("peer after oversized result", result.get("structuredContent", {}))
+            expect_result(client.modern_request("tools/list"))
+        finally:
+            client.close()
+
+
+def run_admission_overload(repo_root, fixture_root, timeout):
+    with tempfile.TemporaryDirectory(prefix="lean-beam-mcp-admission-overload-") as tmp:
+        root = Path(tmp) / "project"
+        started = Path(tmp) / "started"
+        release = Path(tmp) / "release"
+        copy_project_fixture(fixture_root, root)
+        client = McpClient(repo_root, root, timeout, label="admission-overload", extra_env={
+            "BEAM_MCP_GATE_STARTED": started, "BEAM_MCP_GATE_RELEASE": release,
+        })
+        try:
+            client.initialize()
+            version = client.call_tool("lean_update", {"path": "McpConcurrency.lean"})["version"]
+            line = (root / "McpConcurrency.lean").read_text().splitlines().index("  trivial")
+            params = {"name": "lean_run_at", "arguments": {
+                "path": "McpConcurrency.lean", "version": version,
+                "line": line, "character": 2, "text": "mcp_concurrency_gate",
+            }}
+            requests = [client.send_request("tools/call", params, request_id=f"burst-{i}")
+                        for i in range(40)]
+            wait_for_file(started, timeout, "overload execution gate")
+            # The first 32 remain gated. Each excess request must get its own error without
+            # cancelling admitted work or closing the process, even before that work finishes.
+            for request in requests[32:]:
+                expect_error_code(client.read_response(request), -32024)
+            require(client.proc.poll() is None, "admission overload terminated the MCP server")
+            release.write_text("release\n")
+            for request in requests[:32]:
+                result = expect_result(client.read_response(request))
+                require_success("admitted overload request", result.get("structuredContent", {}))
+            expect_result(client.request("tools/list"))
+        finally:
+            release.write_text("release\n")
+            client.close()
+
+
+def run_diagnostic_overflow(repo_root, fixture_root, timeout):
+    with tempfile.TemporaryDirectory(prefix="lean-beam-mcp-diagnostic-overflow-") as tmp:
+        root = Path(tmp) / "project"
+        copy_project_fixture(fixture_root, root)
+        (root / "ManyErrors.lean").write_text(
+            "import Lean\n" + "".join(f"#check missingDeclaration{i}\n" for i in range(150)),
+            encoding="utf-8",
+        )
+        client = McpClient(repo_root, root, timeout, label="diagnostic-overflow",
+                           drain_stdout=False, stdout_read_delay=0.02, server_trace=True)
+        try:
+            update_id = client.send_request("tools/call", with_modern_metadata({
+                "name": "lean_update", "arguments": {"path": "McpConcurrency.lean"},
+            }))
+            ready, _, _ = select.select([client.proc.stdout], [], [], timeout)
+            require(ready, "diagnostic fixture did not receive its update response")
+            updated = json.loads(client.proc.stdout.readline())
+            require(updated.get("id") == update_id, updated)
+            version = expect_result(updated)["structuredContent"]["version"]
+            client.forget_request(update_id)
+            # Occupy the sole writer first. This makes overflow deterministic regardless of
+            # platform pipe size or scheduling; reading then resumes at one message per 20 ms.
+            blocker = client.send_request("tools/call", with_modern_metadata({
+                "name": "lean_run_at", "arguments": {
+                    "path": "McpConcurrency.lean", "version": version,
+                    "line": 2, "character": 0,
+                    "text": "#eval String.ofList (List.replicate (512 * 1024) 'x')",
+                },
+            }), request_id="diagnostic-writer-blocker")
+            client.wait_for_trace("stdout write start kind=response", "diagnostic writer did not block",
+                                  request_id=blocker)
+            sync = client.send_request("tools/call", with_modern_metadata({
+                "name": "lean_sync", "arguments": {"path": "ManyErrors.lean"},
+            }, log_level="debug"), request_id="many-diagnostics")
+            client.wait_for_trace("terminal response ready", "diagnostic overflow stalled execution",
+                                  request_id=sync)
+            client.start_stdout_reader()
+            expect_result(client.read_response(blocker))
+            result = expect_result(client.read_response(sync))
+            require(result.get("isError") is not True, result)
+            output = result.get("_meta", {}).get("lean-beam/output", {})
+            require(output.get("diagnosticsOmitted", 0) > 0,
+                    f"slow diagnostic reader did not receive an omission report: {output}")
+            require(diagnostic_log_notifications(client), "no diagnostic prefix was delivered")
+            expect_result(client.modern_request("tools/list"))
+            require(client.proc.poll() is None, "diagnostic overflow terminated the MCP server")
+        finally:
+            if client.stdout_thread is None:
+                client.start_stdout_reader()
+            client.close()
+
+
 def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
     # Keep stdout open but unread until runtime close finishes. Resuming the reader is cleanup,
     # not the event that is allowed to unblock runtime teardown.
@@ -3646,6 +3779,9 @@ def main():
     run_lifecycle_matrix(repo_root, fixture_root, args.timeout)
     run_blank_line_regression(repo_root, fixture_root, args.timeout)
     run_legacy_eof_teardown(repo_root, fixture_root, args.timeout)
+    run_output_limit_isolation(repo_root, fixture_root, args.timeout)
+    run_admission_overload(repo_root, fixture_root, args.timeout)
+    run_diagnostic_overflow(repo_root, fixture_root, args.timeout)
     run_blocked_stdout_eof_cleanup(repo_root, fixture_root, args.timeout)
     run_closed_stdout_regression(repo_root, fixture_root, args.timeout)
 

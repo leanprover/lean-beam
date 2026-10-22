@@ -10,9 +10,11 @@ namespace Beam.Mcp.StdioOutput
 
 open Lean
 
-/-- Internal limits, reserved per request before broker admission. -/
+/-- Internal storage limits. Each admission reserves a small terminal reply before work begins. -/
 structure Limits where
-  requests : Nat := 32
+  pendingBytes : Nat := 64 * 1024 * 1024
+  rejectionBytes : Nat := 256 * 1024
+  reservedResponseBytes : Nat := 4 * 1024
   responseBytes : Nat := 8 * 1024 * 1024
   diagnosticBytes : Nat := 256 * 1024
   diagnosticRecords : Nat := 64
@@ -26,13 +28,17 @@ structure Frame where
 private def Frame.bytes (frame : Frame) : Nat :=
   frame.text.utf8ByteSize + frame.label.utf8ByteSize
 
+-- Derive ASCII escaping from the selected Lean serializer, including DEL, rather than copying
+-- its escape table. The closed table is shared by all preflight traversals.
+private def asciiStringBytes : Array Nat :=
+  (Array.range 128).map fun code =>
+    (Json.str (String.singleton (Char.ofNat code))).compress.utf8ByteSize - 2
+
 private def stringBytes (text : String) (limit : Nat) : Nat := Id.run do
   let mut bytes := 2
   for char in text do
     bytes := bytes +
-      if char == '"' || char == '\\' || char == '\n' || char == '\r' then 2
-      else if char.toNat < 32 then 6
-      else if char.toNat < 128 then 1
+      if char.toNat < 128 then asciiStringBytes[char.toNat]!
       else if char.toNat < 2048 then 2
       else if char.toNat < 65536 then 3
       else 4
@@ -67,24 +73,40 @@ private partial def jsonBytes (json : Json) (limit : Nat) : Nat := Id.run do
         first := false
       return bytes
 
-private def encode (json : Json) (label : String) (limit : Nat) : IO Frame := do
+inductive OutputLimit where
+  | tooLarge (limit : Nat)
+  | capacity
+  deriving BEq
+
+private def encode (json : Json) (label : String) (limit : Nat) : Except OutputLimit Frame := do
   -- Labels are diagnostic only. Bound them independently before retaining them.
   let label := (label.take 256).toString
   if label.utf8ByteSize + 1 > limit ||
       jsonBytes json (limit - label.utf8ByteSize - 1) > limit - label.utf8ByteSize - 1 then
-    throw <| IO.userError "MCP output exceeds its frame limit"
+    throw (.tooLarge limit)
   let frame := { text := json.compress ++ "\n", label : Frame }
   if frame.bytes > limit then
-    throw <| IO.userError "MCP output exceeds its frame limit"
+    throw (.tooLarge limit)
   pure frame
 
+private inductive SlotKind where
+  | request
+  | rejection
+
 private structure Pending where
+  kind : SlotKind := .request
   cancelled : Bool := false
   diagnostics : Array Frame := #[]
   diagnosticBytes : Nat := 0
+  omittedDiagnostics : Nat := 0
   progress? : Option Frame := none
   response? : Option Frame := none
   done : IO.Promise (Except IO.Error Unit)
+
+private def Pending.bytes (pending : Pending) (limits : Limits) : Nat :=
+  limits.reservedResponseBytes + pending.diagnosticBytes +
+    (pending.progress?.map Frame.bytes).getD 0 +
+    ((pending.response?.map Frame.bytes).getD 0 - limits.reservedResponseBytes)
 
 private inductive Phase where
   | accepting
@@ -96,6 +118,29 @@ private structure State where
   phase : Phase := .accepting
   nextId : Nat := 0
   pending : Std.TreeMap Nat Pending := {}
+  pendingBytes : Nat := 0
+  rejectionBytes : Nat := 0
+
+/-- Keep accounting in one pure transition for insertion, replacement, and retirement. -/
+private def State.replace (current : State) (limits : Limits) (id : Nat)
+    (next? : Option Pending) : State := Id.run do
+  let previous? := current.pending.get? id
+  let some reference := previous?.or next? | return current
+  let oldBytes := (previous?.map (·.bytes limits)).getD 0
+  let newBytes := (next?.map (·.bytes limits)).getD 0
+  let pending := match next? with
+    | some next => current.pending.insert id next
+    | none => current.pending.erase id
+  match reference.kind with
+  | .request => return { current with
+      pending := pending
+      pendingBytes := current.pendingBytes - oldBytes + newBytes }
+  | .rejection => return { current with
+      pending := pending
+      rejectionBytes := current.rejectionBytes - oldBytes + newBytes }
+
+private def State.fits (current : State) (limits : Limits) : Bool :=
+  current.pendingBytes <= limits.pendingBytes && current.rejectionBytes <= limits.rejectionBytes
 
 /-- One writer owns stdout. Pending slots contain only text and delivery promises. -/
 structure Writer where
@@ -121,7 +166,7 @@ private def failState (error : IO.Error) : Std.AtomicT State IO (Option (Array P
   match current.phase with
   | .failed _ | .finished => pure none
   | _ =>
-      set { current with phase := .failed error, pending := {} }
+      set { current with phase := .failed error, pending := {}, pendingBytes := 0, rejectionBytes := 0 }
       pure <| some <| current.pending.toArray.map Prod.snd
 
 private def Writer.publishFailure (writer : Writer) (error : IO.Error) (pending : Array Pending) : IO Unit := do
@@ -134,28 +179,43 @@ def Writer.fail (writer : Writer) (error : IO.Error) : IO Unit := do
   let some pending ← writer.state.atomically (failState error) | return
   writer.publishFailure error pending
 
-/-- Reserve terminal capacity without waiting for the client. Exhaustion fails the session. -/
-def Writer.reserve (writer : Writer) : IO Slot := do
+/-- Try to reserve a small terminal reply. Normal overload never fails the session. -/
+def Writer.tryReserve (writer : Writer) : IO (Option Slot) := do
   let done ← IO.Promise.new
-  let result : Except (IO.Error × Array Pending) Nat ← writer.state.atomically do
+  let id? ← writer.state.atomically do
     let current ← get
     match current.phase with
     | .failed error => throw error
     | .draining | .finished => throw <| IO.userError "MCP output is draining"
     | .accepting =>
-        if current.pending.size >= writer.limits.requests then
-          let error := IO.userError "MCP output capacity exhausted"
-          let pending ← failState error
-          pure (.error (error, pending.getD #[]))
-        else
+        let id := current.nextId
+        let next := current.replace writer.limits id (some { done })
+        if !next.fits writer.limits then return none
+        set { next with nextId := id + 1 }
+        pure (some id)
+  pure <| id?.map fun id => { writer, id, done }
+
+/-- Reject bursts from a separate budget. Only the input reader waits when it too is full. -/
+def Writer.reserveRejection (writer : Writer) : IO Slot := do
+  let done ← IO.Promise.new
+  let id ← writer.state.atomicallyOnce writer.available
+    (do
+      let current ← get
+      match current.phase with
+      | .accepting => pure <|
+          current.rejectionBytes + writer.limits.reservedResponseBytes <= writer.limits.rejectionBytes
+      | _ => pure true)
+    (do
+      let current ← get
+      match current.phase with
+      | .failed error => throw error
+      | .draining | .finished => throw <| IO.userError "MCP output is draining"
+      | .accepting =>
           let id := current.nextId
-          set { current with nextId := id + 1, pending := current.pending.insert id { done } }
-          pure (.ok id)
-  match result with
-  | .error (error, pending) =>
-      writer.publishFailure error pending
-      throw error
-  | .ok id => pure { writer, id, done }
+          let next := current.replace writer.limits id (some { kind := .rejection, done })
+          set { next with nextId := id + 1 }
+          pure id)
+  pure { writer, id, done }
 
 private def Slot.isOpen (slot : Slot) : IO Bool :=
   slot.writer.state.atomically do
@@ -164,65 +224,11 @@ private def Slot.isOpen (slot : Slot) : IO Bool :=
     | .failed error => throw error
     | _ => pure <| (current.pending.get? slot.id).any (fun pending => !pending.cancelled && pending.response?.isNone)
 
-/-- A stale producer cannot fail another admission between its identity check and failure. -/
-private def Slot.failIfOpen (slot : Slot) (error : IO.Error) : IO Bool := do
-  let pending? ← slot.writer.state.atomically do
-    let current ← get
-    match current.phase with
-    | .failed retained => throw retained
-    | _ =>
-        let some pending := current.pending.get? slot.id | return none
-        if pending.cancelled || pending.response?.isSome then return none
-        failState error
-  let some pending := pending? | return false
-  slot.writer.publishFailure error pending
-  pure true
-
 private def Slot.encode? (slot : Slot) (json : Json) (label : String) (limit : Nat) : IO (Option Frame) := do
   if !(← slot.isOpen) then return none
-  try return some (← encode json label limit)
-  catch error =>
-    if ← slot.failIfOpen error then throw error
-    return none
+  pure (encode json label limit).toOption
 
 private def Slot.offer (slot : Slot) (frame : Frame) (progress : Bool) : IO Unit := do
-  let failure? ← slot.writer.state.atomically do
-    let current ← get
-    match current.phase with
-    | .failed error => throw error
-    | _ =>
-        let some pending := current.pending.get? slot.id | return none
-        if pending.cancelled || pending.response?.isSome then return none
-        if progress then
-          set { current with pending := current.pending.insert slot.id { pending with progress? := some frame } }
-        else if pending.diagnostics.size >= slot.writer.limits.diagnosticRecords ||
-            pending.diagnosticBytes + frame.bytes > slot.writer.limits.diagnosticBytes then
-          let error := IO.userError "MCP required diagnostic capacity exhausted"
-          let pending ← failState error
-          return some (error, pending.getD #[])
-        else
-          set { current with pending := current.pending.insert slot.id { pending with
-            diagnostics := pending.diagnostics.push frame
-            diagnosticBytes := pending.diagnosticBytes + frame.bytes } }
-        return none
-  if let some (error, pending) := failure? then
-    slot.writer.publishFailure error pending
-    throw error
-  slot.writer.available.notifyOne
-
-/-- Required diagnostics retain their order; they cannot be replaced by progress. -/
-def Slot.diagnostic (slot : Slot) (json : Json) (label : String := "") : IO Unit := do
-  let some frame ← slot.encode? json label slot.writer.limits.diagnosticBytes | return
-  slot.offer frame false
-
-/-- Only the latest unsent progress update is useful. -/
-def Slot.progress (slot : Slot) (json : Json) (label : String := "") : IO Unit := do
-  let some frame ← slot.encode? json label slot.writer.limits.progressBytes | return
-  slot.offer frame true
-
-/-- Accept one terminal response, preserving required diagnostics and removing obsolete progress. -/
-def Slot.respond (slot : Slot) (json : Json) (label : String := "") : IO Unit := do
-  let some frame ← slot.encode? json label slot.writer.limits.responseBytes | return
   slot.writer.state.atomically do
     let current ← get
     match current.phase with
@@ -230,9 +236,75 @@ def Slot.respond (slot : Slot) (json : Json) (label : String := "") : IO Unit :=
     | _ =>
         let some pending := current.pending.get? slot.id | return
         if pending.cancelled || pending.response?.isSome then return
-        set { current with pending := current.pending.insert slot.id { pending with
-          response? := some frame, progress? := none } }
+        if progress then
+          let next := current.replace slot.writer.limits slot.id (some { pending with progress? := some frame })
+          if next.fits slot.writer.limits then set next
+          else set <| current.replace slot.writer.limits slot.id (some { pending with progress? := none })
+        else
+          let next := current.replace slot.writer.limits slot.id (some { pending with
+            diagnostics := pending.diagnostics.push frame
+            diagnosticBytes := pending.diagnosticBytes + frame.bytes })
+          if pending.omittedDiagnostics > 0 ||
+              pending.diagnostics.size >= slot.writer.limits.diagnosticRecords ||
+              pending.diagnosticBytes + frame.bytes > slot.writer.limits.diagnosticBytes ||
+              !next.fits slot.writer.limits then
+            set <| current.replace slot.writer.limits slot.id (some { pending with
+              omittedDiagnostics := pending.omittedDiagnostics + 1 })
+          else set next
   slot.writer.available.notifyOne
+
+/-- Retain a bounded diagnostic prefix and count omissions without stalling execution. -/
+def Slot.diagnostic (slot : Slot) (json : Json) (label : String := "") : IO Unit := do
+  if !(← slot.isOpen) then return
+  match encode json label slot.writer.limits.diagnosticBytes with
+  | .ok frame => slot.offer frame false
+  | .error _ =>
+      slot.writer.state.atomically do
+        let current ← get
+        let some pending := current.pending.get? slot.id | return
+        if pending.cancelled || pending.response?.isSome then return
+        set <| current.replace slot.writer.limits slot.id (some { pending with
+          omittedDiagnostics := pending.omittedDiagnostics + 1 })
+
+/-- Only the latest unsent progress update is useful. -/
+def Slot.progress (slot : Slot) (json : Json) (label : String := "") : IO Unit := do
+  let some frame ← slot.encode? json label slot.writer.limits.progressBytes | return
+  slot.offer frame true
+
+/-- Accept a terminal response with an exact omission count. The pure projection is not retained.
+An oversized response leaves the reservation open so its caller can send a small error instead. -/
+private def Slot.accept (slot : Slot) (response : Nat → Json) (label : String)
+    (reserved : Bool) : IO (Except OutputLimit Unit) := do
+  let result ← slot.writer.state.atomically do
+    let current ← get
+    match current.phase with
+    | .failed error => throw error
+    | _ =>
+        let some pending := current.pending.get? slot.id | return .ok ()
+        if pending.cancelled || pending.response?.isSome then return .ok ()
+        let limit := match pending.kind with
+          | .request => if reserved then slot.writer.limits.reservedResponseBytes else slot.writer.limits.responseBytes
+          | .rejection => slot.writer.limits.reservedResponseBytes
+        let frame ← match encode (response pending.omittedDiagnostics) label limit with
+          | .ok frame => pure frame
+          | .error error => return .error error
+        let next := current.replace slot.writer.limits slot.id (some { pending with
+          response? := some frame, progress? := none })
+        if !next.fits slot.writer.limits then return .error .capacity
+        set next
+        return .ok ()
+  slot.writer.available.notifyOne
+  pure result
+
+/-- Successful results may claim extra shared storage without waiting for stdout. -/
+def Slot.respond (slot : Slot) (response : Nat → Json) (label : String := "") :
+    IO (Except OutputLimit Unit) :=
+  slot.accept response label false
+
+/-- A small terminal error uses only storage already reserved before execution. -/
+def Slot.respondReserved (slot : Slot) (response : Nat → Json) (label : String := "") :
+    IO (Except OutputLimit Unit) :=
+  slot.accept response label true
 
 /-- Stop publishers but retain the execution's reservation until cleanup finishes. -/
 def Slot.cancel (slot : Slot) : IO Unit := do
@@ -240,8 +312,8 @@ def Slot.cancel (slot : Slot) : IO Unit := do
     let current ← get
     let some pending := current.pending.get? slot.id | return
     if pending.response?.isSome then return
-    set { current with pending := current.pending.insert slot.id { pending with
-      cancelled := true, diagnostics := #[], diagnosticBytes := 0, progress? := none } }
+    set <| current.replace slot.writer.limits slot.id (some { pending with
+      cancelled := true, diagnostics := #[], diagnosticBytes := 0, progress? := none })
 
 /-- Release after execution cleanup. An accepted terminal response keeps its reservation. -/
 def Slot.release (slot : Slot) : IO Unit := do
@@ -249,7 +321,7 @@ def Slot.release (slot : Slot) : IO Unit := do
     let current ← get
     let some pending := current.pending.get? slot.id | return false
     if pending.response?.isSome then return false
-    set { current with pending := current.pending.erase slot.id }
+    set <| current.replace slot.writer.limits slot.id none
     return true
   if removed then slot.done.resolve (.ok ())
   slot.writer.available.notifyAll
@@ -260,7 +332,7 @@ private structure Delivery where
   terminal : Bool
 
 private def select (current : State) : Option Delivery := Id.run do
-  -- Ready responses, including their required diagnostics, take priority over live progress.
+  -- Ready responses, including their retained diagnostics, take priority over live progress.
   for (id, pending) in current.pending do
     if pending.response?.isSome then
       if let some frame := pending.diagnostics[0]? then return some { id, frame, terminal := false }
@@ -290,7 +362,7 @@ private def Writer.take (writer : Writer) : IO (Option Delivery) :=
               else { pending with
                 diagnostics := pending.diagnostics.extract 1 pending.diagnostics.size
                 diagnosticBytes := pending.diagnosticBytes - delivery.frame.bytes }
-            set { current with pending := current.pending.insert delivery.id pending }
+            set <| current.replace writer.limits delivery.id (some pending)
           pure (some delivery))
 
 private partial def Writer.run (writer : Writer) (write : Frame → IO Unit) : IO Unit := do
@@ -301,9 +373,10 @@ private partial def Writer.run (writer : Writer) (write : Frame → IO Unit) : I
     let done? ← writer.state.atomically do
       let current ← get
       let some pending := current.pending.get? delivery.id | return none
-      set { current with pending := current.pending.erase delivery.id }
+      set <| current.replace writer.limits delivery.id none
       pure (some pending.done)
     if let some done := done? then done.resolve (.ok ())
+    writer.available.notifyAll
   writer.run write
 
 /-- Commit normal completion against concurrent failure and retain the first failed-state cause. -/
@@ -317,6 +390,9 @@ private def Writer.settle (writer : Writer) : IO (Except IO.Error Unit) :=
         pure (.ok ())
 
 def start (write : Frame → IO Unit) (limits : Limits := {}) : IO Writer := do
+  if limits.reservedResponseBytes == 0 || limits.pendingBytes < limits.reservedResponseBytes ||
+      limits.rejectionBytes < limits.reservedResponseBytes then
+    throw <| IO.userError "MCP output budgets must each hold a nonempty reserved response"
   let writer : Writer := {
     limits, state := ← Std.Mutex.new {}, available := ← Std.Condvar.new
     outcome := ← IO.Promise.new, finished := ← IO.Promise.new

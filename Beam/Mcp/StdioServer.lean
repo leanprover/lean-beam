@@ -14,8 +14,8 @@ open Lean
 /-!
 Stdio transport and concurrent request coordination for the MCP server.
 
-`runStdio` supervises one input reader and one output writer. Neither input processing nor broker
-cleanup waits for the client to read stdout.
+`runStdio` supervises one input reader and one output writer. Only complete saturation of the
+rejection reserve pauses input. Admitted work and broker cleanup never wait for stdout capacity.
 -/
 
 namespace Beam.Mcp.Server
@@ -81,10 +81,12 @@ private structure RoutingState where
   admitted : Std.TreeMap String InFlightRequest := {}
   controlBarrier? : Option InFlightRequest := none
   closing : Bool := false
+  executionAdmissions : Nat := 0
 
 private inductive RequestRegistrationError where
   | duplicate
   | closing
+  | busy
 
 /-
 Nested state locks flow routing → request → output. They perform only bounded in-memory transitions.
@@ -95,6 +97,7 @@ private structure Coordinator where
   routing : Std.Mutex RoutingState
   output : Beam.Mcp.StdioOutput.Writer
   closing : IO.Promise Unit
+  executionLimit : Nat := 32
 
 private def Coordinator.create : IO Coordinator := do
   pure {
@@ -110,9 +113,14 @@ private def Coordinator.registerRequest
     (cancellationPolicy : ClientCancellationPolicy) :
     IO (Except RequestRegistrationError InFlightRequest) := do
   -- Ignore duplicates before reserving capacity; registration is driven by the sole reader.
-  if ← coordinator.routing.atomically (do return (← get).inFlight.contains id) then
-    return .error .duplicate
-  let output ← coordinator.output.reserve
+  let unavailable? ← coordinator.routing.atomically do
+    let routing ← get
+    if routing.inFlight.contains id then return some .duplicate
+    if routing.closing then return some .closing
+    if routing.executionAdmissions >= coordinator.executionLimit then return some .busy
+    return none
+  if let some reason := unavailable? then return .error reason
+  let some output ← coordinator.output.tryReserve | return .error .busy
   let request : InFlightRequest := {
     id
     brokerId := ""
@@ -128,6 +136,8 @@ private def Coordinator.registerRequest
       pure <| .error .duplicate
     else if routing.closing then
       pure <| .error .closing
+    else if routing.executionAdmissions >= coordinator.executionLimit then
+      pure <| .error .busy
     else
       let brokerId := s!"mcp:{routing.nextBrokerId}"
       let request := { request with brokerId }
@@ -136,6 +146,7 @@ private def Coordinator.registerRequest
           nextBrokerId := routing.nextBrokerId + 1
           inFlight := routing.inFlight.insert id request
           admitted := routing.admitted.insert brokerId request
+          executionAdmissions := routing.executionAdmissions + 1
       }
       pure <| .ok request
   if let .error _ := result then output.release
@@ -160,6 +171,14 @@ private def Coordinator.completeRequest
   coordinator.routing.atomically do
     modify fun routing =>
       { routing with admitted := routing.admitted.erase request.brokerId }
+
+/-- Release execution admission once, independently of response storage and delivery. -/
+private def Coordinator.finishExecution (coordinator : Coordinator) (request : InFlightRequest) : IO Unit :=
+  coordinator.routing.atomically do
+    if ← request.executionDone.isResolved then return
+    modify fun routing => { routing with executionAdmissions := routing.executionAdmissions - 1 }
+    request.state.atomically do modify fun current => { current with brokerRequest? := none }
+    request.executionDone.resolve ()
 
 private def InFlightRequest.isActive (request : InFlightRequest) : IO Bool := do
   request.state.atomically do
@@ -228,7 +247,7 @@ private def InFlightRequest.notify (request : InFlightRequest)
     (delivery : NotificationDelivery) (json : Json) : IO Unit := do
   if !(← request.isActive) then return
   match delivery with
-  | .required => request.output.diagnostic json (outgoingJsonLabel json)
+  | .diagnostic => request.output.diagnostic json (outgoingJsonLabel json)
   | .replaceableProgress => request.output.progress json (outgoingJsonLabel json)
 
 private def InFlightRequest.bindBrokerRequest
@@ -248,9 +267,42 @@ private def traceMcpSafely (message : String) : IO Unit := do
   catch _ =>
     pure ()
 
-private def Coordinator.finishDelivery (coordinator : Coordinator) (request : InFlightRequest) : IO Unit := do
+/-- Delivery omissions annotate the response, leaving the operation's result and metadata intact. -/
+private def withDiagnosticOmissions (response : Json) (omitted : Nat) : Json := Id.run do
+  if omitted == 0 then return response
+  let output := Json.mkObj [("diagnosticsOmitted", toJson omitted)]
+  if let .ok result@(.obj _) := response.getObjVal? "result" then
+    let metadata := match result.getObjVal? "_meta" with
+      | .ok metadata@(.obj _) => metadata
+      | _ => Json.mkObj []
+    return response.setObjVal! "result" <|
+      result.setObjVal! "_meta" (metadata.setObjVal! "lean-beam/output" output)
+  if let .ok error@(.obj _) := response.getObjVal? "error" then
+    let data := match error.getObjVal? "data" with
+      | .ok data@(.obj _) => data
+      | .ok original => Json.mkObj [("originalData", original)]
+      | .error _ => Json.mkObj []
+    return response.setObjVal! "error" <|
+      error.setObjVal! "data" (data.setObjVal! "lean-beam/output" output)
+  return response
+
+private def respondWithinLimit (slot : Beam.Mcp.StdioOutput.Slot) (id : Json)
+    (response : Json) : IO Unit := do
+  match ← slot.respond (withDiagnosticOmissions response) (outgoingJsonLabel response) with
+  | .ok () => pure ()
+  | .error limit =>
+      let limit? := match limit with
+        | .tooLarge bytes => some bytes
+        | .capacity => none
+      let error := errorResponse id (RpcError.outputLimit limit?)
+      match ← slot.respondReserved (withDiagnosticOmissions error) (outgoingJsonLabel error) with
+      | .ok () => pure ()
+      | .error _ => throw <| IO.userError "MCP request ID exceeds the error response budget"
+
+private def Coordinator.finishDelivery (coordinator : Coordinator) (request : InFlightRequest)
+    (result? : Option (Except IO.Error Unit)) : IO Unit := do
   try
-    let some result ← IO.wait request.output.deliveryTask
+    let some result := result?
       | throw <| IO.userError "MCP output delivery promise was dropped"
     match result with
     | .ok () => pure ()
@@ -266,8 +318,7 @@ private def Coordinator.finishRequest
     (deliveryDependencies : Array InFlightRequest := #[]) : IO Unit := do
   try
     -- Execution has released its admission. Delivery retains no broker handle.
-    request.state.atomically do modify fun current => { current with brokerRequest? := none }
-    request.executionDone.resolve ()
+    coordinator.finishExecution request
     for dependency in deliveryDependencies do
       coordinator.awaitRequestBoundary dependency
     -- Routing retirement and terminal acceptance share the cancellation cutoff. The input reader
@@ -284,7 +335,7 @@ private def Coordinator.finishRequest
         match current.phase with
         | .queued | .executing =>
             -- Queueing never waits for stdout or free capacity. Encoding is bounded by the slot.
-            request.output.respond response (outgoingJsonLabel response)
+            respondWithinLimit request.output request.id response
             set { current with phase := .completed }
         | .clientCancelled =>
             request.output.release
@@ -299,12 +350,13 @@ private def Coordinator.finishRequest
       request.deliveryDone.resolve ()
     throw error
   finally
-    request.executionDone.resolve ()
-  -- Delivery is owned independently, including for replies produced by the input reader.
+    coordinator.finishExecution request
+  -- A short continuation retires delivery; pending replies need no dedicated waiting thread.
   try
-    let _ ← IO.asTask (prio := Task.Priority.dedicated) do
-      try coordinator.finishDelivery request
-      catch error => traceMcpSafely s!"request delivery failed id={request.id.label}: {error}"
+    let _ ← IO.mapTask (fun result => do
+      try coordinator.finishDelivery request result
+      catch error => traceMcpSafely s!"request delivery failed id={request.id.label}: {error}")
+      request.output.deliveryTask
     pure ()
   catch error =>
     coordinator.output.fail error
@@ -424,8 +476,10 @@ private def Coordinator.closeTransport (coordinator : Coordinator) : IO Unit := 
     finally coordinator.output.finish
 
 private def Coordinator.sendUnowned (coordinator : Coordinator) (json : Json) : IO Unit := do
-  let slot ← coordinator.output.reserve
-  slot.respond json (outgoingJsonLabel json)
+  -- This is the sole capacity wait. It runs on the reader, outside all coordinator locks.
+  let slot ← coordinator.output.reserveRejection
+  let id := (json.getObjVal? "id").toOption.getD Json.null
+  respondWithinLimit slot id json
 
 private def Coordinator.admitToolRequest
     (coordinator : Coordinator)
@@ -577,6 +631,9 @@ private def Coordinator.reserveRequestId
   | .error .closing =>
       coordinator.sendUnowned <| errorResponse id <|
         RpcError.invalidRequest "MCP server is shutting down"
+      pure none
+  | .error .busy =>
+      coordinator.sendUnowned <| errorResponse id RpcError.serverBusy
       pure none
 
 private def Coordinator.reserveRequest

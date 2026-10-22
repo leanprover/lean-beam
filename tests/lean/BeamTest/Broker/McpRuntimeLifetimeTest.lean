@@ -8,6 +8,7 @@ import Beam.Mcp.StdioServer
 import BeamTest.Broker.JsonAssert
 
 open Lean
+open Beam.Mcp
 open Beam.Mcp.Server
 open BeamTest.Broker.JsonAssert
 
@@ -71,13 +72,16 @@ local macro "stdioPrivate% " name:ident : term =>
   pure <| mkIdent (mkPrivateNameCore `Beam.Mcp.StdioServer name.getId)
 
 private def withCoordinator
-    (test : (stdioPrivate% Beam.Mcp.Server.Coordinator) → IO.Ref (Array String) → IO Unit) : IO Unit := do
+    (test : (stdioPrivate% Beam.Mcp.Server.Coordinator) → IO.Ref (Array String) → IO Unit)
+    (beforeWrite : IO Unit := pure ()) : IO Unit := do
   let frames ← IO.mkRef (#[] : Array String)
-  let writer ← Beam.Mcp.StdioOutput.start fun frame => frames.modify (·.push frame.text)
+  let writer ← Beam.Mcp.StdioOutput.start fun frame => do
+    beforeWrite
+    frames.modify (·.push frame.text)
   let coordinator := (stdioPrivate% Beam.Mcp.Server.Coordinator.mk)
     (← ServerState.create)
-    (← Std.Mutex.new ((stdioPrivate% Beam.Mcp.Server.RoutingState.mk) 1 {} {} none false))
-    writer (← IO.Promise.new)
+    (← Std.Mutex.new ((stdioPrivate% Beam.Mcp.Server.RoutingState.mk) 1 {} {} none false 0))
+    writer (← IO.Promise.new) 32
   try test coordinator frames
   finally
     writer.fail (IO.userError "coordinator fixture cleanup")
@@ -93,6 +97,97 @@ private def registerFixture
       coordinator (.string id) policy
     | throw <| IO.userError "coordinator fixture could not register its request"
   pure request
+
+private def checkOversizedResponseIsolation : IO Unit :=
+  withCoordinator fun coordinator frames => do
+    let large ← registerFixture coordinator "large"
+    let peer ← registerFixture coordinator "peer"
+    let mut text := "x"
+    for _ in [:23] do text := text ++ text
+    let response := successResponse (.str "large") <| Json.mkObj [("text", .str text)]
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator large response
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator peer
+      (successResponse (.str "peer") (Json.mkObj [("ok", .bool true)]))
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitRequestBoundary) coordinator large
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitRequestBoundary) coordinator peer
+    let responses ← (← frames.get).mapM fun frame =>
+      IO.ofExcept <| (Json.parse frame).mapError IO.userError
+    require "oversized result preserves both terminal outcomes" (responses.size == 2)
+    let some large := responses.find? (fun response =>
+        (response.getObjValAs? String "id").toOption == some "large")
+      | throw <| IO.userError "oversized request lost its error response"
+    let error ← requireObjVal "oversized request" "error" large
+    requireJsonInt "oversized request" "code" (-32023) error
+    let data ← requireObjVal "oversized request" "data" error
+    requireJsonBool "oversized request" "operationMayHaveCompleted" true data
+    require "unrelated request succeeds after the oversized result"
+      (responses.any fun response =>
+        (response.getObjValAs? String "id").toOption == some "peer" &&
+        (response.getObjVal? "result").isOk)
+
+private def checkExecutionAdmissionLifetime : IO Unit := do
+  let entered ← IO.Promise.new
+  let release ← IO.Promise.new
+  withCoordinator (fun coordinator frames => do
+    try
+      let mut requests := #[]
+      for index in [:32] do
+        requests := requests.push (← registerFixture coordinator s!"admitted-{index}")
+      for index in [32:40] do
+        let request? ← (stdioPrivate% Beam.Mcp.Server.Coordinator.reserveRequestId)
+          coordinator (.string s!"busy-{index}")
+          (stdioPrivate% Beam.Mcp.Server.ClientCancellationPolicy.cooperative)
+        require "overflow requests are rejected before execution" request?.isNone
+      let some _ ← IO.wait entered.result?
+        | throw <| IO.userError "fixture writer never reached its gate"
+      let some first := requests[0]?
+        | throw <| IO.userError "fixture did not register its first request"
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator first (.str "finished")
+      require "completed execution can still await delivery"
+        (!(← IO.hasFinished ((stdioPrivate% Beam.Mcp.Server.InFlightRequest.output) first).deliveryTask))
+      let replacement ← registerFixture coordinator "replacement"
+      require "execution admission was released before output resumed"
+        (← ((stdioPrivate% Beam.Mcp.Server.InFlightRequest.executionDone) first).isResolved)
+      discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
+      for request in requests.extract 1 requests.size |>.push replacement do
+        (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator request (.str "cancelled")
+      release.resolve ()
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
+      let writer := (stdioPrivate% Beam.Mcp.Server.Coordinator.output) coordinator
+      let some (.ok ()) ← IO.wait writer.finishedTask
+        | throw <| IO.userError "fixture writer did not finish successfully"
+      let responses ← (← frames.get).mapM fun frame =>
+        IO.ofExcept <| (Json.parse frame).mapError IO.userError
+      require "all forty original requests have a receipt or explicit EOF cancellation"
+        (responses.size == 9)
+      let errors := responses.filterMap fun response => (response.getObjVal? "error").toOption
+      require "each rejected request has its own busy reply" (errors.size == 8)
+      for error in errors do requireJsonInt "busy reply" "code" (-32024) error
+    finally release.resolve ()) (beforeWrite := do
+      entered.resolve ()
+      let some _ ← IO.wait release.result?
+        | throw <| IO.userError "fixture writer release was dropped")
+
+private def checkDiagnosticOmissionProjection : IO Unit := do
+  let result := Json.mkObj [("value", .num 42), ("_meta", Json.mkObj [("existing", .bool true)])]
+  let response := successResponse (.str "sync") result
+  let projected := (stdioPrivate% Beam.Mcp.Server.withDiagnosticOmissions) response 150
+  let result ← requireObjVal "diagnostic omission" "result" projected
+  requireJsonInt "diagnostic omission preserves result" "value" 42 result
+  let metadata ← requireObjVal "diagnostic omission" "_meta" result
+  requireJsonBool "diagnostic omission preserves metadata" "existing" true metadata
+  let output ← requireObjVal "diagnostic omission" "lean-beam/output" metadata
+  requireJsonInt "diagnostic omission" "diagnosticsOmitted" 150 output
+  let error := errorResponse (.str "sync") {
+    code := -32603, message := "failed"
+    data? := some <| Json.mkObj [("existing", .bool true)] }
+  let projected := (stdioPrivate% Beam.Mcp.Server.withDiagnosticOmissions) error 2
+  let error ← requireObjVal "error diagnostic omission" "error" projected
+  requireJsonInt "error diagnostic omission preserves code" "code" (-32603) error
+  let data ← requireObjVal "error diagnostic omission" "data" error
+  requireJsonBool "error diagnostic omission preserves data" "existing" true data
+  let output ← requireObjVal "error diagnostic omission" "lean-beam/output" data
+  requireJsonInt "error diagnostic omission" "diagnosticsOmitted" 2 output
 
 private def checkQueuedEviction (closeBeforeFence : Bool) : IO Unit :=
   withCoordinator fun coordinator frames => do
@@ -260,6 +355,9 @@ private def checkEvictionCleanupDuringEof : IO Unit :=
 def run : IO Unit := do
   checkPermanentClosure
   checkSharedCleanupFailure
+  checkOversizedResponseIsolation
+  checkExecutionAdmissionLifetime
+  checkDiagnosticOmissionProjection
   checkQueuedEviction true
   checkQueuedEviction false
   checkStartedEviction

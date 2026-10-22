@@ -281,19 +281,23 @@ integration-test process supervision outside the server executable.
 Keep these stdio invariants explicit:
 
 - one dedicated input task reads stdin; one transport writer owns every stdout message
-- input handling, notifications, cancellation, and broker cleanup never wait for stdout capacity
+- admitted workers, notifications, and broker cleanup never wait for stdout capacity; only full
+  rejection-reserve saturation pauses input, delaying later cancellation and EOF observation
 - the server emits no JSON-RPC requests to clients
 - request IDs preserve their string-versus-integer kind and their string or numeric value
 - ordinary calls may overlap; cache eviction is a full stream-order fence while stdin remains open
-- execution completion releases broker resources and is separate from terminal-delivery completion
-- EOF closes admission and starts backend teardown before joining execution; live delivery fences
+- execution completion releases broker resources and execution admission independently of delivery;
+  pending output is bounded by byte budgets and does not retain a dedicated waiting thread
+- observed EOF closes admission and starts backend teardown before joining execution; live delivery fences
   switch to execution completion so an unread response cannot hold backend resources alive
 - queued evictions may be cancelled; started evictions retain a truthful terminal outcome
 - terminal acceptance and exact ID retirement share the cancellation cutoff; late publishers and
   completions cannot affect another generation that reuses the same external request ID
 - once a request is registered, setup must either transfer it to a worker or complete it terminally
-- cancelled execution retains its output reservation until cleanup finishes; progress cannot consume
-  final-response capacity or displace required diagnostic notifications
+- cancelled execution retains its small terminal reservation until cleanup finishes; oversize/storage
+  failures return per-request errors, diagnostics report omissions, and progress remains replaceable
+- admission overload returns busy before execution; the separate rejection reserve backpressures input
+  only when full, without holding coordinator locks
 - ordinary tool calls bind cancellation to the exact broker admission handle
 - nested state locks flow routing → request → output; no physical output or broker cleanup runs
   under these locks, and detached workspace cleanup runs outside the MCP runtime mutex
