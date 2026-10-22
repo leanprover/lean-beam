@@ -11,8 +11,10 @@ write stdout directly. Messages cannot interleave. Retained diagnostic notificat
 request's final response; ordinary responses may arrive out of request order.
 
 Output storage is bounded. Before accepting work, reserve space for a small terminal error.
-A successful result may claim additional shared storage when it finishes. If its encoded frame is
-too large or shared storage is full, send a request-specific output-limit error using the reserved
+Check the exact fixed error envelope and trace label before any admission or execution. Request
+IDs that cannot fit this envelope are rejected before effects begin. A successful result may
+claim additional shared storage when it finishes. If its encoded frame is too large or shared
+storage is full, send a request-specific output-limit error using the reserved
 space. The error must explain that the operation may already have completed. It must not cause
 unrelated requests or workspaces to be cancelled.
 
@@ -53,6 +55,9 @@ budget or the shared storage budget is exceeded, count subsequent omissions with
 request. The final result reports the count in
 `result._meta["lean-beam/output"].diagnosticsOmitted`; JSON-RPC errors use
 `error.data["lean-beam/output"].diagnosticsOmitted`. Existing result metadata and error data survive.
+The reserved output-limit fallback instead has a fixed shape reporting incomplete output and
+`operationMayHaveCompleted`; it does not append omission counts or other optional fields after
+preflight.
 Progress has one replaceable pending notification per request. Oversized progress is discarded;
 terminal acceptance removes obsolete progress. Omitted/replaced progress is not counted as a lost
 log notification.
@@ -73,7 +78,8 @@ The rejection reserve holds up to 64 small replies. Normal output reservations a
 shared byte budget, independently of the execution limit. One physical frame may additionally be
 in flight. These bounds cover transport-owned frames and reservations, not input decoding, result
 construction, object overhead, or broker computation. An envelope whose ID cannot fit even its
-reserved error reply is unrepresentable within these transport limits.
+reserved error reply is unrepresentable within these transport limits and ends the transport
+before that request receives any execution or output admission.
 
 ## 4. Observed shutdown starts cleanup before joining execution
 
@@ -95,7 +101,9 @@ as described above. Neither limitation allows output waits under broker or coord
 
 The existing `BeamTest.Broker.McpOutputTest` and `McpRuntimeLifetimeTest` fixtures check storage
 accounting, reserved errors, rejection backpressure and resumption, execution/delivery separation,
-exact-generation cancellation, and first-failure settlement. They run through the existing MCP
+exact-generation cancellation, and first-failure settlement. Reply-ID boundary models check
+ordinary, invalid, and control envelopes before admission, and exercise an exactly representable
+fallback after oversized output and diagnostic omissions. They run through the existing MCP
 protocol test executable in `bash tests/test-beam-fast.sh`.
 
 `python3 tests/test-mcp-stdio.py --iterations 1 --restart-cycles 1 --timeout 60` checks oversized

@@ -107,11 +107,19 @@ private def Coordinator.create : IO Coordinator := do
     closing := ← IO.Promise.new
   }
 
+private def Coordinator.validateReplyId (coordinator : Coordinator) (id : Json) : IO Unit := do
+  let fallback := errorResponse id RpcError.outputLimit
+  match coordinator.output.validateReserved fallback (outgoingJsonLabel fallback) with
+  | .ok () => pure ()
+  | .error _ =>
+      throw <| IO.userError "JSON-RPC request ID cannot fit the reserved MCP error envelope"
+
 private def Coordinator.registerRequest
     (coordinator : Coordinator)
     (id : RequestId)
     (cancellationPolicy : ClientCancellationPolicy) :
     IO (Except RequestRegistrationError InFlightRequest) := do
+  coordinator.validateReplyId id
   -- Ignore duplicates before reserving capacity; registration is driven by the sole reader.
   let unavailable? ← coordinator.routing.atomically do
     let routing ← get
@@ -290,14 +298,13 @@ private def respondWithinLimit (slot : Beam.Mcp.StdioOutput.Slot) (id : Json)
     (response : Json) : IO Unit := do
   match ← slot.respond (withDiagnosticOmissions response) (outgoingJsonLabel response) with
   | .ok () => pure ()
-  | .error limit =>
-      let limit? := match limit with
-        | .tooLarge bytes => some bytes
-        | .capacity => none
-      let error := errorResponse id (RpcError.outputLimit limit?)
-      match ← slot.respondReserved (withDiagnosticOmissions error) (outgoingJsonLabel error) with
+  | .error _ =>
+      -- This exact fixed envelope was checked before admission. Do not append counters or
+      -- optional fields here: an ID near the boundary must still get its reserved error.
+      let error := errorResponse id RpcError.outputLimit
+      match ← slot.respondReserved (fun _ => error) (outgoingJsonLabel error) with
       | .ok () => pure ()
-      | .error _ => throw <| IO.userError "MCP request ID exceeds the error response budget"
+      | .error _ => throw <| IO.userError "MCP reserved terminal-response invariant violated"
 
 private def Coordinator.finishDelivery (coordinator : Coordinator) (request : InFlightRequest)
     (result? : Option (Except IO.Error Unit)) : IO Unit := do
@@ -476,9 +483,10 @@ private def Coordinator.closeTransport (coordinator : Coordinator) : IO Unit := 
     finally coordinator.output.finish
 
 private def Coordinator.sendUnowned (coordinator : Coordinator) (json : Json) : IO Unit := do
+  let id := (json.getObjVal? "id").toOption.getD Json.null
+  coordinator.validateReplyId id
   -- This is the sole capacity wait. It runs on the reader, outside all coordinator locks.
   let slot ← coordinator.output.reserveRejection
-  let id := (json.getObjVal? "id").toOption.getD Json.null
   respondWithinLimit slot id json
 
 private def Coordinator.admitToolRequest

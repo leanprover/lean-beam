@@ -98,13 +98,16 @@ private def registerFixture
     | throw <| IO.userError "coordinator fixture could not register its request"
   pure request
 
+private def oversizedResponse (id : Json) : Json := Id.run do
+  let mut text := "x"
+  for _ in [:23] do text := text ++ text
+  return successResponse id <| Json.mkObj [("text", .str text)]
+
 private def checkOversizedResponseIsolation : IO Unit :=
   withCoordinator fun coordinator frames => do
     let large ← registerFixture coordinator "large"
     let peer ← registerFixture coordinator "peer"
-    let mut text := "x"
-    for _ in [:23] do text := text ++ text
-    let response := successResponse (.str "large") <| Json.mkObj [("text", .str text)]
+    let response := oversizedResponse (.str "large")
     (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator large response
     (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator peer
       (successResponse (.str "peer") (Json.mkObj [("ok", .bool true)]))
@@ -124,6 +127,98 @@ private def checkOversizedResponseIsolation : IO Unit :=
       (responses.any fun response =>
         (response.getObjValAs? String "id").toOption == some "peer" &&
         (response.getObjVal? "result").isOk)
+
+private def checkUnrepresentableReplyIds : IO Unit :=
+  withCoordinator fun coordinator _ => do
+    let id := String.ofList (List.replicate 5000 'x')
+    let effects ← IO.mkRef (0 : Nat)
+    let opts : Beam.Mcp.Server.Options := { identity := do
+      effects.modify (· + 1)
+      pure { name := Beam.Version.mcpServerName } }
+    let root ← IO.currentDir
+    for tool in #["beam_version", "lean_drop_workspace"] do
+      let json := Json.mkObj [
+        ("jsonrpc", .str "2.0"), ("id", .str id), ("method", .str "tools/call"),
+        ("params", Json.mkObj [
+          ("name", .str tool), ("arguments", if tool == "lean_drop_workspace" then
+            Json.mkObj [("workspace", toJson (Beam.Workspace.Descriptor.ofRoot root))]
+            else Json.mkObj []),
+          ("_meta", Json.mkObj [
+            ("io.modelcontextprotocol/protocolVersion", .str Beam.Mcp.protocolVersion),
+            ("io.modelcontextprotocol/clientCapabilities", Json.mkObj []),
+            ("io.modelcontextprotocol/clientInfo", Json.mkObj [("name", .str "reply-boundary"), ("version", .str "0")])
+          ])
+        ])
+      ]
+      let .ok incoming := Incoming.fromJson? json
+        | throw <| IO.userError "invalid reply-boundary fixture request"
+      let rejected ← try
+        (stdioPrivate% Beam.Mcp.Server.Coordinator.handleIncoming) coordinator opts incoming
+        pure false
+      catch _ => pure true
+      require "unrepresentable ordinary/control envelope is rejected before work" rejected
+    let rejected ← try
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.handleInvalidMessage) coordinator
+        (Json.mkObj [("jsonrpc", .str "2.0"), ("id", .str id), ("method", .num 42)]) "invalid method"
+      pure false
+    catch _ => pure true
+    require "invalid envelopes share reply-ID preflight" rejected
+    let routing ← ((stdioPrivate% Beam.Mcp.Server.Coordinator.routing) coordinator).atomically get
+    require "no private admission identity was allocated"
+      ((stdioPrivate% Beam.Mcp.Server.RoutingState.nextBrokerId) routing == 1)
+    require "no execution admission was allocated"
+      ((stdioPrivate% Beam.Mcp.Server.RoutingState.executionAdmissions) routing == 0)
+    require "no request was retained"
+      ((stdioPrivate% Beam.Mcp.Server.RoutingState.admitted) routing).isEmpty
+    require "no operation effects began" ((← effects.get) == 0)
+    let writer := (stdioPrivate% Beam.Mcp.Server.Coordinator.output) coordinator
+    writer.finish
+    let some (some (.ok ())) ← Beam.waitTaskWithTimeout writer.finishedTask 5000
+      | throw <| IO.userError "unrepresentable envelopes retained an output admission"
+
+private def checkReservedReplyBoundary : IO Unit := do
+  let entered ← IO.Promise.new
+  let release ← IO.Promise.new
+  withCoordinator (fun coordinator frames => do
+    try
+      let writer := (stdioPrivate% Beam.Mcp.Server.Coordinator.output) coordinator
+      let makeId (size : Nat) := String.ofList (List.replicate size 'x')
+      let fits (size : Nat) :=
+        let error := errorResponse (.str (makeId size)) RpcError.outputLimit
+        (writer.validateReserved error ((stdioPrivate% Beam.Mcp.Server.outgoingJsonLabel) error)).isOk
+      let mut lower := 0
+      let mut upper := 8192
+      while lower + 1 < upper do
+        let middle := (lower + upper) / 2
+        if fits middle then lower := middle else upper := middle
+      require "fixture found the exact encoded fallback boundary" (fits lower && !fits upper)
+      let id := makeId lower
+      let request ← registerFixture coordinator id
+      let slot := (stdioPrivate% Beam.Mcp.Server.InFlightRequest.output) request
+      let diagnostic := logMessageNotification .error "lean.diagnostic" (.str "prefix")
+      slot.diagnostic diagnostic
+      let some _ ← IO.wait entered.result?
+        | throw <| IO.userError "boundary fixture did not enter its writer gate"
+      for _ in [:70] do slot.diagnostic diagnostic
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator request (oversizedResponse (.str id))
+      release.resolve ()
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitRequestBoundary) coordinator request
+      let responses ← (← frames.get).mapM fun frame =>
+        IO.ofExcept <| (Json.parse frame).mapError IO.userError
+      let some response := responses.find? (fun response => (response.getObjVal? "error").isOk)
+        | throw <| IO.userError "boundary request lost its reserved error"
+      requireJsonString "reserved error preserves exact ID" "id" id response
+      let error ← requireObjVal "reserved boundary error" "error" response
+      requireJsonInt "reserved boundary error" "code" (-32023) error
+      let data ← requireObjVal "reserved boundary error" "data" error
+      requireJsonBool "reserved boundary error" "operationMayHaveCompleted" true data
+      require "fixed fallback does not append variable omission metadata"
+        (!(data.getObjVal? "lean-beam/output").isOk)
+      require "boundary fallback leaves the transport healthy" (!(← IO.hasFinished writer.outcomeTask))
+    finally release.resolve ()) (beforeWrite := do
+      entered.resolve ()
+      let some _ ← IO.wait release.result?
+        | throw <| IO.userError "boundary fixture release was dropped")
 
 private def checkExecutionAdmissionLifetime : IO Unit := do
   let entered ← IO.Promise.new
@@ -356,6 +451,8 @@ def run : IO Unit := do
   checkPermanentClosure
   checkSharedCleanupFailure
   checkOversizedResponseIsolation
+  checkUnrepresentableReplyIds
+  checkReservedReplyBoundary
   checkExecutionAdmissionLifetime
   checkDiagnosticOmissionProjection
   checkQueuedEviction true

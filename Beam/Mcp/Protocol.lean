@@ -58,13 +58,11 @@ def invalidParams (message : String) : RpcError :=
 def internalError (message : String) : RpcError :=
   { code := -32603, message }
 
-def outputLimit (limit? : Option Nat := none) : RpcError :=
+def outputLimit : RpcError :=
   {
     code := -32023
-    message := "MCP response exceeds available output storage; the operation may have completed"
-    data? := some <| Json.mkObj <|
-      [("operationMayHaveCompleted", toJson true)] ++
-      (limit?.toList.map fun limit => ("limitBytes", toJson limit))
+    message := "MCP output is incomplete; the operation may have completed"
+    data? := some <| Json.mkObj [("operationMayHaveCompleted", toJson true)]
   }
 
 def serverBusy : RpcError :=

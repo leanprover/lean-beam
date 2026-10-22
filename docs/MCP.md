@@ -193,13 +193,17 @@ Busy replies and unowned protocol errors use a separate 256 KiB reserve, enough 
 replies. If this reserve also fills, the input reader waits for output space without holding
 coordinator locks. Admitted workers and the writer continue. Cancellation and EOF later in stdin
 are delayed until input resumes. These limits are internal, not client settings. An envelope whose
-ID cannot fit even the reserved error reply is outside these transport limits.
+ID cannot fit even the reserved error reply is outside these transport limits and is rejected
+before that request is admitted or begins effects.
 
 Diagnostic and status log notifications preserve a bounded prefix: at most 256 KiB and 64 pending
 records per request, also charged to shared output storage. After overflow, later omissions are
 counted. The final result reports them in `result._meta["lean-beam/output"].diagnosticsOmitted`;
-a JSON-RPC error reports them in `error.data["lean-beam/output"].diagnosticsOmitted`. Retained logs
-precede the response. Progress has one replaceable pending notification of at most 64 KiB; oversized
+an ordinary JSON-RPC error reports them in
+`error.data["lean-beam/output"].diagnosticsOmitted`. The reserved `-32023` fallback instead reports
+incomplete output without an exact omission count; its fixed shape was checked before admission.
+Retained logs precede the response. Progress has one replaceable pending notification of at most
+64 KiB; oversized
 or obsolete progress may be discarded. Responses are never truncated. Cancelled execution retains
 its small terminal reservation until cleanup finishes.
 

@@ -161,6 +161,11 @@ def Writer.outcomeTask (writer : Writer) : Task (Option (Except IO.Error Unit)) 
 def Writer.finishedTask (writer : Writer) : Task (Option (Except IO.Error Unit)) := writer.finished.result?
 def Slot.deliveryTask (slot : Slot) : Task (Option (Except IO.Error Unit)) := slot.done.result?
 
+/-- Check the exact terminal-error envelope before accepting any work for its request ID. -/
+def Writer.validateReserved (writer : Writer) (json : Json) (label : String) : Except OutputLimit Unit := do
+  let _ ← encode json label writer.limits.reservedResponseBytes
+  pure ()
+
 private def failState (error : IO.Error) : Std.AtomicT State IO (Option (Array Pending)) := do
   let current ← get
   match current.phase with
