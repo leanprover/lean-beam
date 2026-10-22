@@ -266,7 +266,9 @@ The executable path is split into importable modules:
 - [Beam/Mcp/Server.lean](../Beam/Mcp/Server.lean): descriptor resolution, lazy runtime dispatch, and
   the synchronous protocol-test seam
 - [Beam/Mcp/StdioServer.lean](../Beam/Mcp/StdioServer.lean): permanent stdin reader, concurrent
-  coordination, cancellation, cache-control barriers, and serialized output
+  request coordination, cancellation, cache-control barriers, and shutdown
+- [Beam/Mcp/StdioOutput.lean](../Beam/Mcp/StdioOutput.lean): bounded output reservations,
+  notification buffering, and the sole stdout writer
 - [Beam/Mcp/ServerMain.lean](../Beam/Mcp/ServerMain.lean): executable entry point
 
 The [MCP transport contract](MCP_TRANSPORT_CONTRACT.md) defines execution, delivery, cancellation,

@@ -3218,7 +3218,7 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                 drain_stdout=False,
             )
             blocked_id = "blocked-terminal-output"
-            waiting_id = "terminal-waiting-for-output-lock"
+            waiting_id = "terminal-waiting-for-delivery"
             drop_id = "drop-behind-blocked-terminal"
             cancelled_id = "cancelled-sync-behind-drop"
             protocol_id = "protocol-behind-blocked-output"
@@ -3293,7 +3293,7 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                 )
                 client.wait_for_trace(
                     "terminal response ready",
-                    "second terminal response did not reach the output lock",
+                    "second terminal response was not accepted for delivery",
                     request_id=waiting_id,
                 )
                 # The sole input reader must enqueue both protocol replies and errors, then
@@ -3355,7 +3355,7 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                 require_success("blocked-output runAt", result.get("structuredContent", {}))
                 waiting = expect_result(client.read_response(waiting_id))
                 require(waiting.get("isError") is not True, waiting)
-                require_success("output-lock-waiting runAt", waiting.get("structuredContent", {}))
+                require_success("delivery-waiting runAt", waiting.get("structuredContent", {}))
                 expect_result(client.read_response(protocol_id))
                 expect_error_code(client.read_response(error_id), -32601)
                 if queued_drop:
