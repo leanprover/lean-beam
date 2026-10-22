@@ -465,17 +465,21 @@ This scenario covers out-of-order tool responses, exact string/numeric request-I
 duplicate active-ID suppression, repeated asynchronous request-ID reuse after terminal responses,
 exact modern and legacy broker cancellation, per-request progress ordering, deterministic overlap
 between a gated request in one workspace and a fast request in another, single-flight first use,
-simultaneous cold first use of distinct roots, stateless multi-root isolation, non-cancellable cache
-eviction with ordering on both sides of the global fence, lazy recreation, and EOF cancellation and
+simultaneous cold first use of distinct roots, stateless multi-root isolation, protection of started
+cache evictions with ordering on both sides of the global fence, lazy recreation, and EOF cancellation and
 teardown. The full stdio suite also checks modern request-ID reuse, synchronous and workspace-control
 closed-output teardown, and rejects a proof handle carried across an MCP process restart.
 `run_blocked_stdout_eof_cleanup` holds stdout open and unread while a completed 512 KiB response
-blocks its writer, with another completed response waiting for the output lock. It checks successful
-runtime close and Lean file-worker termination before stdout reading resumes, both with and without
-an admitted workspace eviction queued behind those responses. Reading then resumes to check terminal
-response order and successful exit. The eviction case also queues an ordinary sync request whose
-elaboration would write a marker: EOF must cancel it before execution, leaving no marker or response.
-A fresh MCP client then syncs that module to check that the marker fixture actually executes.
+blocks its writer, with another completed response, a protocol reply, and a protocol error waiting
+for delivery. It checks successful runtime close and Lean file-worker termination before stdout
+reading resumes, both with and without a workspace eviction queued behind those responses. EOF
+cancels that queued eviction. Reading then resumes to check terminal response order and successful
+exit. The eviction case also queues an ordinary sync request whose elaboration would write a marker:
+EOF must cancel it before execution, leaving no marker or response. A fresh MCP client then syncs
+that module to check that the marker fixture actually executes.
+`BeamTest.Broker.McpRuntimeLifetimeTest` additionally gates a started eviction after workspace
+removal commits. EOF must begin teardown of another workspace before that gate opens; the eviction
+retains its committed result, and its late cleanup cannot reopen the closed MCP session.
 The test does not require exit while stdout is blocked. The slow
 Beam suite runs
 `--scenario multi-toolchain-workspaces` after installing both fixture toolchains and verifies that
