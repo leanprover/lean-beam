@@ -358,6 +358,30 @@ def qualify(args, lean_prefix, scratch):
             assert stats["metrics"]["sessionStarts"] == before["metrics"]["sessionStarts"], (before, stats)
             updated = json.loads(call("update", "Demo.lean").stdout)
             version = updated["result"]["version"]
+            # Observe the actual volume rather than assuming that macOS folds path case.
+            case_root = project.with_name(project.name.swapcase())
+            case_probe = {
+                "platform": sys.platform,
+                "device": project.stat().st_dev,
+                "root": str(project),
+                "alias": str(case_root),
+                "case_insensitive": case_root.exists() and case_root.samefile(project),
+            }
+            case_evidence = project / ".beam" / "document-path-case.json"
+            case_evidence.parent.mkdir(exist_ok=True)
+            if case_probe["case_insensitive"]:
+                alias_update = call("update", str(case_root / source.name), ok=False)
+                case_probe.update(returncode=alias_update.returncode, stdout=alias_update.stdout,
+                                  stderr=alias_update.stderr)
+                write_report(case_evidence, case_probe)
+                assert alias_update.returncode == 0, case_probe
+                assert json.loads(alias_update.stdout)["result"]["version"] == version, case_probe
+                alias_stats = json.loads(call("stats").stdout)["result"]
+                case_probe["open_document_count"] = alias_stats["session"]["openDocCount"]
+                write_report(case_evidence, case_probe)
+                assert case_probe["open_document_count"] == 1, case_probe
+            else:
+                write_report(case_evidence, case_probe)
             probe = json.loads(call("run-at", "Demo.lean", str(version), tactic_line, "2", "trivial").stdout)
             assert probe["ok"], probe
             # Close before applying a source edit, then update the broker to the new saved text.

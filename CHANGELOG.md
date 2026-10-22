@@ -8,6 +8,12 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Changed
 
+- Document reads and probes reject paths outside the selected workspace with `invalidParams`,
+  including parent traversal and escaping symlinks. Normal dependency imports and hover/definition
+  navigation from an in-workspace document remain available. Opening an external dependency as a
+  document for `run-at`, goals or diagnostics requires selecting a workspace containing that file;
+  restarting the same server does not change this boundary. Refresh validates and reads saved source
+  before reopening, preserving the tracked document on read failure and respecting newer accepted reads.
 - Close-save reserves its accepted document through checkpointing and closure. During preparation,
   competing document operations fail with `contentModified` / `documentClosing`; invalidated delayed
   requests use `documentAdmissionExpired`. Callers coordinate retries after the closing request

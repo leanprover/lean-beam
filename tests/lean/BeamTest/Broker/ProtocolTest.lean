@@ -2552,6 +2552,33 @@ private def checkDocumentAdmission : IO Unit := do
         payload := .updateFile { path := dependency.toString }
       }
       require "dependency sources physically within the root are admitted" response.ok
+      let gone := root / "Gone.lean"
+      IO.FS.writeFile gone source
+      require "deleted-source fixture opens its document" (← runtime.dispatchRequest {
+        workspaceId? := some "document-admission", payload := .syncFile { path := gone.toString }
+      }).ok
+      let before ← writes.get
+      -- This owned fixture simulates an editor deleting a tracked source file.
+      IO.FS.removeFile gone
+      let failedRefresh ← runtime.dispatchRequest {
+        workspaceId? := some "document-admission", payload := .refreshFile { path := gone.toString }
+      }
+      require "refresh reports a structured failure for missing source" failedRefresh.error?.isSome
+      require "failed refresh leaves the tracked document open" ((← writes.get) == before)
+      for _ in [:2] do
+        require "plain close remains available after source deletion" (← runtime.dispatchRequest {
+          workspaceId? := some "document-admission", payload := .close { path := gone.toString }
+        }).ok
+      require "repeated missing-source close sends exactly one didClose"
+        ((← writes.get).map Prod.fst == (before.map Prod.fst).push "textDocument/didClose")
+      runtime.state.atomically do
+        let some workspace := (← get).workspaces.get? "document-admission"
+          | throw <| IO.userError "deleted-source fixture workspace is missing"
+        let some session := workspace.lean.session?
+          | throw <| IO.userError "deleted-source fixture session is missing"
+        require "missing-source close removes the tracked document"
+          (!(session.docs.contains (sessionUri gone)))
+        require "missing-source cleanup releases every admission" workspace.documents.entries.isEmpty
     withDocumentAdmissionSession (base / "workspace-alias") fun runtime writes => do
       let response ← runtime.dispatchRequest {
         workspaceId? := some "document-admission", payload := .updateFile { path := "Main.lean" }
@@ -2611,7 +2638,7 @@ private def checkRefreshAdmittedIdentity (race : RefreshRace := .retargetAlias) 
   let releaseWriter := base / "release-writer"
   let newerRead := race != .retargetAlias
   let heldBarrier ← Std.Mutex.new
-    (race == .pendingSync, none : Bool × Option (PendingRequest × Json))
+    (race == .pendingSync, (none : Option (PendingRequest × Json)))
   let barrierEntered ← IO.Promise.new
   let releaseBarrier : IO Unit := do
     let held? ← heldBarrier.atomically do
