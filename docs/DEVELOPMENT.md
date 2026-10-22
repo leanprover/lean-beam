@@ -116,6 +116,27 @@ include those files when reporting installation size.
 - keep destructive cleanup scoped to owned temp or worktree paths
 - if Lean reports stale or rebuild trouble unexpectedly, stop and surface it explicitly
 
+## Transactional I/O
+
+Use `Beam.Transaction.run` to execute an operation with prepared rollback and commit-cleanup
+actions. It attempts every recovery action in reverse order and retains typed errors with their
+action indices. A failed operation retains both its original error and any rollback errors. A
+committed operation stays committed when cleanup fails; its cleanup errors are returned separately.
+There is no unconditional cleanup after rollback, because failed recovery may need its backups.
+
+The caller owns isolation, the cancellation boundary, and the beforeimages needed for recovery.
+Rollback must be valid even if the operation changed nothing or completed only part of its work.
+Acquisition can use the same helper with a separate rollback plan. The helper does not provide
+process-crash recovery or make multiple filesystem changes atomically visible.
+
+Worker artifact publication uses two such scopes under its publication lock. Backup preparation
+can remove only the attempt's backup paths on failure. Once every backup is prepared, publication
+can restore the complete original output set, including removing outputs recorded as originally
+absent. It needs no per-replacement progress journal. A failed restoration retains its backup;
+successful restoration also removes a backup left behind by a same-file rename.
+After publication commits, backup removal is best effort: a removal failure may leave backup
+files, but does not report the save as failed or prevent the broker from writing its Lake trace.
+
 ## Common Code Smells
 
 - do not stringify typed errors or responses and later parse the rendered exception text to recover
@@ -242,7 +263,6 @@ The executable path is split into importable modules:
 - [Beam/Mcp/Protocol.lean](../Beam/Mcp/Protocol.lean): current MCP JSON-RPC helpers
 - [Beam/Mcp/Options.lean](../Beam/Mcp/Options.lean): executable options and usage
 - [Beam/Mcp/Application.lean](../Beam/Mcp/Application.lean): installation-owned runtime admission
-- [Beam/Mcp/SelfCheck.lean](../Beam/Mcp/SelfCheck.lean): installed-wrapper self-check
 - [Beam/Mcp/Server.lean](../Beam/Mcp/Server.lean): descriptor resolution, lazy runtime dispatch, and
   the synchronous protocol-test seam
 - [Beam/Mcp/StdioServer.lean](../Beam/Mcp/StdioServer.lean): permanent stdin reader, concurrent
@@ -251,6 +271,10 @@ The executable path is split into importable modules:
 
 The [MCP transport contract](MCP_TRANSPORT_CONTRACT.md) defines execution, delivery, cancellation,
 and shutdown ownership. Lake text-buffer integration is a separate planned follow-up.
+
+Installed and relocated native executable checks use the external `McpClient` in
+`tests/test-mcp-stdio.py`, via `tests/lib/installed-mcp-smoke.py`. Keep client conversation and
+integration-test process supervision outside the server executable.
 
 Keep these stdio invariants explicit:
 
@@ -340,6 +364,20 @@ The terminal response carries the latest progress observation available when it 
 which may be newer than the last live progress event. Keep these invariants exhaustive in
 `Beam.Broker.StreamMessage` and encode their exact wire behavior in `StreamContractTest`; do not
 promote this stream to an installed client API.
+
+Each TCP connection has one receive owner. Keep all framed reads on the same
+`Beam.Broker.Transport.Connection`, which retains unread bytes between frames; concurrent reads or
+raw socket reads would bypass that ownership. After a timeout, interruption, or framing error,
+discard the connection. A later receive does not resume a partially consumed frame. A completed
+socket read takes precedence over a stop check; buffered bytes check interruption and deadlines
+before consumption.
+
+The transport uses 4096-byte lookahead to amortize socket reads and polling waits across small
+frames. This is an internal tuning choice, independent of the frame-length limit and wire format.
+Large payloads still request their full remaining body. The cursor releases exhausted storage;
+lookahead bounds do not include the active payload or change the underlying polling interval.
+`beam-transport-test` covers framing, refill boundaries and pending-read cancellation without CLI
+or POSIX process fixtures, and runs in Fast and native platform qualification, including Windows.
 
 Lean/Lake root validation remains shared with the CLI. MCP descriptors use
 `Beam.Lean.Workspace.resolveRoot`, which requires absolute paths; ordinary `lean-beam` CLI paths use
@@ -600,7 +638,10 @@ cancellation, generation probes, and shutdown, first verifies the selected gener
 daemon's bounded same-connection identity greeting and then presents the capability. The greeting
 prevents a stale descriptor whose port was reused from receiving request contents or fabricating a
 valid wrapper result; it is identity pinning, not a cryptographic proof against an actively hostile
-process that already knows the descriptor. The daemon watches the
+process that already knows the descriptor. Foreground ownership watches SIGINT and, on POSIX, SIGTERM and SIGHUP through the same shutdown path.
+The watchers remain active from acquisition through final cleanup, so repeated signals do not bypass
+that cleanup. Unexpected daemon crashes and incomplete cleanup retain their recovery fences.
+The daemon watches the
 pipe's read end;
 EOF closes admission, marks admitted requests for cancellation, shuts down backend sessions, and
 stops the listener. There is no heartbeat, lease, or time-based retirement fence.
@@ -843,6 +884,16 @@ the default caches, use `LAKE_CACHE_DIR= bash tests/test-beam-fast.sh` (or the r
 keep artifact caches local to each build workspace. The save/checkpoint regression
 suite uses separate fixture packages and disables their artifact caches so a Lake replay cannot
 masquerade as a Beam-written artifact.
+`tests/test-beam-checkpoint-hashes.py` instead gives each case a private `LAKE_CACHE_DIR`; that
+isolates its cache rather than disabling it. Its first unchanged-consumer build is an ordinary
+incremental build, with no intervening cache repair or forced rebuild.
+
+Lake may hard-link executables to its artifact cache. On macOS, dyld can identify that inode by its
+cache path, so a raw cached frontend may fail to find its sibling `lib/lean` libraries. Construction
+and native packaging copy executables into independent files before running them. The application
+startup regression uses that boundary; its cache-linked input simulates the hardlink layout rather
+than running Lake's cache save/restore cycle. See [the application test coverage](TESTING.md#beam-surface)
+for its discovery checks. Do not modify a cache-linked build output in place.
 
 CI restores the artifact cache for every Lean job. In combined macOS mode, `beam-fast` writes the
 Linux cache and `macos-platform` writes the macOS cache. With `BEAM_FULL_MACOS_CI=true`, the
@@ -913,15 +964,48 @@ companion paths: `.olean.server`, `.olean.private`, `.ir`, and `.ir.sig`. Worker
 directly. No pre-v4.33 API selection remains. The transport still uses `Std.Internal.UV.TCP`
 directly so interruption and timeout can cancel the exact pending receive.
 
+CLI request and owner signal scopes use `try`/`finally` around successfully started subscriptions.
+`withRequestInterruptWatcher` installs one-shot SIGINT; the private request runners return before
+completed-response rendering. `withOwnerInterruptWatcher` retains repeating SIGINT and POSIX
+SIGTERM/SIGHUP from before owner acquisition until after owner cleanup. Startup borrows the owner
+watcher rather than registering nested request handlers. The observation capability is valid during
+the enclosing callback; it does not enforce a linear lifetime. These CLI scopes own process-wide
+signal policy, not independently nestable library-local dispositions. On POSIX, libuv restores
+SIG_DFL when the last watcher stops, rather than restoring arbitrary previous dispositions.
+On Windows, stopping removes the watcher from libuv's console-handler dispatch tree.
+
 CLI interrupt watchers stop their signal handler with `Std.Internal.UV.Signal.stop`. The runtime
 already releases the pending promise in 4.33–4.35, although those releases' Lean API comments claim
 otherwise; see the [4.33.1 runtime implementation](https://github.com/leanprover/lean4/blob/v4.33.1/src/runtime/uv/signal.cpp).
-An extra `Signal.cancel` call is not needed to release that wait. The native watcher regression
-(`python3 tests/test-interrupt-watcher.py`, after `lake build beam-cli-daemon-test`) checks pending
-waiters on normal and exceptional exits. On POSIX it also checks actual SIGINT delivery, isolation
-of a later watcher, and restoration of the default SIGINT action after teardown. This cleanup does
+An extra `Signal.cancel` call is not needed to release that wait. A failed `Signal.next` has no
+subscription to stop: release the native object and propagate the start error. Calling `stop` after
+a failed start can double-release the loop reference on 4.33/4.34. The native watcher regression
+(`python3 tests/test-interrupt-watcher.py`, using the executable, plugin, and daemon-fixture
+builds listed in `tests/test-beam-fast.sh`) checks pending
+waiters on normal and exceptional exits. On POSIX it also checks INT/TERM/HUP delivery, retained stop
+observations after the first waiter completes, survival of repeated signals in a held owner scope,
+isolation of a later watcher, default actions after normal and exceptional teardown, and blocked
+stdout/stderr in the real CLI request/rendering paths. This cleanup does
 not require raising the minimum Lean version. The
 [support-window roadmap](STATUS.md#lean-support-window) records the remaining tradeoffs.
+
+The acquisition regression gates runtime resolution, latches the borrowed cancellation observation,
+then releases acquisition of a real fixture daemon. It joins the owned task before checking the
+nonzero exit, absent readiness, reaped daemon, and removed session descriptor. Signal delivery is
+tested separately, so this exit-status regression does not depend on signal scheduling.
+
+Lean 4.33–4.35 retain an upstream race between one-shot callback completion and `Signal.stop`.
+The ownership-ordering fixes in [Lean #14793](https://github.com/leanprover/lean4/pull/14793) and
+[Lean #15523](https://github.com/leanprover/lean4/pull/15523) are present in the default 4.36.0-rc1.
+Passing lifecycle tests does not establish race-free one-shot teardown on the older targets;
+backporting those fixes or changing the supported-version floor is separate support-window work.
+
+Cancellation polling returns the stop before interruption diagnostics are printed. Forced owner
+cleanup attempts child termination and exit collection before printing its diagnostic. A stderr
+capture failure restores the recovery fence before printing the source-failure diagnostic. Other
+cleanup work can remain after these messages, so blocked diagnostics can delay finalization.
+`finally` runs when an action returns or throws; it cannot interrupt a blocked synchronous write.
+Owner shutdown therefore remains cooperative, and repeated ordinary signals do not force exit.
 
 ## Installation admission and workspace ownership
 

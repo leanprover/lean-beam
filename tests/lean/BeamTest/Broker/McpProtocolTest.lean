@@ -6,7 +6,6 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Mcp.Server
 import Beam.Mcp.Options
-import Beam.Mcp.SelfCheck
 import Beam.Mcp.Stdio
 import BeamTest.Broker.McpDropFailureTest
 import BeamTest.Broker.McpOutputTest
@@ -325,19 +324,20 @@ private def requireSchemaRequiredFields
   require s!"{label} required fields" (required == toJson expected)
 
 private def checkToolDescriptionContracts (tools : Array Json) : IO Unit := do
-  let sourceFileInvariant :=
-    "Beam never applies source edits to `.lean` files on disk; the client applies source edits."
-  for operation in Beam.Lean.Operation.all do
-    let toolName := s!"lean_{operation.key}"
-    let description ← requireToolDescription tools toolName
-    require s!"{toolName} description should end with the source-file invariant"
-      (description.endsWith sourceFileInvariant)
+  -- Transport-wide rules live once in the server instructions, not in every tool description.
+  for rule in [Beam.Lean.sourceFileInvariant, "_meta.progressToken", "workspace descriptor"] do
+    require s!"MCP server instructions should state '{rule}'"
+      (Beam.Mcp.serverInstructions.contains rule)
+  for tool in tools do
+    let description ← IO.ofExcept <| tool.getObjValAs? String "description"
+    require "tool descriptions should not repeat transport-wide progress guidance"
+      (!description.contains "progressToken")
   for toolName in #["lean_run_at", "lean_run_at_handle", "lean_run_with", "lean_run_with_linear"] do
     let description ← requireToolDescription tools toolName
     require s!"{toolName} description should explain speculative file behavior"
       (description.contains "not persisted as source" &&
         description.contains "first edit and save the Lean file" &&
-        description.contains "only then call lean_sync")
+        description.contains "then call lean_sync")
     require s!"{toolName} description should state the speculative IO boundary"
       (description.contains "not an OS sandbox" && description.contains "may perform IO")
   let runAtHandleDescription ← requireToolDescription tools "lean_run_at_handle"
@@ -362,9 +362,6 @@ private def checkToolDescriptionContracts (tools : Array Json) : IO Unit := do
   let feedbackReportDescription ← requireToolDescription tools "beam_feedback_report"
   require "beam_feedback_report description should state the no-upload contract"
     (feedbackReportDescription.startsWith "Beam does not upload or submit feedback.")
-  require "beam_feedback_report description should advertise live-status tuning"
-    (feedbackReportDescription.contains "_meta.progressToken" &&
-      feedbackReportDescription.contains "one status log")
 
 private def checkToolsListShape : IO Unit := do
   let result := Beam.Mcp.toolsListResult
@@ -826,6 +823,7 @@ private def checkModernProtocol : IO Unit := do
   requireModernResultEnvelope "server/discover result" discover
   requireJsonInt "server/discover result" "ttlMs" (Int.ofNat Beam.Mcp.publicCacheTtlMs) discover
   requireJsonString "server/discover result" "cacheScope" "public" discover
+  requireJsonString "server/discover result" "instructions" Beam.Mcp.serverInstructions discover
   let supportedJson ← requireObjVal "server/discover result" "supportedVersions" discover
   let supported ← requireJsonArray "server/discover supportedVersions" supportedJson
   require "server/discover advertises exactly the modern per-request protocol revisions"
@@ -1047,6 +1045,7 @@ private def checkServerBasics : IO Unit := do
   let serverInfo ← requireObjVal "initialize result" "serverInfo" initResult
   requireJsonString "initialize serverInfo" "name" Beam.Mcp.serverName serverInfo
   requireJsonString "initialize serverInfo" "version" Beam.Mcp.serverVersion serverInfo
+  requireJsonString "initialize result" "instructions" Beam.Mcp.serverInstructions initResult
   let capabilities ← requireObjVal "initialize result" "capabilities" initResult
   discard <| requireObjVal "initialize capabilities" "logging" capabilities
   let toolsCapability ← requireObjVal "initialize capabilities" "tools" capabilities
@@ -1745,170 +1744,11 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     catch _ =>
       pure ()
 
-private inductive SelfCheckScenario where
-  | stderrFlood | stderrFailure | notifications | teardownStall | earlyExit
-  | stringIsError | nullProgress | invalidJsonrpc | invalidProgress | inProgress
-  deriving BEq
-
-private def SelfCheckScenario.cliName : SelfCheckScenario → String
-  | .stderrFlood => "stderr-flood"
-  | .stderrFailure => "stderr-failure"
-  | .notifications => "notifications"
-  | .teardownStall => "teardown-stall"
-  | .earlyExit => "early-exit"
-  | .stringIsError => "string-is-error"
-  | .nullProgress => "null-progress"
-  | .invalidJsonrpc => "invalid-jsonrpc"
-  | .invalidProgress => "invalid-progress"
-  | .inProgress => "in-progress"
-
-private def SelfCheckScenario.parse (raw : String) : IO SelfCheckScenario := do
-  let scenarios : List SelfCheckScenario := [
-    .stderrFlood, .stderrFailure, .notifications, .teardownStall, .earlyExit,
-    .stringIsError, .nullProgress, .invalidJsonrpc, .invalidProgress, .inProgress
-  ]
-  let some scenario := scenarios.find? (·.cliName == raw)
-    | throw <| IO.userError s!"unknown self-check fixture scenario '{raw}'"
-  pure scenario
-
-private def selfCheckChild (scenario : SelfCheckScenario) : IO Unit := do
-  if scenario == .earlyExit then
-    throw <| IO.userError "self-check early exit fixture"
-  let stdin ← IO.getStdin
-  let stdout ← IO.getStdout
-  let respond := fun json => do
-    stdout.putStrLn (Json.compress json)
-    stdout.flush
-  let notify := respond <| Json.mkObj [
-    ("jsonrpc", toJson "2.0"), ("method", toJson "notifications/message"),
-    ("params", Json.mkObj [("level", toJson "info"), ("data", toJson "self-check fixture")])
-  ]
-  discard <| stdin.getLine
-  notify
-  respond <| Json.mkObj [
-    ("jsonrpc", toJson "2.0"), ("id", toJson (1 : Nat)),
-    ("result", Json.mkObj [
-      ("resultType", toJson "complete"),
-      ("supportedVersions", toJson #[Beam.Mcp.protocolVersion])
-    ])
-  ]
-  discard <| stdin.getLine
-  if scenario == .notifications then
-    -- Notifications must not restart the budget. Keep producing until the checker stops us.
-    repeat
-      notify
-      IO.sleep 50
-  if scenario == .stderrFlood || scenario == .stderrFailure then
-    let stderr ← IO.getStderr
-    -- Exceed pipe capacity before sending the sync response to require concurrent draining.
-    let chunk := String.ofList (List.replicate 4096 'x')
-    for _ in [:64] do
-      stderr.putStr chunk
-    stderr.flush
-  let progress := if scenario == .nullProgress then Json.null else Json.mkObj [
-    ("updates", if scenario == .invalidProgress then toJson "zero" else toJson (0 : Nat)),
-    ("done", toJson (scenario != .inProgress))
-  ]
-  respond <| Json.mkObj [
-    ("jsonrpc", toJson (if scenario == .invalidJsonrpc then "1.0" else "2.0")),
-    ("id", toJson (2 : Nat)),
-    ("result", Json.mkObj [
-      ("resultType", toJson "complete"),
-      ("isError", if scenario == .stringIsError then toJson "true" else toJson false),
-      ("structuredContent", Json.mkObj [("document_progress", progress)])
-    ])
-  ]
-  discard <| stdin.readToEnd
-  if scenario == .teardownStall then
-    -- A finite delay can complete while the checker is descheduled. This fixture must stay
-    -- stalled until the checker terminates it; the protocol test has an external watchdog.
-    repeat
-      IO.sleep 1000
-  if scenario == .stderrFailure then
-    throw <| IO.userError "self-check shutdown failure fixture"
-
-private def withSelfCheckFixture
-    (scenario : SelfCheckScenario)
-    (check : IO.Process.Output → IO Unit) : IO Unit := do
-  let started ← IO.monoMsNow
-  let result ← IO.Process.output {
-    cmd := (← IO.appPath).toString
-    args := #["--self-check-parent", scenario.cliName]
-    env := #[("LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS", some "2000"),
-      ("BEAM_TEST_SELF_CHECK_SCENARIO", some scenario.cliName)]
-  }
-  let elapsed := (← IO.monoMsNow) - started
-  try
-    check result
-  catch err =>
-    throw <| IO.userError s!"{err}\nfixture: {scenario.cliName}\nexit: {result.exitCode}\nelapsed: {elapsed} ms\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-
-private def checkSelfCheckStderrDrain : IO Unit := do
-  withSelfCheckFixture .stderrFlood fun result => do
-    require "self-check accepts diagnostic stderr after completing the protocol"
-      (result.exitCode == 0 && result.stdout.contains "Lean Beam MCP self-check passed")
-    require "successful self-check does not replay child diagnostics" result.stderr.isEmpty
-    require "self-check drains stderr while awaiting protocol responses"
-      (!result.stderr.contains "timed out")
-
-private def checkSelfCheckNonzeroExitWithStderr : IO Unit := do
-  withSelfCheckFixture .stderrFailure fun result => do
-    require "self-check still rejects nonzero exit after valid protocol responses"
-      (result.exitCode != 0 && result.stderr.contains "self-check child exited with code")
-    require "failed self-check retains the final child diagnostic"
-      (result.stderr.contains "self-check shutdown failure fixture")
-    require "failed self-check bounds the diagnostic tail" (result.stderr.utf8ByteSize < 70 * 1024)
-    require "failed self-check does not report success"
-      (!result.stdout.contains "Lean Beam MCP self-check passed")
-
-private def checkSelfCheckTimeout (scenario : SelfCheckScenario) : IO Unit := do
-  withSelfCheckFixture scenario fun result => do
-    require s!"self-check budget covers {scenario.cliName}"
-      (result.exitCode != 0 && result.stderr.contains
-        "timed out after 2000 ms waiting for lean-beam-mcp self-check")
-    require "timed-out self-check does not report success"
-      (!result.stdout.contains "Lean Beam MCP self-check passed")
-
-private def checkSelfCheckEarlyExit : IO Unit := do
-  withSelfCheckFixture .earlyExit fun result => do
-    require "early child exit retains diagnostics and fails without success"
-      (result.exitCode != 0 && result.stderr.contains "self-check early exit fixture" &&
-        !result.stdout.contains "Lean Beam MCP self-check passed")
-
-private def checkSelfCheckResponseValidation : IO Unit := do
-  for (scenario, diagnostic) in [
-    (SelfCheckScenario.stringIsError, "invalid 'isError'"),
-    (.nullProgress, "document_progress"),
-    (.invalidJsonrpc, "expected jsonrpc 2.0"),
-    (.invalidProgress, "updates")
-  ] do
-    withSelfCheckFixture scenario fun result => do
-      require s!"self-check rejects malformed {scenario.cliName} response"
-        (result.exitCode != 0 && result.stderr.contains diagnostic &&
-          !result.stdout.contains "Lean Beam MCP self-check passed")
-  withSelfCheckFixture .inProgress fun result => do
-    require "self-check accepts valid sync progress without requiring elaboration completion"
-      (result.exitCode == 0 && result.stdout.contains "Lean Beam MCP self-check passed")
-
-private def checkSelfCheck : IO Unit := do
-  checkSelfCheckStderrDrain
-  checkSelfCheckNonzeroExitWithStderr
-  checkSelfCheckTimeout .notifications
-  checkSelfCheckTimeout .teardownStall
-  checkSelfCheckEarlyExit
-  checkSelfCheckResponseValidation
-
 def main (args : List String) : IO Unit := do
   match args with
   | ["--drop-failure-tests"] => return ← BeamTest.Broker.McpDropFailureTest.run
-  | ["--self-check-tests"] => return ← checkSelfCheck
   | ["--runtime-admission-tests"] => return ← checkRuntimeAdmissionPolicy
-  | ["--self-check-parent", _] => return ← Beam.Mcp.SelfCheck.run "lakefile.lean"
-  | [] =>
-      if let some scenario ← IO.getEnv "BEAM_TEST_SELF_CHECK_SCENARIO" then
-        return ← selfCheckChild (← SelfCheckScenario.parse scenario)
   | _ => pure ()
-  checkSelfCheck
   BeamTest.Broker.McpOutputTest.run
   BeamTest.Broker.McpRuntimeLifetimeTest.run
   checkJsonHelpers

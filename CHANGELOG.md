@@ -8,6 +8,12 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Changed
 
+- Shrink the installed `lean-beam` skill from about 32 KB to under 10 KB by stating each workflow
+  rule once. Installation, session internals, recovery, and feedback details move to the new
+  `references/setup-and-recovery.md` and `references/feedback.md`. MCP tool descriptions drop
+  per-tool progress and source-edit boilerplate (about 12k to under 4k characters); the server
+  instructions, now also returned by legacy `initialize`, state those rules once. Fast checks
+  enforce both budgets.
 - Save finalization now checks the exact accepted document before marking or closing it.
   A refused close-save reports `contentModified` with reason `savedDocumentChanged`, the
   committed checkpoint in `error.data.saved`, and `closed: false`; any replacement is left intact.
@@ -35,8 +41,19 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   An explicit root can be inspected after Lean project markers disappear; setup failures still
   produce a nonzero exit status.
 
+### Fixed
+
+- Parse tactic `runAt` text and handle continuations as a tactic sequence, as in the body of a
+  `by` block. Previously the text was one tactic with no indentation reference, so `simp⏎exact h`
+  and `simp; exact h` failed with `expected end of input`, and a line break could not end a
+  tactic's arguments: `intro a⏎omega` succeeded by introducing a hypothesis named `omega` without
+  running `omega`. A line at the first tactic's column now starts a new tactic; a more indented
+  line still continues the previous one.
+
 ### Removed
 
+- Remove `lean-beam-mcp --self-check`. Verify the configured MCP client with a normal `lean_sync`
+  call; installed and native stdio smoke tests run through the external test harness.
 - Move Rocq goal probes, agent skill, and `coq-lsp` setup to the independent `rocq-beam` project.
   Lean Beam no longer accepts Rocq broker requests, `serve rocq`, or `--rocq-skill`.
 - Remove the redundant backend selector from broker requests and continuation handles. CLI commands

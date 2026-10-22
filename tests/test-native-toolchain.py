@@ -36,15 +36,19 @@ def run(args, *, cwd=REPO, env=None, ok=True):
     return result
 
 
-def self_check(mcp, source, *, cwd, env):
-    command = [str(mcp), "--self-check", str(source)]
-    timeout = float(os.environ.get("BEAM_MCP_SELF_CHECK_WATCHDOG_SECONDS", "600"))
+def mcp_smoke(mcp, source, *, cwd, env, trace=False):
+    command = [sys.executable, str(REPO / "tests/lib/installed-mcp-smoke.py"),
+               str(mcp), str(cwd), str(source)]
+    if trace:
+        command.append("--server-trace")
+    timeout = float(os.environ.get("BEAM_MCP_SMOKE_WATCHDOG_SECONDS", "600"))
     try:
         result = watchdog.run_with_watchdog(command, timeout=timeout, cwd=cwd, env=env)
     except subprocess.TimeoutExpired as error:
         raise AssertionError(
             f"{command}: external watchdog expired\n{error.stdout}\n{error.stderr}") from error
     assert result.returncode == 0, result
+    assert json.loads(result.stdout)["ok"] is True, result
     return result
 
 
@@ -111,23 +115,23 @@ def qualify(args, lean_prefix, scratch):
         # configuration and CLI first, then prove the native builder uses its requested mode
         # without replacing that CLI or changing the ordinary configuration.
         run([lean_prefix / "bin" / f"lake{EXE}", "--reconfigure", "-KbeamToolchain=false",
-             "--no-cache", "build", "beam-cli", "beam-mcp-protocol-test",
+             "--no-cache", "build", "beam-cli",
              "beam-lake-helper-client-fixture", "beam-installation-lookup-test",
              "beam-installation-construction-test", "beam-installation-manifest-test",
-             "beam-system-contract-test", "beam-backend-process-test"], env=build_env)
-        # Execute the portable process-owner checks on every native platform, including Windows.
-        run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "30", "--",
-             REPO / ".lake/build/bin" / f"beam-backend-process-test{EXE}"], env=build_env)
+             "beam-system-contract-test", "beam-backend-process-test", "beam-transport-test",
+             "beam-save-publication-test"],
+            env=build_env)
+        # Execute portable process-owner and TCP framing checks on every native platform.
+        for executable in ["beam-backend-process-test", "beam-transport-test",
+                           "beam-save-publication-test"]:
+            run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "30", "--",
+                 REPO / ".lake/build/bin" / f"{executable}{EXE}"], env=build_env)
         run([sys.executable, "-X", "utf8", REPO / "tests/test-system-contracts.py"], env=build_env)
         run([sys.executable, "-X", "utf8", REPO / "tests/test-installation-manifest.py"], env=build_env)
         run([sys.executable, "-X", "utf8", REPO / "tests/test-installation-construction.py"], env=build_env)
         # Native platform jobs also qualify real Elan links, including Windows junctions,
         # and ordinary-directory impostors with the selected SDK's native filesystem helper.
         run([sys.executable, "-X", "utf8", REPO / "tests/test-installation-lookup.py"], env=build_env)
-        # Exercise the same typed self-check fixtures with the native SDK's header/DLL environment.
-        run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "90", "--",
-             REPO / ".lake/build/bin" / f"beam-mcp-protocol-test{EXE}", "--self-check-tests"],
-            env=build_env)
         runtime_files = json.loads(run([lean_prefix / "bin" / f"lake{EXE}", "script", "run",
                                        "beamSharedRuntimeFiles"], env=build_env).stdout)
         runtime_paths = [REPO / ".lake/build" / path for path in runtime_files]
@@ -380,10 +384,9 @@ def qualify(args, lean_prefix, scratch):
                     owner.terminate()
                     owner.wait(timeout=10)
 
-    self_check(mcp, source, cwd=project, env=env)
-    traced_env = dict(env, LEAN_BEAM_BROKER_TRACE="1", LEAN_BEAM_MCP_TRACE="1")
-    traced = self_check(mcp, source, cwd=project, env=traced_env)
-    assert "Lean Beam MCP self-check passed" in traced.stdout, traced
+    # Exercise the relocated executable over real stdio in both supported protocol families.
+    mcp_smoke(mcp, source, cwd=project, env=env)
+    mcp_smoke(mcp, source, cwd=project, env=env, trace=True)
     build_info = json.loads(run([beam, "toolchain-build-info"], cwd=scratch, env=env).stdout)
     assert build_info["compiledLeanRevision"] == metadata["components"]["frontends"]["compilerRevision"] == build_info["loadedLeanRevision"], build_info
     assert build_info["sourceRevision"] == metadata["sourceCommit"], build_info

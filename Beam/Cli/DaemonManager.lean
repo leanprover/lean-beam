@@ -1060,7 +1060,6 @@ private def forceOwnedDaemonChild
     {cfg : IO.Process.StdioConfig}
     (child : IO.Process.Child cfg)
     (exitCodeRef : IO.Ref (Option UInt32)) : IO OwnedDaemonProcessOutcome := do
-  attemptCleanup <| IO.eprintln "beam: forcing daemon termination during owner cleanup"
   let killSent ←
     try
       Beam.ProcessJob.Internal.requestTermination child
@@ -1068,6 +1067,8 @@ private def forceOwnedDaemonChild
     catch _ =>
       pure false
   attemptCleanup <| waitForOwnedDaemonExit child exitCodeRef 20
+  -- A blocked diagnostic consumer must not prevent termination or exit collection.
+  attemptCleanup <| IO.eprintln "beam: forcing daemon termination during owner cleanup"
   match ← exitCodeRef.get with
   | some exitCode =>
       if killSent then pure .forcedReaped else pure <| classifyOwnedDaemonExit exitCode
@@ -1155,8 +1156,8 @@ private def finishOwnedProjectDaemon
     let finish ← finishOwnedDaemonChild owned exitCodeRef
     match finish.stderr with
     | .sourceFailed err =>
-        IO.eprintln s!"Beam daemon stderr source failed during cleanup: {err}"
         restoreOwnedRegistryRecoveryFence root controlDir owned.entry
+        IO.eprintln s!"Beam daemon stderr source failed during cleanup: {err}"
     | .pipeStillOpen =>
         let tail := (← owned.started.stderrCapture.snapshot).trimAscii.toString
         unless tail.isEmpty do

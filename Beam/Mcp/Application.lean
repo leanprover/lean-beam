@@ -6,7 +6,6 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Mcp.Options
 import Beam.Mcp.StdioServer
-import Beam.Mcp.SelfCheck
 import Beam.Installation.Lookup
 
 namespace Beam.Mcp.Application
@@ -45,8 +44,6 @@ def main (args : List String) : IO Unit := do
   if opts.showVersion then
     IO.println (← readIdentity installation).text
     return
-  match opts.selfCheckPath? with
-  | some path => SelfCheck.run path
-  | none => Server.runStdio (serverOptions installation)
+  Server.runStdio (serverOptions installation)
 
 end Beam.Mcp.Application

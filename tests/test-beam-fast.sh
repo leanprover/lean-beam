@@ -21,6 +21,7 @@ bash scripts/check-daemon-safety.sh
 bash scripts/check-task-priority.sh
 python3 tests/test-runtime-boundary.py
 bash scripts/check-markdown-links.sh
+python3 tests/test-skill-budget.py
 python3 scripts/ci-toolchains.py > /dev/null
 python3 tests/test-toolchain-ci-matrix.py
 python3 tests/test-toolchain-registry.py
@@ -65,10 +66,12 @@ run_quiet_lake_build \
   beam-lake-helper-client-fixture \
   lean-beam-mcp \
   beam-system-contract-test \
+  beam-save-publication-test \
   BeamTest.SystemTimeTest \
   BeamTest.Broker.StreamDedupTest \
   BeamTest.Broker.RequestHandleTest \
   beam-backend-process-test \
+  beam-transport-test \
   beam-broker-protocol-test \
   beam-broker-pending-test \
   beam-broker-document-state-test \
@@ -123,7 +126,11 @@ PY
 
 run_quiet_test "partial-setup doctor" python3 tests/test-beam-doctor.py
 run_quiet_test system-contracts python3 tests/test-system-contracts.py
+run_quiet_test save-publication python3 tests/lib/process_watchdog.py \
+  --timeout 30 -- .lake/build/bin/beam-save-publication-test
 run_quiet_test backend-process .lake/build/bin/beam-backend-process-test
+run_quiet_test broker-transport python3 tests/lib/process_watchdog.py \
+  --timeout 30 -- .lake/build/bin/beam-transport-test
 run_quiet_test broker-protocol .lake/build/bin/beam-broker-protocol-test
 run_quiet_test broker-pending .lake/build/bin/beam-broker-pending-test
 run_quiet_test broker-document-state .lake/build/bin/beam-broker-document-state-test
@@ -288,33 +295,8 @@ assert_output_contains "installed MCP --version" "$mcp_wrapper_version" "source 
 
 mcp_http_timeout="${BEAM_MCP_HTTP_TIMEOUT:-60}"
 python3 tests/test-mcp-http-bridge.py --timeout "$mcp_http_timeout" > /dev/null
-mcp_self_check_timeout="${BEAM_MCP_SELF_CHECK_TIMEOUT_MS:-120000}"
-mcp_self_check_watchdog="${BEAM_MCP_SELF_CHECK_WATCHDOG_SECONDS:-600}"
-mcp_self_check_watchdog_script="$PWD/tests/lib/process_watchdog.py"
-(cd "$BEAM_TEST_PROJECT" && \
-  LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS="$mcp_self_check_timeout" \
-    python3 "$mcp_self_check_watchdog_script" --timeout "$mcp_self_check_watchdog" -- \
-      "$beam_test_mcp" --self-check PositionEmptyLine.lean > /dev/null)
-
-# Owned self-check timeout/teardown fixtures run in beam-mcp-protocol-test. Component
-# provider stalls are obsolete: shipped MCP has no external CLI discovery path.
-
-self_check_missing_file_err="$(mktemp /tmp/lean-beam-mcp-self-check-missing-file-XXXXXX)"
-if (cd "$BEAM_TEST_PROJECT" && \
-    python3 "$mcp_self_check_watchdog_script" --timeout "$mcp_self_check_watchdog" -- \
-      "$beam_test_mcp" --self-check DoesNotExist.lean \
-      > /dev/null 2>"$self_check_missing_file_err"); then
-  echo "expected MCP self-check to reject a missing Lean file" >&2
-  rm -f "$self_check_missing_file_err"
-  exit 1
-fi
-if ! grep -Eiq 'No such file|failed to canonicalize|does not exist' "$self_check_missing_file_err"; then
-  echo "expected missing-file MCP self-check failure to explain the path error" >&2
-  cat "$self_check_missing_file_err" >&2
-  rm -f "$self_check_missing_file_err"
-  exit 1
-fi
-rm -f "$self_check_missing_file_err"
+python3 tests/lib/process_watchdog.py --timeout "${BEAM_MCP_SMOKE_WATCHDOG_SECONDS:-600}" -- \
+  python3 tests/lib/installed-mcp-smoke.py "$beam_test_mcp" "$BEAM_TEST_PROJECT" > /dev/null
 
 mcp_removed_root_err="$(mktemp /tmp/lean-beam-mcp-removed-root-XXXXXX)"
 if "$beam_test_mcp" --root "$BEAM_TEST_PROJECT" \

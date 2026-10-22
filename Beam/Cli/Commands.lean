@@ -184,37 +184,44 @@ private def recoverProjectSession (runtime : RuntimeAccess) (opts : CliOptions) 
       }
   printResponse <| Response.success <| toJson result
 
-private def runThenHoldUntilInterrupted
+/-- Initialize an acquired foreground owner, then hold it until shutdown.
+The caller owns the enclosing signal/owner scopes; initialization must reject pre-readiness stops. -/
+def runThenHoldUntilInterrupted
+    (watcher : InterruptWatcher)
     (owner : ProjectDaemonOwner)
-    (act : IO Unit) : IO Unit :=
-  withInterruptWatcher fun watcher => do
-    act
-    while !(← watcher.interrupted) && (← owner.exitCode?).isNone &&
-        (← owner.registered) && !(← IO.checkCanceled) do
-      IO.sleep 50
-    if ← watcher.interrupted then
-      watcher.awaitInterrupt
-    else if let some exitCode ← owner.exitCode? then
-      unless exitCode == 0 do
-        let tail := (← owner.stderrTail).trimAscii.toString
-        let detail := if tail.isEmpty then "" else s!"\ndaemon stderr tail:\n{tail}"
-        throw <| IO.userError s!"owned Beam daemon exited with status {exitCode}{detail}"
+    (act : IO Unit) : IO Unit := do
+  -- Initialization owns the pre-readiness cancellation check, including a stop latched
+  -- during acquisition. Skipping it would report success without publishing readiness.
+  act
+  while !(← watcher.interrupted) && (← owner.exitCode?).isNone &&
+      (← owner.registered) && !(← IO.checkCanceled) do
+    IO.sleep 50
+  if ← watcher.interrupted then
+    watcher.awaitInterrupt
+  else if let some exitCode ← owner.exitCode? then
+    unless exitCode == 0 do
+      let tail := (← owner.stderrTail).trimAscii.toString
+      let detail := if tail.isEmpty then "" else s!"\ndaemon stderr tail:\n{tail}"
+      throw <| IO.userError s!"owned Beam daemon exited with status {exitCode}{detail}"
 
 private def serveProject
     (runtime : RuntimeAccess)
     (opts : CliOptions) : IO Unit := do
   let root ← projectRoot opts
-  withProjectDaemonOwner runtime.resolve root
+  withOwnerInterruptWatcher fun watcher =>
+    withProjectDaemonOwner runtime.resolve root
       (explicitControlDir? := opts.explicitControlDir?) fun owner =>
-    runThenHoldUntilInterrupted owner do
-      IO.eprintln "beam: loading Lake workspace configuration..."
-      callBrokerQuiet root owner.client <| Request.ensure
-      printResponse <| Response.success <| toJson <|
-        mkSessionStatus .running root owner.client.controlDir (some owner.generation)
-      (← IO.getStdout).flush
-      IO.eprintln <|
-        "beam: serving Beam session; interrupt this process or run when finished:\n" ++
-        wrapperSessionCommand root owner.client.controlDir .stop
+      runThenHoldUntilInterrupted watcher owner do
+        IO.eprintln "beam: loading Lake workspace configuration..."
+        callBrokerQuiet watcher root owner.client <| Request.ensure
+        if (← watcher.interrupted) || (← IO.checkCanceled) then
+          throw <| IO.userError "Beam startup interrupted before readiness"
+        printResponse <| Response.success <| toJson <|
+          mkSessionStatus .running root owner.client.controlDir (some owner.generation)
+        (← IO.getStdout).flush
+        IO.eprintln <|
+          "beam: serving Beam session; interrupt this process or run when finished:\n" ++
+          wrapperSessionCommand root owner.client.controlDir .stop
 
 private def sessionStatus (opts : CliOptions) : IO Unit := do
   let root ← inspectionRoot opts

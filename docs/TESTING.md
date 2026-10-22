@@ -89,6 +89,7 @@ Current LSP coverage includes:
 - shuffled concurrent workload coverage in [tests/lean/BeamTest/LSP/Scenario/StressTest.lean](../tests/lean/BeamTest/LSP/Scenario/StressTest.lean)
 - handle API, restart, lifecycle, and nested-failure coverage in [tests/lean/BeamTest/LSP/Handle](../tests/lean/BeamTest/LSP/Handle)
 - full registered LSP request coverage through request-family tests under [tests/lean/BeamTest/LSP/Requests](../tests/lean/BeamTest/LSP/Requests), aggregated by [tests/lean/BeamTest/LSP/RequestSurfaceTest.lean](../tests/lean/BeamTest/LSP/RequestSurfaceTest.lean), including `$/lean/todo` and `$/lean/runAt` composition
+- tactic-sequence parsing in [RunAt/BasicTest.lean](../tests/lean/BeamTest/LSP/Requests/RunAt/BasicTest.lean): newline- and `;`-separated tactics, comments and nested bullets, more-indented argument continuation, a line break that must end `intro`'s binders instead of naming one after the next tactic, the same text through a `runWith` continuation, rollback of a continuation whose second tactic fails (no successor handle; a non-linear parent stays reusable, a linear parent is consumed), and a clear error for comment-only text
 - auxiliary-declaration conformance in [AuxiliaryDeclarationTest.lean](../tests/lean/BeamTest/LSP/Requests/RunAt/AuxiliaryDeclarationTest.lean), comparing `runAt` with identical tactic replacements through ordinary LSP document edits, including private and nested proofs, stored-handle branches, and failure isolation
 - proof-context combinations in the same fixture: universe-polymorphic kernel `decide` and `grind`, rollback within `first`, local instances and dependent induction across handle branches, native computation, `conv` under binders, and bitvector solver success and counterexamples
 - available-goal execution in [AvailabilityTest.lean](../tests/lean/BeamTest/LSP/Requests/RunAt/AvailabilityTest.lean): a later tactic signals entry and waits on a gate; goal inspection and `runAt` must finish before that gate is released, with both synchronous and asynchronous elaboration
@@ -141,7 +142,7 @@ after tactic evaluation is covered by the same failure and restoration boundary.
 Default Beam entrypoints:
 
 - [tests/test-beam-fast.sh](../tests/test-beam-fast.sh): fast broker stream, barrier, request-contract,
-  MCP projection, HTTP bridge, self-check, and toolchain registry/matrix coverage
+  MCP projection, HTTP bridge, installed stdio smoke, and toolchain registry/matrix coverage
 - [tests/test-beam-slow.sh](../tests/test-beam-slow.sh): wrapper, MCP stdio stress and
   multi-toolchain workspace coverage, sandbox-wrapper, and save-replay coverage
 - [tests/test-beam-install.sh](../tests/test-beam-install.sh): installer and installed-runtime layout
@@ -168,6 +169,7 @@ Additional Beam lanes:
 Current Beam coverage includes:
 
 - fast Beam daemon smoke, broker stream ordering, save-stream, wrapper-readiness codec checks,
+  buffered TCP framing and receive cancellation,
   backend-startup failure with provisional backend cleanup, tracked-diagnostic dedup,
   exact broker request-handle lifetime, identity-matched daemon-generation probes, terminal shutdown
   response delivery, shutdown after the requesting TCP client resets its connection, protocol tests,
@@ -209,7 +211,7 @@ Current Beam coverage includes:
   `doctor`, installed-state pruning, and installed MCP wrapper coverage
   in [tests/test-beam-install.sh](../tests/test-beam-install.sh), with focused prune safety and
   invalid-runtime identity cases in [tests/test-beam-prune.sh](../tests/test-beam-prune.sh)
-- MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, self-check, released
+- MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, installed smoke, released
   official-client interoperability, and external legacy/modern conformance coverage
 
 Run the Beam surface when the change touches broker protocol or transport, request/progress/diagnostics streams, daemon session or restart logic, wrapper CLI behavior, installation lookup or construction, install layout, `doctor`, save replay, save barriers, and MCP.
@@ -326,6 +328,23 @@ Deferred compilation is required on all supported releases; both the wrapper and
 without a feature-availability skip. The wrapper test checks both Lake options and declaration-scoped
 `compiler.postponeCompile`: sync must report the unsupported readiness reason, both save commands
 must reject the checkpoint, and every prior artifact and the Lake trace must remain unchanged.
+
+The slow suite runs [tests/test-beam-checkpoint-hashes.py](../tests/test-beam-checkpoint-hashes.py)
+against its constructed installation. It covers `save`, `close-save`, both commands with module
+companions, and both commands with an output-hash removal error. After weakening a provider's
+theorem, the first ordinary incremental consumer build must reject the unchanged consumer; no
+clean, forced build, or hash repair precedes that verdict. The fixture checks invalidation of
+written output hashes, preservation of unrelated hashes, and removal of backup/staging paths
+before owner shutdown. Hash-removal errors must preserve canonical bytes and leave no final trace.
+For a focused run, supply `--installation PATH --toolchain TOOLCHAIN`, optionally `--case CASE`;
+`--keep NEW-DIRECTORY` retains the evidence and requires a directory that does not yet exist.
+
+`lake exe beam-save-publication-test` separately exercises real filesystem publication with
+injected partial backup, partial replacement, first-replacement, and restoration failures, plus
+successful publication and a real hash-directory obstruction. It checks restored bytes, continued
+rollback, and retention of a failed-restoration backup. Fast, LSP, and native-toolchain suites run
+it; `--keep NEW-DIRECTORY` retains its filesystem evidence. Its transaction-helper checks also
+cover typed failures and commit-cleanup errors.
 
 Use [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) to validate one
 supported bundle lane at a time. The module-save case requires and removes the batch-produced IR
@@ -497,28 +516,31 @@ Set `--server-trace` to add MCP/broker trace lines to the timeout dump, and set
 runs the stdio stress harness with `BEAM_MCP_STDIO_TIMEOUT` defaulting to 60 seconds, enables
 `BEAM_MCP_SERVER_TRACE=1` for the stdio harness by default, and sets the diagnostics-barrier watchdog
 to `BEAM_MCP_STDIO_WAIT_DIAGNOSTICS_WATCHDOG_MS=10000`. Set `BEAM_MCP_STDIO_SERVER_TRACE=0` only
-when intentionally checking the quiet stderr path. The fast suite's installed-wrapper self-check uses
-`BEAM_MCP_SELF_CHECK_TIMEOUT_MS`, defaulting to 120 seconds. The suite stages its complete installation
-before starting the self-check budget; normal MCP execution does not construct missing runtimes.
-Workspace initialization and Lean processing during sync still run within that budget. Keep
-`--timeout 30` for local repro attempts unless you are specifically checking the CI budget.
-Focused wrapper tests, including `tests/test-beam-wrapper-daemon.sh`, consume a preconstructed
-`BEAM_TEST_INSTALLATION`; see [the Beam test setup](#beam-surface).
+when intentionally checking the quiet stderr path. Keep `--timeout 30` for local repro attempts
+unless you are specifically checking the CI budget. Focused wrapper tests, including
+`tests/test-beam-wrapper-daemon.sh`, consume a preconstructed `BEAM_TEST_INSTALLATION`; see
+[the Beam test setup](#beam-surface).
 
-MCP self-check is an installation smoke test with one best-effort timeout covering discovery,
-sync, and shutdown, including stderr draining. Success verifies discovery of the supported protocol
-and a correctly shaped `lean_sync` result. It does not require completed elaboration (`done: true`),
-a file without Lean diagnostics, or readiness to save artifacts; those have separate sync/save tests.
-Protocol fixtures reject malformed response envelopes and progress fields, check that notifications
-cannot restart the budget, and cover EOF shutdown stalls and early child exits. The existing
-`Beam.StderrCapture` drains diagnostics concurrently and retains at most the final 64 KiB for failure
-reporting; successful probes do not replay diagnostic stderr.
-Process creation and failure cleanup are outside the budget; blocked I/O can still delay process
-exit. The fast suite and
-installed-wrapper suite supervise it using `tests/lib/process_watchdog.py`, with
-`BEAM_MCP_SELF_CHECK_WATCHDOG_SECONDS` defaulting to 600 seconds. The MCP protocol test executable,
-which includes self-check child fixtures, has a separate 240-second external watchdog configurable
-with `BEAM_MCP_PROTOCOL_TEST_WATCHDOG_SECONDS`.
+The fast, installer, and native toolchain suites run `tests/lib/installed-mcp-smoke.py` against
+their installed wrapper or relocated native executable. It reuses the external `McpClient` from
+`tests/test-mcp-stdio.py`, starts separate servers for MCP `2026-07-28` and `2025-11-25`, and checks
+discovery or initialization, an explicitly workspace-bound `lean_sync`, the missing-file error
+path, and zero exit after stdin EOF. Valid sync progress need not have `done: true`; diagnostics
+and artifact readiness have separate sync/save coverage. Quiet runs require empty stderr; the
+native driver also repeats the check with server tracing enabled.
+
+`python3 tests/test-installed-mcp-smoke.py` exercises that client over real fixture pipes. Cases
+cover interleaved notifications, coalesced and fragmented responses, partial frames, malformed
+response/progress fields, notification floods, stderr draining, early/nonzero exits, and stalled
+EOF shutdown. A notification does not reset a request's deadline. These fixtures test the external
+harness rather than embedding a second client or process supervisor in the MCP server.
+
+`BEAM_MCP_SMOKE_TIMEOUT` sets each smoke request's response timeout (60 seconds by default), and
+`BEAM_MCP_SMOKE_SHUTDOWN_TIMEOUT` sets the EOF wait (30 seconds by default). The suites run the
+smoke client under `tests/lib/process_watchdog.py`, with `BEAM_MCP_SMOKE_WATCHDOG_SECONDS`
+defaulting to 600 seconds. This external watchdog covers stalls beyond those individual waits,
+including blocked I/O. The MCP protocol test executable has a separate 240-second external
+watchdog configurable with `BEAM_MCP_PROTOCOL_TEST_WATCHDOG_SECONDS`.
 
 The watchdog captures stdout/stderr in files and reads at most the final 1 MiB of each, so inherited
 writers cannot keep output collection waiting for EOF. This bounds the returned strings, not disk
@@ -528,14 +550,32 @@ cleanup, targeting only its owned POSIX process group or its Windows process tre
 Process creation is outside the wait deadline; cleanup has separate five-second bounds for the
 Windows tree-termination command and direct-child reaping. `python3 tests/test-process-watchdog.py`
 checks successful logging, nonzero exit, bounded returned output, and timeout with inherited output,
-a partial response, and actual descendant termination. Windows execution still needs qualification
-on a Windows runner.
+a partial response, and actual descendant termination. The `native-toolchain (windows-latest)`
+CI job runs this qualification before building the native distribution.
 
 `python3 tests/test-runtime-boundary.py` checks the transitive imports of shared identity,
 configuration, session, and MCP execution modules. It rejects dependencies on installation layout,
 SDK discovery, managed bundle resolution, or application startup. The fast suite runs this guard.
-`python3 tests/test-mcp-application.py` starts the MCP executable with a missing `BEAM_HOME` and
-unused runtime overrides, verifying that protocol discovery does not require runtime resolution.
+`python3 tests/test-installation-construction.py` passes an owned cache-linked input through
+`Construction.stageOutput`. It checks that the staged file has an independent inode and matching
+bytes, and that changing it leaves the build output and cache alias intact. The installation staging
+fixture also uses this production helper to copy its already-built outputs.
+Its environment-policy check resolves the SDK once through the compiler named by `LEAN`, or
+`lean` on `PATH` when `LEAN` is absent. Bare compiler names are resolved against the supplied
+`PATH` before execution on both Windows and POSIX. Regression cases cover ordinary `PATH`
+selection, failure for an unusable compiler on `PATH`, explicit selection despite that unusable
+compiler, and failure without fallback when the explicit compiler is missing.
+For a focused run, use `lake build beam-installation-construction-test`, then
+`python3 tests/test-installation-construction.py`.
+`python3 tests/test-skill-budget.py` keeps `skills/lean-beam/SKILL.md` under 10,000 bytes, and
+`McpProjectionTest` keeps the combined MCP tool descriptions under 4,500 characters; both run in
+the fast suite.
+`python3 tests/test-mcp-application.py` runs discovery from independent frontend payloads copied
+from fresh and simulated cache-linked inputs. It retains the frontend's shared libraries but removes
+the installation manifest and target runtimes, and points `BEAM_HOME` at a missing directory.
+Discovery must succeed without recreating those paths. The simulated case models the hardlink
+layout, not Lake's actual cache save/restore cycle. The test also checks rejection of the removed
+`--lean-cmd`, `--lean-plugin`, and `--beam-cli` flags.
 The CLI daemon test also exercises pure SDK admission: selector aliases, exact installation identity,
 compiler/provenance mismatches, and payload changes. The native installation regression checks that
 an existing owner remains stoppable with malformed provenance.
@@ -595,7 +635,7 @@ still fails the job. The job has a 120-minute timeout.
 
 Each layout runs shell lint once per operating system, separately from the slow suite. The slow
 suite owns the full MCP stdio harness, including four iterations and three restart cycles; the fast
-suite retains protocol, projection, HTTP bridge, and self-check coverage. `test-lsp.sh` builds its own prerequisites, so the
+suite retains protocol, projection, HTTP bridge, and installed stdio smoke coverage. `test-lsp.sh` builds its own prerequisites, so the
 workflow does not run a separate build before it. The local aggregate and default defensive
 validation commands also run shell lint once before their product suites.
 
@@ -631,12 +671,16 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
 - `toolchains`: registry validation and compatibility-matrix generation as described above
 - `macos-platform`: the combined macOS job described above
 - `native-toolchain`: [tests/test-native-toolchain.py](../tests/test-native-toolchain.py), including
-  execution of the portable `beam-backend-process-test` on every native platform, including Windows
+  execution of the portable `beam-backend-process-test` and `beam-transport-test` on every native
+  platform, including Windows
 - `lsp`: [tests/test-lsp.sh](../tests/test-lsp.sh)
 - `beam-fast`: [tests/test-beam-fast.sh](../tests/test-beam-fast.sh)
   also executes `beam-backend-process-test`. Run it alone with
   `lake build beam-backend-process-test` followed by `.lake/build/bin/beam-backend-process-test`
   (`.exe` on Windows). Its controlled process operations require no POSIX commands or real PIDs.
+  The framing, refill and TCP cancellation tests run with
+  `lake build beam-transport-test` followed by `.lake/build/bin/beam-transport-test`
+  (`.exe` on Windows); both Fast and native qualification execute them under a 30-second watchdog.
 - `mcp-conformance`: [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh)
 - `mcp-modern`: [tests/test-mcp-modern-sdk.sh](../tests/test-mcp-modern-sdk.sh) followed by
   [tests/test-mcp-modern-conformance.sh](../tests/test-mcp-modern-conformance.sh)

@@ -62,6 +62,50 @@ def checkRunAtTacticPositions : ScenarioM Unit := do
     throw <| IO.userError s!"expected replacement type mismatch, got {(toJson diagnostics).compress}"
   closeDoc doc
 
+def checkRunAtTacticSequences : ScenarioM Unit := do
+  let doc ← openDoc "tests/scenario/docs/TacticPositionProof.lean"
+  syncDoc doc
+  let simpStart : Lean.Lsp.Position := { line := 1, character := 2 }
+
+  requireRunAtSolvesProof "newline-separated tactics" doc simpStart "simp\nexact h"
+  requireRunAtSolvesProof "semicolon-separated tactics" doc simpStart "simp; exact h"
+  requireRunAtSolvesProof "uniformly indented tactics" doc simpStart "  simp\n  exact h"
+  requireRunAtSolvesProof "comments, blank lines, and nested bullets" doc simpStart
+    "-- note\nhave h2 : 1 = 1 ∧ 2 = 2 := by\n  constructor\n  · rfl\n  · rfl\n\nsimp\nexact h"
+  requireRunAtFailureMessage "comment-only text" doc simpStart "-- note" "expected tactic"
+  -- A more indented line still continues the previous tactic's arguments, as in a `by` block.
+  requireRunAtSolvesProof "indented argument continuation" doc simpStart
+    "revert a b\n  h\nintro a b\nsimp"
+  -- Parsed as one tactic, `intro a⏎omega` would introduce `b` under the name `omega` and succeed
+  -- without running `omega`, leaving the goal open.
+  requireRunAtSolvesProof "line break ends tactic arguments" doc { line := 4, character := 2 }
+    "intro a\nomega"
+  -- Handle continuations parse their text the same way.
+  let minted ← requireRunAtResponseSuccess "mint sequence handle" <|
+    ← sendRunAt doc { line := 4, character := 2, text := "skip", storeHandle := true }
+  let some handle := minted.handle?
+    | throw <| IO.userError s!"expected a handle, got {(toJson minted).compress}"
+  let targets (result : Beam.LSP.RunAt.Result) := result.proofState?.map (·.goals.map (·.target))
+  -- A failure after an advancing tactic rolls back the whole sequence and mints no successor.
+  let requireRolledBack (label : String) (result : Beam.LSP.RunAt.Result) : ScenarioM Unit := do
+    unless !result.success && result.handle?.isNone && targets result == targets minted do
+      throw <| IO.userError
+        s!"{label}: expected rollback to the parent state, got {(toJson result).compress}"
+  for linear in [false, true] do
+    let failed : Beam.LSP.RunAt.Result ← awaitResponseAs
+      (← runWithHandle doc handle { text := "intro a\nexact rfl", storeHandle := true, linear })
+    requireRolledBack s!"failed sequence continuation (linear := {linear})" failed
+    let reuseReq ← runWithHandle doc handle { text := "intro a\nomega" }
+    if linear then
+      -- A linear continuation consumes its parent even when it fails.
+      expectErrorContains reuseReq invalidParamsJson
+    else
+      let continued : Beam.LSP.RunAt.Result ← awaitResponseAs reuseReq
+      unless continued.success && targets continued == some #[] do
+        throw <| IO.userError
+          s!"runWith tactic sequence should solve the goal, got {(toJson continued).compress}"
+  closeDoc doc
+
 def checkRunAtOneCommandOnly : ScenarioM Unit := do
   let doc ← openDoc "tests/lean/BeamTest/Fixtures/Deps/DepA.lean"
   syncDoc doc
@@ -191,6 +235,7 @@ def checkRunAtWithStandardLspInterference : ScenarioM Unit := do
 
 def run : ScenarioM Unit := do
   checkRunAtTacticPositions
+  checkRunAtTacticSequences
   checkRunAtOneCommandOnly
   checkRunAtTheoremSuccessOmitsSilentMessages
   checkRunAtTheoremProofFailure

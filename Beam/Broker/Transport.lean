@@ -26,8 +26,22 @@ inductive Endpoint where
   | tcp (port : UInt16)
   deriving Repr, BEq
 
+/-- Internal framing state. Only the consumed prefix advances; an exhausted buffer releases its bytes. -/
+structure Framing.Buffer where
+  private mk ::
+  private bytes : ByteArray
+  private offset : Nat
+  deriving BEq
+
+def Framing.Buffer.ofBytes (bytes : ByteArray) : Framing.Buffer :=
+  ⟨bytes, 0⟩
+
+/-- Copy the unread bytes, for inspecting framing ownership in deterministic tests. -/
+def Framing.Buffer.unreadBytes (buffer : Framing.Buffer) : ByteArray :=
+  buffer.bytes.extract buffer.offset buffer.bytes.size
+
 inductive Connection where
-  | tcp (client : TCP.Socket)
+  | tcp (client : TCP.Socket) (pending : IO.Ref Framing.Buffer)
 
 inductive Listener where
   | tcp (server : TCP.Socket)
@@ -106,7 +120,7 @@ def connect (endpoint : Endpoint) : IO Connection := do
       let client ← TCP.Socket.new
       let promise ← TCP.Socket.connect client addr
       waitTcpPromise promise "Beam daemon connection failed before TCP connect completed"
-      pure <| .tcp client
+      pure <| .tcp client (← IO.mkRef <| Framing.Buffer.ofBytes ByteArray.empty)
 
 private def abandonTcpSocket (client : TCP.Socket) : IO Unit := do
   try
@@ -129,7 +143,7 @@ private def connectTcpUsing
   let promise ← TCP.Socket.connect client (localhost port)
   match ← waitTcpPromiseWithStop promise shouldStop
       "Beam daemon connection failed before TCP connect completed" with
-  | .ok () => pure <| .ok (.tcp client)
+  | .ok () => pure <| .ok (.tcp client (← IO.mkRef <| Framing.Buffer.ofBytes ByteArray.empty))
   | .error stopped =>
       abandonTcpSocket client
       pure <| .error stopped
@@ -178,11 +192,12 @@ def accept (listener : Listener) : IO Connection := do
   match listener with
   | .tcp server =>
       let promise ← TCP.Socket.accept server
-      pure <| .tcp (← waitTcpPromise promise "Beam daemon listener closed before TCP accept completed")
+      let client ← waitTcpPromise promise "Beam daemon listener closed before TCP accept completed"
+      pure <| .tcp client (← IO.mkRef <| Framing.Buffer.ofBytes ByteArray.empty)
 
 def closeConnection (conn : Connection) : IO Unit := do
   match conn with
-  | .tcp client =>
+  | .tcp client _ =>
       try
         let promise ← TCP.Socket.shutdown client
         waitTcpPromise promise "Beam daemon connection closed before TCP shutdown completed"
@@ -226,45 +241,56 @@ private def receiveTcp (client : TCP.Socket) (size : UInt64) : IO (Except Empty 
   let promise ← TCP.Socket.recv? client size
   .ok <$> waitTcpPromise promise "Beam daemon connection closed during TCP receive"
 
-private def receiveTcpUntil
+private def receiveTcpUsing
     (client : TCP.Socket)
-    (size : UInt64)
-    (deadlineNanos : Nat) : IO (Except Unit (Option ByteArray)) := do
+    (shouldStop : IO (Option stop))
+    (size : UInt64) : IO (Except stop (Option ByteArray)) := do
   let promise ← TCP.Socket.recv? client size
-  waitTcpReceivePromise client promise (do
-    if (← IO.monoNanosNow) >= deadlineNanos then
-      pure <| some ()
-    else
-      pure none) "Beam daemon connection closed during TCP receive"
+  waitTcpReceivePromise client promise shouldStop
+    "Beam daemon connection closed during TCP receive"
 
-private def receiveTcpInterruptibly
-    (client : TCP.Socket)
-    (size : UInt64)
-    (interrupted : IO Bool) : IO (Except Unit (Option ByteArray)) := do
-  let promise ← TCP.Socket.recv? client size
-  waitTcpReceivePromise client promise (do
-    if ← interrupted then
-      pure <| some ()
-    else
-      pure none) "Beam daemon connection closed during TCP receive"
+-- Small reads may fetch the next frame too; retain only a bounded lookahead. Large bodies
+-- still request their full remaining size, rather than paying a polling wait for each small chunk.
+private def readAheadBytes : UInt64 := 4096
 
-private def receiveTcpInterruptiblyUntil
-    (client : TCP.Socket)
-    (size : UInt64)
-    (deadlineNanos : Nat)
-    (interrupted : IO Bool) : IO (Except WaitStop (Option ByteArray)) := do
-  let promise ← TCP.Socket.recv? client size
-  waitTcpReceivePromise client promise (do
-    if ← interrupted then
-      pure <| some WaitStop.interrupted
-    else if (← IO.monoNanosNow) >= deadlineNanos then
-      pure <| some WaitStop.timedOut
-    else
-      pure none) "Beam daemon connection closed during TCP receive"
+private def receiveBuffered
+    (pending : IO.Ref Framing.Buffer)
+    (receive : UInt64 → IO (Except stop (Option ByteArray)))
+    (shouldStop : IO (Option stop))
+    (size : UInt64) : IO (Except stop (Option ByteArray)) := do
+  let buffered ← pending.get
+  let buffer ← if buffered.offset == buffered.bytes.size then do
+    match ← receive (max size readAheadBytes) with
+    | .error stopped => return .error stopped
+    | .ok none => return .ok none
+    | .ok (some chunk) => pure <| Framing.Buffer.ofBytes chunk
+  else do
+    -- Pending UV receives retain completion-first precedence. Buffered bytes have no pending
+    -- promise: check the caller's stop condition before consuming them, including between frames.
+    if let some stopped ← shouldStop then
+      return .error stopped
+    pure buffered
+  -- The private cursor always satisfies offset ≤ bytes.size. Do not copy the unread suffix on
+  -- each header byte; retain it until consumed, then drop the backing array entirely.
+  let endOffset := min (buffer.offset + size.toNat) buffer.bytes.size
+  pending.set <| if endOffset == buffer.bytes.size then
+    Framing.Buffer.ofBytes ByteArray.empty
+  else
+    { buffer with offset := endOffset }
+  let chunk := if buffer.offset == 0 && endOffset == buffer.bytes.size then buffer.bytes
+    else buffer.bytes.extract buffer.offset endOffset
+  pure <| .ok (some chunk)
 
-private def recvMsgTcpUsing
-    (receive : UInt64 → IO (Except stop (Option ByteArray))) :
+namespace Framing
+
+/-- Internal framing core, with injectable reads for deterministic chunk/receive-count tests.
+The buffer belongs to one connection and one receive owner; callers discard a stopped frame. -/
+def recvMsgUsing
+    (pending : IO.Ref Buffer)
+    (receive : UInt64 → IO (Except stop (Option ByteArray)))
+    (shouldStop : IO (Option stop)) :
     IO (Except stop String) := do
+  let receive := receiveBuffered pending receive shouldStop
   let mut header := ByteArray.empty
   repeat
     match ← receive 1 with
@@ -297,42 +323,57 @@ private def recvMsgTcpUsing
     | throw <| IO.userError "invalid Beam daemon UTF-8"
   pure <| .ok msg
 
-private def recvMsgTcp (client : TCP.Socket) : IO String := do
-  match ← recvMsgTcpUsing (receiveTcp client) with
+end Framing
+
+private def recvMsgTcp (client : TCP.Socket) (pending : IO.Ref Framing.Buffer) : IO String := do
+  match ← Framing.recvMsgUsing pending (receiveTcp client) (pure none) with
   | .ok msg => pure msg
   | .error stopped => nomatch stopped
 
-private def recvMsgTcpUntil (client : TCP.Socket) (deadlineNanos : Nat) : IO (Option String) := do
-  match ← recvMsgTcpUsing (receiveTcpUntil client · deadlineNanos) with
+private def recvMsgTcpUntil
+    (client : TCP.Socket)
+    (pending : IO.Ref Framing.Buffer)
+    (deadlineNanos : Nat) : IO (Option String) := do
+  let shouldStop : IO (Option Unit) := do
+    pure <| if (← IO.monoNanosNow) >= deadlineNanos then some () else none
+  match ← Framing.recvMsgUsing pending (receiveTcpUsing client shouldStop) shouldStop with
   | .ok msg => pure (some msg)
   | .error () => pure none
 
 private def recvMsgTcpInterruptibly
     (client : TCP.Socket)
+    (pending : IO.Ref Framing.Buffer)
     (interrupted : IO Bool) : IO (InterruptResult String) := do
-  match ← recvMsgTcpUsing (receiveTcpInterruptibly client · interrupted) with
+  let shouldStop : IO (Option Unit) := do
+    pure <| if ← interrupted then some () else none
+  match ← Framing.recvMsgUsing pending (receiveTcpUsing client shouldStop) shouldStop with
   | .ok msg => pure <| .completed msg
   | .error () => pure .interrupted
 
 private def recvMsgTcpInterruptiblyUntil
     (client : TCP.Socket)
+    (pending : IO.Ref Framing.Buffer)
     (deadlineNanos : Nat)
     (interrupted : IO Bool) : IO (InterruptibleDeadlineResult String) := do
-  match ← recvMsgTcpUsing (receiveTcpInterruptiblyUntil client · deadlineNanos interrupted) with
+  let shouldStop : IO (Option WaitStop) := do
+    if ← interrupted then pure (some WaitStop.interrupted)
+    else if (← IO.monoNanosNow) >= deadlineNanos then pure (some WaitStop.timedOut)
+    else pure none
+  match ← Framing.recvMsgUsing pending (receiveTcpUsing client shouldStop) shouldStop with
   | .ok msg => pure <| .completed msg
-  | .error .timedOut => pure .timedOut
-  | .error .interrupted => pure .interrupted
+  | .error WaitStop.timedOut => pure .timedOut
+  | .error WaitStop.interrupted => pure .interrupted
 
 def sendMsg (conn : Connection) (msg : String) : IO Unit := do
   match conn with
-  | .tcp client => sendMsgTcp client msg
+  | .tcp client _ => sendMsgTcp client msg
 
 def sendMsgUntil
     (conn : Connection)
     (msg : String)
     (deadlineNanos : Nat) : IO (DeadlineResult Unit) := do
   match conn with
-  | .tcp client =>
+  | .tcp client _ =>
       let result ← sendMsgTcpUsing client msg do
         if (← IO.monoNanosNow) >= deadlineNanos then
           pure <| some ()
@@ -347,7 +388,7 @@ def sendMsgInterruptibly
     (msg : String)
     (interrupted : IO Bool) : IO (InterruptResult Unit) := do
   match conn with
-  | .tcp client =>
+  | .tcp client _ =>
       let result ← sendMsgTcpUsing client msg do
         if ← interrupted then
           pure <| some ()
@@ -359,26 +400,35 @@ def sendMsgInterruptibly
 
 def recvMsg (conn : Connection) : IO String := do
   match conn with
-  | .tcp client => recvMsgTcp client
+  | .tcp client pending => recvMsgTcp client pending
 
-/-- Receive one framed message by an absolute monotonic deadline, returning `none` on timeout. -/
+/-- Receive one framed message by an absolute monotonic deadline, returning `none` on timeout.
+A timeout may follow partial frame consumption. On `none`, discard the connection; a later
+receive does not resume the interrupted frame. A completed socket read takes precedence over
+the deadline check; buffered bytes check the deadline before consumption. -/
 def recvMsgUntil (conn : Connection) (deadlineNanos : Nat) : IO (Option String) := do
   match conn with
-  | .tcp client => recvMsgTcpUntil client deadlineNanos
+  | .tcp client pending => recvMsgTcpUntil client pending deadlineNanos
 
-/-- Receive one complete frame while preserving partial-frame state until completion or interrupt. -/
+/-- Receive one complete frame, retaining partial-frame state while waiting.
+On `.interrupted`, discard the connection: some frame bytes may already have been consumed,
+and a later receive does not resume that frame. A completed socket read takes precedence over
+interruption; buffered bytes check interruption before consumption. -/
 def recvMsgInterruptibly
     (conn : Connection)
     (interrupted : IO Bool) : IO (InterruptResult String) := do
   match conn with
-  | .tcp client => recvMsgTcpInterruptibly client interrupted
+  | .tcp client pending => recvMsgTcpInterruptibly client pending interrupted
 
-/-- Receive one frame until either interruption or an absolute monotonic deadline wins. -/
+/-- Receive one frame until interruption or an absolute monotonic deadline stops the read.
+On `.interrupted` or `.timedOut`, discard the connection: a partially consumed frame cannot
+be resumed by a later receive. A completed socket read takes precedence over stop checks;
+buffered bytes check interruption first, then the deadline, before consumption. -/
 def recvMsgInterruptiblyUntil
     (conn : Connection)
     (deadlineNanos : Nat)
     (interrupted : IO Bool) : IO (InterruptibleDeadlineResult String) := do
   match conn with
-  | .tcp client => recvMsgTcpInterruptiblyUntil client deadlineNanos interrupted
+  | .tcp client pending => recvMsgTcpInterruptiblyUntil client pending deadlineNanos interrupted
 
 end Beam.Broker.Transport

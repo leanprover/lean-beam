@@ -497,7 +497,8 @@ def initializeResult : Json :=
         ("listChanged", toJson false)
       ])
     ]),
-    ("serverInfo", serverInfoJson)
+    ("serverInfo", serverInfoJson),
+    ("instructions", toJson serverInstructions)
   ]
 
 private def publicCacheResult (result : Json) : Json :=
@@ -513,8 +514,7 @@ def discoverResult : Json :=
         ("listChanged", toJson false)
       ])
     ]),
-    ("instructions", toJson
-      "Use an explicit local workspace descriptor on every workspace-bound Beam tool call.")
+    ("instructions", toJson serverInstructions)
   ]
 
 def toolDescriptorJson (desc : ToolDescriptor) : Json :=

@@ -230,6 +230,16 @@ The guard skips JSON parsing and probes when `update` fails; read its stderr dia
 inherited ownership pipe defines the session lifetime: interrupt the holder, or run
 `lean-beam --root ROOT stop`, to close the daemon and its backend processes. Lean queries and file
 operations attach to an existing owner and report the exact `serve` command when no session exists.
+
+The foreground owner handles Ctrl-C and, on POSIX, SIGTERM and SIGHUP from acquisition through
+cleanup. A signal received during startup remains latched; repeated signals do not bypass cleanup.
+Cancellation observed before readiness exits nonzero without publishing a running-session response.
+These handlers override an inherited ignored SIGHUP, including from `nohup`. Shutdown is cooperative:
+lock/readiness waits observe the stop when they return, and blocked synchronous output or filesystem
+operations can delay cleanup. Attached commands handle the first Ctrl-C while awaiting a request;
+another Ctrl-C can terminate a blocked client. Their TERM/HUP dispositions remain inherited, and
+completed response output uses the default Ctrl-C action.
+
 Help, version reporting, `doctor`, `status`, and `prune` can run without a live owner.
 MCP clients do not need a separate holder; the stdio MCP process owns its runtime session.
 For alternate session directories, status details, and abnormal-exit recovery, see
@@ -381,27 +391,20 @@ opencode mcp add
 
 ### Verify The MCP Server
 
-To verify the installed MCP path without writing JSON-RPC by hand, change to the Lean project.
-Use the same absolute MCP command you registered above:
+After registering the server, use your client's MCP tools to call `lean_sync` for an existing
+Lean file. Supply the absolute project root in `workspace` and the file path relative to that root,
+as shown below. The project's Lean target must already belong to the installed component set.
+A successful call verifies the configured client, stdio transport, runtime selection, and Lean
+request path together. The returned `document_progress` describes elaboration progress; success
+does not require `done: true`, a file without Lean diagnostics, or readiness to save artifacts.
+
+For executable and installation identity, run:
 
 ```bash
-cd /path/to/lean/project
-"/absolute/path/to/lean-beam-mcp" --self-check MyPkg/Sub/Module.lean
+"/absolute/path/to/lean-beam-mcp" --version
 ```
 
-The self-check starts a child MCP server, calls `lean_sync` with an explicit descriptor for the
-current project, and shuts the child server down. The project target must already be a member of
-the installed component set; the self-check does not construct missing runtimes. Success requires valid discovery and sync
-responses and a zero server exit status. It verifies that sync can run, without requiring completed
-elaboration, a file without Lean diagnostics, or readiness to save artifacts. Server stderr is
-diagnostic: logging does not fail an otherwise successful check, and failures include the final
-64 KiB of captured stderr when available.
-The smoke test uses one best-effort timeout for discovery, sync, and shutdown, including stderr
-draining; notifications do not restart it. Process creation and failure cleanup are outside that
-budget, and blocked I/O tasks can delay process exit. If a very slow machine needs a longer wait,
-set `LEAN_BEAM_MCP_SELF_CHECK_TIMEOUT_MS` to a positive timeout in milliseconds (default 120000).
-CI supervises the command with a separate process watchdog. Maintainer details
-for MCP live in the [MCP maintainer notes](MCP.md).
+This reports identity and runtime paths without starting Lean or sending a tool request.
 
 ### Workspaces And Server Identity
 

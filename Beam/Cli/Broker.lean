@@ -33,35 +33,44 @@ structure BrokerWaitSpec where
   failureBoundary : String := "before the request completed"
   responseNote? : Response → Option String := fun _ => none
 
+/-- Borrowed stop observation, valid during its enclosing watcher callback. -/
 structure InterruptWatcher where
   interrupted : IO Bool
   awaitInterrupt : IO Unit
 
-/-- Acquire one non-repeating SIGINT watcher and release its pending wait on every exit path. -/
-def withInterruptWatcher (act : InterruptWatcher → IO α) : IO α := do
-  let signal ← Std.Internal.UV.Signal.mk 2 false
-  let promise ←
-    try
-      Std.Internal.UV.Signal.next signal
-    catch err =>
-      try
-        Std.Internal.UV.Signal.stop signal
-      catch _ =>
-        pure ()
-      throw err
-  let event := promise.result?
-  let watcher : InterruptWatcher := {
-    interrupted := IO.hasFinished event
-    awaitInterrupt := do
-      let some _ ← IO.wait event
-        | throw <| IO.userError "SIGINT watcher promise dropped"
-      pure ()
-  }
+private def withSignalEvent
+    (signum : Int32) (repeating : Bool) (act : Task (Option Int) → IO α) : IO α := do
+  let signal ← Std.Internal.UV.Signal.mk signum repeating
+  -- A failed start has no subscription to stop; dropping the object closes its native handle.
+  let promise ← Std.Internal.UV.Signal.next signal
   try
-    act watcher
+    act promise.result?
   finally
     -- Every supported runtime drops its pending promise when the signal handler is stopped.
     Std.Internal.UV.Signal.stop signal
+
+private def interruptWatcher
+    (interrupt : Task (Option Int)) (others : List (Task (Option Int)) := []) : InterruptWatcher := {
+  interrupted := (interrupt :: others).anyM fun event => IO.hasFinished event
+  awaitInterrupt := do
+    let some _ ← IO.waitAny (interrupt :: others)
+      | throw <| IO.userError "interrupt watcher promise dropped"
+    pure ()
+}
+
+/-- Observe the first SIGINT during a request; further SIGINTs retain default termination. -/
+def withRequestInterruptWatcher (act : InterruptWatcher → IO α) : IO α :=
+  withSignalEvent 2 false fun interrupt => act (interruptWatcher interrupt)
+
+/-- Latch owner termination through cleanup: SIGINT everywhere, plus SIGTERM/SIGHUP on POSIX.
+Repeated signals do not escalate. This is cooperative shutdown, including during synchronous I/O. -/
+def withOwnerInterruptWatcher (act : InterruptWatcher → IO α) : IO α :=
+  withSignalEvent 2 true fun interrupt => do
+    if System.Platform.isWindows then
+      act (interruptWatcher interrupt)
+    else
+      withSignalEvent 15 true fun terminate =>
+        withSignalEvent 1 true fun hangup => act (interruptWatcher interrupt [terminate, hangup])
 
 private def progressEnabled : IO Bool := do
   match ← envFlag? "BEAM_PROGRESS" with
@@ -76,6 +85,7 @@ private def prepareWrapperBrokerRequest
   withEnvClientRequestId <| client.sealRequest req
 
 private def awaitBrokerResponseWithInterrupts
+    (interruptWatcher : InterruptWatcher)
     (endpoint : Transport.Endpoint)
     (expectedIdentity : DaemonIdentity)
     (req : Request)
@@ -83,50 +93,57 @@ private def awaitBrokerResponseWithInterrupts
     (progressSpec? : Option BrokerWaitSpec)
     (callbacks : StreamCallbacks := {}) :
     IO (Except BrokerClientFailure Response) := do
-  withInterruptWatcher fun interruptWatcher => do
-    let emit := fun msg => IO.eprintln <| annotateRequestMessage visibleClientRequestId? msg
-    if let some spec := progressSpec? then
-      emit spec.startMsg
-    let startedNanos ← IO.monoNanosNow
-    let lastReportedSeconds ← IO.mkRef 0
-    let interruptReported ← IO.mkRef false
-    let interrupted : IO Bool := do
-      let interrupted ← interruptWatcher.interrupted
-      let interrupted := interrupted || (← IO.checkCanceled)
-      if interrupted then
-        unless ← interruptReported.get do
-          interruptReported.set true
-          emit "beam: interrupting broker request"
-      else if let some spec := progressSpec? then
+  let emit := fun msg => IO.eprintln <| annotateRequestMessage visibleClientRequestId? msg
+  if let some spec := progressSpec? then
+    emit spec.startMsg
+  let startedNanos ← IO.monoNanosNow
+  let lastReportedSeconds ← IO.mkRef 0
+  let interrupted : IO Bool := do
+    let interrupted ← interruptWatcher.interrupted
+    let interrupted := interrupted || (← IO.checkCanceled)
+    if !interrupted then
+      if let some spec := progressSpec? then
         let seconds := ((← IO.monoNanosNow) - startedNanos) / 1000000000
         let previous ← lastReportedSeconds.get
         if seconds > previous then
           lastReportedSeconds.set seconds
           emit <| spec.stillWaitingMsg seconds
-      pure interrupted
-    let result ← sendRequestWithCallbacksInterruptiblyResult endpoint req interrupted callbacks
-      (.wrapper expectedIdentity)
-    match result with
-    | .ok response =>
-        if let some spec := progressSpec? then
-          emit <| spec.completeMsg response
-        pure <| .ok response
-    | .error failure => pure <| .error failure
+    pure interrupted
+  -- A stop latched during owner acquisition must not open a broker connection first.
+  let result : Except BrokerClientFailure Response ←
+    if ← interrupted then pure <| Except.error .interrupted
+    else
+      sendRequestWithCallbacksInterruptiblyResult endpoint req interrupted callbacks
+        (.wrapper expectedIdentity)
+  match result with
+  | .error .interrupted =>
+      -- Abandon the connection before a diagnostic write can block cancellation itself.
+      emit "beam: interrupting broker request"
+  | _ => pure ()
+  pure result
 
 private structure WrapperBrokerResponse where
   response : Response
   visibleClientRequestId? : Option String
 
-private def requestBrokerResponse
+private def requestBrokerResponseWithWatcher
+    (watcher : InterruptWatcher)
     (root : System.FilePath)
     (client : ProjectDaemonClient)
     (req : Request) : IO WrapperBrokerResponse := do
   let wrapperReq ← prepareWrapperBrokerRequest client req
   let visibleClientRequestId? := wrapperReq.clientRequestId?
   let response ← withBrokerErrorContext root client do
-    awaitBrokerResponseWithInterrupts client.endpoint client.identity wrapperReq
+    awaitBrokerResponseWithInterrupts watcher client.endpoint client.identity wrapperReq
       visibleClientRequestId? none
   pure { response, visibleClientRequestId? }
+
+private def requestBrokerResponse
+    (root : System.FilePath)
+    (client : ProjectDaemonClient)
+    (req : Request) : IO WrapperBrokerResponse :=
+  withRequestInterruptWatcher fun watcher =>
+    requestBrokerResponseWithWatcher watcher root client req
 
 /-- Send one wrapper request without printing or interpreting its response. -/
 def requestBroker
@@ -144,11 +161,11 @@ def callBroker
   failOnError result.response
 
 def callBrokerQuiet
+    (watcher : InterruptWatcher)
     (root : System.FilePath)
     (client : ProjectDaemonClient)
     (req : Request) : IO Unit := do
-  let resp ← requestBroker root client req
-  failOnError resp
+  failOnError (← requestBrokerResponseWithWatcher watcher root client req).response
 
 private def syncReadinessSuffix (result : SyncFileResult) : String :=
   let readiness := result.readiness
@@ -345,15 +362,14 @@ def leanSaveWaitSpec
     failureBoundary := "before save artifacts were finalized"
   }
 
-def callBrokerWithProgress
+private def requestBrokerResponseWithProgress
     (root : System.FilePath)
     (client : ProjectDaemonClient)
     (req : Request)
-    (spec : BrokerWaitSpec) : IO Unit := do
-  let wrapperReq ← prepareWrapperBrokerRequest client req
-  let req := wrapperReq
+    (spec : BrokerWaitSpec)
+    (showProgress : Bool) : IO WrapperBrokerResponse := do
+  let req ← prepareWrapperBrokerRequest client req
   let visibleClientRequestId? := req.clientRequestId?
-  let showProgress ← progressEnabled
   let callbacks : StreamCallbacks := {
     onFileProgress := fun progress => do
       if showProgress then
@@ -362,9 +378,23 @@ def callBrokerWithProgress
       IO.eprintln <| annotateRequestMessage visibleClientRequestId? (formatStreamDiagnostic diagnostic)
   }
   let progressSpec? := if showProgress then some spec else none
-  let resp ← withBrokerErrorContext root client do
-    awaitBrokerResponseWithInterrupts client.endpoint client.identity req
-      visibleClientRequestId? progressSpec? callbacks
+  let response ← withBrokerErrorContext root client do
+    withRequestInterruptWatcher fun watcher =>
+      awaitBrokerResponseWithInterrupts watcher client.endpoint client.identity req
+        visibleClientRequestId? progressSpec? callbacks
+  pure { response, visibleClientRequestId? }
+
+def callBrokerWithProgress
+    (root : System.FilePath)
+    (client : ProjectDaemonClient)
+    (req : Request)
+    (spec : BrokerWaitSpec) : IO Unit := do
+  let showProgress ← progressEnabled
+  let result ← requestBrokerResponseWithProgress root client req spec showProgress
+  let resp := result.response
+  let visibleClientRequestId? := result.visibleClientRequestId?
+  if showProgress then
+    IO.eprintln <| annotateRequestMessage visibleClientRequestId? (spec.completeMsg resp)
   match responseErrorSummary? spec.action spec.failureBoundary resp with
   | some note =>
       IO.eprintln <| annotateRequestMessage visibleClientRequestId? note

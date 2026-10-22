@@ -10,6 +10,7 @@ import Lean.Server.FileWorker.RequestHandling
 import Lean.Server.Requests
 import Beam.LSP.Lib.Diagnostics
 import Beam.LSP.Lib.Request
+import Beam.Transaction
 
 open Lean
 open Lean.Elab
@@ -166,8 +167,10 @@ def ensureParentDir (path : System.FilePath) : IO Unit := do
     IO.FS.createDirAll parent
 
 private def removeFileIfExists (path : System.FilePath) : IO Unit := do
-  if ← path.pathExists then
-    IO.FS.removeFile path
+  try IO.FS.removeFile path
+  catch
+    | .noFileOrDirectory .. => pure ()
+    | error => throw error
 
 private def withTempSiblingDir
     (path : System.FilePath)
@@ -228,7 +231,9 @@ private def stagedArtifactAt
     | throw <| IO.userError s!"internal {kind} artifact staging mismatch"
   pure artifact
 
-private def publishStagedArtifacts (artifacts : Array StagedArtifact) : IO Unit := do
+private def publishStagedArtifacts (artifacts : Array StagedArtifact)
+    (hardLink : System.FilePath → System.FilePath → IO Unit := IO.FS.hardLink)
+    (rename : System.FilePath → System.FilePath → IO Unit := IO.FS.rename) : IO Unit := do
   -- Complete all checks that can be done without touching canonical outputs before the commit.
   for artifact in artifacts do
     unless ← artifact.staged.pathExists do
@@ -237,51 +242,62 @@ private def publishStagedArtifacts (artifacts : Array StagedArtifact) : IO Unit 
       throw <| IO.userError s!"artifact output path is a directory: {artifact.target}"
     ensureParentDir artifact.target
 
-  let mut backedUp : Array StagedArtifact := #[]
-  let mut installed : Array StagedArtifact := #[]
-  try
-    -- Hard-link each prior artifact before publication. The canonical paths remain readable, and
-    -- every subsequent rename replaces one file atomically while retaining rollback data.
-    for artifact in artifacts do
-      if ← artifact.target.pathExists then
-        IO.FS.hardLink artifact.target artifact.backup
-        backedUp := backedUp.push artifact
-    for artifact in artifacts do
-      IO.FS.rename artifact.staged artifact.target
-      installed := installed.push artifact
-  catch publishError =>
-    let mut rollbackErrors : Array String := #[]
-    for artifact in installed.toList.reverse do
-      try
-        if ← artifact.backup.pathExists then
-          IO.FS.rename artifact.backup artifact.target
-        else
-          removeFileIfExists artifact.target
-      catch rollbackError =>
-        rollbackErrors := rollbackErrors.push
-          s!"could not restore {artifact.target}: {rollbackError}"
-    for artifact in backedUp.toList.reverse do
-      try
-        let wasInstalled := installed.any fun installedArtifact =>
-          installedArtifact.target.toString == artifact.target.toString
-        if !wasInstalled && (← artifact.backup.pathExists) then
-          removeFileIfExists artifact.backup
-      catch rollbackError =>
-        rollbackErrors := rollbackErrors.push
-          s!"could not clean rollback link for {artifact.target}: {rollbackError}"
-    if rollbackErrors.isEmpty then
-      throw publishError
-    throw <| IO.userError <|
-      s!"artifact publication failed: {publishError}; rollback also failed: " ++
-        String.intercalate "; " rollbackErrors.toList
+  -- Capture the original state under the caller's publication lock. Once all backups exist,
+  -- recovery can restore the whole plan without recording which replacements completed.
+  let originals ← artifacts.mapM fun artifact => do
+    let existed ← match ← artifact.target.symlinkMetadata.toBaseIO with
+      | .ok _ => pure true
+      | .error (.noFileOrDirectory ..) => pure false
+      | .error error => throw error
+    pure (artifact, existed)
+  let backups := originals.filterMap fun (artifact, existed) =>
+    if existed then some artifact else none
+  -- Preparation may fail halfway. Its rollback owns only backup names, never canonical outputs.
+  let preparation ← Beam.Transaction.run (rollback := backups.map fun artifact =>
+      removeFileIfExists artifact.backup) do
+    for artifact in backups do hardLink artifact.target artifact.backup
+  match preparation with
+  | .committed () _ => pure ()
+  | .aborted error failures =>
+      if failures.isEmpty then throw error
+      let details := failures.toList.map fun failure =>
+        let path := match backups[failure.actionIndex]? with
+          | some artifact => artifact.backup.toString
+          | none => s!"step {failure.actionIndex}"
+        s!"backup cleanup {path}: {failure.error}"
+      throw <| IO.userError <|
+        s!"artifact backup preparation failed: {error}; cleanup also failed: " ++
+          String.intercalate "; " details
 
-  -- Publication has committed. Backup cleanup must not turn a successful, complete save into a
-  -- reported failure whose trace is omitted.
-  for artifact in backedUp do
-    try
-      removeFileIfExists artifact.backup
-    catch _ =>
+  let publication ← Beam.Transaction.run
+      (rollback := originals.map fun (artifact, existed) => do
+        if existed then
+          rename artifact.backup artifact.target
+          -- Renaming two names for the same original file can leave both names intact.
+          -- Remove the backup only after successful restoration; retain it on failure.
+          removeFileIfExists artifact.backup
+        else
+          removeFileIfExists artifact.target)
+      (cleanup := backups.map fun artifact => removeFileIfExists artifact.backup) do
+    -- Invalidate Lake's cached hashes for exactly the outputs being replaced. A removal failure
+    -- must recover the prepared backups before any canonical output can change.
+    for artifact in artifacts do removeFileIfExists (artifact.target.addExtension "hash")
+    for artifact in artifacts do rename artifact.staged artifact.target
+  match publication with
+  | .committed () _ =>
+      -- Backup cleanup is best-effort after commit. Its failure must not omit the save trace
+      -- or turn a complete publication into a reported failure.
       pure ()
+  | .aborted error failures =>
+      if failures.isEmpty then throw error
+      let details := failures.toList.map fun failure =>
+        let path := match originals[failure.actionIndex]? with
+          | some (artifact, _) => artifact.target.toString
+          | none => s!"step {failure.actionIndex}"
+        s!"artifact recovery {path}: {failure.error}"
+      throw <| IO.userError <|
+        s!"artifact publication failed: {error}; rollback also failed: " ++
+          String.intercalate "; " details
 
 private structure ModuleArtifactTargets where
   oleanServerFile : System.FilePath

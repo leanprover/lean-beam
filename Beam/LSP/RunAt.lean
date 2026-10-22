@@ -331,6 +331,29 @@ private def parseOneCommandText (env : Environment) (text : String) : CommandPar
   else
     .extraInput ((s.mkError "end of input").toErrorMsg ictx)
 
+/--
+Parse tactic probe text as the body of a `by` block. `tacticSeq` saves the position of the first
+tactic, so a following line at that column starts a new tactic instead of continuing the previous
+tactic's arguments; a bare `tactic` category parse has no saved position and would read
+`funext a b⏎simp` as `funext a b simp`.
+-/
+private def parseTacticSeqText (env : Environment) (text : String) : Except String Syntax :=
+  let ictx := Parser.mkInputContext text "<runAt>"
+  let pmctx : Parser.ParserModuleContext := { env, options := {} }
+  let tokens := Parser.getTokenTable env
+  let leading := Parser.whitespace.run ictx pmctx tokens (Parser.mkParserState text)
+  -- `tacticSeq` tries `{ ... }` first, so blank text would otherwise report "expected '{'".
+  if leading.allErrors.isEmpty && ictx.atEnd leading.pos then
+    .error ((leading.mkEOIError ["tactic"]).toErrorMsg ictx)
+  else
+  let s := Parser.Tactic.tacticSeq.fn.run ictx pmctx tokens leading
+  if !s.allErrors.isEmpty then
+    .error (s.toErrorMsg ictx)
+  else if ictx.atEnd s.pos then
+    .ok s.stxStack.back
+  else
+    .error ((s.mkError "end of input").toErrorMsg ictx)
+
 private def oneCommandOnlyResult (err : String) : Result :=
   errorResult
     s!"{runAtSupportsOneCommandOnlyCode}: command-mode runAt accepts exactly one Lean command, not a top-level command sequence. Use a stored handle continuation for explicit speculative sequencing, or write the sequence to the file and sync it. Original parse error: {err}"
@@ -481,7 +504,7 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
     let snapshot := { snapshot with coreContext := {
       snapshot.coreContext with fileName := "<runAt>", fileMap := text.toFileMap } }
     let stx ←
-      match Parser.runParserCategory snapshot.coreState.env `tactic text "<runAt>" with
+      match parseTacticSeqText snapshot.coreState.env text with
       | .ok stx => pure stx
       | .error err => return (errorResult err (some initialProofState), none)
     let (output, (outcome, proofSnapshot')) ←

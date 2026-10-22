@@ -7,8 +7,7 @@ Author: Emilio J. Gallego Arias
 import Beam.Install.Construction
 
 private def copy (source destination : System.FilePath) : IO Unit := do
-  if let some parent := destination.parent then IO.FS.createDirAll parent
-  IO.FS.writeBinFile destination (← IO.FS.readBinFile source)
+  Beam.Install.Construction.stageOutput source destination
   let access : IO.AccessRight := { read := true, execution := true }
   IO.setAccessRights destination ⟨{ access with write := true }, access, access⟩
 

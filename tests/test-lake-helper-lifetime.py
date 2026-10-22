@@ -151,8 +151,10 @@ def direct(base, compiler, helper):
 
 def through_cli(base, compiler, cli):
     scenarios = ["cold-success", "owner-loss"]
+    signals = {}
     if os.name == "posix":
-        scenarios.append("interrupt")
+        signals = {"interrupt": signal.SIGINT, "terminate": signal.SIGTERM, "hangup": signal.SIGHUP}
+        scenarios.extend(signals)
     for scenario in scenarios:
         root = project(base, compiler, "cli-" + scenario)
         environment = child_environment(root)
@@ -204,12 +206,14 @@ def through_cli(base, compiler, cli):
                     assert owner.wait(timeout=15) == 0, stderr_path.read_text(errors="replace")
                     assert "forcing daemon termination" not in stderr_path.read_text(errors="replace"), \
                         "normal stop must release the owner pipe and let the daemon exit gracefully"
-                elif scenario == "interrupt":
-                    owner.send_signal(signal.SIGINT)
+                elif scenario in signals:
+                    owner.send_signal(signals[scenario])
                     assert owner.wait(timeout=15) != 0, "interrupted cold serve reported success"
                     assert stdout_path.stat().st_size == 0, "interrupted cold serve became ready"
                     assert "forcing daemon termination" not in stderr_path.read_text(errors="replace"), \
                         "interruption must release the owner pipe and let the daemon exit gracefully"
+                    assert invoke("status")["result"]["state"] == "absent", \
+                        "handled termination must not require manual recovery"
                 else:
                     owner.kill()
                     owner.wait(timeout=5)
