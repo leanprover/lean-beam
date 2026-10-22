@@ -204,6 +204,11 @@ def closeConnection (conn : Connection) : IO Unit := do
       catch _ =>
         pure ()
 
+/-- Abandon an interrupted or failed connection without joining queued writes. -/
+def abandonConnection (connection : Connection) : IO Unit :=
+  match connection with
+  | .tcp client _ => abandonTcpSocket client
+
 def closeListener (listener : Listener) : IO Unit := do
   match listener with
   | .tcp server =>

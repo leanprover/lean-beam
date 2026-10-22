@@ -18,6 +18,7 @@ import Beam.Daemon.Paths
 import Beam.Path
 import BeamTest.Broker.JsonAssert
 import BeamTest.Broker.InterruptWatcherTest
+import BeamTest.Broker.OutputTest
 import BeamTest.PathBoundaryTest
 
 open Lean
@@ -558,6 +559,25 @@ private def checkClientResponsePresentation : IO Unit := do
       throw <| IO.userError
         s!"presentation-decorated response decoded as semantic response: {(toJson response).compress}"
   | .error _ => pure ()
+
+private def checkWorkspaceOutputPresentation : IO Unit := do
+  let first : Beam.WorkspaceOutput.Chunk := { source := .stderr, text := "config line 9791 ünïcödé " }
+  let (state, initial) := ({} : Beam.Cli.WorkspaceOutputFormat).render first
+  require "ordinary fragments must not wait for a newline" (initial == first.text)
+  let (state, marker) := state.render { first with text := "935 ünïcödé", omittedBefore := true }
+  require "omission marker must have its own line"
+    (marker == "\nbeam: earlier workspace output omitted\n")
+  let (state, remainder) := state.render { first with text := " ✔ continuation" }
+  require "a truncated line may span multiple chunks" remainder.isEmpty
+  let (state, recovered) := state.render { first with text := "\nconfig line 9793 ünïcödé ✔\nlast fragment" }
+  require "resume at the next complete line without losing its Unicode text"
+    (recovered == "config line 9793 ünïcödé ✔\nlast fragment")
+  let (_, ending) := state.render { first with text := " complete\n" }
+  require "ordinary fragments after recovery remain unchanged" (ending == " complete\n")
+  let (_, atStart) := ({} : Beam.Cli.WorkspaceOutputFormat).render
+    { first with text := "partial\nnext\n", omittedBefore := true }
+  require "a gap at a line boundary must not add an empty line"
+    (atStart == "beam: earlier workspace output omitted\nnext\n")
 
 private def checkCliRecoveryHints : IO Unit := do
   let staleData := Json.mkObj [
@@ -1440,29 +1460,39 @@ private def checkSdkRuntimeAdmission : IO Unit := do
       (!(Beam.Installation.Bundled.validateProvenance (layout.home / "provenance.json")
         { compiled with compilerRevision := revision } Lean.githash p).isOk)
 
+private def withFirstStderrWrite (before : IO Unit) (action : IO α) : IO α := do
+  let stderr ← IO.getStderr
+  let first ← IO.mkRef true
+  let observed := { stderr with putStr := fun text => do
+    if ← first.get then
+      first.set false
+      before
+    stderr.putStr text
+  }
+  IO.withStderr observed action
+
 /-- Run the real CLI request/rendering path against a parent-owned fake broker. -/
 def blockedOutput (stream : String) (port : UInt16) : IO Unit := do
   let root : System.FilePath := "/tmp"
   let client := projectDaemonClientForTest (.tcp port) root
   match stream with
   | "progress-start" =>
-      let stderr ← IO.getStderr
-      let firstWrite ← IO.mkRef true
-      let gatedStderr := { stderr with putStr := fun text => do
-        if ← firstWrite.get then
-          firstWrite.set false
-          IO.println "progress start reached"
-          (← IO.getStdout).flush
-          -- The parent sends SIGINT before releasing the first progress write.
-          unless (← (← IO.getStdin).getLine) == "release\n" do
-            throw <| IO.userError "progress start gate was not released"
-        stderr.putStr text
-      }
-      IO.withStderr gatedStderr <|
+      withFirstStderrWrite (do
+        IO.println "progress start reached"
+        (← IO.getStdout).flush
+        -- The parent sends SIGINT before releasing the first progress write.
+        unless (← (← IO.getStdin).getLine) == "release\n" do
+          throw <| IO.userError "progress start gate was not released") <|
+        Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
+          (Beam.Cli.syncWaitSpec "Main.lean")
+  | "stderr" =>
+      withFirstStderrWrite (do
+        IO.println "diagnostic write reached"
+        (← IO.getStdout).flush) <|
         Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
           (Beam.Cli.syncWaitSpec "Main.lean")
   | "stdout" => Beam.Cli.callBroker root client Beam.Broker.Request.stats
-  | "stdout-progress" | "stderr" =>
+  | "stdout-progress" =>
       Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
         (Beam.Cli.syncWaitSpec "Main.lean")
   | _ => throw <| IO.userError s!"unknown blocked output stream: {stream}"
@@ -1472,6 +1502,7 @@ def main : IO Unit := do
   checkLeanConfigLowering
   checkProjectDaemonRequestSealing
   checkClientResponsePresentation
+  checkWorkspaceOutputPresentation
   checkCliRecoveryHints
   checkSyncWaitSpecs
   checkCliRootParsing
@@ -1489,6 +1520,7 @@ def main : IO Unit := do
   checkStderrCaptureSurvivesSinkFailure
   checkStderrSinkDisableIsSynchronized
   checkStderrCaptureDoesNotJoinInheritedPipe
+  OutputTest.check
   checkBrokerConnectionClosedIncident
   checkTypedRegistryReads
   checkDaemonFailureIncidentRetention

@@ -2,7 +2,6 @@
 
 [MCP.md](MCP.md) describes public protocol behavior. This contract defines ownership and resource
 limits for the stdio transport. The broker owns execution and cleanup; the transport owns delivery.
-Lake text-buffer integration is a separate follow-up.
 
 ## 1. One writer owns stdout
 
@@ -72,6 +71,20 @@ Progress has one replaceable pending notification per request. Oversized progres
 terminal acceptance removes obsolete progress. Omitted/replaced progress is not counted as a lost
 log notification.
 
+Raw helper text has its own bounded request buffer. When logging can consume it, reserve its
+256 KiB allowance, one claimed 8 KiB chunk, and the worst encoded packet/envelope allowance against
+the shared normal budget before work starts. Reject with the existing busy error if it does not
+fit. Claim text directly from that buffer; do not copy it into the diagnostic or progress queues.
+Keep only projection metadata and logging-policy data beside it, never a server/runtime closure.
+Buffer claims, logging policy reads, serialization and physical writes occur outside the outbox
+mutex. Empty-buffer readiness wakes the sole writer without polling or one waiting thread per
+request. Each request preserves its bounded completion tail before its terminal response.
+
+Oldest pending raw text is replaceable under pressure, with the gap marked by `omittedBefore` on
+the next retained packet. Raw log filtering happens at delivery preparation: legacy log-level
+changes affect pending text; modern request logging is immutable. A packet already in flight may
+finish after cancellation or a log-level change. Diagnostic omission counts remain separate.
+
 The internal limits are not client settings:
 
 | Resource | Limit |
@@ -83,6 +96,7 @@ The internal limits are not client settings:
 | Encoded successful response | 8 MiB |
 | Pending diagnostic/status logs per request | 256 KiB and 64 records |
 | Replaceable progress per request | One notification, at most 64 KiB |
+| Pending raw helper text per request | 256 KiB and 256 chunks, charged to shared storage |
 
 The rejection reserve holds up to 64 small replies. Normal output reservations are bounded by the
 shared byte budget, independently of the execution limit. One physical frame may additionally be

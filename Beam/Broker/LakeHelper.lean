@@ -8,6 +8,7 @@ import Lean
 import Beam.Broker.Errors
 import Beam.ProcessJob
 import Beam.System
+import Beam.WorkspaceOutput
 
 open Lean
 
@@ -84,6 +85,8 @@ def LakeHelperOperation.waitPolicy : LakeHelperOperation → LakeHelperWaitPolic
 
 structure LakeHelperControl where
   cancelRef? : Option (IO.Ref Bool) := none
+  /-- A capability borrowed for this helper, retired when the helper scope ends. -/
+  output? : Option Beam.WorkspaceOutput.Publisher := none
 
 private structure HelperDeadline where
   timeoutMs : Nat
@@ -112,7 +115,7 @@ def publish (directory : System.FilePath) (response : Response) : IO Unit := do
 end LakeHelperJob
 
 private def helperStdio : IO.Process.StdioConfig := {
-  stdin := .piped, stdout := .null, stderr := .null
+  stdin := .piped, stdout := .piped, stderr := .piped
 }
 
 private def helperCancelled (control : LakeHelperControl) : IO Bool := do
@@ -169,6 +172,15 @@ def runRequest [ToJson α] [FromJson β]
     (request : α)
     (waitPolicy : LakeHelperWaitPolicy)
     (control : LakeHelperControl := {}) : IO (Except BrokerFailure β) := do
+  let publisher ← match control.output? with
+    | some publisher => pure publisher
+    | none => do
+        let buffer ← Beam.WorkspaceOutput.Buffer.create
+        let some publisher ← buffer.borrow
+          | throw <| IO.userError "new helper output buffer was already closed"
+        pure publisher
+  let capture ← IO.mkRef (none : Option Beam.WorkspaceOutput.Capture)
+  let operationResponse ← IO.mkRef (none : Option Response)
   let response ←
     try
       if ← helperCancelled control then return .error cancelledHelper
@@ -189,16 +201,29 @@ def runRequest [ToJson α] [FromJson β]
           setsid := true
         }
         Beam.ProcessJob.withChild child fun scope => do
+          -- Establish both drains before allowing configuration code to write either pipe.
+          capture.set (some (← Beam.WorkspaceOutput.Capture.start child.stdout child.stderr publisher))
           if let some failure ← helperInterruption? control deadline? then return .error failure
           -- The helper cannot evaluate project code until its Windows job is assigned.
           child.stdin.putStr "go\n"
           child.stdin.flush
-          awaitHelperResponse scope directory control deadline?
+          let response ← awaitHelperResponse scope directory control deadline?
+          if let .ok completed := response then operationResponse.set (some completed)
+          return response
     catch error =>
       return .error {
         code := .internalError
         message := s!"target Lake helper '{operation.key}' failed: {error}"
+        -- Publication may already have committed. Preserve the typed operation receipt
+        -- when later process-job or temporary-directory cleanup fails.
+        data? := (← operationResponse.get).map fun response =>
+          Json.mkObj [("operationResponse", toJson response)]
       }
+    finally
+      try
+        if let some capture ← capture.get then discard <| capture.finish
+      finally
+        publisher.retire
   let response ← match response with
     | .error failure => return .error failure
     | .ok response => pure response

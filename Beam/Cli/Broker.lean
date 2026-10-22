@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Beam.Cli.DaemonManager
 import Beam.Cli.Output
 import Beam.Broker.Client
+import Beam.Broker.Output
 import Beam.Broker.Transport
 import Std.Internal.UV.Signal
 
@@ -91,33 +92,92 @@ private def awaitBrokerResponseWithInterrupts
     (req : Request)
     (visibleClientRequestId? : Option String)
     (waitMessage? : Option (Nat → String))
-    (callbacks : StreamCallbacks := {}) :
+    (formatProgress? : Option (SyncFileProgress → String) := none)
+    (showDiagnostics : Bool := false)
+    (startMessage? : Option String := none) :
     IO (Except BrokerClientFailure Response) := do
-  let emit := fun msg => IO.eprintln <| annotateRequestMessage visibleClientRequestId? msg
+  let text ← Beam.WorkspaceOutput.Buffer.create
+  let output ← Output.Queue.create text
+  let some publisher ← text.borrow | throw <| IO.userError "new CLI output buffer was closed"
+  let emit := fun msg => publisher.offer .stderr <|
+    annotateRequestMessage visibleClientRequestId? msg ++ "\n"
+  let stop ← IO.mkRef false
   let startedNanos ← IO.monoNanosNow
-  let lastReportedSeconds ← IO.mkRef 0
+  let lastActivityNanos ← IO.mkRef startedNanos
+  let observedOutput ← IO.mkRef (← text.activity)
   let interrupted : IO Bool := do
     let interrupted ← interruptWatcher.interrupted
-    let interrupted := interrupted || (← IO.checkCanceled)
+    let interrupted := interrupted || (← stop.get) || (← output.failed) || (← IO.checkCanceled)
     if !interrupted then
       if let some waitMessage := waitMessage? then
-        let seconds := ((← IO.monoNanosNow) - startedNanos) / 1000000000
-        let previous ← lastReportedSeconds.get
-        if seconds >= previous + 5 then
-          lastReportedSeconds.set seconds
-          emit <| waitMessage seconds
+        let now ← IO.monoNanosNow
+        let activity ← text.activity
+        if activity != (← observedOutput.get) then
+          observedOutput.set activity
+          lastActivityNanos.set now
+        else if now >= (← lastActivityNanos.get) + 5000000000 then
+          lastActivityNanos.set now
+          emit <| waitMessage ((now - startedNanos) / 1000000000)
     pure interrupted
-  -- A stop latched during owner acquisition must not open a broker connection first.
-  let result : Except BrokerClientFailure Response ←
-    if ← interrupted then pure <| Except.error .interrupted
-    else
-      sendRequestWithCallbacksInterruptiblyResult endpoint req interrupted callbacks
-        (.wrapper expectedIdentity)
-  match result with
-  | .error .interrupted =>
-      -- Abandon the connection before a diagnostic write can block cancellation itself.
-      emit "beam: interrupting broker request"
-  | _ => pure ()
+  let callbacks : StreamCallbacks := {
+    output? := some publisher
+    onFileProgress := fun progress => do
+      if formatProgress?.isSome then
+        lastActivityNanos.set (← IO.monoNanosNow)
+        output.progress req.clientRequestId? progress
+    onDiagnostic := fun diagnostic => do
+      if showDiagnostics then
+        lastActivityNanos.set (← IO.monoNanosNow)
+        output.diagnostic req.clientRequestId? diagnostic
+  }
+  let completion : IO.Promise (Except IO.Error (Except BrokerClientFailure Response)) ← IO.Promise.new
+  let execution := completion.result?.map fun
+    | some result => result
+    | none => .error <| IO.userError "CLI request completion was dropped"
+  let stderr ← IO.getStderr
+  let textFormat ← IO.mkRef ({} : WorkspaceOutputFormat)
+  let renderer ← IO.asTask (prio := Task.Priority.dedicated) do
+    try
+      output.run execution Except.toOption req.clientRequestId? fun message => do
+        match message with
+        | .fileProgress _ progress =>
+            if let some format := formatProgress? then
+              stderr.putStrLn <| annotateRequestMessage visibleClientRequestId? (format progress)
+              textFormat.modify fun state => { state with atLineStart := true }
+        | .diagnostic _ diagnostic =>
+            if showDiagnostics then
+              stderr.putStrLn <| annotateRequestMessage visibleClientRequestId? (formatStreamDiagnostic diagnostic)
+              textFormat.modify fun state => { state with atLineStart := true }
+        | .workspaceOutput _ chunk =>
+            let (state, rendered) := (← textFormat.get).render chunk
+            textFormat.set state
+            stderr.putStr rendered
+        | .response .. => pure ()
+        stderr.flush
+    finally
+      -- A broken renderer stops the caller's interruptible request independently.
+      stop.set true
+  let outcome : Except IO.Error (Except BrokerClientFailure Response) ←
+    try
+      if let some message := startMessage? then emit message
+      -- Keep execution in the caller: IO.checkCanceled observes this task's cancellation.
+      let result : Except BrokerClientFailure Response ←
+        if ← interrupted then pure <| .error .interrupted
+        else
+          sendRequestWithCallbacksInterruptiblyResult endpoint req interrupted callbacks
+            (.wrapper expectedIdentity)
+      if let .error .interrupted := result then output.cancelOptional
+      pure (.ok result)
+    catch error => pure (.error error)
+    finally publisher.retire
+  completion.resolve outcome
+  let result ← try
+    IO.ofExcept (← IO.wait renderer)
+  finally
+    stop.set true
+    output.cancelOptional
+  if let .error .interrupted := result then
+    IO.eprintln <| annotateRequestMessage visibleClientRequestId? "beam: interrupting broker request"
   pure result
 
 private structure WrapperBrokerResponse where
@@ -373,20 +433,13 @@ private def requestBrokerResponseWithProgress
     (showProgress : Bool) : IO WrapperBrokerResponse := do
   let req ← prepareWrapperBrokerRequest client req
   let visibleClientRequestId? := req.clientRequestId?
-  let callbacks : StreamCallbacks := {
-    onFileProgress := fun progress => do
-      if showProgress then
-        IO.eprintln <| annotateRequestMessage visibleClientRequestId? (spec.progressMsg progress)
-    onDiagnostic := fun diagnostic =>
-      IO.eprintln <| annotateRequestMessage visibleClientRequestId? (formatStreamDiagnostic diagnostic)
-  }
+  let formatProgress? := if showProgress then some spec.progressMsg else none
+  let startMessage? := if showProgress then some spec.startMsg else none
   let waitMessage? := if showProgress then some spec.stillWaitingMsg else none
   let response ← withBrokerErrorContext root client do
     withRequestInterruptWatcher fun watcher => do
-      if showProgress then
-        IO.eprintln <| annotateRequestMessage visibleClientRequestId? spec.startMsg
       awaitBrokerResponseWithInterrupts watcher client.endpoint client.identity req
-        visibleClientRequestId? waitMessage? callbacks
+        visibleClientRequestId? waitMessage? formatProgress? true startMessage?
   pure { response, visibleClientRequestId? }
 
 def callBrokerWithProgress

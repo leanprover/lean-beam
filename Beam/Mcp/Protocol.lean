@@ -635,3 +635,24 @@ def callToolErrorResult (err : ToolError) : Json :=
   callToolResult (toolErrorJson err) (isError := true)
 
 end Beam.Mcp
+
+namespace Beam.Mcp.Server
+
+inductive LegacyProtocolPhase where
+  | awaitingInitialized
+  | ready
+  deriving BEq, Repr
+
+structure LegacyProtocolState where
+  phase : LegacyProtocolPhase := .awaitingInitialized
+  logLevel : LogLevel := .debug
+  deriving Repr
+
+inductive ProtocolState where
+  | undecided
+  | legacy (state : LegacyProtocolState)
+  | modern
+  deriving Repr
+
+
+end Beam.Mcp.Server

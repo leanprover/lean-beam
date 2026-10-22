@@ -7,12 +7,15 @@ Author: Emilio J. Gallego Arias
 import Lean
 import Beam.Broker.Protocol
 import Beam.Broker.Transport
+import Beam.WorkspaceOutput
 
 open Lean
 
 namespace Beam.Broker
 
 structure StreamCallbacks where
+  /-- Borrowed bounded destination; receiving text never waits for presentation. -/
+  output? : Option Beam.WorkspaceOutput.Publisher := none
   onFileProgress : SyncFileProgress → IO Unit := fun _ => pure ()
   onDiagnostic : StreamDiagnostic → IO Unit := fun _ => pure ()
 
@@ -194,7 +197,7 @@ private partial def sendRequestWithStreamResultCore
       match stream with
       | .response _ response =>
           pure <| .ok response
-      | .fileProgress .. | .diagnostic .. =>
+      | .fileProgress .. | .diagnostic .. | .workspaceOutput .. =>
           receiveResponse
     receiveResponse
   finally
@@ -231,6 +234,9 @@ partial def sendRequestWithCallbacksTimeoutResult
         callbacks.onFileProgress progress
     | .diagnostic _ diagnostic =>
         callbacks.onDiagnostic diagnostic
+    | .workspaceOutput _ chunk =>
+        if let some publisher := callbacks.output? then
+          publisher.offer chunk.source chunk.text chunk.omittedBefore
 
 /-- Send one request whose owning client may interrupt the exact in-flight connection. -/
 partial def sendRequestWithCallbacksInterruptiblyResult
@@ -246,6 +252,9 @@ partial def sendRequestWithCallbacksInterruptiblyResult
     | .fileProgress _ progress =>
         callbacks.onFileProgress progress
     | .diagnostic _ diagnostic =>
-        callbacks.onDiagnostic diagnostic) (.interruptible interrupted) server
+        callbacks.onDiagnostic diagnostic
+    | .workspaceOutput _ chunk =>
+        if let some publisher := callbacks.output? then
+          publisher.offer chunk.source chunk.text chunk.omittedBefore) (.interruptible interrupted) server
 
 end Beam.Broker

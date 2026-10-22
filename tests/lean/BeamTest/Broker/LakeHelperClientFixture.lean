@@ -82,6 +82,9 @@ private def runHelper (args : List String) : IO Unit := do
       | some timeout => pure (LakeHelperWaitPolicy.timeout timeout)
       | none => throw <| IO.userError "invalid fixture timeout"
   let cancelled ← IO.mkRef false
+  let output ← Beam.WorkspaceOutput.Buffer.create
+  let some publisher ← output.borrow
+    | throw <| IO.userError "new fixture output buffer was closed"
   let done ← IO.mkRef false
   let watcher? ← (options[1]?).mapM fun path =>
     IO.asTask (prio := Task.Priority.dedicated) do
@@ -92,18 +95,52 @@ private def runHelper (args : List String) : IO Unit := do
           break
         IO.sleep 10
   let result : Except BrokerFailure Json ← try
-    LakeHelperJob.runRequest helper operation request waitPolicy { cancelRef? := some cancelled }
+    LakeHelperJob.runRequest helper operation request waitPolicy {
+      cancelRef? := some cancelled, output? := some publisher }
   finally
     done.set true
     if let some watcher := watcher? then discard <| IO.wait watcher
+  output.seal
+  -- This fixture retains the bounded tail until completion; live pipe delivery is
+  -- checked by the gated producer in the existing CLI daemon test executable.
+  let stderr ← IO.getStderr
+  while true do
+    match ← output.poll with
+    | .chunk chunk => stderr.putStr chunk.text
+    | .closed => break
+    | .waiting _ => throw <| IO.userError "sealed fixture output was still waiting"
+  stderr.flush
   let response := match result with
     | .ok value => Response.success value
     | .error failure => failure.toResponse
   IO.println (toJson response).compress
 
+/-- Exercise a real post-response temporary-directory cleanup failure without a production hook. -/
+private def cleanupFaultHelper (directory : System.FilePath) : IO Unit := do
+  let stdin ← IO.getStdin
+  unless (← stdin.getLine).trimAscii == "go" do
+    throw <| IO.userError "fixture helper expected assignment before project code"
+  let owner ← IO.asTask (prio := Task.Priority.dedicated) do
+    try discard <| stdin.readToEnd finally Beam.ProcessJob.parentLost
+  let request ← LakeHelperJob.readJson (LakeHelperJob.requestPath directory)
+  let response ← IO.ofExcept <| request.getObjValAs? Response "response"
+  let marker ← IO.ofExcept <| request.getObjValAs? System.FilePath "marker"
+  let receipt ← IO.ofExcept <| request.getObjValAs? System.FilePath "receipt"
+  let obstacle := directory / "cleanup-denied"
+  IO.FS.createDir obstacle
+  IO.FS.writeFile (obstacle / "owned") "fixture-owned cleanup obstacle\n"
+  IO.FS.writeFile receipt (Json.mkObj [
+    ("directory", toJson obstacle), ("pid", toJson (← IO.Process.getPID).toNat)]).compress
+  IO.setAccessRights obstacle {}
+  IO.FS.writeFile marker "operation finished\n"
+  LakeHelperJob.publish directory response
+  -- The real client owns termination and reaping, including owner-loss handling.
+  discard <| IO.wait owner
+
 /-- Non-shipped client for exercising owned helper messages and retained-child cleanup. -/
 def main (args : List String) : IO Unit := do
   match args with
+  | ["lake-helper", "write-save-trace", directory] => cleanupFaultHelper directory
   | ["--process-job-exit"] => do
       unless (← (← IO.getStdin).getLine).trimAscii == "exit" do
         throw <| IO.userError "fixture expected exit permission after job assignment"

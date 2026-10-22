@@ -466,6 +466,12 @@ private def Coordinator.executeToolRequest
     (initialProgress : Nat := 0) : IO Json := do
   let notifications : NotificationSink := {
     send := request.notify
+    attachWorkspaceOutput? := some fun context => do
+      if !(← request.isActive) then
+        return .error <| RpcError.invalidRequest "request was cancelled before execution"
+      match ← request.output.attachWorkspaceOutput context with
+      | some buffer => pure <| .ok buffer
+      | none => pure <| .error RpcError.serverBusy
   }
   match ← Internal.handleToolCall
       coordinator.state

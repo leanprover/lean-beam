@@ -141,7 +141,7 @@ class InterruptWatcherTest(unittest.TestCase):
                                 "path": "Main.lean", "uri": "file:///Main.lean",
                                 "range": {"start": {"line": 0, "character": 0},
                                           "end": {"line": 0, "character": 1}},
-                                "message": "x" * (1024 * 1024),
+                                "message": "x" * 1024,
                                 "completionBlocking": False,
                             }}
                         else:
@@ -162,19 +162,40 @@ class InterruptWatcherTest(unittest.TestCase):
             server = threading.Thread(target=serve, args=(listener,))
             server.start()
             child = None
+            stderr_read = stderr_write = None
             try:
+                if stream == "stderr":
+                    # Fill an owned pipe before spawning. A small valid diagnostic must
+                    # then block, regardless of the platform's default pipe capacity.
+                    stderr_read, stderr_write = os.pipe()
+                    os.set_blocking(stderr_write, False)
+                    try:
+                        while True:
+                            os.write(stderr_write, b"x" * 4096)
+                    except BlockingIOError:
+                        pass
+                    try:
+                        while True:
+                            os.write(stderr_write, b"x")
+                    except BlockingIOError:
+                        pass
+                    os.set_blocking(stderr_write, True)
                 child = subprocess.Popen(
                     [str(self.binary.resolve()), "--blocked-output", stream,
                      str(listener.getsockname()[1])],
                     cwd=REPO_ROOT, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE if stream != "stderr" else subprocess.DEVNULL,
-                    stderr=subprocess.PIPE if stream == "stderr" else subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=stderr_write if stream == "stderr" else subprocess.DEVNULL,
                     env=dict(os.environ, BEAM_PROGRESS="0"), start_new_session=True,
                 )
-                output = child.stderr if stream == "stderr" else child.stdout
-                # Do not drain the pipe. Readability establishes that rendering has begun;
-                # the megabyte payload exceeds the supported platforms' pipe buffers.
-                self.assertTrue(select.select([output], [], [], 5)[0], errors)
+                if stderr_write is not None:
+                    os.close(stderr_write)
+                    stderr_write = None
+                # Do not drain the output being tested. For stderr, the separate fixture
+                # marker establishes entry into the write to the already-full pipe.
+                self.assertTrue(select.select([child.stdout], [], [], 5)[0], errors)
+                if stream == "stderr":
+                    self.assertEqual(child.stdout.readline(), b"diagnostic write reached\n", errors)
                 self.assertIsNone(child.poll(), errors)
                 child.send_signal(termination)
                 if repeat:
@@ -193,6 +214,9 @@ class InterruptWatcherTest(unittest.TestCase):
                         child.stdout.close()
                     if child.stderr is not None:
                         child.stderr.close()
+                for descriptor in [stderr_read, stderr_write]:
+                    if descriptor is not None:
+                        os.close(descriptor)
                 release.set()
                 server.join(timeout=6)
             self.assertFalse(server.is_alive(), "fake broker survived fixture cleanup")

@@ -70,8 +70,9 @@ private partial def drainStderr
     (source : IO.FS.Handle)
     (tail : Std.Mutex ByteArray)
     (tailLimit : Nat)
-    (sinkState : Std.Mutex StderrSinkState) : IO Unit := do
-  let chunk ← source.read 8192
+    (sinkState : Std.Mutex StderrSinkState)
+    (readSize : USize) : IO Unit := do
+  let chunk ← source.read readSize
   unless chunk.isEmpty do
     appendBoundedTail tail tailLimit chunk
     sinkState.atomically do
@@ -85,16 +86,18 @@ private partial def drainStderr
             sink? := none
             failure? := state.failure? <|> some err
           }
-    drainStderr source tail tailLimit sinkState
+    drainStderr source tail tailLimit sinkState readSize
 
 def StderrCapture.start
     (source : IO.FS.Handle)
     (tailLimit : Nat)
-    (sink? : Option StderrSink := none) : IO StderrCapture := do
+    (sink? : Option StderrSink := none)
+    (readSize : USize := 8192) : IO StderrCapture := do
+  if readSize == 0 then throw <| IO.userError "stderr capture read size must be positive"
   let tail ← Std.Mutex.new ByteArray.empty
   let sinkState ← Std.Mutex.new ({ sink? } : StderrSinkState)
   let drainTask ← IO.asTask (prio := Task.Priority.dedicated) <|
-    drainStderr source tail tailLimit sinkState
+    drainStderr source tail tailLimit sinkState readSize
   pure { tail, sinkState, drainTask }
 
 def StderrCapture.snapshot (capture : StderrCapture) : IO String := do

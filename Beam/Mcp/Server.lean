@@ -10,6 +10,7 @@ import Beam.Feedback.Broker
 import Beam.Daemon.Debug
 import Beam.Lean.Workspace
 import Beam.Mcp.Protocol
+import Beam.Mcp.Reporting
 import Beam.Mcp.SetupError
 import Beam.System
 import Beam.Workspace
@@ -26,22 +27,6 @@ transport I/O. The declarations under `Internal` are the narrow bridge used by t
 -/
 
 namespace Beam.Mcp.Server
-
-inductive LegacyProtocolPhase where
-  | awaitingInitialized
-  | ready
-  deriving BEq, Repr
-
-structure LegacyProtocolState where
-  phase : LegacyProtocolPhase := .awaitingInitialized
-  logLevel : LogLevel := .debug
-  deriving Repr
-
-inductive ProtocolState where
-  | undecided
-  | legacy (state : LegacyProtocolState)
-  | modern
-  deriving Repr
 
 private structure OwnedWorkspace where
   root : System.FilePath
@@ -111,10 +96,8 @@ inductive NotificationDelivery where
 
 structure NotificationSink where
   send : NotificationDelivery → Json → IO Unit := fun _ _ => pure ()
-
-private inductive LogPolicy where
-  | legacy (state : ServerState)
-  | request (minimum? : Option LogLevel)
+  attachWorkspaceOutput? :
+    Option (WorkspaceTextContext → IO (Except RpcError Beam.WorkspaceOutput.Buffer)) := none
 
 private structure Notifier where
   logPolicy : LogPolicy
@@ -126,7 +109,7 @@ private def notifierFor
     (notifications : NotificationSink) : Notifier :=
   let logPolicy :=
     match admitted with
-    | .legacy => LogPolicy.legacy state
+    | .legacy => LogPolicy.legacy state.protocol
     | .modern context => LogPolicy.request context.logLevel?
   { logPolicy, sink := notifications }
 
@@ -283,26 +266,14 @@ def Internal.projectStreamDiagnostic
   else
     .diagnostic
 
-private def Notifier.minimumLogLevel? (notifier : Notifier) : IO (Option LogLevel) := do
-  match notifier.logPolicy with
-  | .legacy state =>
-      match ← state.protocolState with
-      | .legacy legacy => pure <| some legacy.logLevel
-      | .undecided | .modern => pure none
-  | .request minimum? => pure minimum?
-
 private def Notifier.couldEmitNotice (notifier : Notifier) : Bool :=
-  match notifier.logPolicy with
-  -- Legacy logging is connection-wide and may change while this request is pending.
-  | .legacy _ => true
-  | .request (some minimum) => minimum.allows .notice
-  | .request none => false
+  notifier.logPolicy.mayAllow .notice
 
 private def Notifier.emitLogNotification
     (notifier : Notifier)
     (level : LogLevel)
     (notification : Json) : IO Unit := do
-  match ← notifier.minimumLogLevel? with
+  match ← notifier.logPolicy.minimumLogLevel? with
   | some minimum =>
       if minimum.allows level then
         notifier.send notification
@@ -918,6 +889,15 @@ def Internal.handleToolCall
     | .error err =>
         Internal.traceMcp s!"tools/call invalid input id={req.id.label} tool={params.name.key} error={err}"
         return .ok <| callToolErrorResult <| ToolError.invalidInput err
+  let output? ←
+    if notifier.logPolicy.mayAllow .info then
+      match notifications.attachWorkspaceOutput? with
+      | some attach =>
+          match ← attach { requestId := req.id, tool := params.name.key, policy := notifier.logPolicy } with
+          | .ok buffer => pure (some buffer)
+          | .error err => return .error err
+      | none => pure none
+    else pure none
   let reporter ← CallReporter.create notifier req.id params progress?
   try
     reporter.emitPreparing
@@ -945,6 +925,7 @@ def Internal.handleToolCall
     let brokerResp ← runtime.dispatchRequestWithHandle brokerReq bindCurrentWorkspace
       (emitProgress? := emitBrokerProgress?)
       (emitDiagnostic? := some emitDiagnostic)
+      (output? := output?)
     Internal.traceMcp
       s!"tools/call broker returned id={req.id.label} tool={params.name.key} ok={brokerResp.ok}"
     match normalizeBrokerResponse params.name brokerResp with
@@ -956,7 +937,9 @@ def Internal.handleToolCall
         Internal.traceMcp s!"tools/call tool error id={req.id.label} tool={params.name.key}"
         pure <| .ok <| callToolErrorResult err
   finally
-    reporter.finish
+    try reporter.finish
+    finally
+      if let some output := output? then output.seal
 
 private def handleReadyOperationRequest
     (state : ServerState)

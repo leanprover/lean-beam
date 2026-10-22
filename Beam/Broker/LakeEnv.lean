@@ -60,9 +60,16 @@ private def loadWorkspaceWithConfig (root : FilePath) (lakeEnv : Lake.Env)
     configFile := configFile
     updateToolchain := false
   }
-  let (ws?, log) ← LoggerIO.captureLog <| Lake.loadWorkspace loadConfig
-  let messages := log.entries.map fun entry => entry.toString
-  pure (ws?, messages)
+  let messages ← IO.mkRef (#[] : Array String)
+  let stderr ← IO.getStderr
+  let ws? ← LoggerIO.run?' (Lake.loadWorkspace loadConfig) fun entry => do
+    let text := entry.toString
+    messages.modify (·.push text)
+    -- Rendering uses the existing raw stderr channel. A presentation failure must not
+    -- change workspace loading or the invalid-configuration fallback below.
+    if entry.level ≥ Lake.LogLevel.info then
+      discard <| (do stderr.putStr (text ++ "\n"); stderr.flush).toBaseIO
+  pure (ws?, ← messages.get)
 
 private def loadWorkspaceFailureMessage
     (root : FilePath)

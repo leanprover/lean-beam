@@ -495,6 +495,28 @@ intentionally repeat diagnostics already seen live; it is an alternate delivery 
 that cannot consume interleaved events. Silent editor-only Lean messages, such as
 `Goals accomplished!`, are removed at reception and are never made visible by `diagnostic_scope`.
 
+Raw Lake helper output covers configuration evaluation, dependency cloning, and save helpers;
+dependency module builds use the existing diagnostic channel. It is separate from Lean diagnostics
+and progress counters. Beam forwards stdout/stderr fragments as `notifications/message` events
+with level `info` and logger `lake.output`. Legacy clients that send `initialize` start at `debug`,
+so these logs are **on by default**. Send `logging/setLevel` with `{"level":"notice"}` or a higher
+threshold to suppress raw Lake logs; `notice` still allows Beam's liveness notices. Modern calls
+receive no raw logs unless their `params._meta["io.modelcontextprotocol/logLevel"]` admits `info`
+(for example, `"info"` or `"debug"`). Lake logger entries themselves use Lake's normal `info`
+threshold, so trace-level git command logs are hidden even when MCP logging is at `debug`.
+Each event's `data` contains `requestId`,
+`tool`, `source` (`stdout` or `stderr`), `text`, and `omittedBefore`. Stderr is a stream identity,
+not an inferred error severity. Fragments need not end in a newline.
+
+Pending raw text is limited to 256 KiB and 256 chunks per request. Slow readers cause the oldest
+pending text to be dropped; `omittedBefore: true` marks that gap before the retained text. Normal
+completion preserves the bounded tail before the final response. Cancellation discards pending
+text; a packet already in flight may finish. There is no transcript file or replay API. Lean can
+buffer `run_cmd` output until the command returns, so forwarding cannot make those messages appear
+earlier. Legacy log-level changes apply when the writer prepares each raw packet for delivery;
+modern logging policy stays fixed for the request. These optional logs do not change the operation's
+typed result or diagnostic omission count.
+
 ### Stable Result Shapes
 
 The `structuredContent` for a clean `lean_sync` has this semantic shape (counts are always present;

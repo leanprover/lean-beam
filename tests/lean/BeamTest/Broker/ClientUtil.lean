@@ -69,7 +69,7 @@ def runClientWithProgress
     match stream with
     | .fileProgress clientRequestId? progress =>
         progressRef.modify fun seen => seen.push { clientRequestId?, progress }
-    | .diagnostic .. | .response .. => pure ()
+    | .diagnostic .. | .workspaceOutput .. | .response .. => pure ()
   let resp ←
     match result with
     | .ok response => pure response

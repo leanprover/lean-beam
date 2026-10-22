@@ -269,6 +269,7 @@ dispatch above that boundary.
 The executable path is split into importable modules:
 
 - [Beam/Mcp/Protocol.lean](../Beam/Mcp/Protocol.lean): current MCP JSON-RPC helpers
+- [Beam/Mcp/Reporting.lean](../Beam/Mcp/Reporting.lean): runtime-free logging policy and raw-text projection data shared by execution and delivery
 - [Beam/Mcp/Options.lean](../Beam/Mcp/Options.lean): executable options and usage
 - [Beam/Mcp/Application.lean](../Beam/Mcp/Application.lean): installation-owned runtime admission
 - [Beam/Mcp/Server.lean](../Beam/Mcp/Server.lean): descriptor resolution, lazy runtime dispatch, and
@@ -280,7 +281,7 @@ The executable path is split into importable modules:
 - [Beam/Mcp/ServerMain.lean](../Beam/Mcp/ServerMain.lean): executable entry point
 
 The [MCP transport contract](MCP_TRANSPORT_CONTRACT.md) defines execution, delivery, cancellation,
-and shutdown ownership. Lake text-buffer integration is a separate planned follow-up.
+and shutdown ownership, including bounded delivery of raw Lake helper output.
 
 Installed and relocated native executable checks use the external `McpClient` in
 `tests/test-mcp-stdio.py`, via `tests/lib/installed-mcp-smoke.py`. Keep client conversation and
@@ -372,13 +373,34 @@ result is always closed.
 ### Internal Broker Stream Contract
 
 The daemon transport is a private implementation boundary. One request may emit any number of
-`fileProgress` and `diagnostic` messages followed by exactly one terminal `response`; nothing after
+`fileProgress`, `diagnostic`, and `workspaceOutput` messages followed by exactly one terminal `response`; nothing after
 that response belongs to the request. Every variant uses the same `kind`, `payload`, and optional
 `clientRequestId` envelope, while the semantic response payload never owns transport correlation.
 The terminal response carries the latest progress observation available when it was constructed,
 which may be newer than the last live progress event. Keep these invariants exhaustive in
 `Beam.Broker.StreamMessage` and encode their exact wire behavior in `StreamContractTest`; do not
 promote this stream to an installed client API.
+
+`workspaceOutput` carries a stdout/stderr source, 1–8192 UTF-8 bytes of text, and an `omittedBefore`
+flag. The receiving buffer preserves that flag across splitting and later eviction. One request
+shares a 256 KiB/256-record buffer across all its Lake helpers. Retiring a helper preserves its
+accepted text. Normal execution completion seals the buffer and preserves its tail before the
+terminal response; cancellation revokes publishers and discards optional output.
+
+[Beam/Broker/Output.lean](../Beam/Broker/Output.lean) separates execution from delivery for TCP and
+CLI requests. It retains typed notifications and outcomes, keeps the latest pending file-progress
+update, and reserves 16 MiB/64 records for required diagnostics, preserving the existing frame allowance. Pending progress has a separate
+64 KiB budget. Required-output exhaustion fails delivery rather than silently dropping a diagnostic.
+Only one consumer writes; helper pipe drains, request cancellation, and execution cleanup never
+wait for physical output. A synchronous CLI stderr write can remain blocked, so this does not
+promise a fixed process-exit deadline for an unread stderr pipe.
+
+In-process dispatch also accepts an optional text buffer. Its caller owns sealing or discarding
+that buffer after execution cleanup. MCP reserves the raw buffer and its packet allowance within
+the shared outbox budget, then the sole writer claims chunks directly. Typed projection metadata
+retains no runtime authority; legacy logging holds only the protocol-state mutex. Buffer claims,
+policy reads and encoding happen outside the outbox lock. One asynchronous readiness observer per
+empty buffer generation wakes the writer, while the pending tail remains bounded.
 
 Each TCP connection has one receive owner. Keep all framed reads on the same
 `Beam.Broker.Transport.Connection`, which retains unread bytes between frames; concurrent reads or

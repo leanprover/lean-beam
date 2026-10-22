@@ -18,6 +18,7 @@ import Beam.Broker.DocumentAdmission
 import Beam.Broker.Errors
 import Beam.Broker.Metrics
 import Beam.Broker.OpenDocs
+import Beam.Broker.Output
 import Beam.Broker.Pending
 import Beam.Broker.Protocol
 import Beam.Broker.Publication
@@ -594,6 +595,14 @@ private partial def awaitInitializeResponse (stdout : IO.FS.Stream) : IO Unit :=
   | .request .. =>
       throw <| IO.userError "unexpected server request before initialize completed"
 
+private def requestHelperControl
+    (cancelRef? : Option (IO.Ref Bool))
+    (output? : Option Beam.WorkspaceOutput.Buffer) : IO LakeHelperControl := do
+  let publisher? ← match output? with
+    | some output => output.borrow
+    | none => pure none
+  return { cancelRef?, output? := publisher? }
+
 private def backendInitializeTimeoutMs : Nat :=
   30000
 
@@ -609,9 +618,10 @@ private def acquireBackendSession
     (workspaceGeneration : Nat)
     (config : BrokerConfig)
     (epoch : Nat)
-    (cancelRef? : Option (IO.Ref Bool)) : IO (Except BrokerFailure Session) := do
+    (cancelRef? : Option (IO.Ref Bool))
+    (output? : Option Beam.WorkspaceOutput.Buffer) : IO (Except BrokerFailure Session) := do
   let root := config.root
-  let (cmd, args, env) ← match ← leanCommand config { cancelRef? } with
+  let (cmd, args, env) ← match ← leanCommand config (← requestHelperControl cancelRef? output?) with
     | .error failure => return .error failure
     | .ok command => pure command
   let child ← IO.Process.spawn {
@@ -673,7 +683,8 @@ private def acquireBackendSession
     throw <| IO.userError message
 
 private def ensureSession (workspaceId : WorkspaceId)
-    (cancelRef? : Option (IO.Ref Bool) := none) : M (Except ResponseFailure Session) := do
+    (cancelRef? : Option (IO.Ref Bool) := none)
+    (output? : Option Beam.WorkspaceOutput.Buffer := none) : M (Except ResponseFailure Session) := do
   let state ← get
   let workspace ←
     match getWorkspace? state workspaceId with
@@ -685,7 +696,7 @@ private def ensureSession (workspaceId : WorkspaceId)
   | some session => pure (.ok session)
   | none =>
       let acquired ← try
-        acquireBackendSession workspaceId workspace.generation config sessionState.nextEpoch cancelRef?
+        acquireBackendSession workspaceId workspace.generation config sessionState.nextEpoch cancelRef? output?
       catch error => pure <| .error { code := .internalError, message := error.toString }
       let session ← match acquired with
         | .error failure => return .error failure.toResponseFailure
@@ -777,10 +788,11 @@ private def withSessionForSnapshot
     (workspaceId : WorkspaceId)
     (snapshot : FileSyncSnapshot)
     (act : Session → M (Except ResponseFailure α))
-    (cancelRef? : Option (IO.Ref Bool) := none) :
+    (cancelRef? : Option (IO.Ref Bool) := none)
+    (output? : Option Beam.WorkspaceOutput.Buffer := none) :
     M (Except ResponseFailure α) :=
   withWorkspaceForSnapshot workspaceId snapshot fun _ => do
-    match ← ensureSession workspaceId cancelRef? with
+    match ← ensureSession workspaceId cancelRef? output? with
     | .error failure => pure (.error failure)
     | .ok session => act session
 
@@ -1486,6 +1498,7 @@ private structure AdmittedDocument where
   permit : DocumentAdmission.Permit
 
 private structure WorkspaceRequest where
+  output? : Option Beam.WorkspaceOutput.Buffer := none
   workspaceId : WorkspaceId
   workspaceGeneration : Nat
   clientRequestId? : Option String
@@ -1508,7 +1521,8 @@ private def requireRequestDocument (req : WorkspaceRequest) : IO AdmittedDocumen
 private def validateRequestWorkspace
     (server : ServerRuntime)
     (req : Request)
-    (cancelRef? : Option (IO.Ref Bool)) : IO (Except ResponseFailure WorkspaceRequest) := do
+    (cancelRef? : Option (IO.Ref Bool))
+    (output? : Option Beam.WorkspaceOutput.Buffer := none) : IO (Except ResponseFailure WorkspaceRequest) := do
   let workspaceId ←
     match req.requireWorkspaceId with
     | .ok workspaceId => pure workspaceId
@@ -1520,6 +1534,7 @@ private def validateRequestWorkspace
   pure (.ok {
     workspaceId
     workspaceGeneration := workspace.generation
+    output?
     clientRequestId? := req.clientRequestId?
     cancelRef?
   })
@@ -1778,7 +1793,7 @@ private def startSyncedWorkspaceRequest
     (diagnosticScope : DiagnosticScope := .errors)
     (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) :
     M (Except ResponseFailure StartedSyncedRequest) :=
-  withSessionForSnapshot req.workspaceId snapshot (cancelRef? := req.cancelRef?) fun session =>
+  withSessionForSnapshot req.workspaceId snapshot (cancelRef? := req.cancelRef?) (output? := req.output?) fun session =>
     startSyncedDocumentRequest server session snapshot method mkParams expectedVersion?
       req.clientRequestId? emitProgress? diagnosticScope emitDiagnostic? req.cancelRef?
 
@@ -1833,7 +1848,7 @@ private def startTrackedDiagnosticsBarrierIO
     | .error failure => return .error failure
   server.withRequestSessionState req do
     withWorkspaceForSnapshot req.workspaceId snapshot fun workspace => do
-      let session ← match ← ensureSession req.workspaceId req.cancelRef? with
+      let session ← match ← ensureSession req.workspaceId req.cancelRef? req.output? with
         | .error failure => return .error failure
         | .ok session => pure session
       let synced ← syncFileSnapshotDetailed session snapshot
@@ -2076,7 +2091,7 @@ private def saveOleanCore
     match ← liftHandlerIO <|
         requestSaveSpecification leanConfig.lakeHelper started.document.session.root path
           { hash := started.lakeTraceHash, mtime := started.textMTime }
-          { cancelRef? := req.cancelRef? } with
+          (← requestHelperControl req.cancelRef? req.output?) with
     | .ok spec => pure spec
     | .error failure =>
       if failure.code != .saveUnsupportedSetup then throwBrokerFailure failure
@@ -2179,7 +2194,7 @@ private def saveOleanCore
     -- Defer caller cancellation through the helper's existing bounded trace wait, so a normal
     -- cancellation can dispose the private outputs after their producer has actually finished.
     withFailureProgress barrierProgress? do
-      match ← liftHandlerIO <| writeLeanSaveTrace privateSpec with
+      match ← liftHandlerIO <| writeLeanSaveTrace privateSpec (← requestHelperControl none req.output?) with
       | .ok () => pure ()
       | .error failure =>
           let failure ← liftHandlerIO <|
@@ -2297,7 +2312,7 @@ private def handleUpdateFileOp
   liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
   let snapshot ← liftFailureIO <| readRequestSyncSnapshot server req
   let updated ← liftFailureIO <| server.withRequestSessionState req do
-    withSessionForSnapshot req.workspaceId snapshot (cancelRef? := req.cancelRef?) fun session => do
+    withSessionForSnapshot req.workspaceId snapshot (cancelRef? := req.cancelRef?) (output? := req.output?) fun session => do
       let synced ← syncFileSnapshotDetailed session snapshot
       updateSession synced.session
       pure (.ok synced)
@@ -2460,7 +2475,7 @@ private def handleWorkspaceSymbolsOp
   liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
   let (session, pending) ← liftFailureIO <|
     server.withRequestSessionState req do
-      let session ← match ← ensureSession req.workspaceId req.cancelRef? with
+      let session ← match ← ensureSession req.workspaceId req.cancelRef? req.output? with
         | .error failure => return .error failure
         | .ok session => pure session
       let params := toJson ({ query := request.query : WorkspaceSymbolParams })
@@ -2671,7 +2686,8 @@ private def handleRequestIO
     (req : Request)
     (activeRequest? : Option ActiveRequest := none)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
-    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) : IO Response := do
+    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none)
+    (output? : Option Beam.WorkspaceOutput.Buffer := none) : IO Response := do
   let cancelRef? := activeRequest?.map (·.cancelRef)
   match req.payload with
   | .shutdown =>
@@ -2681,7 +2697,7 @@ private def handleRequestIO
       match req.workspaceId? with
       | none => server.statsResponse
       | some _ =>
-          match ← validateRequestWorkspace server req cancelRef? with
+          match ← validateRequestWorkspace server req cancelRef? output? with
           | .error failure => pure failure.toResponse
           | .ok workspaceReq =>
               server.statsResponse (some workspaceReq.workspaceId)
@@ -2693,7 +2709,7 @@ private def handleRequestIO
       match req.workspaceId? with
       | none => pure <| Response.success (← server.withState openDocsPayload)
       | some _ =>
-          match ← validateRequestWorkspace server req cancelRef? with
+          match ← validateRequestWorkspace server req cancelRef? output? with
           | .error failure => pure failure.toResponse
           | .ok workspaceReq =>
               pure <| Response.success
@@ -2717,7 +2733,7 @@ private def handleRequestIO
       let cancelled ← cancelActiveRequest server req.resolvedWorkspaceId? targetClientRequestId
       pure <| Response.success (toJson ({ cancelled } : CancelResult))
   | payload =>
-      match ← validateRequestWorkspace server req cancelRef? with
+      match ← validateRequestWorkspace server req cancelRef? output? with
       | .error failure => pure failure.toResponse
       | .ok workspaceReq =>
           withDocumentAdmission server workspaceReq payload.documentPath? fun workspaceReq => do
@@ -2730,7 +2746,7 @@ private def handleRequestIO
                 let resp ←
                   try
                     let result ← server.withRequestSessionState workspaceReq do
-                      let session ← match ← ensureSession workspaceReq.workspaceId workspaceReq.cancelRef? with
+                      let session ← match ← ensureSession workspaceReq.workspaceId workspaceReq.cancelRef? workspaceReq.output? with
                         | .error failure => return .error failure
                         | .ok session => pure session
                       let payload := Json.mkObj [
@@ -2869,21 +2885,23 @@ def ServerRuntime.dispatchRequestWithHandle
     (req : Request)
     (beforeDispatch : RequestHandle → IO Bool)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
-    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) : IO Response := do
+    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none)
+    (output? : Option Beam.WorkspaceOutput.Buffer := none) : IO Response := do
   server.withRequestAdmission req fun handle => do
     unless ← beforeDispatch handle do
       return BrokerFailure.toResponse {
         code := .requestCancelled
         message := "request was cancelled before broker dispatch"
       }
-    handleRequestIO server req handle.active? emitProgress? emitDiagnostic?
+    handleRequestIO server req handle.active? emitProgress? emitDiagnostic? output?
 
 def ServerRuntime.dispatchRequest
     (server : ServerRuntime)
     (req : Request)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
-    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) : IO Response := do
-  server.dispatchRequestWithHandle req (fun _ => pure true) emitProgress? emitDiagnostic?
+    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none)
+    (output? : Option Beam.WorkspaceOutput.Buffer := none) : IO Response := do
+  server.dispatchRequestWithHandle req (fun _ => pure true) emitProgress? emitDiagnostic? output?
 
 private def rootWatchPollMs : UInt32 :=
   250
@@ -2924,99 +2942,98 @@ private def watchSessionOwnerStdin
 
 private def watchClientDisconnectUntil
     (client : Transport.Connection)
-    (handle : RequestHandle)
-    (requestDone : IO Bool) : IO Unit := do
+    (requestDone : IO Bool)
+    (disconnect : IO Unit) : IO Unit := do
   try
-    -- The daemon transport accepts one request per connection. A second message is invalid and a
-    -- disconnect cancels the exact admitted request. Normal request completion interrupts this
-    -- receive so the watcher cannot outlive its connection handler.
+    -- One request per connection. A second message is invalid too.
     match ← Transport.recvMsgInterruptibly client requestDone with
-    | .completed _ => discard <| handle.cancel
+    | .completed _ => disconnect
     | .interrupted => pure ()
   catch _ =>
-    unless ← requestDone do
-      discard <| handle.cancel
+    unless ← requestDone do disconnect
 
 private def handleClient
     (server : ServerRuntime)
     (transport : DaemonTransport)
     (client : Transport.Connection) : IO Unit := do
-  let clientRequestIdRef ← IO.mkRef (none : Option String)
-  let terminalSentRef ← IO.mkRef false
-  let sendResponse (clientRequestId? : Option String) (resp : Response) : IO Unit := do
-    Transport.sendMsg client
-      (toJson (StreamMessage.response clientRequestId? resp)).compress
-    terminalSentRef.set true
+  let abandoned ← IO.mkRef false
+  let outputStarted ← IO.mkRef false
+  let clientRequestId ← IO.mkRef (none : Option String)
+  let sendResponse (id? : Option String) (response : Response) : IO Unit := do
+    outputStarted.set true
+    Transport.sendMsg client (toJson (StreamMessage.response id? response)).compress
   try
     if let some identity := server.mode.wrapperIdentity? then
-      -- The greeting pins this connection to the descriptor-selected wrapper generation before
-      -- the peer discloses its capability or semantic request contents.
+      outputStarted.set true
       Transport.sendMsg client (toJson (ServerHello.current identity)).compress
-    let initialRequestTimeoutMs := 5000
-    let deadlineNanos := (← IO.monoNanosNow) + initialRequestTimeoutMs * 1000000
+      outputStarted.set false
+    let deadlineNanos := (← IO.monoNanosNow) + 5000 * 1000000
     let some msg ← Transport.recvMsgUntil client deadlineNanos
-      | throw <| IO.userError s!"Beam daemon initial request timed out after {initialRequestTimeoutMs} ms"
-    let request : Except ResponseFailure Request ←
-      match Json.parse msg with
-      | .error err =>
-          pure <| Except.error <|
-            responseFailureFor .invalidParams s!"invalid request json: {err}"
-      | .ok json => do
-          match json.getObjValAs? String "clientRequestId" with
-          | .ok clientRequestId => clientRequestIdRef.set (some clientRequestId)
-          | .error _ => pure ()
-          match fromJson? json with
-          | .ok req => pure <| Except.ok req
-          | .error err =>
-              pure <| Except.error <|
-                responseFailureFor .invalidParams s!"invalid request payload: {err}"
+      | throw <| IO.userError "Beam daemon initial request timed out after 5000 ms"
+    let request : Except ResponseFailure Request := do
+      let json ← (Json.parse msg).mapError fun error =>
+        responseFailureFor .invalidParams s!"invalid request json: {error}"
+      (fromJson? json).mapError fun error =>
+        responseFailureFor .invalidParams s!"invalid request payload: {error}"
     match request with
-    | Except.error failure =>
-        sendResponse (← clientRequestIdRef.get) failure.toResponse
-    | Except.ok req =>
-        let emitProgress : SyncFileProgress → IO Unit := fun progress =>
-          Transport.sendMsg client
-            (toJson (StreamMessage.fileProgress req.clientRequestId? progress)).compress
-        let emitDiagnostic : StreamDiagnostic → IO Unit := fun diagnostic =>
-          Transport.sendMsg client
-            (toJson (StreamMessage.diagnostic req.clientRequestId? diagnostic)).compress
+    | .error failure =>
+        let id? := (Json.parse msg).toOption.bind fun json =>
+          (json.getObjValAs? String "clientRequestId").toOption
+        sendResponse id? failure.toResponse
+    | .ok req =>
+        clientRequestId.set req.clientRequestId?
+        let text ← Beam.WorkspaceOutput.Buffer.create
+        let output ← Output.Queue.create text
+        let disconnected ← IO.mkRef false
         let requestDone ← IO.mkRef false
+        let handleRef ← IO.mkRef (none : Option RequestHandle)
         let watcherRef ← IO.mkRef (none : Option (Task (Except IO.Error Unit)))
-        let resp ←
+        let cancel : IO Unit := do
+          disconnected.set true
+          text.discard
+          if let some handle ← handleRef.get then discard <| handle.cancel
+        let execution ← IO.asTask (prio := Task.Priority.dedicated) do
           try
             server.dispatchRequestWithHandle req (fun handle => do
+              handleRef.set (some handle)
+              if ← disconnected.get then return false
               let watcher ← IO.asTask (prio := Task.Priority.dedicated) <|
-                watchClientDisconnectUntil client handle requestDone.get
+                watchClientDisconnectUntil client requestDone.get cancel
               watcherRef.set (some watcher)
-              pure true) (some emitProgress) (some emitDiagnostic)
+              pure true)
+              (some (output.progress req.clientRequestId?))
+              (some (output.diagnostic req.clientRequestId?)) (some text)
           finally
+            -- Pending delivery retains no active broker admission handle.
+            handleRef.set none
+        try
+          discard <| output.run execution some req.clientRequestId? fun message => do
+            let frame := (toJson message).compress
+            let stop := do return (← disconnected.get) || (← output.failed) || (← transport.stop.get)
+            outputStarted.set true
+            match ← Transport.sendMsgInterruptibly client frame stop with
+            | .completed () => pure ()
+            | .interrupted => throw <| IO.userError "broker output connection interrupted"
+        finally
+          -- Stop the exact execution before joining it; display must not own cleanup.
+          try cancel
+          finally
+            discard <| IO.wait execution
             requestDone.set true
-            if let some watcher ← watcherRef.get then
-              discard <| IO.wait watcher
-        -- Request validation alone does not grant shutdown authority. Only stop the listener once
-        -- dispatch has authenticated the capability and started runtime closure.
-        let stopsTransport ←
-          if req.op == .shutdown then server.closeStarted else pure false
-        if stopsTransport then
-          -- A successful send is the transport's flush boundary. Wake the listener only after the
-          -- terminal response has been handed off, but do so even when the caller disconnected so
-          -- a closed runtime cannot remain behind a live listener.
-          try
-            sendResponse req.clientRequestId? resp
-          finally
-            requestStop transport
-        else
-          sendResponse req.clientRequestId? resp
-  catch e =>
-    unless ← terminalSentRef.get do
-      let clientRequestId? ← clientRequestIdRef.get
-      let resp := errorResponseFor .internalError e.toString
+            if let some watcher ← watcherRef.get then discard <| IO.wait watcher
+            if req.op == .shutdown && (← server.closeStarted) then requestStop transport
+  catch error =>
+    let reported ← if ← outputStarted.get then pure false else
       try
-        sendResponse clientRequestId? resp
-      catch _ =>
-        pure ()
+        sendResponse (← clientRequestId.get) (errorResponseFor .internalError error.toString)
+        pure true
+      catch _ => pure false
+    unless reported do
+      -- A send may have emitted a partial frame. Never append a replacement response.
+      abandoned.set true
+      Transport.abandonConnection client
   finally
-    Transport.closeConnection client
+    unless ← abandoned.get do Transport.closeConnection client
 
 private partial def acceptLoop
     (server : ServerRuntime)

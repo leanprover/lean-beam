@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import signal
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -40,16 +41,25 @@ def project(base, compiler, label, stall=True, abrupt=False):
     # Both helper and descendant record their PID before the test cancels/kills the owner.
     descendant = root / "descendant.py"
     descendant.write_text("from pathlib import Path\nimport os,time\n" +
+                          "os.write(1, 'child stdout α'.encode('utf-8'))\n" +
+                          "os.write(2, 'child stderr β'.encode('utf-8'))\n" +
                           f"Path({str(root / 'descendant.pid')!r}).write_text(str(os.getpid()))\n" +
-                          f"while not Path({str(root / 'release-descendant')!r}).exists(): time.sleep(0.02)\n",
+                          f"while not Path({str(root / 'release-descendant')!r}).exists():\n" +
+                          f"    if Path({str(root / 'pulse-output')!r}).exists(): os.write(2, b'configuration output\\n')\n" +
+                          "    time.sleep(0.5)\n",
                           encoding="utf-8")
     (root / "lakefile.lean").write_text(
         "import Lake\nopen Lake DSL\nrun_cmd do\n" +
+        '  (← IO.getStdout).putStr "helper stdout α"\n' +
+        '  (← IO.getStdout).flush\n' +
+        '  (← IO.getStderr).putStr "helper stderr β"\n' +
+        '  (← IO.getStderr).flush\n' +
+        '  Lean.logWarning "helper configuration warning"\n' +
         f"  IO.FS.writeFile {json.dumps(str(root / 'helper.pid'), ensure_ascii=False)} (toString (← IO.Process.getPID))\n" +
         "  discard <| IO.Process.spawn {\n" +
         f"    cmd := {json.dumps(sys.executable, ensure_ascii=False)}\n" +
         f"    args := #[{json.dumps(str(descendant), ensure_ascii=False)}]\n" +
-        "    stdin := .null, stdout := .null, stderr := .null\n  }\n" +
+        "    stdin := .null, stdout := .inherit, stderr := .inherit\n  }\n" +
         f"  while !(← (System.FilePath.mk {json.dumps(str(root / 'descendant.pid'), ensure_ascii=False)}).pathExists) do IO.sleep 10\n" +
         (f"  while !(← (System.FilePath.mk {json.dumps(str(root / 'release'), ensure_ascii=False)}).pathExists) do IO.sleep 10\n"
          if stall else "") +
@@ -93,9 +103,53 @@ def child_environment(root):
     return dict(os.environ, TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary))
 
 
+def cleanup_receipts(base, fixture):
+    if os.name != "posix" or os.geteuid() == 0:
+        print("cleanup receipt permission fault: requires unprivileged POSIX permissions", flush=True)
+        return
+    responses = [
+        {"ok": True, "result": {"traceWritten": True, "tracePath": "fixture.trace"}},
+        {"ok": False, "error": {"code": "contentModified", "message": "fixture changed",
+                                 "data": {"reason": "fixture", "snapshot": 42}}},
+    ]
+    for index, response in enumerate(responses):
+        root = base / f"cleanup-receipt-{index}"
+        root.mkdir()
+        marker, receipt = root / "operation-finished", root / "job-receipt.json"
+        request = {"response": response, "marker": str(marker), "receipt": str(receipt)}
+        with (root / "owner.out").open("w") as stdout, (root / "owner.err").open("w") as stderr:
+            owner = subprocess.Popen([str(fixture), str(fixture), "write-save-trace", "5000"],
+                                     stdin=subprocess.PIPE, stdout=stdout, stderr=stderr, text=True,
+                                     env=child_environment(root))
+            try:
+                owner.stdin.write(json.dumps(request))
+                owner.stdin.close()
+                owner.wait(timeout=10)
+                assert owner.returncode == 0, (root / "owner.err").read_text()
+                assert marker.read_text() == "operation finished\n", "operation did not finish"
+                failure = json.loads((root / "owner.out").read_text())
+                assert failure["ok"] is False, failure
+                assert failure["error"]["code"] == "internalError", failure
+                assert failure["error"]["data"]["operationResponse"] == response, failure
+                stopped([json.loads(receipt.read_text())["pid"]])
+                print("owned helper cleanup retains typed response:", index, "passed", flush=True)
+            finally:
+                if owner.poll() is None:
+                    owner.kill()
+                    owner.wait(timeout=5)
+                if receipt.is_file():
+                    protected = Path(json.loads(receipt.read_text())["directory"])
+                    assert protected.name == "cleanup-denied" and protected.parent.name == "job"
+                    assert protected.parent.parent.parent == root / "temporary", protected
+                    # Restore only this fixture's obstacle so outer owned-directory cleanup works.
+                    if protected.exists():
+                        protected.chmod(0o700)
+
+
 def direct(base, compiler, helper):
     fixture = REPO / ".lake/build/bin" / ("beam-lake-helper-client-fixture" + EXE)
     subprocess.run([str(fixture), "--process-job-exited-groups"], check=True, timeout=30)
+    cleanup_receipts(base, fixture)
     for scenario in [f"early-deadline-{i}" for i in range(8)] + [
             "success", "abrupt", "deadline", "cancel", "parent-loss"]:
         early = scenario.startswith("early-deadline-")
@@ -134,6 +188,11 @@ def direct(base, compiler, helper):
                     response = json.loads(stdout_path.read_text(encoding="utf-8"))
                     if scenario == "success":
                         assert "result" in response, response
+                        output = stderr_path.read_text(encoding="utf-8")
+                        assert "helper stdout α" in output, output
+                        assert "helper stderr β" in output, output
+                        assert "helper configuration warning" in output, output
+                        assert "helper stdout" not in stdout_path.read_text(encoding="utf-8"), response
                     elif scenario == "cancel":
                         assert response["error"]["code"] == "requestCancelled", response
                     elif scenario == "abrupt":
@@ -161,6 +220,19 @@ def through_cli(base, compiler, cli):
         environment = child_environment(root)
         if scenario == "cold-success":
             environment["BEAM_PROGRESS"] = "1"
+            (root / "pulse-output").touch()
+            # A real local clone exercises Lake's trace entries without network access or
+            # another helper hold. Normal live logs must retain info/warnings, not git traces.
+            dependency = root / "dependency-source"
+            dependency.mkdir()
+            (dependency / "lakefile.toml").write_text('name = "fixture_dep"\n', encoding="utf-8")
+            for arguments in [["init", "--quiet"], ["add", "lakefile.toml"],
+                              ["-c", "user.name=Beam Fixture", "-c", "user.email=fixture@example.invalid",
+                               "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture"]]:
+                subprocess.run(["git", *arguments], cwd=dependency, env=environment,
+                               check=True, capture_output=True, text=True, timeout=10)
+            with (root / "lakefile.lean").open("a", encoding="utf-8") as config:
+                config.write(f'\nrequire fixture_dep from git {json.dumps(str(dependency))} @ "HEAD"\n')
         command = [str(cli), "--root", str(root)]
         stdout_path, stderr_path = root / "owner.out", root / "owner.err"
 
@@ -179,21 +251,41 @@ def through_cli(base, compiler, cli):
             pids = []
             try:
                 pids = entered(root, owner)
+
+                def raw_output_visible():
+                    assert owner.poll() is None, stderr_path.read_text(errors="replace")
+                    assert stdout_path.stat().st_size == 0, "serve completed before release"
+                    output = stderr_path.read_text(encoding="utf-8", errors="replace")
+                    # The descendant inherits the helper's real pipes. run_cmd's own Lean
+                    # streams are captured upstream until command completion. Both raw
+                    # scalars must arrive without a newline, including non-TTY cases.
+                    return "α" in output and "β" in output
+
+                wait_for(raw_output_visible, "cold serve hid flushed Lake output until completion")
                 if scenario == "cold-success":
                     assert "beam: loading Lake workspace configuration..." in stderr_path.read_text(), \
                         "serve must explain its configuration wait before readiness"
                     # Hold project evaluation past the old 30-second deadline. The descendant
                     # has a separate latch, so successful cleanup must terminate it too.
+                    active_until = time.monotonic() + 8
+                    initial_waits = re.findall(r"still preparing Lean workspace \((\d+)s\)",
+                                              stderr_path.read_text(encoding="utf-8"))
 
                     def still_loading():
                         assert owner.poll() is None, stderr_path.read_text(errors="replace")
                         assert stdout_path.stat().st_size == 0, "serve completed before release"
+                        if time.monotonic() < active_until:
+                            waits = re.findall(r"still preparing Lean workspace \((\d+)s\)",
+                                               stderr_path.read_text(encoding="utf-8"))
+                            assert waits == initial_waits, "waiting reminders duplicated active Lake output"
+                        else:
+                            (root / "pulse-output").unlink(missing_ok=True)
 
                     hold_helper(pids, "cold server environment", still_loading)
                     waits = [int(seconds) for seconds in re.findall(
                         r"still preparing Lean workspace \((\d+)s\)",
                         stderr_path.read_text(encoding="utf-8"))]
-                    assert waits and waits[-1] >= 30, "held serve must report elapsed waiting time"
+                    assert waits and waits[-1] >= 25, "quiet held serve must resume waiting reminders"
                     assert waits[0] >= 5, waits
                     assert all(later - earlier >= 5 for earlier, later in zip(waits, waits[1:])), waits
                     (root / "release").touch()
@@ -205,6 +297,23 @@ def through_cli(base, compiler, cli):
                     wait_for(ready, "cold serve did not become ready after release", seconds=20)
                     served = json.loads(stdout_path.read_text(encoding="utf-8"))
                     assert served["ok"] is True and served["result"]["state"] == "running", served
+                    output = stderr_path.read_text(encoding="utf-8")
+                    assert (root / ".lake/packages/fixture_dep/.git").exists(), "local dependency was not cloned"
+                    assert "info:" in output and "helper configuration warning" in output, output
+                    assert not any(line.startswith("trace:") for line in output.splitlines()), output
+                    registry = Path(served["result"]["sessionDir"]) / "beam-daemon.json"
+                    port = json.loads(registry.read_text(encoding="utf-8"))["port"]
+                    with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+                        with connection.makefile("rb") as incoming:
+                            def receive():
+                                header = incoming.readline()
+                                assert header, "wrapper daemon closed before returning its framed error"
+                                return json.loads(incoming.read(int(header)))
+                            assert receive()["schemaVersion"] == 1
+                            connection.sendall(b"16777217\n")
+                            error = receive()["payload"]["error"]
+                            assert error["code"] == "internalError", error
+                            assert "exceeds 16777216 bytes" in error["message"], error
                     synced = invoke("sync", "Main.lean")
                     assert synced["fileProgress"]["done"] is True, synced
                     assert synced["result"]["readiness"]["saveReady"] is True, synced
@@ -263,9 +372,28 @@ def through_mcp(base, compiler, server):
                 params = {"name": "lean_save" if scenario == "save-cancel-drop" else "lean_sync", "arguments": {
                     "workspace": {"root": str(root)}, "path": "Main.lean"}}
                 if modern:
-                    params = mcp.with_modern_metadata(params)
+                    params = mcp.with_modern_metadata(params, log_level="info")
                 request = client.send_request("tools/call", params)
                 pids = entered(root)
+
+                def raw_output_visible():
+                    assert client.proc.poll() is None, client._diagnostic_context()
+                    assert not client.response_ready(request), client._diagnostic_context()
+                    with client.state_changed:
+                        notifications = list(client.notifications)
+                    streams = {"stdout": "", "stderr": ""}
+                    for notification in notifications:
+                        params = notification.get("params", {})
+                        if params.get("logger") != "lake.output":
+                            continue
+                        data = params.get("data", {})
+                        if data.get("requestId") == request:
+                            assert data.get("tool") == ("lean_save" if scenario == "save-cancel-drop" else "lean_sync")
+                            assert isinstance(data.get("omittedBefore"), bool), data
+                            streams[data["source"]] += data["text"]
+                    return "α" in streams["stdout"] and "β" in streams["stderr"]
+
+                wait_for(raw_output_visible, "MCP hid live helper output until completion")
                 if modern and scenario == "save-cancel-drop":
                     # Save preparation reloads Lake too. Keep one real deadline regression,
                     # then prove that cancellation still tears down this long-running helper.

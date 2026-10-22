@@ -5,10 +5,12 @@ Released under Apache 2.0 license as described in the file LICENSE.
 
 import Lean
 import Std.Sync.Mutex
+import Beam.Mcp.Reporting
+import Beam.WorkspaceOutput
 
 namespace Beam.Mcp.StdioOutput
 
-open Lean
+open _root_.Lean
 
 /-- Internal storage limits. Each admission reserves a small terminal reply before work begins. -/
 structure Limits where
@@ -93,6 +95,17 @@ private inductive SlotKind where
   | request
   | rejection
 
+private structure WorkspaceText where
+  buffer : Beam.WorkspaceOutput.Buffer
+  context : Beam.Mcp.Server.WorkspaceTextContext
+  encodedLimit : Nat
+  ready : Task (Option Unit)
+  watching : Bool := false
+  closed : Bool := false
+
+private def WorkspaceText.bytes (text : WorkspaceText) : Nat :=
+  Beam.WorkspaceOutput.byteLimit + Beam.WorkspaceOutput.chunkLimit + text.encodedLimit
+
 private structure Pending where
   kind : SlotKind := .request
   cancelled : Bool := false
@@ -100,12 +113,14 @@ private structure Pending where
   diagnosticBytes : Nat := 0
   omittedDiagnostics : Nat := 0
   progress? : Option Frame := none
+  text? : Option WorkspaceText := none
   response? : Option Frame := none
   done : IO.Promise (Except IO.Error Unit)
 
 private def Pending.bytes (pending : Pending) (limits : Limits) : Nat :=
   limits.reservedResponseBytes + pending.diagnosticBytes +
     (pending.progress?.map Frame.bytes).getD 0 +
+    (pending.text?.map WorkspaceText.bytes).getD 0 +
     ((pending.response?.map Frame.bytes).getD 0 - limits.reservedResponseBytes)
 
 private inductive Phase where
@@ -117,6 +132,7 @@ private inductive Phase where
 private structure State where
   phase : Phase := .accepting
   nextId : Nat := 0
+  nextTextId : Nat := 0
   pending : Std.TreeMap Nat Pending := {}
   pendingBytes : Nat := 0
   rejectionBytes : Nat := 0
@@ -175,7 +191,9 @@ private def failState (error : IO.Error) : Std.AtomicT State IO (Option (Array P
       pure <| some <| current.pending.toArray.map Prod.snd
 
 private def Writer.publishFailure (writer : Writer) (error : IO.Error) (pending : Array Pending) : IO Unit := do
-  for slot in pending do slot.done.resolve (.error error)
+  for slot in pending do
+    if let some text := slot.text? then text.buffer.discard
+    slot.done.resolve (.error error)
   writer.outcome.resolve (.error error)
   writer.available.notifyAll
 
@@ -199,6 +217,38 @@ def Writer.tryReserve (writer : Writer) : IO (Option Slot) := do
         set { next with nextId := id + 1 }
         pure (some id)
   pure <| id?.map fun id => { writer, id, done }
+
+/-- Reserve raw storage and one worst-case encoded packet before execution. The writer claims
+the buffer directly; raw text never enters the diagnostic or replaceable-progress queues. -/
+def Slot.attachWorkspaceOutput (slot : Slot) (context : Beam.Mcp.Server.WorkspaceTextContext) :
+    IO (Option Beam.WorkspaceOutput.Buffer) := do
+  if !context.policy.mayAllow .info then return none
+  let probe := context.notification { source := .stderr, text := "" }
+  let some envelope := (encode probe "workspace output" slot.writer.limits.responseBytes).toOption
+    | return none
+  let encodedLimit := envelope.bytes + 6 * Beam.WorkspaceOutput.chunkLimit
+  if encodedLimit > slot.writer.limits.responseBytes then return none
+  let buffer ← Beam.WorkspaceOutput.Buffer.create
+  let ready ← buffer.readiness
+  let attached ← slot.writer.state.atomically do
+    let current ← get
+    let some pending := current.pending.get? slot.id | return false
+    if let .rejection := pending.kind then return false
+    if pending.cancelled || pending.response?.isSome || pending.text?.isSome then return false
+    let next := current.replace slot.writer.limits slot.id (some { pending with
+      text? := some { buffer, context, encodedLimit, ready } })
+    if !next.fits slot.writer.limits then return false
+    set next
+    return true
+  if !attached then return none
+  slot.writer.available.notifyOne
+  return some buffer
+
+private def Slot.sealWorkspaceOutput (slot : Slot) : IO Unit := do
+  let buffer? ← slot.writer.state.atomically do
+    let pending? := (← get).pending.get? slot.id
+    pure <| pending?.bind fun pending => pending.text?.map (·.buffer)
+  if let some buffer := buffer? then buffer.seal
 
 /-- Reject bursts from a separate budget. Only the input reader waits when it too is full. -/
 def Writer.reserveRejection (writer : Writer) : IO Slot := do
@@ -280,6 +330,7 @@ def Slot.progress (slot : Slot) (json : Json) (label : String := "") : IO Unit :
 An oversized response leaves the reservation open so its caller can send a small error instead. -/
 private def Slot.accept (slot : Slot) (response : Nat → Json) (label : String)
     (reserved : Bool) : IO (Except OutputLimit Unit) := do
+  slot.sealWorkspaceOutput
   let result ← slot.writer.state.atomically do
     let current ← get
     match current.phase with
@@ -313,67 +364,150 @@ def Slot.respondReserved (slot : Slot) (response : Nat → Json) (label : String
 
 /-- Stop publishers but retain the execution's reservation until cleanup finishes. -/
 def Slot.cancel (slot : Slot) : IO Unit := do
-  slot.writer.state.atomically do
+  let buffer? ← slot.writer.state.atomically do
     let current ← get
-    let some pending := current.pending.get? slot.id | return
-    if pending.response?.isSome then return
+    let some pending := current.pending.get? slot.id | return none
+    if pending.response?.isSome then return none
     set <| current.replace slot.writer.limits slot.id (some { pending with
-      cancelled := true, diagnostics := #[], diagnosticBytes := 0, progress? := none })
+      cancelled := true, diagnostics := #[], diagnosticBytes := 0, progress? := none, text? := none })
+    return pending.text?.map (·.buffer)
+  if let some buffer := buffer? then buffer.discard
 
 /-- Release after execution cleanup. An accepted terminal response keeps its reservation. -/
 def Slot.release (slot : Slot) : IO Unit := do
-  let removed ← slot.writer.state.atomically do
+  let removed? ← slot.writer.state.atomically do
     let current ← get
-    let some pending := current.pending.get? slot.id | return false
-    if pending.response?.isSome then return false
+    let some pending := current.pending.get? slot.id | return none
+    if pending.response?.isSome then return none
     set <| current.replace slot.writer.limits slot.id none
-    return true
-  if removed then slot.done.resolve (.ok ())
+    return some pending
+  if let some removed := removed? then
+    if let some text := removed.text? then text.buffer.discard
+    slot.done.resolve (.ok ())
   slot.writer.available.notifyAll
+
+private inductive Payload where
+  | frame (value : Frame)
+  | text (value : WorkspaceText)
 
 private structure Delivery where
   id : Nat
-  frame : Frame
+  payload : Payload
   terminal : Bool
 
-private def select (current : State) : Option Delivery := Id.run do
-  -- Ready responses, including their retained diagnostics, take priority over live progress.
+private def Writer.takeFrame (writer : Writer) (id : Nat) (pending : Pending)
+    (frame : Frame) (terminal : Bool) : Std.AtomicT State IO Delivery := do
+  unless terminal do
+    let pending := if pending.diagnostics.isEmpty then { pending with progress? := none }
+      else { pending with
+        diagnostics := pending.diagnostics.extract 1 pending.diagnostics.size
+        diagnosticBytes := pending.diagnosticBytes - frame.bytes }
+    modify fun current => current.replace writer.limits id (some pending)
+  return { id, payload := .frame frame, terminal }
+
+private def Writer.takeText (id : Nat)
+    (text : WorkspaceText) : Std.AtomicT State IO (Option Delivery) := do
+  modify fun current => { current with nextTextId := id + 1 }
+  return some { id, payload := .text text, terminal := false }
+
+private def Writer.select (writer : Writer) : Std.AtomicT State IO (Option Delivery) := do
+  let current ← get
+  -- A completed request keeps its accepted bounded text tail before its terminal response.
   for (id, pending) in current.pending do
     if pending.response?.isSome then
-      if let some frame := pending.diagnostics[0]? then return some { id, frame, terminal := false }
-      if let some frame := pending.response? then return some { id, frame, terminal := true }
+      if let some frame := pending.diagnostics[0]? then
+        return some (← writer.takeFrame id pending frame false)
+      if let some text := pending.text? then
+        unless text.closed do return ← Writer.takeText id text
+      if let some frame := pending.response? then
+        return some (← writer.takeFrame id pending frame true)
   for (id, pending) in current.pending do
-    if let some frame := pending.diagnostics[0]? then return some { id, frame, terminal := false }
-    if let some frame := pending.progress? then return some { id, frame, terminal := false }
+    if let some frame := pending.diagnostics[0]? then
+      return some (← writer.takeFrame id pending frame false)
+    if let some frame := pending.progress? then
+      return some (← writer.takeFrame id pending frame false)
+  -- Round-robin live text so an output flood does not monopolize other helpers' feedback.
+  for wrapped in [false, true] do
+    for (id, pending) in current.pending do
+      if (id < current.nextTextId) == wrapped then
+        if let some text := pending.text? then
+          if !text.closed && (← IO.hasFinished text.ready) then
+            return ← Writer.takeText id text
   return none
 
-private def Writer.take (writer : Writer) : IO (Option Delivery) :=
-  writer.state.atomicallyOnce writer.available
+private def Writer.hasDelivery (writer : Writer) : Std.AtomicT State IO Bool := do
+  let current ← get
+  for (_, pending) in current.pending do
+    if pending.response?.isSome || !pending.diagnostics.isEmpty || pending.progress?.isSome then
+      return true
+    if let some text := pending.text? then
+      if !text.closed && (← IO.hasFinished text.ready) then return true
+  -- Each empty buffer has at most one outstanding observer. Its continuation takes this
+  -- mutex before notifying, so a publication cannot race the condition-variable wait.
+  for (id, pending) in current.pending do
+    if let some text := pending.text? then
+      if !text.closed && !text.watching then
+        modify fun current => current.replace writer.limits id
+          (some { pending with text? := some { text with watching := true } })
+        let _ ← IO.mapTask (fun _ => do
+          writer.state.atomically do
+            let current ← get
+            if let some pending := current.pending.get? id then
+              if let some text := pending.text? then
+                set <| current.replace writer.limits id
+                  (some { pending with text? := some { text with watching := false } })
+          writer.available.notifyOne) text.ready (sync := false)
+        pure ()
+  return false
+
+private partial def Writer.take (writer : Writer) : IO (Option Delivery) := do
+  let delivery? ← writer.state.atomicallyOnce writer.available
     (do
       let current ← get
       match current.phase with
       | .failed _ => pure true
-      | .draining | .finished => pure (current.pending.isEmpty || (select current).isSome)
-      | .accepting => pure (select current).isSome)
+      | .draining | .finished =>
+          if current.pending.isEmpty then pure true else writer.hasDelivery
+      | .accepting => writer.hasDelivery)
     (do
       let current ← get
       match current.phase with
       | .failed error => throw error
-      | _ =>
-          let some delivery := select current | return none
-          if !delivery.terminal then
-            let some pending := current.pending.get? delivery.id | return none
-            let pending := if pending.diagnostics.isEmpty then { pending with progress? := none }
-              else { pending with
-                diagnostics := pending.diagnostics.extract 1 pending.diagnostics.size
-                diagnosticBytes := pending.diagnosticBytes - delivery.frame.bytes }
-            set <| current.replace writer.limits delivery.id (some pending)
-          pure (some delivery))
+      | _ => writer.select)
+  if delivery?.isSome then return delivery?
+  let finished ← writer.state.atomically do
+    let current ← get
+    return current.pending.isEmpty && (match current.phase with | .accepting => false | _ => true)
+  if finished then return none
+  writer.take
+
+private def Writer.refreshText (writer : Writer) (id : Nat)
+    (ready : Task (Option Unit)) (closed : Bool := false) : IO Unit :=
+  writer.state.atomically do
+    let current ← get
+    let some pending := current.pending.get? id | return
+    let some text := pending.text? | return
+    -- Preserve the current observer flag: its continuation can run while we claim text.
+    set <| current.replace writer.limits id
+      (some { pending with text? := some { text with ready, closed } })
 
 private partial def Writer.run (writer : Writer) (write : Frame → IO Unit) : IO Unit := do
   let some delivery ← writer.take | return
   -- This is the only physical output call. No transport or coordinator lock is held.
-  write delivery.frame
+  match delivery.payload with
+  | .frame frame => write frame
+  | .text text =>
+      -- Buffer claims, logging policy reads, encoding and writes all occur outside the outbox lock.
+      match ← text.buffer.poll with
+      | .chunk chunk =>
+          writer.refreshText delivery.id (← text.buffer.readiness)
+          if (← text.context.policy.minimumLogLevel?).any (·.allows .info) then
+            let frame ← IO.ofExcept <|
+              (encode (text.context.notification chunk) "workspace output" text.encodedLimit).mapError fun _ =>
+                IO.userError "workspace output exceeded its reserved encoded packet allowance"
+            write frame
+      | .waiting ready => writer.refreshText delivery.id ready
+      | .closed => writer.refreshText delivery.id text.ready true
   if delivery.terminal then
     let done? ← writer.state.atomically do
       let current ← get

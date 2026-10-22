@@ -99,6 +99,31 @@ private def checkShutdownResponseBeforeExit (root : System.FilePath) : IO Unit :
     catch _ =>
       pure ()
 
+private def checkInitialRequestErrors (endpoint : Beam.Broker.Endpoint) : IO Unit := do
+  for (header?, expected) in #[(some "16777217\n", "exceeds 16777216 bytes"),
+      (none, "initial request timed out")] do
+    let connection ← Beam.Broker.Transport.connect endpoint
+    try
+      if let some header := header? then
+        let .tcp socket _ := connection
+        let sent ← Std.Internal.UV.TCP.Socket.send socket #[header.toUTF8]
+        let some result ← IO.wait sent.result?
+          | throw <| IO.userError "initial request probe lost its send result"
+        IO.ofExcept result
+      let deadline := (← IO.monoNanosNow) + 15000 * 1000000
+      let some message ← Beam.Broker.Transport.recvMsgUntil connection deadline
+        | throw <| IO.userError s!"initial request probe received no error for {expected}"
+      let message : Beam.Broker.StreamMessage ← IO.ofExcept <| fromJson? (← IO.ofExcept <| Json.parse message)
+      let .response none response := message
+        | throw <| IO.userError "initial request failure was not an uncorrelated terminal response"
+      expectErrorCode "initial request" "internalError" response
+      let some error := response.error?
+        | throw <| IO.userError "initial request probe received no error payload"
+      unless error.message.contains expected do
+        throw <| IO.userError s!"expected initial request error '{expected}', got '{error.message}'"
+    finally
+      Beam.Broker.Transport.closeConnection connection
+
 def main : IO Unit := do
   let port ← freshTcpPort
   let endpoint : Beam.Broker.Endpoint := .tcp port
@@ -111,6 +136,7 @@ def main : IO Unit := do
   let broker ← spawnLeanBroker endpoint root (identity? := some identity)
   try
     waitForBrokerReadyForRoot endpoint root
+    checkInitialRequestErrors endpoint
     match ← Beam.Daemon.standaloneDaemonGenerationStatus endpoint testWorkspaceId root identity with
     | .exact => pure ()
     | status =>

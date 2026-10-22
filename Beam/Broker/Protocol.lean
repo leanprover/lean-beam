@@ -8,6 +8,7 @@ import Lean
 import Beam.JsonFields
 import Beam.LSP.Todo
 import Beam.Workspace.Protocol
+import Beam.WorkspaceOutput.Types
 
 open Lean
 
@@ -1145,15 +1146,43 @@ def saveUnsupportedSetupCode : String :=
 def saveTargetNotModuleCode : String :=
   "saveTargetNotModule"
 
+instance : ToJson Beam.WorkspaceOutput.Source where
+  toJson
+    | .stdout => toJson "stdout"
+    | .stderr => toJson "stderr"
+
+instance : FromJson Beam.WorkspaceOutput.Source where
+  fromJson?
+    | .str "stdout" => .ok .stdout
+    | .str "stderr" => .ok .stderr
+    | _ => .error "workspace output source must be stdout or stderr"
+
+instance : ToJson Beam.WorkspaceOutput.Chunk where
+  toJson chunk := Json.mkObj [
+    ("source", toJson chunk.source), ("text", toJson chunk.text),
+    ("omittedBefore", toJson chunk.omittedBefore)]
+
+instance : FromJson Beam.WorkspaceOutput.Chunk where
+  fromJson? json := do
+    requireOnlyJsonFields "workspace output" #["source", "text", "omittedBefore"] json
+    let source ← requiredField json "source"
+    let text : String ← requiredField json "text"
+    let omittedBefore ← requiredField json "omittedBefore"
+    unless !text.isEmpty && text.utf8ByteSize ≤ Beam.WorkspaceOutput.chunkLimit do
+      throw "workspace output text must contain 1 to 8192 UTF-8 bytes"
+    return { source, text, omittedBefore }
+
 private inductive StreamKind where
   | response
   | fileProgress
   | diagnostic
+  | workspaceOutput
 
 private def StreamKind.key : StreamKind → String
   | .response => "response"
   | .fileProgress => "fileProgress"
   | .diagnostic => "diagnostic"
+  | .workspaceOutput => "workspaceOutput"
 
 private instance : ToJson StreamKind where
   toJson kind := toJson kind.key
@@ -1163,6 +1192,7 @@ private instance : FromJson StreamKind where
     | .str "response" => .ok .response
     | .str "fileProgress" => .ok .fileProgress
     | .str "diagnostic" => .ok .diagnostic
+    | .str "workspaceOutput" => .ok .workspaceOutput
     | j => .error s!"expected Beam daemon stream kind, got {j.compress}"
 
 /-- One decoded broker stream event with exactly the payload selected by its wire `kind`. -/
@@ -1170,12 +1200,14 @@ inductive StreamMessage where
   | response (clientRequestId? : Option String) (response : Response)
   | fileProgress (clientRequestId? : Option String) (progress : SyncFileProgress)
   | diagnostic (clientRequestId? : Option String) (diagnostic : StreamDiagnostic)
+  | workspaceOutput (clientRequestId? : Option String) (chunk : Beam.WorkspaceOutput.Chunk)
   deriving Inhabited
 
 def StreamMessage.clientRequestId? : StreamMessage → Option String
   | .response clientRequestId? _
   | .fileProgress clientRequestId? _
-  | .diagnostic clientRequestId? _ => clientRequestId?
+  | .diagnostic clientRequestId? _
+  | .workspaceOutput clientRequestId? _ => clientRequestId?
 
 instance : ToJson StreamMessage where
   toJson
@@ -1193,6 +1225,12 @@ instance : ToJson StreamMessage where
         Json.mkObj <| [
           ("kind", toJson StreamKind.diagnostic),
           ("payload", toJson streamDiagnostic)
+        ] ++ optionalJsonField "clientRequestId" clientRequestId?
+
+    | .workspaceOutput clientRequestId? chunk =>
+        Json.mkObj <| [
+          ("kind", toJson StreamKind.workspaceOutput),
+          ("payload", toJson chunk)
         ] ++ optionalJsonField "clientRequestId" clientRequestId?
 
 private def decodeStreamPayload [FromJson α]
@@ -1215,6 +1253,8 @@ instance : FromJson StreamMessage where
         pure <| .fileProgress clientRequestId? (← decodeStreamPayload kind payload)
     | .diagnostic =>
         pure <| .diagnostic clientRequestId? (← decodeStreamPayload kind payload)
+    | .workspaceOutput =>
+        pure <| .workspaceOutput clientRequestId? (← decodeStreamPayload kind payload)
 
 def Response.success (result : Json) : Response :=
   .successResult result none

@@ -233,6 +233,19 @@ five-second intervals and follow the normal progress setting: enabled on a termi
 redirected, or disabled with `BEAM_PROGRESS=0`. These messages report liveness, not a percentage.
 The running-session JSON appears on stdout only after preparation completes.
 
+The helper forwards output from Lake configuration evaluation, dependency cloning, and save
+preparation to CLI stderr while it runs. Lake logger entries use its normal `info` threshold;
+trace entries such as raw git commands are hidden. Direct stdout/stderr fragments need no newline.
+Dependency module builds use the existing diagnostic channel. Lean can buffer
+`run_cmd` output as messages until the command returns; those messages appear when Lean releases
+them. `BEAM_PROGRESS=0` disables Beam's elapsed waiting messages; it does not suppress Lake output.
+Waiting reminders pause while output is arriving, resuming after five seconds of silence.
+Pending text uses a 256 KiB buffer with at most 256 chunks. Bursts can exceed the capacity of the
+daemon-to-CLI path even when stderr goes to a file. Beam drops the oldest pending text, prints
+`beam: earlier workspace output omitted` on its own line, and skips the truncated line's remainder
+through the next newline. Normal completion retains the bounded tail; cancellation discards
+pending optional output. No transcript file is created.
+
 Interrupt the foreground process, or run `lean-beam --root ROOT stop`, to close the daemon and its
 backend processes. Lean queries and file operations attach to an existing owner and report the exact
 `serve` command when no session exists.

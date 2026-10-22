@@ -382,6 +382,225 @@ private def checkWriteFailure : IO Unit := do
   requireFailure "physical writer reports failure" (← awaitTask writer.finishedTask)
   requireFailure "write failure closes admission" (← attempt (reserve writer))
 
+private def workspaceContext : Beam.Mcp.Server.WorkspaceTextContext := {
+  requestId := .string "raw", tool := "lean_sync", policy := .request (some .info)
+}
+
+private def attachText (slot : Slot)
+    (context : Beam.Mcp.Server.WorkspaceTextContext := workspaceContext) :
+    IO Beam.WorkspaceOutput.Buffer := do
+  let some buffer ← slot.attachWorkspaceOutput context
+    | throw <| IO.userError "fixture unexpectedly exhausted workspace text storage"
+  return buffer
+
+private def awaitTextObserver (slot : Slot) : IO Unit := do
+  let writer := (outputPrivate% Beam.Mcp.StdioOutput.Slot.writer) slot
+  let id := (outputPrivate% Beam.Mcp.StdioOutput.Slot.id) slot
+  let deadline := (← IO.monoMsNow) + 5000
+  while true do
+    let observing ← ((outputPrivate% Beam.Mcp.StdioOutput.Writer.state) writer).atomically do
+      let pending := (outputPrivate% Beam.Mcp.StdioOutput.State.pending) (← get)
+      let some pending := pending.get? id | return false
+      return ((outputPrivate% Beam.Mcp.StdioOutput.Pending.text?) pending).any
+        (outputPrivate% Beam.Mcp.StdioOutput.WorkspaceText.watching)
+    if observing then return
+    require "writer did not wait for an empty workspace buffer" ((← IO.monoMsNow) < deadline)
+    IO.sleep 1
+
+private def checkWorkspaceText : IO Unit := do
+  let entered ← IO.Promise.new
+  let release ← IO.Promise.new
+  let frames ← IO.mkRef (#[] : Array String)
+  let writer ← start fun frame => do
+    if (← frames.get).isEmpty then
+      entered.resolve ()
+      await release
+    frames.modify (·.push frame.text)
+  try
+    let slot ← reserve writer
+    let buffer ← attachText slot
+    let some publisher ← buffer.borrow | throw <| IO.userError "new text buffer closed"
+    -- Publish only after the physical writer is asleep on an otherwise empty outbox.
+    awaitTextObserver slot
+    publisher.offer .stderr "live"
+    require "workspace text did not wake the writer before completion"
+      (← Beam.waitTaskWithTimeout entered.result? 5000).isSome
+    publisher.offer .stdout (String.ofList (List.replicate (2 * Beam.WorkspaceOutput.byteLimit) 'x'))
+    let tail := String.singleton (Char.ofNat 1) ++ "🙂"
+    publisher.offer .stdout tail
+    publisher.retire
+    respond slot (.str "done")
+    require "completion reopened workspace publishing" (← buffer.borrow).isNone
+    require "blocked presentation completed delivery" (!(← IO.hasFinished slot.deliveryTask))
+    release.resolve ()
+    requireSuccess (← awaitTask slot.deliveryTask)
+    writer.finish
+    requireSuccess (← awaitTask writer.finishedTask)
+    let frames ← frames.get
+    require "workspace tail did not precede the terminal response" (frames.back? == some "\"done\"\n")
+    let mut received := ""
+    let mut gaps := 0
+    for frame in frames.pop do
+      let json ← IO.ofExcept (Json.parse frame)
+      let params ← requireObjVal "workspace notification" "params" json
+      requireJsonString "workspace notification" "level" "info" params
+      requireJsonString "workspace notification" "logger" "lake.output" params
+      let data ← requireObjVal "workspace notification" "data" params
+      requireJsonString "workspace association" "requestId" "raw" data
+      requireJsonString "workspace association" "tool" "lean_sync" data
+      received := received ++ (← IO.ofExcept (data.getObjValAs? String "text"))
+      if ← IO.ofExcept (data.getObjValAs? Bool "omittedBefore") then gaps := gaps + 1
+    require "workspace overflow lost its gap or retained tail"
+      (received.startsWith "live" && received.endsWith tail && gaps == 1 &&
+       received.utf8ByteSize <= Beam.WorkspaceOutput.byteLimit + 4)
+    requireEmptyBudget writer
+  finally
+    release.resolve ()
+    writer.fail (IO.userError "workspace text fixture cleanup")
+    discard <| awaitTask writer.finishedTask
+
+private def checkWorkspaceBudget : IO Unit := do
+  let writer ← start (limits := { pendingBytes := Beam.WorkspaceOutput.byteLimit + 80 * 1024 })
+    fun _ => pure ()
+  try
+    let first ← reserve writer
+    let second ← reserve writer
+    discard <| attachText first
+    require "workspace text escaped the shared storage budget"
+      (← second.attachWorkspaceOutput workspaceContext).isNone
+    first.release
+    discard <| attachText second
+    second.release
+    writer.finish
+    requireSuccess (← awaitTask writer.finishedTask)
+    requireEmptyBudget writer
+  finally
+    writer.fail (IO.userError "workspace budget fixture cleanup")
+    discard <| awaitTask writer.finishedTask
+
+  let writer ← start (limits := { responseBytes := 80 * 1024 }) fun _ => pure ()
+  try
+    let slot ← reserve writer
+    let context := { workspaceContext with
+      requestId := .string (String.ofList (List.replicate 6000 (Char.ofNat 1))) }
+    require "text metadata omitted JSON escaping from its packet allowance"
+      (← slot.attachWorkspaceOutput context).isNone
+    require "disabled request logging reserved workspace text"
+      (← slot.attachWorkspaceOutput { workspaceContext with policy := .request none }).isNone
+    slot.release
+    writer.finish
+    requireSuccess (← awaitTask writer.finishedTask)
+    requireEmptyBudget writer
+  finally
+    writer.fail (IO.userError "workspace metadata fixture cleanup")
+    discard <| awaitTask writer.finishedTask
+
+private def checkWorkspaceWakeups : IO Unit := do
+  let delivered ← IO.mkRef 0
+  let writer ← start fun _ => delivered.modify (· + 1)
+  try
+    let slot ← reserve writer
+    let buffer ← attachText slot
+    let some publisher ← buffer.borrow | throw <| IO.userError "new text buffer closed"
+    for message in #["first wake", "second wake", "third wake"] do
+      awaitTextObserver slot
+      let previous ← delivered.get
+      publisher.offer .stdout message
+      let deadline := (← IO.monoMsNow) + 5000
+      while (← delivered.get) == previous do
+        require "workspace text reused a stale wakeup after draining" ((← IO.monoMsNow) < deadline)
+        IO.sleep 1
+    respond slot (.str "done")
+    writer.finish
+    requireSuccess (← awaitTask writer.finishedTask)
+    requireEmptyBudget writer
+  finally
+    writer.fail (IO.userError "workspace wakeup fixture cleanup")
+    discard <| awaitTask writer.finishedTask
+
+private def checkWorkspaceLogPolicy (enable : Bool) : IO Unit := do
+  let entered ← IO.Promise.new
+  let release ← IO.Promise.new
+  let frames ← IO.mkRef (#[] : Array String)
+  let writer ← start fun frame => do
+    if (← frames.get).isEmpty then
+      entered.resolve ()
+      await release
+    frames.modify (·.push frame.text)
+  try
+    let blocker ← reserve writer
+    respond blocker (.str "blocker")
+    await entered
+    let protocol ← Std.Mutex.new <| Beam.Mcp.Server.ProtocolState.legacy {
+      logLevel := if enable then .warning else .debug }
+    let legacy ← reserve writer
+    let buffer ← attachText legacy { workspaceContext with policy := .legacy protocol }
+    let some publisher ← buffer.borrow | throw <| IO.userError "new text buffer closed"
+    publisher.offer .stderr "legacy text"
+    respond legacy (.str "legacy result")
+    let modern ← reserve writer
+    let buffer ← attachText modern
+    let some publisher ← buffer.borrow | throw <| IO.userError "new text buffer closed"
+    publisher.offer .stdout "modern text"
+    respond modern (.str "modern result")
+    protocol.atomically do
+      set <| Beam.Mcp.Server.ProtocolState.legacy { logLevel := if enable then .debug else .warning }
+    release.resolve ()
+    requireSuccess (← awaitTask legacy.deliveryTask)
+    requireSuccess (← awaitTask modern.deliveryTask)
+    writer.finish
+    requireSuccess (← awaitTask writer.finishedTask)
+    let output := String.join (← frames.get).toList
+    require "legacy text ignored delivery-time logging policy"
+      (decide ((output.splitOn "legacy text").length > 1) == enable)
+    require "legacy logging changes affected immutable modern policy"
+      ((output.splitOn "modern text").length > 1)
+  finally
+    release.resolve ()
+    writer.fail (IO.userError "workspace policy fixture cleanup")
+    discard <| awaitTask writer.finishedTask
+
+private def checkWorkspaceCancellation : IO Unit := do
+  let entered ← IO.Promise.new
+  let release ← IO.Promise.new
+  let frames ← IO.mkRef (#[] : Array String)
+  let writer ← start fun frame => do
+    if (← frames.get).isEmpty then
+      entered.resolve ()
+      await release
+    frames.modify (·.push frame.text)
+  try
+    let blocker ← reserve writer
+    respond blocker (.str "blocker")
+    await entered
+    let cancelled ← reserve writer
+    let buffer ← attachText cancelled
+    let some publisher ← buffer.borrow | throw <| IO.userError "new text buffer closed"
+    publisher.offer .stderr "cancelled text"
+    cancelled.cancel
+    publisher.offer .stderr "late text"
+    require "cancelled MCP delivery retained workspace text"
+      (match ← buffer.poll with | .closed => true | _ => false)
+    cancelled.release
+    let replacement ← reserve writer
+    let buffer ← attachText replacement
+    let some replacementPublisher ← buffer.borrow | throw <| IO.userError "replacement text buffer closed"
+    replacementPublisher.offer .stdout "replacement text"
+    respond replacement (.str "replacement result")
+    release.resolve ()
+    requireSuccess (← awaitTask replacement.deliveryTask)
+    writer.finish
+    requireSuccess (← awaitTask writer.finishedTask)
+    let output := String.join (← frames.get).toList
+    require "cancelled text leaked into replacement delivery"
+      ((output.splitOn "cancelled text").length == 1 && (output.splitOn "late text").length == 1 &&
+       (output.splitOn "replacement text").length > 1)
+    requireEmptyBudget writer
+  finally
+    release.resolve ()
+    writer.fail (IO.userError "workspace cancellation fixture cleanup")
+    discard <| awaitTask writer.finishedTask
+
 def run : IO Unit := do
   checkBlockedWriter
   checkRetiredWriterOutcome
@@ -398,5 +617,11 @@ def run : IO Unit := do
   checkCancelledReservation
   checkCancellationAndReuse
   checkWriteFailure
+  checkWorkspaceText
+  checkWorkspaceBudget
+  checkWorkspaceWakeups
+  checkWorkspaceLogPolicy false
+  checkWorkspaceLogPolicy true
+  checkWorkspaceCancellation
 
 end BeamTest.Broker.McpOutputTest

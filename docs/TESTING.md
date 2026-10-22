@@ -179,7 +179,8 @@ Current Beam coverage includes:
   buffered TCP framing and receive cancellation,
   backend-startup failure with provisional backend cleanup, tracked-diagnostic dedup,
   exact broker request-handle lifetime, identity-matched daemon-generation probes, terminal shutdown
-  response delivery, shutdown after the requesting TCP client resets its connection, protocol tests,
+  response delivery, framed errors for oversized initial requests and the first-message timeout,
+  shutdown after the requesting TCP client resets its connection, protocol tests,
   and validated-toolchain/release-line CI policy consistency through
   [tests/test-beam-fast.sh](../tests/test-beam-fast.sh)
 - wrapper coverage through [tests/test-beam-wrapper.sh](../tests/test-beam-wrapper.sh), which reports
@@ -266,14 +267,30 @@ The fast suite also runs [tests/test-lake-helper-lifetime.py](../tests/test-lake
 against the actual staged daemon and a non-shipped helper client. A fresh public `lean-beam serve`
 holds Lake evaluation behind a latch for over 31 seconds, then releases it and checks completed
 `sync` progress and save readiness. Before release, stderr must explain that configuration is
-loading while stdout contains no readiness result. CLI interruption and owner loss exercise cold-load cleanup.
-With `BEAM_PROGRESS=1`, the same held `serve` must emit increasing elapsed waiting messages for
-at least 30 seconds before release, with no reminder before five seconds and at least five seconds
-between reminders. This reuses the existing hold rather than adding another slow
-test scenario.
+loading while stdout contains no readiness result. Flushed stdout/stderr fragments without a
+newline must reach stderr before the helper's release gate, including non-TTY cases without
+forced progress. CLI interruption and owner loss exercise cold-load cleanup.
+With `BEAM_PROGRESS=1`, the same held `serve` receives periodic raw output for eight seconds and
+must suppress redundant waiting reminders during that output. Reminders must resume once output
+goes quiet, with no reminder before five seconds and at least five seconds between reminders.
+This reuses the existing 31-second hold rather than adding another slow test scenario.
 Normal stop must report acknowledged shutdown without a warning, and both stop and interruption
 must release the owner pipe without forced daemon termination. The foreground owner still has
 the same 15-second exit assertion.
+The existing CLI daemon unit executable also checks strict text-event decoding, preservation of
+accepted text before the terminal response, and execution cleanup while a gated writer remains
+blocked. Cancellation must reject pending and late optional output; required diagnostic overflow
+must fail delivery explicitly.
+The portable `beam-backend-process-test` executable checks raw pipe capture, short flushed UTF-8
+fragments, bounded overflow and omission markers, and cancellation of an active output flood.
+Both the fast suite and native toolchain jobs run it, including Windows and macOS native jobs.
+The MCP output fixture checks repeated empty-buffer wakeups, a completion tail behind a blocked
+writer, shared storage including escaped envelope metadata, legacy delivery-time log filtering,
+immutable modern logging, and cancellation/reuse. The real helper fixture requires raw output
+notifications before the helper is released in both MCP protocol families.
+The held CLI fixture also clones a local git dependency and checks that normal Lake information
+and warnings remain visible while trace entries are hidden. CLI presentation tests put omission
+markers on separate lines and recover from truncated UTF-8 lines spanning multiple chunks.
 The fixture also checks completed requests, abrupt helper exit with a live descendant, explicit
 test deadlines, cancellation, and parent death, then cancellation/drop and
 EOF shutdown through both legacy and modern MCP. Save preparation is also cancelled with a

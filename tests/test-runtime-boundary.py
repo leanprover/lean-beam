@@ -12,7 +12,7 @@ import sys
 REPO = Path(__file__).resolve().parents[1]
 ROOTS = (
     "Beam.Version", "Beam.Runtime", "Beam.BuildInfo", "Beam.Broker.Config", "Beam.Cli.DaemonConfig", "Beam.Cli.DaemonManager",
-    "Beam.Mcp.Projection", "Beam.Mcp.Protocol", "Beam.Mcp.Server", "Beam.Mcp.StdioServer",
+    "Beam.Mcp.Projection", "Beam.Mcp.Protocol", "Beam.Mcp.Reporting", "Beam.Mcp.Server", "Beam.Mcp.StdioServer",
 )
 INSTALL_MODULES = (
     "Beam.Install", "Beam.Installation", "Beam.Cli.Installation", "Beam.Mcp.Application",
@@ -55,6 +55,8 @@ def violations():
                            "Beam.Installation.StandaloneLayout",
                            "Beam.Installation.Bundled", "Beam.Mcp.Application", "Beam.Broker.ServerMain")
     return (violations_for(ROOTS, INSTALL_MODULES) + violations_for(shared_installation, ("Beam.Cli",)) +
+            violations_for(("Beam.Mcp.Reporting",),
+                           ("Beam.Broker.Server", "Beam.Mcp.Server", "Beam.Mcp.StdioServer", "Beam.Cli.DaemonManager")) +
             violations_for(SHIPPED_ROOTS, ("Beam.Install",)))
 
 

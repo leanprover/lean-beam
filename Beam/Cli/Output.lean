@@ -61,6 +61,24 @@ def formatStreamDiagnostic (diagnostic : StreamDiagnostic) : String :=
       ""
   s!"beam: diagnostic {severity}{blocking} {diagnostic.path}:{line}:{character}: {message}"
 
+/-- CLI-only line recovery after a raw-output gap; no text is retained here. -/
+structure WorkspaceOutputFormat where
+  atLineStart : Bool := true
+  skippingLine : Bool := false
+
+def WorkspaceOutputFormat.render (state : WorkspaceOutputFormat)
+    (chunk : Beam.WorkspaceOutput.Chunk) : WorkspaceOutputFormat × String := Id.run do
+  let marker := if chunk.omittedBefore then
+      (if state.atLineStart then "" else "\n") ++ "beam: earlier workspace output omitted\n"
+    else ""
+  let skipping := state.skippingLine || chunk.omittedBefore
+  let afterLine := if skipping then (chunk.text.dropWhile (· != '\n')).toString else ""
+  let text := if skipping then (afterLine.drop 1).toString else chunk.text
+  let skippingLine := skipping && afterLine.isEmpty
+  let atLineStart := if !text.isEmpty then text.endsWith "\n"
+    else if chunk.omittedBefore then true else state.atLineStart
+  return ({ atLineStart, skippingLine }, marker ++ text)
+
 /-- Render a CLI response, optionally adding caller-visible correlation at the presentation edge. -/
 def responseOutputJson (resp : Response) (clientRequestId? : Option String := none) : Json :=
   match clientRequestId? with
