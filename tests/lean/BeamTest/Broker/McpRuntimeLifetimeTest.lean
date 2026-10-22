@@ -81,7 +81,7 @@ private def withCoordinator
   let coordinator := (stdioPrivate% Beam.Mcp.Server.Coordinator.mk)
     (← ServerState.create)
     (← Std.Mutex.new ((stdioPrivate% Beam.Mcp.Server.RoutingState.mk) 1 {} {} none false 0))
-    writer (← IO.Promise.new) 32
+    writer 32
   try test coordinator frames
   finally
     writer.fail (IO.userError "coordinator fixture cleanup")
@@ -98,6 +98,13 @@ private def registerFixture
     | throw <| IO.userError "coordinator fixture could not register its request"
   pure request
 
+private def awaitDelivery (request : (stdioPrivate% Beam.Mcp.Server.InFlightRequest)) : IO Unit := do
+  let some result ← IO.wait ((stdioPrivate% Beam.Mcp.Server.InFlightRequest.output) request).deliveryTask
+    | throw <| IO.userError "fixture delivery completion was dropped"
+  match result with
+  | .ok () => pure ()
+  | .error error => throw error
+
 private def oversizedResponse (id : Json) : Json := Id.run do
   let mut text := "x"
   for _ in [:23] do text := text ++ text
@@ -111,8 +118,8 @@ private def checkOversizedResponseIsolation : IO Unit :=
     (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator large response
     (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator peer
       (successResponse (.str "peer") (Json.mkObj [("ok", .bool true)]))
-    (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitRequestBoundary) coordinator large
-    (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitRequestBoundary) coordinator peer
+    awaitDelivery large
+    awaitDelivery peer
     let responses ← (← frames.get).mapM fun frame =>
       IO.ofExcept <| (Json.parse frame).mapError IO.userError
     require "oversized result preserves both terminal outcomes" (responses.size == 2)
@@ -202,7 +209,7 @@ private def checkReservedReplyBoundary : IO Unit := do
       for _ in [:70] do slot.diagnostic diagnostic
       (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator request (oversizedResponse (.str id))
       release.resolve ()
-      (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitRequestBoundary) coordinator request
+      awaitDelivery request
       let responses ← (← frames.get).mapM fun frame =>
         IO.ofExcept <| (Json.parse frame).mapError IO.userError
       let some response := responses.find? (fun response => (response.getObjVal? "error").isOk)
@@ -284,6 +291,46 @@ private def checkDiagnosticOmissionProjection : IO Unit := do
   let output ← requireObjVal "error diagnostic omission" "lean-beam/output" data
   requireJsonInt "error diagnostic omission" "diagnosticsOmitted" 2 output
 
+private def checkLiveExecutionFence : IO Unit := do
+  let entered ← IO.Promise.new
+  let release ← IO.Promise.new
+  withCoordinator (fun coordinator frames => do
+    try
+      let prior ← registerFixture coordinator "prior"
+      let drop ← registerFixture coordinator "drop" true
+      let priorRequests ← (stdioPrivate% Beam.Mcp.Server.Coordinator.pushControlBarrier) coordinator drop
+      let later ← registerFixture coordinator "later"
+      let barrier? ← (stdioPrivate% Beam.Mcp.Server.Coordinator.currentControlBarrier?) coordinator
+      require "prior work acquires execution ownership"
+        (← (stdioPrivate% Beam.Mcp.Server.Coordinator.startExecution) coordinator prior)
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator prior (.str "prior")
+      let some _ ← IO.wait entered.result?
+        | throw <| IO.userError "live fence writer never reached its gate"
+      (stdioPrivate% Beam.Mcp.Server.awaitExecutions) priorRequests
+      require "live drop starts while prior output is blocked"
+        (← (stdioPrivate% Beam.Mcp.Server.Coordinator.startExecution) coordinator drop)
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator drop (.str "drop")
+      let some barrier := barrier? | throw <| IO.userError "live fence was not installed"
+      (stdioPrivate% Beam.Mcp.Server.InFlightRequest.awaitExecution) barrier
+      require "later work starts while drop output is pending"
+        (← (stdioPrivate% Beam.Mcp.Server.Coordinator.startExecution) coordinator later)
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator later (.str "later")
+      let routing ← ((stdioPrivate% Beam.Mcp.Server.Coordinator.routing) coordinator).atomically get
+      require "all execution admissions are released before any delivery"
+        ((stdioPrivate% Beam.Mcp.Server.RoutingState.executionAdmissions) routing == 0)
+      require "physical output remains blocked throughout live execution" ((← frames.get).isEmpty)
+      for request in #[prior, drop, later] do
+        require "only delivery remains pending"
+          (!(← IO.hasFinished ((stdioPrivate% Beam.Mcp.Server.InFlightRequest.output) request).deliveryTask))
+      release.resolve ()
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
+      for request in #[prior, drop, later] do awaitDelivery request
+      require "all completed outcomes survive teardown" ((← frames.get).size == 3)
+    finally release.resolve ()) (beforeWrite := do
+      entered.resolve ()
+      let some _ ← IO.wait release.result?
+        | throw <| IO.userError "live fence writer release was dropped")
+
 private def checkQueuedEviction (closeBeforeFence : Bool) : IO Unit :=
   withCoordinator fun coordinator frames => do
     let prior ← registerFixture coordinator "prior"
@@ -292,18 +339,20 @@ private def checkQueuedEviction (closeBeforeFence : Bool) : IO Unit :=
     let later ← registerFixture coordinator "later"
     if closeBeforeFence then discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
     (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator prior (.str "prior")
-    (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitRequests) coordinator
-      ((stdioPrivate% Beam.Mcp.Server.ControlRequestFence.priorRequests) fence)
+    (stdioPrivate% Beam.Mcp.Server.awaitExecutions) fence
     -- The second variant closes after the fence is satisfied but before execution ownership.
     if !closeBeforeFence then discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
     require "EOF prevents queued eviction from acquiring execution ownership"
       (!(← (stdioPrivate% Beam.Mcp.Server.Coordinator.startExecution) coordinator drop))
     (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator drop (.str "must not be delivered")
-    (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitControlBarrier) coordinator (some drop)
+    (stdioPrivate% Beam.Mcp.Server.InFlightRequest.awaitExecution) drop
     require "later work stays cancelled after the eviction fence settles"
       (!(← (stdioPrivate% Beam.Mcp.Server.Coordinator.startExecution) coordinator later))
     (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator later (.str "must not be delivered")
     (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
+    let some (.ok ()) ← IO.wait
+        ((stdioPrivate% Beam.Mcp.Server.Coordinator.output) coordinator).finishedTask
+      | throw <| IO.userError "queued eviction fixture did not drain"
     let expected := if closeBeforeFence then #[] else #["\"prior\"\n"]
     require "queued eviction and later work emit no terminal response" ((← frames.get) == expected)
 
@@ -316,7 +365,7 @@ private def checkStartedEviction : IO Unit :=
     require "started eviction remains active through client cancellation"
       (← (stdioPrivate% Beam.Mcp.Server.InFlightRequest.isActive) drop)
     (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator drop (.str "started outcome")
-    (stdioPrivate% Beam.Mcp.Server.Coordinator.awaitRequestBoundary) coordinator drop
+    (stdioPrivate% Beam.Mcp.Server.InFlightRequest.awaitExecution) drop
     let some result ← IO.wait ((stdioPrivate% Beam.Mcp.Server.InFlightRequest.output) drop).deliveryTask
       | throw <| IO.userError "started eviction fixture dropped delivery"
     match result with
@@ -455,6 +504,7 @@ def run : IO Unit := do
   checkReservedReplyBoundary
   checkExecutionAdmissionLifetime
   checkDiagnosticOmissionProjection
+  checkLiveExecutionFence
   checkQueuedEviction true
   checkQueuedEviction false
   checkStartedEviction

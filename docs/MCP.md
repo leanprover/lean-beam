@@ -170,9 +170,9 @@ other's cold-load latency.
 Reuse admission observes the selected installation outside the server-wide runtime mutex. The
 server checks the retained workspace instance again before dispatch and when binding the broker
 handle, so a concurrent drop/recreate cannot apply an old admission to a new workspace. Stdio
-workspace control operations retain their stream-order fence: they await earlier requests before
-dropping a workspace. Installation admission reads local metadata and paths, without launching
-selector or compiler probes. Cancellation is checked around admission; rejected or cancelled reuse
+workspace control operations use one global execution fence: they await execution and cleanup of
+earlier admitted requests across workspaces before dropping a workspace. Installation admission
+reads local metadata and paths, without launching selector or compiler probes. Cancellation is checked around admission; rejected or cancelled reuse
 does not replace the retained runtime.
 
 The transport reserves space for a small terminal error before accepting work. One writer owns
@@ -185,7 +185,9 @@ They do not bound broker computation, input decoding, or result construction.
 If a completed result exceeds its frame limit or cannot fit the shared output budget, that request
 receives JSON-RPC error `-32023`. Its `data.operationMayHaveCompleted` is `true`: the response could
 not be delivered, but effects such as a committed save are not undone. Do not blindly retry an
-operation that may have effects. Admission overload instead produces error `-32024` before the
+operation that may have effects. A missing or cancelled response is likewise not evidence that a
+save did not commit. Delayed output retains neither broker resources nor publication authority
+after operation cleanup. Admission overload instead produces error `-32024` before the
 request executes; the client may retry after pending work/output drains. Neither condition closes
 other requests or workspaces.
 
@@ -216,9 +218,11 @@ progress write cannot prevent this teardown after EOF is observed. Complete reje
 saturation can delay observing EOF as described above. Process exit has no fixed bound while synchronous
 stdout writes remain blocked; the client must read or close its pipe to release them.
 
-While stdin remains open, workspace-control fences wait for terminal response write attempts to
-finish, including failed writes. The server retires an exact request-ID admission before publishing
-its terminal response, so a client may reuse the ID after observing that response.
+Workspace-control fences wait for execution and cleanup, independently of stdout delivery. Later
+broker work can therefore execute even if an earlier response remains blocked on stdout. The
+server retires an exact request-ID admission before publishing its terminal response, so a client
+may reuse the ID after observing that response. Completing a write attempt does not establish that
+the client consumed or acknowledged the reply.
 
 CLI ingress has a different transport lifetime: a broker daemon accepts one request per socket
 connection, and disconnecting that connection cancels its exact broker admission. MCP carries many
@@ -416,7 +420,7 @@ string and numeric IDs are distinct.
 
 A request ID routes to its exact admission until the server commits its terminal outcome, before
 publishing the response. The admission remains retained separately until its terminal write attempt
-finishes, so output ordering and cleanup still refer to that exact request generation. In the modern
+finishes, so delivery cleanup still refers to that exact request generation. In the modern
 family, clients may safely reuse the ID after observing the response. A malformed second request
 using an ID that is still active is ignored so it cannot create two indistinguishable terminal
 responses for the same ID.
@@ -429,10 +433,10 @@ MCP Roots.
 terminal race, no final response is emitted for that request. `lean_drop_workspace` is
 cancellable while queued. After it acquires execution ownership, it is protected from client
 cancellation because partial cache eviction cannot be rolled back safely. Cache
-eviction is a full stream-order fence while stdin remains open: previously admitted calls drain
-before the drop runs, while later calls wait for its terminal result and may then recreate the same
-descriptor. After EOF, these fences wait for execution cleanup rather than terminal output, allowing
-started evictions and runtime teardown to finish even when a completed response blocks stdout.
+eviction uses a global execution fence: previously admitted calls across workspaces finish execution
+and cleanup before the drop runs; later broker work waits for the drop's execution and cleanup and
+may then recreate the same descriptor. These fences never wait for stdout. Responses may arrive out
+of execution order, including responses to workspace control operations.
 Registration or a progress notification alone does not grant execution ownership.
 
 For both protocol families, the MCP coordinator binds each ordinary tool call to the exact request

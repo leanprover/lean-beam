@@ -70,13 +70,12 @@ private structure InFlightRequest where
   cancellationPolicy : ClientCancellationPolicy
   state : Std.Mutex InFlightState
   executionDone : IO.Promise Unit
-  deliveryDone : IO.Promise Unit
   output : Beam.Mcp.StdioOutput.Slot
 
 private structure RoutingState where
   nextBrokerId : Nat := 1
   -- `inFlight` is the client-ID routing surface. `admitted` retains exact generations through
-  -- terminal output so shutdown and control fences retain the exact admission after ID retirement.
+  -- terminal output so delivery cleanup retains the exact admission after ID retirement.
   inFlight : Std.TreeMap RequestId InFlightRequest := {}
   admitted : Std.TreeMap String InFlightRequest := {}
   controlBarrier? : Option InFlightRequest := none
@@ -96,7 +95,6 @@ private structure Coordinator where
   state : ServerState
   routing : Std.Mutex RoutingState
   output : Beam.Mcp.StdioOutput.Writer
-  closing : IO.Promise Unit
   executionLimit : Nat := 32
 
 private def Coordinator.create : IO Coordinator := do
@@ -104,7 +102,6 @@ private def Coordinator.create : IO Coordinator := do
     state := ← ServerState.create
     routing := ← Std.Mutex.new {}
     output := ← Beam.Mcp.StdioOutput.start writeFrame
-    closing := ← IO.Promise.new
   }
 
 private def Coordinator.validateReplyId (coordinator : Coordinator) (id : Json) : IO Unit := do
@@ -136,7 +133,6 @@ private def Coordinator.registerRequest
     output
     state := ← Std.Mutex.new {}
     executionDone := ← IO.Promise.new
-    deliveryDone := ← IO.Promise.new
   }
   let result ← coordinator.routing.atomically do
     let routing ← get
@@ -198,45 +194,27 @@ private def awaitPromise (label : String) (promise : IO.Promise Unit) : IO Unit 
     | throw <| IO.userError s!"{label} promise was dropped"
   pure ()
 
-/-- Live control fences include delivery; EOF waits only for execution and resource cleanup. -/
-private def Coordinator.awaitRequestBoundary
-    (coordinator : Coordinator)
-    (request : InFlightRequest) : IO Unit := do
-  let some _ ← IO.waitAny [request.deliveryDone.result?, coordinator.closing.result?]
-    | throw <| IO.userError "MCP request boundary promise was dropped"
-  let closing ← coordinator.routing.atomically do pure (← get).closing
-  if closing then
-    -- A delivery may finish while EOF is still marking the remaining admissions cancelled.
-    awaitPromise "MCP closing admission" coordinator.closing
-    awaitPromise s!"in-flight execution {request.id.label}" request.executionDone
-  else
-    awaitPromise s!"in-flight delivery {request.id.label}" request.deliveryDone
+/-- Workspace controls fence execution and cleanup, independently of terminal output. -/
+private def InFlightRequest.awaitExecution (request : InFlightRequest) : IO Unit :=
+  awaitPromise s!"in-flight execution {request.id.label}" request.executionDone
+
+private def awaitExecutions (requests : Array InFlightRequest) : IO Unit := do
+  for request in requests do request.awaitExecution
 
 private def Coordinator.currentControlBarrier?
     (coordinator : Coordinator) : IO (Option InFlightRequest) := do
   coordinator.routing.atomically do
     pure (← get).controlBarrier?
 
-private structure ControlRequestFence where
-  previous? : Option InFlightRequest
-  priorRequests : Array InFlightRequest
-
 private def Coordinator.pushControlBarrier
     (coordinator : Coordinator)
-    (request : InFlightRequest) : IO ControlRequestFence := do
-  let (previous?, priorRequests) ← coordinator.routing.atomically do
+    (request : InFlightRequest) : IO (Array InFlightRequest) :=
+  coordinator.routing.atomically do
     let routing ← get
     let priorRequests := routing.admitted.toList.filterMap (fun (_, other) =>
       if other.brokerId == request.brokerId then none else some other) |>.toArray
     set { routing with controlBarrier? := some request }
-    pure (routing.controlBarrier?, priorRequests)
-  pure { previous?, priorRequests }
-
-private def Coordinator.awaitControlBarrier
-    (coordinator : Coordinator) (barrier? : Option InFlightRequest) : IO Unit := do
-  match barrier? with
-  | none => pure ()
-  | some barrier => coordinator.awaitRequestBoundary barrier
+    pure priorRequests
 
 /-- Acquire execution ownership after fences, atomically against EOF and cancellation. -/
 private def Coordinator.startExecution (coordinator : Coordinator) (request : InFlightRequest) : IO Bool :=
@@ -316,18 +294,14 @@ private def Coordinator.finishDelivery (coordinator : Coordinator) (request : In
     | .error error => throw error
   finally
     coordinator.completeRequest request
-    request.deliveryDone.resolve ()
 
 private def Coordinator.finishRequest
     (coordinator : Coordinator)
     (request : InFlightRequest)
-    (response : Json)
-    (deliveryDependencies : Array InFlightRequest := #[]) : IO Unit := do
+    (response : Json) : IO Unit := do
   try
     -- Execution has released its admission. Delivery retains no broker handle.
     coordinator.finishExecution request
-    for dependency in deliveryDependencies do
-      coordinator.awaitRequestBoundary dependency
     -- Routing retirement and terminal acceptance share the cancellation cutoff. The input reader
     -- cannot route a cancellation through the gap or mistake a reused ID for this generation.
     coordinator.routing.atomically do
@@ -354,7 +328,6 @@ private def Coordinator.finishRequest
     try coordinator.retireRequestId request
     finally
       coordinator.completeRequest request
-      request.deliveryDone.resolve ()
     throw error
   finally
     coordinator.finishExecution request
@@ -368,7 +341,6 @@ private def Coordinator.finishRequest
   catch error =>
     coordinator.output.fail error
     coordinator.completeRequest request
-    request.deliveryDone.resolve ()
     throw error
 
 /-- Own one registered request through execution cleanup and terminal delivery. -/
@@ -376,8 +348,7 @@ private def Coordinator.runOwnedRequest
     (coordinator : Coordinator)
     (req : Request)
     (request : InFlightRequest)
-    (work : IO Json)
-    (deliveryDependencies : Array InFlightRequest := #[]) : IO Unit := do
+    (work : IO Json) : IO Unit := do
   let response ←
     try
       work
@@ -385,7 +356,7 @@ private def Coordinator.runOwnedRequest
       traceMcpSafely s!"request work failed id={req.id.label}: {e.toString}"
       pure <| errorResponse req.id (RpcError.internalError e.toString)
   try
-    coordinator.finishRequest request response deliveryDependencies
+    coordinator.finishRequest request response
   catch e =>
     if !Beam.Mcp.Stdio.isClosedOutputError e then
       traceMcpSafely s!"request completion failed id={req.id.label}: {e.toString}"
@@ -395,25 +366,23 @@ private def Coordinator.failOwnedRequest
     (coordinator : Coordinator)
     (req : Request)
     (request : InFlightRequest)
-    (error : IO.Error)
-    (deliveryDependencies : Array InFlightRequest := #[]) : IO Unit := do
+    (error : IO.Error) : IO Unit := do
   traceMcpSafely s!"request work failed id={req.id.label}: {error.toString}"
   coordinator.runOwnedRequest req request
-    (pure <| errorResponse req.id (RpcError.internalError error.toString)) deliveryDependencies
+    (pure <| errorResponse req.id (RpcError.internalError error.toString))
 
 /-- Transfer a registered request to a worker, or complete it synchronously if task startup fails. -/
 private def Coordinator.spawnOwnedRequest
     (coordinator : Coordinator)
     (req : Request)
     (request : InFlightRequest)
-    (work : IO Json)
-    (deliveryDependencies : Array InFlightRequest := #[]) : IO Unit := do
+    (work : IO Json) : IO Unit := do
   try
     let _ ← IO.asTask (prio := Task.Priority.dedicated) do
-      coordinator.runOwnedRequest req request work deliveryDependencies
+      coordinator.runOwnedRequest req request work
     pure ()
   catch e =>
-    coordinator.failOwnedRequest req request e deliveryDependencies
+    coordinator.failOwnedRequest req request e
 
 private def InFlightRequest.markClientCancelled
     (request : InFlightRequest) : IO (Bool × Option Beam.Broker.RequestHandle) := do
@@ -459,18 +428,8 @@ private def Coordinator.beginClosing
     let requests := routing.admitted.toList.map Prod.snd |>.toArray
     set { routing with closing := true }
     pure requests
-  try
-    for request in requests do
-      request.cancel
-  finally
-    -- Mark cancellable admissions before waking work queued behind a control fence.
-    coordinator.closing.resolve ()
+  for request in requests do request.cancel
   pure requests
-
-private def Coordinator.awaitRequests
-    (coordinator : Coordinator) (requests : Array InFlightRequest) : IO Unit := do
-  for request in requests do
-    coordinator.awaitRequestBoundary request
 
 private def Coordinator.closeTransport (coordinator : Coordinator) : IO Unit := do
   let requests ← coordinator.beginClosing
@@ -479,7 +438,7 @@ private def Coordinator.closeTransport (coordinator : Coordinator) : IO Unit := 
     coordinator.state.closeRuntime
   finally
     traceMcpSafely "runtime close finished"
-    try coordinator.awaitRequests requests
+    try awaitExecutions requests
     finally coordinator.output.finish
 
 private def Coordinator.sendUnowned (coordinator : Coordinator) (json : Json) : IO Unit := do
@@ -531,7 +490,7 @@ private def Coordinator.toolRequestResponse
     (request : InFlightRequest)
     (barrier? : Option InFlightRequest)
     (initialProgress : Nat := 0) : IO Json := do
-  coordinator.awaitControlBarrier barrier?
+  if let some barrier := barrier? then barrier.awaitExecution
   if ← coordinator.startExecution request then
     traceMcpSafely s!"request execution started id={req.id.label}"
     coordinator.executeToolRequest opts req admitted parsedParams request initialProgress
@@ -574,7 +533,6 @@ private def Coordinator.spawnToolRequest
       return
   coordinator.spawnOwnedRequest req request
     (coordinator.toolRequestResponse opts req admitted parsedParams request barrier?)
-    barrier?.toArray
 
 private def Coordinator.handleControlToolRequest
     (coordinator : Coordinator)
@@ -592,7 +550,7 @@ private def Coordinator.handleControlToolRequest
   match admission with
   | .error response => coordinator.runOwnedRequest req request (pure response)
   | .ok admitted =>
-      let fence ←
+      let priorRequests ←
         try
           coordinator.pushControlBarrier request
         catch e =>
@@ -609,10 +567,10 @@ private def Coordinator.handleControlToolRequest
                 coordinator.state req.id admitted params notifications
           | .error _ => pure none
         let run (initialProgress : Nat) : IO Json := do
-          -- Live fences include delivery. EOF wakes the fence, then startExecution atomically
-          -- rejects queued work; a drop that already owns execution keeps its committed outcome.
-          coordinator.awaitRequests fence.priorRequests
-          coordinator.toolRequestResponse opts req admitted parsedParams request fence.previous?
+          -- Only unfinished execution and cleanup fence a drop. Output cannot delay later work.
+          -- startExecution atomically rejects queued work after EOF or cancellation.
+          awaitExecutions priorRequests
+          coordinator.toolRequestResponse opts req admitted parsedParams request none
             initialProgress
         match reporter? with
         | none => run 0
@@ -621,7 +579,7 @@ private def Coordinator.handleControlToolRequest
               run reporter.initialProgress
             finally
               finishReporterSafely req reporter.finish
-      coordinator.spawnOwnedRequest req request work fence.priorRequests
+      coordinator.spawnOwnedRequest req request work
 
 private def isWorkspaceControl : Except String CallToolParams → Bool
   | .ok params => params.name == .leanDropWorkspace

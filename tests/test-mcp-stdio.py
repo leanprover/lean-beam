@@ -3336,24 +3336,25 @@ def run_diagnostic_overflow(repo_root, fixture_root, timeout):
 def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
     # Keep stdout open but unread until runtime close finishes. Resuming the reader is cleanup,
     # not the event that is allowed to unblock runtime teardown.
-    for queued_drop in (False, True):
+    for live_drop in (False, True):
         with tempfile.TemporaryDirectory(prefix="lean-beam-mcp-blocked-eof-") as tmp:
             project_root = Path(tmp) / "project"
             pid_path = Path(tmp) / "file-worker.pid"
-            queued_marker = Path(tmp) / "queued-sync-executed"
+            reopened_marker = Path(tmp) / "queued-sync-executed"
             copy_project_fixture(fixture_root, project_root)
             client = McpClient(
                 repo_root,
                 project_root,
                 timeout,
-                label=f"blocked-stdout-eof-drop-{queued_drop}",
+                label=f"blocked-stdout-eof-drop-{live_drop}",
                 server_trace=True,
                 drain_stdout=False,
             )
             blocked_id = "blocked-terminal-output"
             waiting_id = "terminal-waiting-for-delivery"
+            save_id = "close-save-behind-blocked-terminal"
             drop_id = "drop-behind-blocked-terminal"
-            cancelled_id = "cancelled-sync-behind-drop"
+            reopened_id = "sync-after-live-drop"
             protocol_id = "protocol-behind-blocked-output"
             error_id = "error-behind-blocked-output"
 
@@ -3433,7 +3434,27 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                 # observe EOF while the first response still blocks physical output.
                 client.send_request("tools/list", with_modern_metadata(), request_id=protocol_id)
                 client.send_request("unknown/method", with_modern_metadata(), request_id=error_id)
-                if queued_drop:
+                if live_drop:
+                    artifact = project_root / ".lake/build/lib/lean/SaveSmoke/B.olean"
+                    require(not artifact.exists(), "save fixture already contains the output artifact")
+                    client.send_request(
+                        "tools/call",
+                        with_modern_metadata({
+                            "name": "lean_close_save",
+                            "arguments": {"path": "SaveSmoke/B.lean"},
+                        }),
+                        request_id=save_id,
+                    )
+                    client.wait_for_trace(
+                        "terminal response ready",
+                        "save/close cleanup waited for blocked output",
+                        request_id=save_id,
+                    )
+                    require(artifact.is_file(), "save did not commit its artifact before delivery")
+                    require(
+                        artifact.with_suffix(".olean.trace").is_file(),
+                        "save did not commit its Lake trace before delivery",
+                    )
                     client.send_request(
                         "tools/call",
                         with_modern_metadata({
@@ -3442,20 +3463,44 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                         }),
                         request_id=drop_id,
                     )
-                    marker_literal = json.dumps(str(queued_marker), ensure_ascii=False)
-                    (project_root / "QueuedAfterDrop.lean").write_text(
+                    marker_literal = json.dumps(str(reopened_marker), ensure_ascii=False)
+                    # A new module witnesses execution in the recreated workspace without
+                    # relying on receipt of the pending save/close or eviction responses.
+                    (project_root / "ReopenedAfterDrop.lean").write_text(
                         "import Lean\nrun_cmd do\n"
-                        f'  IO.FS.writeFile {marker_literal} "executed\\n"\n',
+                        f'  IO.FS.writeFile {marker_literal} "executed\\n"\n'
+                        "def bVal : Nat := 2\n",
                         encoding="utf-8",
                     )
-                    queued_params = with_modern_metadata({
-                        "name": "lean_sync",
-                        "arguments": {"path": "QueuedAfterDrop.lean"},
-                    })
                     client.send_request(
                         "tools/call",
-                        queued_params,
-                        request_id=cancelled_id,
+                        with_modern_metadata({
+                            "name": "lean_sync",
+                            "arguments": {"path": "ReopenedAfterDrop.lean"},
+                        }),
+                        request_id=reopened_id,
+                    )
+                    client.wait_for_trace(
+                        "terminal response ready",
+                        "live drop waited for earlier stdout delivery",
+                        request_id=drop_id,
+                    )
+                    require(not process_is_running(pid), "live drop retained the old file worker")
+                    client.wait_for_trace(
+                        "terminal response ready",
+                        "later execution waited for the drop response's delivery",
+                        request_id=reopened_id,
+                    )
+                    require(
+                        reopened_marker.read_text(encoding="utf-8") == "executed\n",
+                        "reopened sync did not execute before output resumed",
+                    )
+                    require(
+                        not any(
+                            "stdout write putStr done kind=response" in line and blocked_id in line
+                            for line in tuple(client.stderr_lines)
+                        ),
+                        "stdout resumed before save/close, drop and later work completed",
                     )
                 client.close_input()
                 client.wait_for_trace(
@@ -3464,24 +3509,20 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                     seconds=min(timeout, 10),
                 )
                 require(not process_is_running(pid), "runtime close left its file worker running")
-                require(not queued_marker.exists(), "EOF sync queued behind eviction executed")
 
-                # Only now consume output. The in-flight frame and the response-order fence must
-                # remain valid. The queued eviction has not acquired execution ownership and is
-                # cancelled by EOF; later work must not execute or receive a terminal response.
+                # Consume output only after backend teardown. The completed responses survive;
+                # neither their write order nor their eventual receipt controls broker work.
                 client.start_stdout_reader()
                 if client.wait_for_exit_after_eof(timeout) != 0:
                     fail(client._diagnostic_context())
                 client.stdout_thread.join(timeout=timeout)
                 require(not client.stdout_thread.is_alive(), "response reader did not finish")
-                if queued_drop:
-                    require(not queued_marker.exists(), "cancelled EOF sync executed during drain")
-                    require(not client.response_ready(cancelled_id), "cancelled EOF sync responded")
-                    client.forget_request(cancelled_id)
                 expected_ids = [blocked_id, waiting_id, protocol_id, error_id]
+                if live_drop:
+                    expected_ids.extend([save_id, drop_id, reopened_id])
                 require(
-                    list(client.responses) == [request_id_key(key) for key in expected_ids],
-                    f"terminal delivery crossed a workspace-control fence: {list(client.responses)}",
+                    set(client.responses) == {request_id_key(key) for key in expected_ids},
+                    f"completed terminal outcomes were lost: {list(client.responses)}",
                 )
                 result = expect_result(client.read_response(blocked_id))
                 require(result.get("isError") is not True, result)
@@ -3491,22 +3532,16 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                 require_success("delivery-waiting runAt", waiting.get("structuredContent", {}))
                 expect_result(client.read_response(protocol_id))
                 expect_error_code(client.read_response(error_id), -32601)
-                if queued_drop:
-                    require(not client.response_ready(drop_id), "queued EOF eviction responded")
-                    client.forget_request(drop_id)
-                    # Prove the marker module is valid and observable when allowed to execute.
-                    control = McpClient(
-                        repo_root, project_root, timeout, label="queued-sync-positive-control"
-                    )
-                    try:
-                        result = expect_result(control.request("tools/call", queued_params))
-                        require(result.get("isError") is not True, result)
-                        require(
-                            queued_marker.read_text(encoding="utf-8") == "executed\n",
-                            "positive-control sync did not execute the marker module",
-                        )
-                    finally:
-                        control.close()
+                if live_drop:
+                    saved = expect_result(client.read_response(save_id))
+                    require(saved.get("isError") is not True, saved)
+                    closed = saved.get("structuredContent", {})
+                    require(closed.get("closed") is True, closed)
+                    require(closed.get("saved", {}).get("module") == "SaveSmoke.B", closed)
+                    dropped = expect_result(client.read_response(drop_id))
+                    require(dropped.get("structuredContent", {}).get("dropped") is True, dropped)
+                    reopened = expect_result(client.read_response(reopened_id))
+                    require(reopened.get("isError") is not True, reopened)
             finally:
                 if client.stdout_thread is None:
                     client.start_stdout_reader()

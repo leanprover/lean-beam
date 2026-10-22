@@ -84,6 +84,14 @@ they established before checkpointing: `save` under `result.sync`, and `close-sa
 `result.saved.sync`. Document-error save failures include the blocking verdict under
 `error.data.sync`.
 
+For MCP, save completion and response delivery are separate. A busy rejection (`-32024`) means the
+request did not execute. An output-limit error (`-32023`) can follow a committed save or completed
+close; it does not roll back those effects. A missing or cancelled response also does not establish
+that a save did not commit. Pending output holds no document permit, broker request handle, or
+publication authority after execution and cleanup finish, and does not delay a workspace drop or
+later broker work. A stdout write attempt is not client acknowledgement. See the
+[MCP transport contract](MCP_TRANSPORT_CONTRACT.md) for output limits and cancellation cutoffs.
+
 After a checkpoint succeeds, finalization checks whether the same accepted document is still
 tracked. If it changed, closed, or reopened, `save` may return its historical
 checkpoint result but does not mark a replacement document checkpointed. `close-save` instead

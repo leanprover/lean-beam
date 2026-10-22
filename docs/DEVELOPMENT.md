@@ -285,11 +285,12 @@ Keep these stdio invariants explicit:
   rejection-reserve saturation pauses input, delaying later cancellation and EOF observation
 - the server emits no JSON-RPC requests to clients
 - request IDs preserve their string-versus-integer kind and their string or numeric value
-- ordinary calls may overlap; cache eviction is a full stream-order fence while stdin remains open
+- ordinary calls may overlap; cache eviction globally fences earlier execution and cleanup, and
+  later broker work waits for that eviction's execution and cleanup; neither fence waits for stdout
 - execution completion releases broker resources and execution admission independently of delivery;
   pending output is bounded by byte budgets and does not retain a dedicated waiting thread
-- observed EOF closes admission and starts backend teardown before joining execution; live delivery fences
-  switch to execution completion so an unread response cannot hold backend resources alive
+- observed EOF closes admission and starts backend teardown before joining execution; an unread
+  response cannot hold backend resources alive
 - queued evictions may be cancelled; started evictions retain a truthful terminal outcome
 - terminal acceptance and exact ID retirement share the cancellation cutoff; late publishers and
   completions cannot affect another generation that reuses the same external request ID
@@ -530,7 +531,7 @@ atomically before the owner terminates and reaps the helper. Cancellation and de
 also terminate and reap it before returning a typed broker failure. Owner loss terminates the
 helper even during an unbounded server-environment wait. A cold load still holds the broker state
 mutex; removing its deadline does not provide concurrent workspace loading. MCP workspace drop
-remains a stream-order fence: cancel an earlier stalled request before awaiting drop.
+remains a global execution fence: cancel an earlier stalled request before awaiting drop.
 The typed operation wrappers select this policy without a caller override. The internal
 `LakeHelperJob.runRequest` primitive accepts an explicit policy for bounded lifetime fixtures.
 

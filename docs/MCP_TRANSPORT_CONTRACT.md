@@ -33,6 +33,16 @@ Retire the matching external JSON-RPC ID when committing the terminal outcome, b
 becomes visible. Late producers and completions refer to the private admission, so they cannot
 alter another request that reuses the same external ID. A write attempt is not client acknowledgement.
 
+Workspace eviction uses one global execution fence: a drop waits for execution and cleanup of
+previously admitted calls across workspaces; later broker work waits for that drop's execution and
+cleanup. Pending responses do not hold either fence. There is no additional response-order guarantee
+for workspace control operations.
+
+Busy means the request did not execute. An output-limit error can follow a completed operation.
+A missing or cancelled response is not evidence that a save did not commit. Output delay must not
+retain a completed operation's broker resources or publication authority; see
+[save outcomes](SYNC_AND_DIAGNOSTICS.md).
+
 Cancellation before terminal acceptance suppresses the response while execution cleanup continues.
 Cancellation afterward leaves the accepted response unchanged. Cancelled execution retains its
 small output reservation until cleanup finishes. A queued workspace eviction may be cancelled;
@@ -83,11 +93,10 @@ before that request receives any execution or output admission.
 
 ## 4. Observed shutdown starts cleanup before joining execution
 
-Once the reader observes EOF, stop admission and mark cooperative requests cancelled before waking
-queued work. Start backend teardown before joining execution: backend closure may itself release
-a request. Live workspace-control fences include terminal delivery; after shutdown begins they
-wait only for execution cleanup. Started evictions must preserve committed outcomes, and detached
-cleanup must not hold the mutex needed to close other workspaces.
+Once the reader observes EOF, stop admission and cancel cooperative requests. Queued work cannot
+acquire execution ownership after admission closes. Start backend teardown before joining execution:
+backend closure may itself release a request. Started evictions must preserve committed outcomes,
+and detached cleanup must not hold the mutex needed to close other workspaces.
 
 Accepted replies may drain while backend cleanup proceeds. A physical write failure or internal
 transport fault instead closes the session and starts cleanup independently of the writer. Ordinary
@@ -108,5 +117,7 @@ protocol test executable in `bash tests/test-beam-fast.sh`.
 
 `python3 tests/test-mcp-stdio.py --iterations 1 --restart-cycles 1 --timeout 60` checks oversized
 results alongside another workspace, 40 gated concurrent calls, 150 diagnostics followed by a
-slow reader, and blocked-output EOF cleanup below complete rejection saturation. The existing
-slow suite owns longer stdio stress. Platform qualification follows [TESTING.md](TESTING.md).
+slow reader, and blocked-output EOF cleanup below complete rejection saturation. While stdout is
+blocked, a committed save/close, live workspace drop, and subsequent sync finish before delivery
+resumes. A coordinator model independently checks execution-admission release under blocked output.
+The existing slow suite owns longer stdio stress. Platform qualification follows [TESTING.md](TESTING.md).
