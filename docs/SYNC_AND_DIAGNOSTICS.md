@@ -26,6 +26,12 @@ transport failures can instead exit nonzero with human-facing stderr and no JSON
 must check the exit status before parsing stdout. Clients that require structured live events and
 failures should use MCP.
 
+`lean-beam refresh` refreshes a tracked document from saved source and waits for diagnostics. It
+validates the path and reads the source before closing and reopening the document, so a rejected
+path or failed source read leaves the existing document open. If a newer source read was accepted
+while the refresh was reading, the refresh uses that newer snapshot without closing it. Refresh is
+therefore not equivalent to issuing `close` followed by `sync` as separate commands.
+
 The returned document `version` is the snapshot token for broker, MCP, and wrapper callers.
 Position- or range-bound operations reject missing or stale versions; clients can obtain the
 version from `lean-beam update`, the internal broker `update_file` operation, or MCP `lean_update`.

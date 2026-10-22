@@ -212,7 +212,7 @@ def refreshWaitSpec (path : String) (action : String := "refresh") : BrokerWaitS
   syncLikeWaitSpec
     (action := action)
     (path := path)
-    (startMsg := s!"beam: refreshing {path} by closing and resyncing")
+    (startMsg := s!"beam: refreshing {path} from saved source")
     (progressLabel := "refresh")
     (stillWaitingLabel := "refreshing")
     (completeLabel := "refresh")

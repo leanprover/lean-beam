@@ -282,7 +282,8 @@ Read those commands like this:
   version without waiting for diagnostics
 - `lean-beam run-at` tries speculative Lean text without editing the file
 - `lean-beam sync` waits for diagnostics/readiness after a real saved edit
-- `lean-beam refresh` is `lean-beam close` plus `lean-beam sync`
+- `lean-beam refresh` reads saved source before reopening the tracked document for fresh diagnostics;
+  see the [refresh contract](SYNC_AND_DIAGNOSTICS.md#command-model)
 - `lean-beam save` checkpoints one synced workspace module; it does not validate downstream importers
 - `lean-beam doctor` explains toolchain support and runtime bundle selection
 
