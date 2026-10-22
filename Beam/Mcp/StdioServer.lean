@@ -673,7 +673,7 @@ partial def runStdio (opts : Options) : IO Unit := do
     -- Failure reaches the session owner even if stdin and stdout are both blocked.
     let outcome ← IO.waitAny [
       readerDone.result?,
-      (coordinator.output.failureTask.map (fun error? => error?.map Except.error))
+      coordinator.output.outcomeTask
     ]
     match outcome with
     | some (.ok ()) => pure ()
@@ -685,10 +685,8 @@ partial def runStdio (opts : Options) : IO Unit := do
     coordinator.closeTransport
   -- Orderly EOF may drain accepted responses after backend cleanup. Logical failure remains
   -- independently observable if a physical write is stuck; never join that writer on failure.
-  let some result ← IO.waitAny [
-    coordinator.output.finishedTask,
-    coordinator.output.failureTask.map (fun error? => error?.map Except.error)
-  ] | throw <| IO.userError "MCP writer completion promise was dropped"
+  let some result ← IO.wait coordinator.output.outcomeTask
+    | throw <| IO.userError "MCP writer completion promise was dropped"
   match result with
   | .ok () => pure ()
   | .error error =>

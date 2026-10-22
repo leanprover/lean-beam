@@ -67,6 +67,18 @@ private def checkBlockedWriter : IO Unit := do
     writer.finish
     discard <| awaitTask writer.finishedTask
 
+private def checkRetiredWriterOutcome : IO Unit := do
+  let outcome ← do
+    let writer ← start fun _ => pure ()
+    let slot ← writer.reserve
+    slot.respond (.str "response")
+    let outcome := writer.outcomeTask
+    writer.finish
+    pure outcome
+  -- Drop the owner's writer/slot references before observing completion, as the EOF supervisor
+  -- does after cleanup. Normal retirement must produce success, not an orphaned promise.
+  requireSuccess (← awaitTask outcome)
+
 private def checkReservationCapacity : IO Unit := do
   let entered ← IO.Promise.new
   let release ← IO.Promise.new
@@ -79,7 +91,7 @@ private def checkReservationCapacity : IO Unit := do
     writing.respond (.str "response")
     await entered
     requireFailure "running and physically writing requests both reserve capacity" (← attempt writer.reserve)
-    discard <| awaitTask writer.failureTask
+    discard <| awaitTask writer.outcomeTask
     requireFailure "execution slot learns failure before stdout resumes" (← awaitTask executing.deliveryTask)
     requireFailure "writing slot learns failure before stdout resumes" (← awaitTask writing.deliveryTask)
     require "logical failure does not claim physical completion" (!(← IO.hasFinished writer.finishedTask))
@@ -107,10 +119,11 @@ private def checkFirstFailure : IO Unit := do
     -- Pause the first failure between its locked transition and unlocked publication. A competing
     -- closer must not publish a different cause while the original owner is paused.
     writer.fail (IO.userError "later failure")
-    require "only the first failure owner may publish" (!(← IO.hasFinished writer.failureTask))
+    require "only the first failure owner may publish" (!(← IO.hasFinished writer.outcomeTask))
     (outputPrivate% Beam.Mcp.StdioOutput.Writer.publishFailure) writer original pending
-    require "session observes the first failure"
-      ((← awaitTask writer.failureTask).toString.contains "first failure")
+    match ← awaitTask writer.outcomeTask with
+    | .ok () => throw <| IO.userError "failed session reported success"
+    | .error error => require "session observes the first failure" (error.toString.contains "first failure")
     match ← awaitTask slot.deliveryTask with
     | .ok () => throw <| IO.userError "failed slot reported success"
     | .error error => require "delivery retains the same failure" (error.toString.contains "first failure")
@@ -175,7 +188,7 @@ private def checkDiagnosticOverflow (limits : Limits) : IO Unit := do
     slot.progress (.str "replaceable")
     requireFailure "diagnostics fail explicitly instead of being silently replaced"
       (← attempt <| slot.diagnostic (.str "overflow"))
-    discard <| awaitTask writer.failureTask
+    discard <| awaitTask writer.outcomeTask
     requireFailure "diagnostic overflow settles every reserved slot" (← awaitTask slot.deliveryTask)
   finally
     release.resolve ()
@@ -229,13 +242,14 @@ private def checkWriteFailure : IO Unit := do
   let writer ← start fun _ => throw <| IO.userError "MCP output fixture write failure"
   let response ← writer.reserve
   response.respond (.str "response")
-  discard <| awaitTask writer.failureTask
+  discard <| awaitTask writer.outcomeTask
   requireFailure "write failure settles delivery" (← awaitTask response.deliveryTask)
   requireFailure "physical writer reports failure" (← awaitTask writer.finishedTask)
   requireFailure "write failure closes admission" (← attempt writer.reserve)
 
 def run : IO Unit := do
   checkBlockedWriter
+  checkRetiredWriterOutcome
   checkReservationCapacity
   checkFirstFailure
   checkNotificationBudgets

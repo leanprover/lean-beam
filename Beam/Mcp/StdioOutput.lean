@@ -101,7 +101,7 @@ structure Writer where
   private limits : Limits
   private state : Std.Mutex State
   private available : Std.Condvar
-  private failure : IO.Promise IO.Error
+  private outcome : IO.Promise (Except IO.Error Unit)
   private finished : IO.Promise (Except IO.Error Unit)
 
 /-- An exact private admission, independent of reusable JSON-RPC IDs. -/
@@ -110,7 +110,8 @@ structure Slot where
   private id : Nat
   private done : IO.Promise (Except IO.Error Unit)
 
-def Writer.failureTask (writer : Writer) : Task (Option IO.Error) := writer.failure.result?
+/-- Logical outcome: failures settle immediately, including while physical output is blocked. -/
+def Writer.outcomeTask (writer : Writer) : Task (Option (Except IO.Error Unit)) := writer.outcome.result?
 def Writer.finishedTask (writer : Writer) : Task (Option (Except IO.Error Unit)) := writer.finished.result?
 def Slot.deliveryTask (slot : Slot) : Task (Option (Except IO.Error Unit)) := slot.done.result?
 
@@ -124,7 +125,7 @@ private def failState (error : IO.Error) : Std.AtomicT State IO (Option (Array P
 
 private def Writer.publishFailure (writer : Writer) (error : IO.Error) (pending : Array Pending) : IO Unit := do
   for slot in pending do slot.done.resolve (.error error)
-  writer.failure.resolve error
+  writer.outcome.resolve (.error error)
   writer.available.notifyAll
 
 /-- Logical failure never joins a blocked physical write. -/
@@ -307,7 +308,7 @@ private partial def Writer.run (writer : Writer) (write : Frame → IO Unit) : I
 def start (write : Frame → IO Unit) (limits : Limits := {}) : IO Writer := do
   let writer : Writer := {
     limits, state := ← Std.Mutex.new {}, available := ← Std.Condvar.new
-    failure := ← IO.Promise.new, finished := ← IO.Promise.new
+    outcome := ← IO.Promise.new, finished := ← IO.Promise.new
   }
   try
     let _ ← IO.asTask (prio := Task.Priority.dedicated) do
@@ -317,6 +318,9 @@ def start (write : Frame → IO Unit) (limits : Limits := {}) : IO Writer := do
       catch error =>
         writer.fail error
         pure (.error error)
+      -- Every observer has a producer on normal completion too; a failure-only promise would be
+      -- orphaned when the writer retires and could race successful completion with `none`.
+      writer.outcome.resolve result
       writer.finished.resolve result
     pure writer
   catch error =>
