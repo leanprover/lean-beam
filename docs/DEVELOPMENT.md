@@ -759,7 +759,10 @@ this lock.
 locks intentionally keep the lower-level unbounded helper because another process may legitimately
 be compiling a helper bundle. The shell installer's `.install-lock` remains an atomic directory
 compatibility boundary: it is never stale-reaped, and a crashed installer requires explicit
-operator recovery. Reusable CLI argument parsing lives in
+operator recovery. Prune protects its owned directory before PID initialization and releases only
+the known PID file and empty lock directory. Unexpected contents remain untouched. Operation and
+cleanup failures stay typed until the CLI reports both; a sole failure retains its original
+`IO.Error`. Reusable CLI argument parsing lives in
 [Beam/Cli/Args.lean](../Beam/Cli/Args.lean). Project-root inference lives in
 [Beam/Cli/Project.lean](../Beam/Cli/Project.lean). The application adapter in
 [Beam/Installation/Lookup.lean](../Beam/Installation/Lookup.lean) selects standalone or SDK (bundled with a complete Lean installation) membership lookup.

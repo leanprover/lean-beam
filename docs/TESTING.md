@@ -210,7 +210,10 @@ Current Beam coverage includes:
   complete immutable installation reuse, incomplete-manifest rejection,
   `doctor`, installed-state pruning, and installed MCP wrapper coverage
   in [tests/test-beam-install.sh](../tests/test-beam-install.sh), with focused prune safety and
-  invalid-runtime identity cases in [tests/test-beam-prune.sh](../tests/test-beam-prune.sh)
+  invalid-runtime identity cases in [tests/test-beam-prune.sh](../tests/test-beam-prune.sh).
+  Fast and native SDK qualification also run `beam-prune-lock-test` for cleanup before and after
+  PID initialization, immediate reacquisition, untouched contending locks, and preservation of
+  typed operation and cleanup failures without recursively deleting unexpected contents.
 - MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, installed smoke, released
   official-client interoperability, and external legacy/modern conformance coverage
 

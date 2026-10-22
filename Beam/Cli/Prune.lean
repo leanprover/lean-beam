@@ -45,8 +45,6 @@ private partial def acquireInstallLockUntil
     | .alreadyExists .. => pure false
     | error => throw error
   if acquired then
-    let selfPid ← IO.Process.getPID
-    IO.FS.writeFile (lockDir / "pid") s!"{selfPid}\n"
     return
   let now ← IO.monoNanosNow
   if now >= deadlineNanos then
@@ -62,17 +60,29 @@ private def releaseInstallLock (lockDir : System.FilePath) : IO Unit := do
     IO.FS.removeFile pidPath
   IO.FS.removeDir lockDir
 
+private inductive InstallLockFailure where
+  | ioError (error : IO.Error)
+  | operationAndCleanup (operation cleanup : IO.Error)
+
+private def InstallLockFailure.toIOError : InstallLockFailure → IO.Error
+  | .ioError error => error
+  | .operationAndCleanup operation cleanup =>
+      IO.userError s!"{operation}\nfailed to release Beam install lock after prune failure:\n{cleanup}"
+
 private def withInstallLockTimeout
     (lockDir : System.FilePath)
     (timeoutMs : Nat)
-    (act : IO α) : IO α := do
+    (act : IO α) : EIO InstallLockFailure α := do
   let startedNanos ← IO.monoNanosNow
-  acquireInstallLockUntil lockDir startedNanos
-    (startedNanos + timeoutMs * 1000000) timeoutMs
-  try
-    act
-  finally
-    releaseInstallLock lockDir
+  (acquireInstallLockUntil lockDir startedNanos
+    (startedNanos + timeoutMs * 1000000) timeoutMs).toEIO .ioError
+  -- mkdir transfers ownership before any fallible initialization runs in act.
+  let operation ← act.toBaseIO
+  let cleanup ← (releaseInstallLock lockDir).toBaseIO
+  match operation, cleanup with
+  | .ok value, .ok () => pure value
+  | .error error, .ok () | .ok _, .error error => throw <| .ioError error
+  | .error operation, .error cleanup => throw <| .operationAndCleanup operation cleanup
 
 private def pruneUsage : String :=
   "usage: lean-beam prune [--apply]"
@@ -219,7 +229,10 @@ def runPrune (home : System.FilePath) (args : List String) : IO Unit := do
     IO.println pruneHelp
     return
   let ctx ← resolvePruneContext home
-  withInstallLockTimeout (ctx.installRoot / ".install-lock") 1000 do
+  let lockDir := ctx.installRoot / ".install-lock"
+  EIO.toIO InstallLockFailure.toIOError <| withInstallLockTimeout lockDir 1000 do
+    let selfPid ← IO.Process.getPID
+    IO.FS.writeFile (lockDir / "pid") s!"{selfPid}\n"
     validatePruneContext ctx
     let plan ← prunePlan ctx
     printPrunePlan ctx opts plan
