@@ -117,16 +117,19 @@ evidence. This does not provide cross-process coordination or crash recovery.
 
 The reservation does not lock files on disk or other Beam processes. Workspace removal and
 backend failure can supersede it before publication is claimed. Failure and cancellation release
-the reservation after settling helper work. If an artifact request or final close has an uncertain
-backend outcome, Beam retires that backend; subsequent work must reacquire its document and
-continuation handles. Cancellation
-before the claim abandons private preparation; private writes do not commit a checkpoint. Later
+the reservation after settling helper work or abandoning isolated private preparation. A failed
+artifact-request write, its immediate propagated cancellation write, or uncertain final close
+delivery retires the captured backend; subsequent work must reacquire its document and
+continuation handles. Cancellation before the claim abandons private preparation; private writes
+do not commit a checkpoint. Later
 cancellation does not undo a committed checkpoint. The internal save handler acknowledges completion
 only after its task and staging cleanup finish, including when the handler rejects a document with
 Lean errors. An acknowledged failure leaves the document open, releases its reservation, and
 preserves other documents and continuation handles. Completion does not imply rollback: a handler
-failure can follow private artifact publication. Bare routing, watchdog, or cancellation errors without
-that acknowledgement remain uncertain, even if a JSON-RPC response was received.
+failure can follow private artifact publication. Missing or malformed completion and bare routing,
+watchdog, or cancellation errors leave private producer completion uncertain. Beam retains the attempt's
+private paths and claims, preserving a healthy backend, its documents, and continuation handles.
+These abandoned attempts cannot publish a canonical checkpoint, even if private writes finish later.
 
 After a checkpoint succeeds, finalization still checks the exact accepted document. An ordinary
 `save` may return its historical checkpoint result after a concurrent change without marking the

@@ -46,6 +46,24 @@ private def requireCanonicalPresent (saved : SaveOleanResult) : IO Unit := do
   for path in artifactPaths saved do
     require s!"committed receipt artifact is absent: {path}" ((← path.metadata).type == .file)
 
+private def requirePrivateRetention (saved : SaveOleanResult) (retained : Bool) : IO Unit := do
+  let mut directories : Array System.FilePath := #[]
+  let mut claims : Array System.FilePath := #[]
+  for path in artifactPaths saved do
+    for entry in ← (path.parent.getD ".").readDir do
+      if entry.fileName.startsWith ".beam-publication-" then
+        if entry.fileName.endsWith ".claim" then
+          if !claims.contains entry.path then claims := claims.push entry.path
+        else
+          if !directories.contains entry.path then directories := directories.push entry.path
+  let expected := if retained then (artifactPaths saved).size else 0
+  require "private preparation retained the wrong number of directories"
+    (directories.size == expected)
+  require "private preparation retained the wrong number of claims" (claims.size == expected)
+  for directory in directories do
+    require "unsettled private directory lost its exclusive claim"
+      (claims.contains (System.FilePath.mk (directory.toString ++ ".claim")))
+
 private def session (server : ServerRuntime) : IO Session :=
   server.withState do
     let some workspace := (← get).workspaces.get? workspaceId
@@ -168,14 +186,28 @@ private def rejectedClose (description : Beam.Runtime.Description) (root : Syste
 
 /-- Inject router replies at the existing stream boundary, before a worker task is launched. -/
 private def completionReply (description : Beam.Runtime.Description) (root gate : System.FilePath)
-    (case : String) : IO Unit := do
+    (case : String) (closeAfter : Bool) : IO Unit := do
   let server ← ServerRuntime.create (BrokerConfig.ofRuntime root description) workspaceId
   try
     discard <| result (← call server (.syncFile { path := "Main.lean" }))
+    IO.FS.writeFile (root / "Other.lean") "example : True := by\n  trivial\n"
+    let other ← result (← call server (.syncFile { path := "Other.lean" }))
+    let version : Nat ← IO.ofExcept <| other.getObjValAs? Nat "version"
+    let seed ← result (← call server (.runAt {
+      path := "Other.lean", version, line := 1, character := 2
+      text := "skip", storeHandle? := some true
+    }))
+    let handle : Handle ← IO.ofExcept <| seed.getObjValAs? Handle "handle"
+    let saved : SaveOleanResult ← IO.ofExcept <| fromJson?
+      (← result (← call server (.saveOlean { path := "Main.lean" })))
+    let prior ← snapshotCheckpoint saved
     let original ← session server
+    let uri := sessionUri (root / "Main.lean")
+    let before ← doc server uri
     IO.FS.writeFile (gate / "enabled") ""
     let pending ← IO.asTask (prio := .dedicated) <|
-      call server (.close { path := "Main.lean", saveArtifacts? := some true })
+      call server (if closeAfter then .close { path := "Main.lean", saveArtifacts? := some true }
+        else .saveOlean { path := "Main.lean" })
     try
       waitForGate gate
       let intercepted ← IO.mkRef false
@@ -226,19 +258,15 @@ private def completionReply (description : Beam.Runtime.Description) (root gate 
       require "save reply preserves public error presentation" (error.code == expected)
       require "save failure preserves barrier progress" (response.fileProgress?.any (·.done))
       let settled := case == "handler-failure" || case == "cancelled-handler-failure"
-      if settled then
-        require "completed handler failure preserves the backend"
-          ((← session server).epoch == original.epoch)
-        require "completed handler failure preserves the document"
-          ((← session server).docs.contains (sessionUri (root / "Main.lean")))
-      else
-        match ← original.proc.observe with
-        | some (.exited _) => pure ()
-        | _ => throw <| IO.userError "bare or malformed reply falsely settled its effect"
-        discard <| result (← call server (.syncFile { path := "Main.lean" }))
-        require "uncertain reply recovery replaces backend"
-          ((← session server).epoch != original.epoch)
+      require "private preparation reply preserves the backend"
+        ((← session server).epoch == original.epoch)
+      require "private preparation reply preserves the accepted document"
+        (DocumentState.basis (← doc server uri) == DocumentState.basis before)
+      requireCheckpointUnchanged prior
+      requirePrivateRetention saved (!settled)
       requireNoAdmissions server
+      requireJsonBool "unrelated continuation survives private preparation reply" "success" true
+        (← result (← call server (.runWith { path := "Other.lean", handle, text := "trivial" })))
     finally
       IO.FS.writeFile (gate / "release") ""
       discard <| IO.ofExcept pending.get
@@ -246,36 +274,63 @@ private def completionReply (description : Beam.Runtime.Description) (root gate 
     server.close
 
 private def uncertainWrite (description : Beam.Runtime.Description) (root gate : System.FilePath)
-    (case : String) : IO Unit := do
+    (case : String) (closeAfter : Bool) : IO Unit := do
   let server ← ServerRuntime.create (BrokerConfig.ofRuntime root description) workspaceId
   try
     discard <| result (← call server (.syncFile { path := "Main.lean" }))
+    let saved : SaveOleanResult ← IO.ofExcept <| fromJson?
+      (← result (← call server (.saveOlean { path := "Main.lean" })))
+    let prior ← snapshotCheckpoint saved
     let original ← session server
     IO.FS.writeFile (gate / "enabled") ""
     let pending ← IO.asTask (prio := .dedicated) <|
-      call server (.close { path := "Main.lean", saveArtifacts? := some true })
+      call server (if closeAfter then .close { path := "Main.lean", saveArtifacts? := some true }
+        else .saveOlean { path := "Main.lean" })
     try
       waitForGate gate
-      let method := if case == "uncertain-close" then "textDocument/didClose" else saveArtifactsMethod
+      let method := if case == "uncertain-close" then "textDocument/didClose"
+        else if case == "uncertain-cancel-write" then "$/cancelRequest" else saveArtifactsMethod
       let delivered ← IO.mkRef false
+      let requestWritten ← IO.mkRef false
       server.withState do
         let state ← get
         let some workspace := state.workspaces.get? workspaceId
           | throw <| IO.userError "missing fixture workspace"
         let some current := workspace.lean.session?
           | throw <| IO.userError "missing fixture backend"
-        let current := { current with stdin := { current.stdin with putStr := fun text => do
-          current.stdin.putStr text
-          if text.contains method then
+        let current := { current with stdin := { current.stdin with
+          putStr := fun text => do
+            if case == "uncertain-cancel-write" && text.contains saveArtifactsMethod then
+              -- Hold delivery so the pending entry cannot be removed before propagation.
+              -- Setting its flag here exercises the immediate post-dispatch cancellation write.
+              let entries ← current.pending.snapshotEntries
+              require "cancel-write fixture expects one pending request" (entries.size == 1)
+              let some (_, request) := entries[0]?
+                | throw <| IO.userError "missing intercepted save request"
+              let some cancelRef := request.cancelRef?
+                | throw <| IO.userError "missing save cancellation identity"
+              cancelRef.set true
+              requestWritten.set true
+              return
+            current.stdin.putStr text
+            if text.contains method then
+              requestWritten.set true
+              if case != "uncertain-save-flush" then
+                current.stdin.flush
+                delivered.set true
+                throw <| IO.userError "controlled failure after backend write"
+          flush := do
             current.stdin.flush
-            delivered.set true
-            throw <| IO.userError "controlled failure after backend write"
+            if case == "uncertain-save-flush" && (← requestWritten.get) then
+              delivered.set true
+              throw <| IO.userError "controlled failure after backend flush"
         }}
         set { state with workspaces := state.workspaces.insert workspaceId {
           workspace with lean := { workspace.lean with session? := some current } } }
       IO.FS.writeFile (gate / "release") ""
       let response ← IO.ofExcept pending.get
       require "fixture did not exercise backend write uncertainty" (← delivered.get)
+      require "fixture did not reach the selected request" (← requestWritten.get)
       let some error := response.error? | throw <| IO.userError "uncertain write returned success"
       require "write error remains typed" (error.code == "internalError")
       if case == "uncertain-close" then
@@ -285,6 +340,10 @@ private def uncertainWrite (description : Beam.Runtime.Description) (root gate :
         requireJsonInt "checkpoint remains committed" "version" 1 savedJson
         let saved : SaveOleanResult ← IO.ofExcept <| fromJson? savedJson
         requireCanonicalPresent saved
+      else
+        requireFieldAbsent "preparation write failure has no saved receipt" "saved"
+          (error.data?.getD Json.null)
+        requireCheckpointUnchanged prior
       match ← original.proc.observe with
       | some (.exited _) => pure ()
       | _ => throw <| IO.userError "uncertain backend effect was not settled"
@@ -303,9 +362,11 @@ def run (description : Beam.Runtime.Description) (root : System.FilePath)
   let some gate ← IO.getEnv "BEAM_TEST_SAVE_GATE_DIR"
     | throw <| IO.userError "missing save gate directory"
   let gate := System.FilePath.mk gate
+  let closeAfter := !case.startsWith "ordinary-"
+  let case := if closeAfter then case else (case.drop "ordinary-".length).toString
   if ["remote-invalid-params", "remote-owner-loss", "remote-cancelled", "malformed-completion",
       "handler-failure", "cancelled-handler-failure"].contains case then
-    completionReply description root gate case
+    completionReply description root gate case closeAfter
     IO.println s!"save owner ({case}): passed"
     return
   if case == "rejected-close" then
@@ -316,8 +377,9 @@ def run (description : Beam.Runtime.Description) (root : System.FilePath)
     delayedAdmission description root gate
     IO.println "save owner (delayed-admission): passed"
     return
-  if case == "uncertain-close" || case == "uncertain-save" then
-    uncertainWrite description root gate case
+  if ["uncertain-close", "uncertain-save", "uncertain-save-flush",
+      "uncertain-cancel-write"].contains case then
+    uncertainWrite description root gate case closeAfter
     IO.println s!"save owner ({case}): passed"
     return
   let config := BrokerConfig.ofRuntime root description

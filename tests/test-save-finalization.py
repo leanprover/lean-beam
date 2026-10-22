@@ -20,8 +20,11 @@ REPO = Path(__file__).resolve().parent.parent
 WORKSPACE = "save-finalization-test"
 REPLY_CASES = ["remote-invalid-params", "remote-owner-loss", "remote-cancelled",
                "malformed-completion", "handler-failure", "cancelled-handler-failure"]
+REPLY_CASES += ["ordinary-" + case for case in REPLY_CASES]
+WRITE_CASES = [prefix + case for prefix in ("", "ordinary-")
+               for case in ("uncertain-save", "uncertain-save-flush", "uncertain-cancel-write")]
 OWNER_CASES = ["workspace-replace", "backend-restart", "distinct-runtime",
-               "delayed-admission", "uncertain-close", "uncertain-save", "rejected-close"] + REPLY_CASES
+               "delayed-admission", "uncertain-close", "rejected-close"] + REPLY_CASES + WRITE_CASES
 CLOSING_CASES = ["exclusive", "preflight-exclusive", "cancel-close", "failed-close"]
 CASES = ["exact", "save-update", "save-reopen", "save-reopen-identical", "drop", "before-dispatch"]
 CASES += CLOSING_CASES
@@ -236,7 +239,7 @@ def check_case(base, case, lean, plugin, daemon):
                         "save-owner-test", case, str(project)], cwd=REPO, check=True, timeout=60,
                        env=dict(os.environ, BEAM_TEST_SAVE_GATE_DIR=str(base),
                                 BEAM_TEST_SAVE_GATE_OP=(
-                                    "prepare-save" if case == "uncertain-save" or case in REPLY_CASES
+                                    "prepare-save" if case in WRITE_CASES or case in REPLY_CASES
                                     else "write-save-trace")))
         return
     before_dispatch = case == "before-dispatch"

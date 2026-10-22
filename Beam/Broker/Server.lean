@@ -1649,7 +1649,7 @@ private def DocumentRef.retireBackend (document : DocumentRef) : IO Unit := do
   -- lets us settle the captured effect without touching a replacement session.
   terminateSession document.session
 
-/-- Keep ownership until a backend effect is acknowledged or its exact owner is retired. -/
+/-- Retire the captured owner if protected backend delivery remains uncertain. -/
 private def DocumentRef.withSettledEffect (document : DocumentRef)
     (act : IO.Ref Bool → HandlerM α) : HandlerM α :=
   ExceptT.mk do
@@ -2126,9 +2126,9 @@ private def saveOleanCore
           -- Validate the producer's basis under the state lock. Canonical files and their
           -- trace remain untouched until completed preparation reaches broker promotion.
           producersSettled.set false
-          -- Both save paths prepare only private files. Preserve close-save's existing
-          -- backend settlement policy; ordinary failures abandon their private candidates.
-          uncertain.set closeAfter
+          -- Failed request or immediate cancellation delivery can leave the backend stream
+          -- uncertain. Both save variants retire that captured owner on write failure.
+          uncertain.set true
           let (current, saveRequest) ← startRequestJsonTrackedDetailed current method params
             (clientRequestId? := req.clientRequestId?)
             (cancelRef? := req.cancelRef?)
@@ -2136,6 +2136,9 @@ private def saveOleanCore
           pure <| .ok (current, saveRequest)
       withFailureProgress barrierProgress? <|
         liftHandlerIO <| propagatePendingCancellation session saveRequest
+      -- Successful delivery ends backend uncertainty. Missing or malformed completion can
+      -- retain private candidates, but cannot authorize canonical publication.
+      liftHandlerIO <| uncertain.set false
       let presentFailure := fun (failure : ResponseFailure) =>
         ({
           failure with
@@ -2156,9 +2159,8 @@ private def saveOleanCore
       let completion : Beam.LSP.Save.SaveArtifactsCompletion ←
         withFailureProgress barrierProgress? <| liftHandlerIO <| decodeResponseAs pending.result
       -- Only this method's typed acknowledgement establishes that its owned task has finished.
-      -- Bare errors from routing, the watchdog, or cancelled response suppression remain uncertain.
+      -- Bare errors, missing replies, or malformed payloads leave private producers unsettled.
       liftHandlerIO <| producersSettled.set true
-      liftHandlerIO <| uncertain.set false
       match completion with
       | .success result => pure result
       | .failure code message =>
