@@ -233,8 +233,8 @@ redirected, or disabled with `BEAM_PROGRESS=0`. These messages report liveness, 
 The running-session JSON appears on stdout only after preparation completes.
 
 Interrupt the foreground process, or run `lean-beam --root ROOT stop`, to close the daemon and its
-backend processes. Lean queries and file
-operations attach to an existing owner and report the exact `serve` command when no session exists.
+backend processes. Lean queries and file operations attach to an existing owner and report the exact
+`serve` command when no session exists.
 
 The foreground owner handles Ctrl-C and, on POSIX, SIGTERM and SIGHUP from acquisition through
 cleanup. A signal received during startup remains latched; repeated signals do not bypass cleanup.
