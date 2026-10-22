@@ -67,6 +67,7 @@ run_quiet_lake_build \
   lean-beam-mcp \
   beam-system-contract-test \
   beam-transaction-test \
+  beam-prune-lock-test \
   BeamTest.SystemTimeTest \
   BeamTest.Broker.StreamDedupTest \
   BeamTest.Broker.RequestHandleTest \
@@ -130,6 +131,8 @@ run_quiet_test "partial-setup doctor" python3 tests/test-beam-doctor.py
 run_quiet_test system-contracts python3 tests/test-system-contracts.py
 run_quiet_test transaction python3 tests/lib/process_watchdog.py \
   --timeout 30 -- .lake/build/bin/beam-transaction-test
+run_quiet_test prune-lock python3 tests/lib/process_watchdog.py \
+  --timeout 30 -- .lake/build/bin/beam-prune-lock-test
 run_quiet_test backend-process .lake/build/bin/beam-backend-process-test
 run_quiet_test broker-transport python3 tests/lib/process_watchdog.py \
   --timeout 30 -- .lake/build/bin/beam-transport-test

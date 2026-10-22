@@ -626,10 +626,14 @@ to an old generation after the launcher's `current` link changes. Pruning coordi
 installer's atomic-directory lock and refuses symlinked or unmarked runtime directories. A crashed
 installer fails closed and requires explicit recovery rather than automatic stale-lock removal.
 
+Prune acquires the install lock before planning or removing runtimes. A lock-acquisition failure
+leaves all runtimes in place.
+
 Apply is incremental rather than transactional: Beam validates and removes one displayed path at a
-time and reports each successful removal immediately. If a later path fails validation or its lock
-cannot be acquired, earlier reported removals remain applied. Resolve the reported error and rerun
-`lean-beam prune` to preview what remains.
+time and reports each successful removal immediately. If validation or removal of a later path
+fails, earlier reported removals remain applied. A lock-release error also leaves completed removals
+applied and is reported to the caller. Resolve the reported error and rerun `lean-beam prune` to
+preview what remains.
 
 If reinstalling reports that an existing runtime does not match its payload hash, stop active Beam
 agents and MCP clients first. Move only the exact reported runtime directory out of
