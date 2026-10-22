@@ -119,11 +119,11 @@ def qualify(args, lean_prefix, scratch):
              "beam-lake-helper-client-fixture", "beam-installation-lookup-test",
              "beam-installation-construction-test", "beam-installation-manifest-test",
              "beam-system-contract-test", "beam-backend-process-test", "beam-transport-test",
-             "beam-save-publication-test"],
+             "beam-transaction-test", "beam-publication-test"],
             env=build_env)
         # Execute portable process-owner and TCP framing checks on every native platform.
         for executable in ["beam-backend-process-test", "beam-transport-test",
-                           "beam-save-publication-test"]:
+                           "beam-transaction-test", "beam-publication-test"]:
             run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "30", "--",
                  REPO / ".lake/build/bin" / f"{executable}{EXE}"], env=build_env)
         run([sys.executable, "-X", "utf8", REPO / "tests/test-system-contracts.py"], env=build_env)

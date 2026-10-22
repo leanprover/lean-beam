@@ -346,14 +346,15 @@ before owner shutdown. Hash-removal errors must preserve canonical bytes and lea
 For a focused run, supply `--installation PATH --toolchain TOOLCHAIN`, optionally `--case CASE`;
 `--keep NEW-DIRECTORY` retains the evidence and requires a directory that does not yet exist.
 
-`lake exe beam-save-publication-test` separately exercises real filesystem publication with
-injected partial backup, partial replacement, first-replacement, and restoration failures, plus
-successful publication. It checks restored bytes, continued rollback, and retention of a
-failed-restoration backup, with separate strict-unlink checks for missing files, regular files,
-and directories. Fast, LSP, and native-toolchain suites run it; `--keep NEW-DIRECTORY` retains its
-filesystem evidence. Its transaction-helper checks also cover typed failures and commit-cleanup
-errors. The broker's `beam-publication-test` covers a real obstruction at the last output hash and
-requires every output hash to be absent before the first canonical artifact replacement.
+`lake exe beam-transaction-test` checks reverse recovery order, typed original and recovery errors,
+and commit-cleanup failures. Fast and native-toolchain suites run it. The broker's
+`beam-publication-test` runs in Fast and native-toolchain suites and owns real-filesystem backup,
+replacement, restoration, and cleanup-failure coverage. It checks a real obstruction at the last
+output hash and requires all output hashes to be absent before the first canonical replacement.
+LSP save scenarios check complete
+ordinary and module families, partial private preparation failure, invalid output shapes, and
+concurrent disjoint attempts. Optional bitcode checks run when the compiler has an LLVM backend;
+otherwise the scenarios explicitly report that bitcode is unsupported.
 
 Use [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) to validate one
 supported bundle lane at a time. The module-save case requires and removes the batch-produced IR

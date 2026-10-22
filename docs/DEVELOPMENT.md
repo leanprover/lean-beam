@@ -140,14 +140,10 @@ Rollback must be valid even if the operation changed nothing or completed only p
 Acquisition can use the same helper with a separate rollback plan. The helper does not provide
 process-crash recovery or make multiple filesystem changes atomically visible.
 
-Worker artifact publication uses two such scopes under its publication lock. Backup preparation
-can remove only the attempt's backup paths on failure. Once every backup is prepared, publication
-can restore the complete original output set, including removing outputs recorded as originally
-absent. It needs no per-replacement progress journal. A failed restoration retains its backup;
-successful restoration also removes a backup left behind by a same-file rename.
-After publication to the supplied private destinations commits, worker backup cleanup is best
-effort: a cleanup failure may leave backup files without failing that completed worker publication.
-Canonical checkpoint publication remains the broker's responsibility.
+The broker owns canonical checkpoint publication and recovery. Workers serialize into the
+broker's unique private destinations; failed preparation may leave a partial private family.
+See the [publication implementation](CLOSE_SAVE_MODEL.md#publication-implementation) for ownership,
+cleanup, and cancellation boundaries.
 
 ## Common Code Smells
 

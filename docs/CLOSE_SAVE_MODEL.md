@@ -144,8 +144,34 @@ transition. Disjoint private paths are an allocation assumption.
 
 This model does not represent filesystem renames, rollback, hash sidecars, mutexes, claim waiting,
 other processes, or crash recovery. Neither it nor the Closing proofs establish the runtime's
-filesystem or lock behavior. The runtime publication claim and cancellation cutoff are described in
-[sync and diagnostics](SYNC_AND_DIAGNOSTICS.md).
+filesystem or lock behavior. The implementation boundaries below complement the public
+[sync and diagnostics contract](SYNC_AND_DIAGNOSTICS.md).
+
+## Publication implementation
+
+The worker and Lake helper receive per-attempt private destinations. The worker validates duplicate
+paths and module companion shape before writing. A temporary directory adapts `Lean.writeModule`'s
+fixed companion names to independently supplied paths; its cleanup finishes before the terminal
+handler acknowledgement. Serialization writes directly into the private destinations, so a failed
+or cancelled attempt may leave a partial family. The broker alone owns canonical publication.
+
+After preparation completes, the broker validates the captured workspace generation, backend
+owner, accepted document basis, and cancellation state, then claims publication. That final
+cancellation check is the cutoff: later cancellation cannot revoke the claim. Same-workspace changes
+and owner teardown wait outside the global state mutex, then revalidate their captured identities.
+Unrelated workspace work, read-only state access, and cancellation marking remain reachable. The
+claim is released and waiters signalled after commit or recovery; filesystem I/O has no fixed bound.
+
+The broker prepares all backup links before changing canonical outputs. Preparation failure removes
+only the attempt's backup paths. Canonical publication removes the old trace, invalidates hashes
+for exactly the artifact outputs written, and installs the new trace last. On failure, the complete
+prepared beforeimages restore pre-existing outputs and remove originally absent outputs; recovery
+continues after an individual failure. Successful recovery leaves the trace absent, and never
+reinstalls the old trace. A failed restoration retains its backup, while successful restoration removes a
+backup left behind by a same-file rename. Recovery failures are reported with the original failure.
+After commit, backup cleanup is best effort: failure preserves checkpoint success and retains the
+attempt's paths as cleanup evidence. These steps provide neither cross-process coordination nor
+crash recovery, and do not make the artifact family atomically visible.
 
 ## Mapping to the broker
 
@@ -186,13 +212,13 @@ outstanding admissions. Successful artifact-request and cancellation writes clea
 awaiting or decoding the response. A concurrent workspace drop cannot make retirement target a
 replacement backend. The internal `$/beam/saveArtifacts` response is a typed completion
 acknowledgement carrying either success or a handler failure. It is constructed
-after the handler task and staging cleanup finish; construction-time rejection is also acknowledged.
+after the handler task and module-adapter cleanup finish; construction-time rejection is also acknowledged.
 The broker decodes this result before allowing private-path disposal, then presents a handler
 failure with the existing error, readiness, progress, and cancellation rules. Completion establishes
 that owned work finished, not that no artifacts were written or that a checkpoint was committed.
 
 Bare JSON-RPC errors, including watchdog owner-loss errors, do not acknowledge handler completion.
-Lean's file worker can also replace the acknowledgement with `requestCancelled` after publication;
+Lean's file worker can also replace the acknowledgement with `requestCancelled` after private serialization;
 that response leaves private producer completion uncertain. Error codes never establish completion.
 Missing or malformed acknowledgement retains the isolated private paths and claims without retiring
 a healthy backend. The separate publication model's `abandoned_run` law covers arbitrary late

@@ -11,8 +11,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 - Close-save reserves its accepted document through checkpointing and closure. During preparation,
   competing document operations fail with `contentModified` / `documentClosing`; invalidated delayed
   requests use `documentAdmissionExpired`. Callers coordinate retries after the closing request
-  finishes. Uncertain backend writes retire that backend before the close-save scope completes.
-  Completed save-handler rejections preserve unrelated documents and continuation handles.
+  finishes. Private preparation failures preserve a healthy backend and its documents and
+  continuation handles; uncertain backend delivery still retires the captured owner. The broker
+  alone publishes canonical checkpoints after preparation and final document/cancellation checks.
 - Shrink the installed `lean-beam` skill from about 32 KB to under 10 KB by stating each workflow
   rule once. Installation, session internals, recovery, and feedback details move to the new
   `references/setup-and-recovery.md` and `references/feedback.md`. MCP tool descriptions drop
@@ -233,8 +234,8 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 - Install and prune control-file reads now reject non-regular or symlinked paths, and a failed lock
   owner-PID write removes the lock directory acquired by that process.
 - `lean-beam serve` now exits cleanly and promptly after `SIGINT`.
-- `save` and `close-save` now stage and commit complete artifact sets, preserving prior
-  outputs on reported failure or cancellation and preventing same-worker saves from mixing files
+- `save` and `close-save` prepare complete artifact sets before canonical publication, preserving
+  prior canonical outputs when preparation fails or is cancelled and isolating concurrent attempts
   ([#217](https://github.com/leanprover/lean-beam/pull/217), @ejgallego).
 - `save` and `close-save` now invalidate prior Lake trace metadata before publishing
   artifacts and replace the new trace atomically, preventing prior metadata from describing newly

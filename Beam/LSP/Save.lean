@@ -10,7 +10,6 @@ import Lean.Server.FileWorker.RequestHandling
 import Lean.Server.Requests
 import Beam.LSP.Lib.Diagnostics
 import Beam.LSP.Lib.Request
-import Beam.Transaction
 
 open Lean
 open Lean.Elab
@@ -87,8 +86,8 @@ structure SaveArtifactsResult where
   deriving FromJson, ToJson
 
 /--
-Acknowledgement that the save handler and its cleanup have finished. A failure may follow artifact
-publication; it does not assert rollback. Routing and owner-loss errors use JSON-RPC errors instead.
+Acknowledgement that the save handler and its cleanup have finished. A failure may follow private
+serialization; it does not assert rollback. Routing and owner-loss errors use JSON-RPC errors instead.
 -/
 inductive SaveArtifactsCompletion where
   | success (result : SaveArtifactsResult)
@@ -176,12 +175,6 @@ def ensureParentDir (path : System.FilePath) : IO Unit := do
   if let some parent := path.parent then
     IO.FS.createDirAll parent
 
-private def removeFileIfExists (path : System.FilePath) : IO Unit := do
-  try IO.FS.removeFile path
-  catch
-    | .noFileOrDirectory .. => pure ()
-    | error => throw error
-
 private def withTempSiblingDir
     (path : System.FilePath)
     (useDir : System.FilePath → IO α) : IO α := do
@@ -196,117 +189,13 @@ private def withTempSiblingDir
     if ← tmpDir.pathExists then
       IO.FS.removeDirAll tmpDir
 
-private structure StagedArtifact where
-  staged : System.FilePath
-  target : System.FilePath
-  backup : System.FilePath
-
-private initialize artifactPublicationMutex : Std.Mutex Unit ← Std.Mutex.new ()
-
-private def prepareStagedArtifacts
-    (targets : Array System.FilePath) : IO (Array StagedArtifact) := do
-  let pid ← IO.Process.getPID
-  let stamp ← IO.monoNanosNow
-  let mut seenTargets : Array String := #[]
-  let mut artifacts : Array StagedArtifact := #[]
-  let mut index := 0
+private def validateArtifactPaths (targets : Array System.FilePath) : IO Unit := do
+  let mut seen : Array String := #[]
   for target in targets do
-    let targetString := target.toString
-    if seenTargets.contains targetString then
+    let path := target.toString
+    if seen.contains path then
       throw <| IO.userError s!"duplicate artifact output path: {target}"
-    seenTargets := seenTargets.push targetString
-    ensureParentDir target
-    if ← target.isDir then
-      throw <| IO.userError s!"artifact output path is a directory: {target}"
-    let staged := System.FilePath.mk s!"{targetString}.beam-save-tmp-{pid}-{stamp}-{index}"
-    let backup := System.FilePath.mk s!"{targetString}.beam-backup-{pid}-{stamp}-{index}"
-    if ← staged.pathExists then
-      throw <| IO.userError s!"artifact staging path already exists: {staged}"
-    if ← backup.pathExists then
-      throw <| IO.userError s!"artifact backup path already exists: {backup}"
-    artifacts := artifacts.push { staged, target, backup }
-    index := index + 1
-  pure artifacts
-
-private def cleanupStagedArtifacts (artifacts : Array StagedArtifact) : IO Unit := do
-  for artifact in artifacts do
-    try
-      removeFileIfExists artifact.staged
-    catch _ =>
-      pure ()
-
-private def stagedArtifactAt
-    (artifacts : Array StagedArtifact) (index : Nat) (kind : String) : IO StagedArtifact := do
-  let some artifact := artifacts[index]?
-    | throw <| IO.userError s!"internal {kind} artifact staging mismatch"
-  pure artifact
-
-private def publishStagedArtifacts (artifacts : Array StagedArtifact)
-    (hardLink : System.FilePath → System.FilePath → IO Unit := IO.FS.hardLink)
-    (rename : System.FilePath → System.FilePath → IO Unit := IO.FS.rename) : IO Unit := do
-  -- Complete all checks before changing the supplied artifact destinations.
-  for artifact in artifacts do
-    unless ← artifact.staged.pathExists do
-      throw <| IO.userError s!"missing staged artifact: {artifact.staged}"
-    if ← artifact.target.isDir then
-      throw <| IO.userError s!"artifact output path is a directory: {artifact.target}"
-    ensureParentDir artifact.target
-
-  -- Capture the original state under the caller's publication lock. Once all backups exist,
-  -- recovery can restore the whole plan without recording which replacements completed.
-  let originals ← artifacts.mapM fun artifact => do
-    let existed ← match ← artifact.target.symlinkMetadata.toBaseIO with
-      | .ok _ => pure true
-      | .error (.noFileOrDirectory ..) => pure false
-      | .error error => throw error
-    pure (artifact, existed)
-  let backups := originals.filterMap fun (artifact, existed) =>
-    if existed then some artifact else none
-  -- Preparation may fail halfway. Its rollback owns only backup names, never supplied outputs.
-  let preparation ← Beam.Transaction.run (rollback := backups.map fun artifact =>
-      removeFileIfExists artifact.backup) do
-    for artifact in backups do hardLink artifact.target artifact.backup
-  match preparation with
-  | .committed () _ => pure ()
-  | .aborted error failures =>
-      if failures.isEmpty then throw error
-      let details := failures.toList.map fun failure =>
-        let path := match backups[failure.actionIndex]? with
-          | some artifact => artifact.backup.toString
-          | none => s!"step {failure.actionIndex}"
-        s!"backup cleanup {path}: {failure.error}"
-      throw <| IO.userError <|
-        s!"artifact backup preparation failed: {error}; cleanup also failed: " ++
-          String.intercalate "; " details
-
-  let publication ← Beam.Transaction.run
-      (rollback := originals.map fun (artifact, existed) => do
-        if existed then
-          rename artifact.backup artifact.target
-          -- Renaming two names for the same original file can leave both names intact.
-          -- Remove the backup only after successful restoration; retain it on failure.
-          removeFileIfExists artifact.backup
-        else
-          removeFileIfExists artifact.target)
-      (cleanup := backups.map fun artifact => removeFileIfExists artifact.backup) do
-    -- The supported broker path supplies private destinations; canonical hash invalidation belongs
-    -- to broker promotion after the worker acknowledges completion.
-    for artifact in artifacts do rename artifact.staged artifact.target
-  match publication with
-  | .committed () _ =>
-      -- Backup cleanup is best-effort after commit. Its failure must not turn a complete
-      -- private artifact family into a reported publication failure.
-      pure ()
-  | .aborted error failures =>
-      if failures.isEmpty then throw error
-      let details := failures.toList.map fun failure =>
-        let path := match originals[failure.actionIndex]? with
-          | some (artifact, _) => artifact.target.toString
-          | none => s!"step {failure.actionIndex}"
-        s!"artifact recovery {path}: {failure.error}"
-      throw <| IO.userError <|
-        s!"artifact publication failed: {error}; rollback also failed: " ++
-          String.intercalate "; " details
+    seen := seen.push path
 
 private structure ModuleArtifactTargets where
   oleanServerFile : System.FilePath
@@ -333,28 +222,30 @@ private def moduleArtifactFiles
         "non-module artifact save must not provide module companion output paths"
   pure files
 
-private def stageModuleArtifacts
+/-- Adapt Lean's fixed companion names to the broker's independently supplied private paths. -/
+private def writeModuleArtifacts
     (env : Environment)
     (oleanFile : System.FilePath)
-    (moduleArtifacts : Array StagedArtifact) : IO Unit := do
+    (moduleFiles : Array System.FilePath) : IO Unit := do
   withTempSiblingDir oleanFile fun tmpDir => do
     let some fileName := oleanFile.fileName
       | throw <| IO.userError s!"module artifact path has no file name: {oleanFile}"
-    let stagedOlean := tmpDir / fileName
-    Lean.writeModule env stagedOlean
+    let generatedOlean := tmpDir / fileName
+    Lean.writeModule env generatedOlean
     let generated :=
       if env.header.isModule then
-        #[stagedOlean, stagedOlean.addExtension "server", stagedOlean.addExtension "private",
-          stagedOlean.withExtension "ir", stagedOlean.withExtension "ir.sig"]
+        #[generatedOlean, generatedOlean.addExtension "server", generatedOlean.addExtension "private",
+          generatedOlean.withExtension "ir", generatedOlean.withExtension "ir.sig"]
       else
-        #[stagedOlean]
-    unless generated.size == moduleArtifacts.size do
-      throw <| IO.userError "internal module artifact staging mismatch"
+        #[generatedOlean]
+    unless generated.size == moduleFiles.size do
+      throw <| IO.userError "internal module artifact path mismatch"
     for path in generated do
       unless ← path.pathExists do
-        throw <| IO.userError s!"Lean did not write expected staged module artifact: {path}"
-    for (path, artifact) in generated.zip moduleArtifacts do
-      IO.FS.writeBinFile artifact.staged (← IO.FS.readBinFile path)
+        throw <| IO.userError s!"Lean did not write expected module artifact: {path}"
+    for (path, target) in generated.zip moduleFiles do
+      ensureParentDir target
+      IO.FS.writeBinFile target (← IO.FS.readBinFile path)
 
 private def writeIlean
     (doc : DocumentMeta)
@@ -593,31 +484,21 @@ def saveCurrentArtifacts
   let mut targetFiles := moduleFiles.push ileanFile |>.push cFile
   if let some bcFile := p.bcFile?.map mkFilePath then
     targetFiles := targetFiles.push bcFile
-  let stagedArtifacts ← prepareStagedArtifacts targetFiles
+  validateArtifactPaths targetFiles
   let trees := snaps.toArray.map (·.infoTree)
-  try
-    let moduleArtifacts := stagedArtifacts.extract 0 moduleFiles.size
-    stageModuleArtifacts env oleanFile moduleArtifacts
-    let ileanArtifact ← stagedArtifactAt stagedArtifacts moduleFiles.size "ilean"
-    writeIlean doc.meta doc.initSnap.stx mainModule trees ileanArtifact.staged
-    let cOutput ← (Lean.Compiler.LCNF.emitC mainModule).toIO'
-      { fileName := "", fileMap := default }
-      { env }
-    let cArtifact ← stagedArtifactAt stagedArtifacts (moduleFiles.size + 1) "C"
-    IO.FS.writeFile cArtifact.staged cOutput
-    if p.bcFile?.isSome then
-      let bcArtifact ← stagedArtifactAt stagedArtifacts (moduleFiles.size + 2) "LLVM"
-      Lean.IR.emitLLVM env mainModule bcArtifact.staged.toString
-    -- Serialize only the short commit phase within this file-worker process. Cross-worker and
-    -- cross-process publication coordination belongs to the broker rather than this LSP handler.
-    -- Without this lock, requests handled by one worker could interleave their per-file renames.
-    artifactPublicationMutex.atomically do
-      -- Cancellation and document invalidation are honored until this explicit commit point. Once
-      -- publication starts it runs to completion so success/failure agrees with the artifact family.
-      checkRequestCancelled
-      publishStagedArtifacts stagedArtifacts
-  finally
-    cleanupStagedArtifacts stagedArtifacts
+  -- These are isolated private destinations. A failure may leave a partial family; canonical
+  -- publication and recovery belong to the broker after this task acknowledges completion.
+  writeModuleArtifacts env oleanFile moduleFiles
+  ensureParentDir ileanFile
+  writeIlean doc.meta doc.initSnap.stx mainModule trees ileanFile
+  let cOutput ← (Lean.Compiler.LCNF.emitC mainModule).toIO'
+    { fileName := "", fileMap := default }
+    { env }
+  ensureParentDir cFile
+  IO.FS.writeFile cFile cOutput
+  if let some bcFile := p.bcFile?.map mkFilePath then
+    ensureParentDir bcFile
+    Lean.IR.emitLLVM env mainModule bcFile.toString
   pure {
     written := true
     version := doc.meta.version
@@ -633,7 +514,7 @@ def handleSaveArtifacts
     let t := doc.reporter.bindCheap (fun _ => doc.cmdSnaps.waitAll)
     let task ← RequestM.mapTaskCostly t fun (snaps, _) => do
       saveCurrentArtifacts doc snaps p
-    -- Map the terminal task outcome, after saveCurrentArtifacts has run its finally cleanup.
+    -- Map the terminal task outcome, after the module filename adapter has finished its cleanup.
     -- FileWorker may still replace this response with requestCancelled; that bare error does
     -- not acknowledge completion to the broker.
     pure <| task.mapCheap fun

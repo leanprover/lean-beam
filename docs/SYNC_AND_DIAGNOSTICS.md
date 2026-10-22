@@ -96,40 +96,23 @@ closure or failure cleanup: they return `documentClosing` while the reservation 
 `documentAdmissionExpired` afterward, under the same `contentModified` code. Start a new request
 after coordinating with the owner. A fresh request may intentionally reopen a closed file.
 Already-dispatched semantic work may finish under its existing document and backend guards.
-Other documents remain admissible during preparation; saves still share the broker's existing
-publication mutex.
+Other documents remain admissible during preparation. Saves serialize checkpoint publication.
 
-The worker and Lake helper prepare per-attempt private outputs. After preparation completes, the
-broker validates the captured workspace generation, backend owner, accepted document basis, and
-cancellation state, then claims canonical publication. That final cancellation check is the cutoff:
-later cancellation cannot revoke the claim. During claimed publication, same-workspace document
-changes and owner teardown wait outside the global state mutex, then revalidate their captured
-identities. Unrelated workspace work, read-only state access, and cancellation marking remain
-reachable. The wait has no fixed filesystem-I/O bound.
+Preparation uses isolated private files, leaving the canonical checkpoint unchanged on failure.
+After preparation, Beam rechecks the accepted document and cancellation before starting canonical
+publication. That final cancellation check is the cutoff: later cancellation cannot revoke the
+publication attempt. Same-workspace document changes and owner teardown wait for publication to
+settle. Unrelated workspace work, read-only state access, and cancellation remain reachable; the
+wait has no fixed filesystem-I/O bound.
+This coordination is local to one broker: it does not lock source files on disk or coordinate
+independent Beam or Lake writers.
 
-The broker prepares backups, removes the old trace, invalidates hashes for exactly the canonical
-artifact outputs it writes, and installs the new trace last. A failed commit attempts artifact
-restoration and trace removal; successful recovery leaves the trace absent, and recovery never
-reinstalls the old trace. Recovery failures are reported with the original failure and retain
-their backup evidence. After canonical publication commits, backup cleanup is best effort: a
-cleanup failure does not fail the checkpoint, and the broker retains the attempt's paths as cleanup
-evidence. This does not provide cross-process coordination or crash recovery.
-
-The reservation does not lock files on disk or other Beam processes. Workspace removal and
-backend failure can supersede it before publication is claimed. Failure and cancellation release
-the reservation after settling helper work or abandoning isolated private preparation. A failed
-artifact-request write, its immediate propagated cancellation write, or uncertain final close
-delivery retires the captured backend; subsequent work must reacquire its document and
-continuation handles. Cancellation before the claim abandons private preparation; private writes
-do not commit a checkpoint. Later
-cancellation does not undo a committed checkpoint. The internal save handler acknowledges completion
-only after its task and staging cleanup finish, including when the handler rejects a document with
-Lean errors. An acknowledged failure leaves the document open, releases its reservation, and
-preserves other documents and continuation handles. Completion does not imply rollback: a handler
-failure can follow private artifact publication. Missing or malformed completion and bare routing,
-watchdog, or cancellation errors leave private producer completion uncertain. Beam retains the attempt's
-private paths and claims, preserving a healthy backend, its documents, and continuation handles.
-These abandoned attempts cannot publish a canonical checkpoint, even if private writes finish later.
+Failure or cancellation before publication releases the reservation and preserves a healthy
+backend, its documents, and continuation handles. An unacknowledged preparation attempt may leave
+private files but cannot publish later. Failed backend delivery, including uncertain final close
+delivery, retires the captured backend; subsequent work must reacquire its documents and handles.
+Cancellation after publication begins does not undo a committed checkpoint. Implementation and
+recovery boundaries are documented in the [close-save model](CLOSE_SAVE_MODEL.md#publication-implementation).
 
 After a checkpoint succeeds, finalization still checks the exact accepted document. An ordinary
 `save` may return its historical checkpoint result after a concurrent change without marking the
@@ -164,9 +147,9 @@ configuration from `lakefile.lean` text and never batch-builds as part of `save`
 
 Before replacing checkpoint artifacts, Beam invalidates Lake's cached hashes for the outputs it
 writes so later incremental builds recheck their dependents. If publication fails, Beam attempts
-to restore the previous artifacts. Failed recovery reports both errors and retains the backups
-needed for recovery. These steps do not make the artifact family atomically visible or recover
-from process death.
+to restore the previous artifacts; successful recovery leaves the final trace absent. Failed recovery
+reports both errors and retains the backups needed for recovery. These steps do not make the artifact
+family atomically visible or recover from process death.
 
 A snapshot with `compiler.postponeCompile` enabled, or with declarations still waiting for deferred
 compilation, is not a complete checkpoint. Its sync result has `readiness.saveReady: false` and
