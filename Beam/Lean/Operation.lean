@@ -106,7 +106,7 @@ private def operationDescription (syncOperation : String) : Operation → String
   | .release => "Release a stored Lean follow-up handle."
   | .update => "Read the current on-disk Lean source into the broker's LSP mirror and return its document version without waiting for diagnostics."
   | .sync => "Read the current on-disk Lean source into the broker's LSP mirror, wait for diagnostics and readiness, and return its document version. This never applies or recovers speculative text."
-  | .refresh => "Refresh the tracked Lean document from saved source and wait for fresh diagnostics."
+  | .refresh => "Refresh the tracked document from the current on-disk Lean source and wait for fresh diagnostics."
   | .save => "Read and synchronize the current on-disk Lean source, then write Lean/Lake build artifacts as a zero-build development checkpoint when possible."
   | .closeSave => "Read and synchronize the current on-disk Lean source, write the same Lean/Lake build artifacts when possible, and close the tracked LSP document."
   | .close => "Close the tracked LSP document."
