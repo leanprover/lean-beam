@@ -38,6 +38,8 @@ structure DocState where
   moduleName? : Option String := none
   /-- Version for which this daemon last completed a Beam checkpoint; not an artifact probe. -/
   checkpointedVersion? : Option Nat := none
+  /-- First explicit worker error observed for this accepted basis. -/
+  workerError? : Option Error := none
   fileProgress? : Option SyncFileProgress := none
   /-- Broker event sequence of the latest successful sync barrier for this document. -/
   lastSyncEventSeq : Nat := 0
@@ -76,6 +78,15 @@ def matchBasis (docs : Docs) (uri : DocumentUri) (expected : DocumentBasis) : Ba
       if basis doc == expected then .current else .superseded (some doc.version)
   | none => .superseded none
 
+/-- Return updated state only for the first failure of the exact current basis. -/
+def recordWorkerErrorForBasis (docs : Docs) (uri : DocumentUri) (expected : DocumentBasis)
+    (error : Error) : Option Docs :=
+  match docs.get? uri with
+  | some doc =>
+      if basis doc != expected || doc.workerError?.isSome then none
+      else some <| docs.insert uri { doc with workerError? := some error }
+  | none => none
+
 structure FileSnapshot where
   /-- Saved source text without line-ending normalization. -/
   rawSourceHash : UInt64
@@ -113,6 +124,7 @@ def FileSnapshot.ofText
 
 inductive SyncFileAction where
   | open
+  | reopen
   | change
   | unchanged
   deriving Inhabited, BEq, Repr
@@ -200,6 +212,18 @@ def syncFileDecision
           action := .unchanged
           version := docState.version
           docs
+        }
+      else if docState.workerError?.isSome then
+        let unchanged := docState.rawSourceHash == snapshot.rawSourceHash
+        let version := if unchanged then docState.version else docState.version + 1
+        {
+          action := .reopen
+          version
+          docs := docs.insert uri {
+            (snapshot.toDocState version) with
+            checkpointedVersion? := if unchanged then docState.checkpointedVersion? else none
+            lastSyncEventSeq := docState.lastSyncEventSeq
+          }
         }
       else if docState.rawSourceHash == snapshot.rawSourceHash then
         {

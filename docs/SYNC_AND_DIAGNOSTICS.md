@@ -199,6 +199,31 @@ such change, run `lean-beam --root ROOT stop` before the next command that uses 
 `lean-beam refresh` only reopens the file within the current server and is not sufficient. Beam does
 not detect this configuration drift, so reusing a running session after such an edit is unsupported.
 
+## Worker Errors And Document Recovery
+
+When Lean explicitly replies with `workerExited` or `workerCrashed`, Beam records the first error
+only for the session and accepted document revision that owned the request. Caller cancellation
+can change the returned error to `requestCancelled`; it does not erase the observed worker failure.
+Late replies cannot mark a replacement document or session as failed.
+
+Ordinary operations on that failed document return its recorded worker error without dispatching
+another request to Lean. A fresh `update` or `sync` closes and reopens that document, using the
+newly read source; the failed operation is never replayed. Other documents and their handles keep
+their existing session. Recovery of unchanged source preserves its document version and checkpoint
+association, but establishes a new internal accepted revision. An actual source edit advances the
+version and invalidates the checkpoint as usual. An update that reopens the worker returns
+`changed: true`.
+
+The internal broker's `open_docs` entry includes `workerError` while the failure is recorded and
+omits obsolete `fileProgress`. Its `checkpointed` field still describes the saved source/artifacts,
+not the health of the current worker. Worker recovery does not rewrite checkpoint artifacts.
+
+This behavior requires an explicit worker-error response. Generic fatal file progress also occurs
+for validly running workers with fatal elaboration diagnostics and is not evidence of worker exit.
+Lean versions that leave later requests unanswered after an idle worker exit require an upstream
+routing correction; Beam does not infer that failure from elapsed time or promise automatic
+recovery before it receives an explicit error.
+
 ## Development Checkpoints And Batch Validation
 
 `lean-beam save` writes a development checkpoint from the environment accepted by the Lean server.

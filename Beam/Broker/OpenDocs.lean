@@ -59,9 +59,9 @@ def docJson
   let checkpointed :=
     status == .matchesTracked && docState.checkpointedVersion? == some docState.version
   let fileProgressFields :=
-    match docState.fileProgress? with
-    | some fileProgress => [("fileProgress", toJson fileProgress)]
-    | none => []
+    match docState.workerError?, docState.fileProgress? with
+    | none, some fileProgress => [("fileProgress", toJson fileProgress)]
+    | _, _ => []
   pure <| Json.mkObj <|
     [
       ("uri", toJson uri),
@@ -73,7 +73,8 @@ def docJson
     | some relPath, _ => [("path", toJson relPath)]
     | none, some path => [("path", toJson path.toString)]
     | none, none => []) ++
-    fileProgressFields
+    fileProgressFields ++
+    docState.workerError?.toList.map (fun error => ("workerError", toJson error))
 
 def sessionJson (session? : Option SessionView) : IO Json := do
   match session? with

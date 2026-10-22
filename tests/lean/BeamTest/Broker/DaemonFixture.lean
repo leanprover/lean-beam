@@ -9,6 +9,7 @@ import Beam.Broker.LakeHelperMain
 import BeamTest.TestHarness
 import BeamTest.Broker.SaveOwnerTest
 import BeamTest.Broker.PrivatePublicationTest
+import BeamTest.Broker.WorkerRecoveryTest
 
 private structure Fixture where
   command : String := "lean"
@@ -59,6 +60,8 @@ def main (args : List String) : IO Unit := do
     toolchain := "library fixture", identity := ⟨(← IO.currentDir), "library fixture"⟩
   }
   match fixture.args with
+  | ["worker-recovery-test", root] =>
+      BeamTest.Broker.WorkerRecoveryTest.run description (← Beam.resolveExistingPath root)
   | ["private-publication-test", root] =>
       BeamTest.Broker.PrivatePublicationTest.run description (← Beam.resolveExistingPath root)
   | ["save-owner-test", case, root] =>

@@ -69,6 +69,20 @@ private def checkDocProjection : IO Unit := do
     requireFieldAbsent "open docs file" "saveModule" file
     requireFieldAbsent "open docs file" "saveDetail" file
     discard <| requireObjVal "open docs file" "fileProgress" file
+    requireFieldAbsent "healthy open docs file" "workerError" file
+
+    let original ← DocumentState.requireDocState session.docs uri
+    let error : Error := { code := "workerCrashed", message := "fixture worker stopped" }
+    let some failedDocs := DocumentState.recordWorkerErrorForBasis session.docs uri
+        (DocumentState.basis original) error
+      | throw <| IO.userError "worker failure fixture was ignored"
+    let failedSession := { session with docs := failedDocs }
+    let failedFile ← requireOnlyFile "failed worker session" (← OpenDocs.sessionJson (some failedSession))
+    let workerError ← requireObjVal "failed worker file" "workerError" failedFile
+    requireJsonString "failed worker cause" "code" "workerCrashed" workerError
+    requireJsonString "failed worker cause" "message" error.message workerError
+    requireFieldAbsent "failed worker file" "fileProgress" failedFile
+    requireJsonBool "failed worker retains checkpoint" "checkpointed" true failedFile
 
     IO.FS.writeFile path "def demo : Nat := 2\n"
     let changedSessionJson ← OpenDocs.sessionJson (some session)

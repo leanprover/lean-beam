@@ -143,6 +143,7 @@ run_quiet_test broker-document-state .lake/build/bin/beam-broker-document-state-
 run_quiet_test closing-model .lake/build/bin/beam-closing-model-test
 run_quiet_test publication-ownership .lake/build/bin/beam-publication-test
 run_quiet_test broker-open-docs .lake/build/bin/beam-broker-open-docs-test
+run_quiet_test worker-recovery python3 tests/test-worker-recovery.py
 run_quiet_test cli-daemon .lake/build/bin/beam-cli-daemon-test
 run_quiet_test interrupt-watcher python3 tests/test-interrupt-watcher.py
 run_quiet_test feedback .lake/build/bin/beam-feedback-test

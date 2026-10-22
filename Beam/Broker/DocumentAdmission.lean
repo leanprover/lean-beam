@@ -67,6 +67,11 @@ def State.reserve (state : State) (permit : Permit) : Except Conflict State :=
 def State.release (state : State) (permit : Permit) : State :=
   { state with entries := state.entries.filter fun entry => entry.1 != permit }
 
+/-- Invalidate held reads after a first worker error, retaining an existing close owner. -/
+def State.revokeReading (state : State) (uri : String) : State :=
+  { state with entries := state.entries.map fun (permit, phase) =>
+      (permit, if permit.uri == uri && phase == .reading then .revoked else phase) }
+
 /-- Backend replacement revokes old work but keeps allocation monotone until workspace removal. -/
 def State.retire (state : State) : State :=
   { state with entries := state.entries.map fun (permit, _) => (permit, .revoked) }

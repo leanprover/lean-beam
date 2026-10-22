@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Broker.DocumentState
+import Beam.Broker.DocumentAdmission
 import BeamTest.Broker.JsonAssert
 import BeamTest.Broker.DocumentFixture
 
@@ -253,7 +254,76 @@ private def checkAcceptedBasis : IO Unit := do
   require "unchanged acceptance still records matching progress"
     ((← DocumentState.requireDocState progressed uri).fileProgress? == matchingProgress)
 
+private def checkWorkerFailure : IO Unit := do
+  let uri := "file:///workspace/Foo.lean"
+  let sibling := "file:///workspace/Other.lean"
+  let snapshot := { (mkSnapshot 10) with readSeq := 10 }
+  let opened := DocumentState.syncFileDecision {} uri snapshot
+  let original ← DocumentState.requireDocState opened.docs uri
+  let expected := DocumentState.basis original
+  let docs := (DocumentState.markSavedVersion opened.docs {} uri original.version "Foo.lean" 5).docs
+  let docs := DocumentState.recordFileProgress docs uri (some { updates := 3, done := true })
+  let docs := docs.insert sibling (← mkDoc 2)
+  let error : Error := { code := "workerCrashed", message := "fixture worker stopped" }
+  let some failed := DocumentState.recordWorkerErrorForBasis docs uri expected error
+    | throw <| IO.userError "first current worker failure was ignored"
+  let doc ← DocumentState.requireDocState failed uri
+  require "failure retains its original acceptance" (DocumentState.basis doc == expected)
+  require "failure retains checkpoint and history"
+    (doc.checkpointedVersion? == some original.version && doc.lastSyncEventSeq == 5)
+  require "failure records its cause" (doc.workerError?.map (·.message) == some error.message)
+  require "repeated failures do not establish another transition"
+    (DocumentState.recordWorkerErrorForBasis failed uri expected
+      { code := "workerExited", message := "later failure" }).isNone
+  require "a late error cannot recreate a closed document"
+    (DocumentState.recordWorkerErrorForBasis (failed.erase uri) uri expected error).isNone
+  let older := DocumentState.syncFileDecision failed uri { snapshot with readSeq := 9 }
+  let retained ← DocumentState.requireDocState older.docs uri
+  require "an old read cannot recover a failed worker"
+    (older.action == .unchanged && DocumentState.basis retained == expected && retained.workerError?.isSome)
+  let recovered := DocumentState.syncFileDecision failed uri { snapshot with readSeq := 11 }
+  let replacement ← DocumentState.requireDocState recovered.docs uri
+  require "same-source recovery reopens without a version change"
+    (recovered.action == .reopen && replacement.version == original.version)
+  require "recovery has a fresh accepted identity"
+    (DocumentState.basis replacement != expected)
+  require "recovery preserves the unchanged source's checkpoint association"
+    (replacement.checkpointedVersion? == some original.version && replacement.lastSyncEventSeq == 5)
+  require "recovery clears obsolete worker progress and error"
+    (replacement.workerError?.isNone && replacement.fileProgress?.isNone)
+  require "a late old error cannot invalidate the replacement"
+    (DocumentState.recordWorkerErrorForBasis recovered.docs uri expected error).isNone
+  let changed := DocumentState.syncFileDecision failed uri
+    { snapshot with rawSourceHash := 11, readSeq := 11 }
+  let changedDoc ← DocumentState.requireDocState changed.docs uri
+  require "changed-source recovery advances version and clears checkpoint"
+    (changed.action == .reopen && changedDoc.version == original.version + 1 &&
+     changedDoc.checkpointedVersion?.isNone)
+  require "recovery preserves the sibling document"
+    ((← DocumentState.requireDocState recovered.docs sibling).version == 2)
+
+private def checkWorkerFailureAdmissions : IO Unit := do
+  let accepted := fun {α : Type} (result : Except DocumentAdmission.Conflict α) =>
+    IO.ofExcept <| result.mapError fun conflict => IO.userError s!"unexpected {repr conflict}"
+  let allows := fun state permit =>
+    match DocumentAdmission.State.check state permit with | .ok () => true | .error _ => false
+  let (state, old) ← accepted <| DocumentAdmission.State.empty.admit "Main"
+  let (state, sibling) ← accepted <| state.admit "Other"
+  let state := state.revokeReading "Main"
+  require "worker failure invalidates held reads" (!allows state old)
+  require "worker failure preserves sibling reads" (allows state sibling)
+  let (state, fresh) ← accepted <| state.admit "Main"
+  require "a fresh request can recover the worker" (allows state fresh)
+  let state ← accepted <| state.reserve fresh
+  let state := state.revokeReading "Main"
+  require "worker observation retains the closing owner's authority" (allows state fresh)
+  let state := state.release fresh
+  require "closing cleanup never restores the old read" (!allows state old)
+  require "closing cleanup preserves the sibling" (allows state sibling)
+
 def main : IO Unit := do
+  checkWorkerFailure
+  checkWorkerFailureAdmissions
   checkAcceptedBasis
   checkTrackedModuleName
   checkRecordFileProgress

@@ -397,12 +397,12 @@ private def awaitPending (pending : PendingRequest) : HandlerM PendingResult := 
 
 private def awaitWaitForDiagnosticsBarrier
     (label : String)
-    (pending : PendingRequest) : HandlerM PendingResult := do
+    (await : IO (Except ResponseFailure PendingResult)) : HandlerM PendingResult := do
   let doneRef ← liftHandlerIO <| IO.mkRef false
   liftHandlerIO <| startWaitDiagnosticsWatchdog label doneRef
   let outcome ← liftHandlerIO <| do
     try
-      let outcome ← pending.awaitOutcome
+      let outcome ← await
       doneRef.set true
       pure outcome
     catch e =>
@@ -796,6 +796,14 @@ private def withSessionForSnapshot
     | .error failure => pure (.error failure)
     | .ok session => act session
 
+private def closeFile (session : Session) (uri : DocumentUri) : IO Session := do
+  if session.docs.get? uri |>.isNone then
+    pure session
+  else
+    let param := toJson ({ textDocument := { uri := uri } : DidCloseTextDocumentParams })
+    let session ← sendNotificationJson session "textDocument/didClose" param
+    pure { session with docs := session.docs.erase uri }
+
 private def syncFileSnapshotDetailed
     (session : Session)
     (snapshot : FileSyncSnapshot) : IO SyncedFileSnapshot := do
@@ -804,7 +812,8 @@ private def syncFileSnapshotDetailed
   let decision := DocumentState.syncFileDecision session.docs snapshot.uri snapshot.file
   let session ←
     match decision.action with
-    | .open =>
+    | .open | .reopen =>
+      let session ← if decision.action == .reopen then closeFile session snapshot.uri else pure session
       let param := toJson ({
         textDocument := {
           uri := snapshot.uri
@@ -838,14 +847,6 @@ private def syncFileSnapshot (session : Session) (snapshot : FileSyncSnapshot) :
 
 private def requireDocState (session : Session) (uri : String) : IO DocState := do
   DocumentState.requireDocState session.docs uri
-
-private def closeFile (session : Session) (uri : DocumentUri) : IO Session := do
-  if session.docs.get? uri |>.isNone then
-    pure session
-  else
-    let param := toJson ({ textDocument := { uri := uri } : DidCloseTextDocumentParams })
-    let session ← sendNotificationJson session "textDocument/didClose" param
-    pure { session with docs := session.docs.erase uri }
 
 private def decodeResponseAs [FromJson α] (json : Json) : IO α := do
   match fromJson? json with
@@ -1620,6 +1621,46 @@ private def DocumentRef.recordProgress
         document.uri document.basis fileProgress?
       { current with docs }
 
+/-- Observe only an explicit backend worker error, before per-caller cancellation presentation. -/
+private def DocumentRef.recordWorkerFailure
+    (document : DocumentRef) (failure : ResponseFailure) : IO Unit := do
+  unless failure.error.code == errorCodeName .workerExited ||
+      failure.error.code == errorCodeName .workerCrashed do return
+  document.runtime.withState do
+    let state ← get
+    let some workspace := getWorkspace? state document.session.workspaceId | return
+    let some current := workspace.lean.session? | return
+    unless sameSessionIdentity current document.session do return
+    let some docs := DocumentState.recordWorkerErrorForBasis current.docs
+        document.uri document.basis failure.error | return
+    set <| setWorkspace state document.session.workspaceId {
+      workspace with
+      lean := { workspace.lean with session? := some { current with docs } }
+      documents := workspace.documents.revokeReading document.uri
+    }
+
+private def DocumentRef.awaitOutcome
+    (document : DocumentRef) (pending : PendingRequest) : IO (Except ResponseFailure PendingResult) := do
+  match ← pending.awaitRawOutcome with
+  | .ok result => pure (.ok result)
+  | .error failure =>
+    document.recordWorkerFailure failure
+    pure <| .error <| ← RequestCancellation.backendFailure pending.cancelRef? failure
+
+/-- Only explicit sync/update requests may reopen a failed worker, using their captured admission.
+Older source reads must not fence newer requests or close their document. -/
+private def syncAdmittedFileSnapshot
+    (req : WorkspaceRequest) (session : Session) (snapshot : FileSyncSnapshot)
+    (recoverWorker : Bool) : M (Except ResponseFailure SyncedFileSnapshot) := do
+  if let some doc := session.docs.get? snapshot.uri then
+    if let some error := doc.workerError? then
+      unless recoverWorker do return .error { error }
+      if snapshot.file.isSupersededBy doc then
+        return .error <| responseFailureFor .contentModified
+          "a newer source read was accepted before worker recovery; start a new sync/update request"
+      if let .error failure ← fenceDocument req then return .error failure
+  .ok <$> syncFileSnapshotDetailed session snapshot
+
 private def withCurrentMatchingSession
     (server : ServerRuntime)
     (cancelRef? : Option (IO.Ref Bool))
@@ -1686,7 +1727,9 @@ private def DocumentRef.withCurrentDocument
     (k : Session → M (Except ResponseFailure α)) : HandlerM α := do
   let result ← document.withCurrentSession fun current => do
     match DocumentState.matchBasis current.docs document.uri document.basis with
-    | .current => k current
+    | .current =>
+        let doc ← requireDocState current document.uri
+        if let some error := doc.workerError? then pure (.error { error }) else k current
     | .superseded version? =>
         pure <| .error <| documentBasisMismatchFailure document.uri version?
   requestArg result
@@ -1764,6 +1807,8 @@ private def startSyncedDocumentRequest
   match ← workspaceForSnapshot session.workspaceId snapshot with
   | .error failure => return .error failure
   | .ok _ => pure ()
+  if let some error := (session.docs.get? snapshot.uri).bind (·.workerError?) then
+    return .error { error }
   let session ← syncFileSnapshot session snapshot
   let uri := snapshot.uri
   let docState ← requireDocState session uri
@@ -1808,7 +1853,7 @@ private def startSyncedWorkspaceRequest
 private def awaitSyncedDocumentRequest
     (started : StartedSyncedRequest) : HandlerM PendingResult := do
   liftHandlerIO <| propagatePendingCancellation started.document.session started.pending
-  let pending ← awaitPending started.pending
+  let pending ← liftFailureIO <| started.document.awaitOutcome started.pending
   withFailureProgress pending.progress? <|
     liftHandlerIO <| started.document.recordProgress pending.progress?
   withFailureProgress pending.progress? <|
@@ -1849,7 +1894,8 @@ private def startTrackedDiagnosticsBarrierIO
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
     (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none)
     (reserveClose : Bool := false)
-    (refresh : Bool := false) :
+    (refresh : Bool := false)
+    (recoverWorker : Bool := false) :
     IO (Except ResponseFailure StartedTrackedBarrier) := do
   let snapshot ←
     match ← readRequestSyncSnapshot server req with
@@ -1866,7 +1912,9 @@ private def startTrackedDiagnosticsBarrierIO
       if reopen then
         if let .error failure ← fenceDocument req then return .error failure
       let session ← if reopen then closeFile session snapshot.uri else pure session
-      let synced ← syncFileSnapshotDetailed session snapshot
+      let synced ← match ← syncAdmittedFileSnapshot req session snapshot recoverWorker with
+        | .error failure => return .error failure
+        | .ok synced => pure synced
       let session := synced.session
       let uri := synced.uri
       let docState ← requireDocState session uri
@@ -2068,7 +2116,7 @@ private def saveOleanCore
   liftHandlerIO <| propagatePendingCancellation started.document.session started.pending
   let barrier ← awaitWaitForDiagnosticsBarrier
     s!"save_olean sync barrier clientRequestId={optionLabel req.clientRequestId?} uri={started.document.uri} version={started.document.version}"
-    started.pending
+    (started.document.awaitOutcome started.pending)
   let barrierResult : DiagnosticsBarrierResult ←
     withFailureProgress barrier.progress? <| liftHandlerIO <| decodeResponseAs barrier.result
   if barrierResult.version != started.document.version then
@@ -2180,7 +2228,7 @@ private def saveOleanCore
         }).withOptionalFileProgress barrierProgress?
       let pending ←
         match ← withFailureProgress barrierProgress? <|
-            liftHandlerIO saveRequest.awaitOutcome with
+            liftHandlerIO (started.document.awaitOutcome saveRequest) with
         | .ok pending => pure pending
         | .error failure =>
             let failure ← liftHandlerIO <| RequestCancellation.backendFailure req.cancelRef? failure
@@ -2194,6 +2242,7 @@ private def saveOleanCore
       | .success result => pure result
       | .failure code message =>
           let failure := (backendResponseFailure code message).withOptionalFileProgress pending.progress?
+          liftHandlerIO <| started.document.recordWorkerFailure failure
           let failure ← liftHandlerIO <| RequestCancellation.backendFailure req.cancelRef? failure
           throw <| presentFailure failure
     if saveResult.version != started.document.version then
@@ -2253,13 +2302,13 @@ private def handleSyncFileOp
   liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
   let diagnosticScope := request.diagnosticScope?.getD .errors
   let started ← liftFailureIO <| startTrackedDiagnosticsBarrierIO server req diagnosticScope
-    emitProgress? emitDiagnostic? (refresh := refresh)
+    emitProgress? emitDiagnostic? (refresh := refresh) (recoverWorker := true)
   liftHandlerIO <| traceBroker
     s!"sync_file await barrier clientRequestId={optionLabel req.clientRequestId?} uri={started.document.uri} version={started.document.version}"
   liftHandlerIO <| propagatePendingCancellation started.document.session started.pending
   let pending ← awaitWaitForDiagnosticsBarrier
     s!"sync_file clientRequestId={optionLabel req.clientRequestId?} uri={started.document.uri} version={started.document.version}"
-    started.pending
+    (started.document.awaitOutcome started.pending)
   liftHandlerIO <| traceBroker
     s!"sync_file barrier completed clientRequestId={optionLabel req.clientRequestId?} progress={pending.progress?.isSome} diagnostics={pending.diagnostics.size} diagnosticsSeen={pending.diagnosticsSeen}"
   let barrierResult : DiagnosticsBarrierResult ←
@@ -2318,7 +2367,9 @@ private def handleUpdateFileOp
   let snapshot ← liftFailureIO <| readRequestSyncSnapshot server req
   let updated ← liftFailureIO <| server.withRequestSessionState req do
     withSessionForSnapshot req.workspaceId snapshot (cancelRef? := req.cancelRef?) (output? := req.output?) fun session => do
-      let synced ← syncFileSnapshotDetailed session snapshot
+      let synced ← match ← syncAdmittedFileSnapshot req session snapshot true with
+        | .error failure => return .error failure
+        | .ok synced => pure synced
       updateSession synced.session
       pure (.ok synced)
   pure <| Response.success (toJson ({
