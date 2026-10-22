@@ -224,8 +224,8 @@ private def checkEvictionCleanupDuringEof : IO Unit :=
       -- Deterministic EOF after removal, before cleanup completion. Runtime close joins the same
       -- cleanup rather than inventing notFound or suppressing the protected operation's receipt.
       discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
-      let closing ← IO.asTask ((stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator)
-        Task.Priority.dedicated
+      let closing ← IO.asTask (prio := Task.Priority.dedicated)
+        ((stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator)
       let some (some _) ← Beam.waitTaskWithTimeout otherTeardown.result? 5000
         | throw <| IO.userError "EOF teardown of the other workspace waited for drop cleanup"
       require "drop cleanup remains gated while the other backend shuts down"
