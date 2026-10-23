@@ -570,7 +570,8 @@ workspace configuration, which can take longer than 30 seconds. Save-trace publi
 deadlines. Request and response JSON use a private temporary directory with bounded
 message size; project stdout/stderr do not carry protocol data. A completed response is published
 atomically before the owner terminates and reaps the helper. Cancellation and deadline failure
-also terminate and reap it before returning a typed broker failure. Owner loss terminates the
+also attempt termination and final collection before returning a typed broker failure; cleanup
+failures remain visible as described below. Owner loss terminates the
 helper even during an unbounded server-environment wait. A cold load still holds the broker state
 mutex; removing its deadline does not provide concurrent workspace loading. MCP workspace drop
 remains a global execution fence: cancel an earlier stalled request before awaiting drop.
@@ -583,6 +584,23 @@ Its caller receives an observation capability rather than maintaining a separate
 Observation and teardown are serialized: loss of child ownership is permanent, and a capability
 retained past teardown rejects observation before touching the old PID. The caller must not wait
 or kill the raw child separately. Native failures retain their OS error code in `IO.Error`.
+The ownership mutex remains held through final collection. Concurrent observation can wait for
+collection to finish; afterward it rejects the closed scope even if cleanup failed. This does not
+promise prompt polling or cancellation while collection is blocked.
+
+Helper completion retains the typed operation result, process-job cleanup, temporary-directory
+cleanup, and output-capture cleanup separately until the broker response is formed. Any cleanup
+failure makes the overall result `internalError` with reason `helperCleanupFailed`. Its data records
+the failed cleanup phases and the original operation outcome, including its error code, message,
+and data. If a helper response
+arrived, `operationResponse` retains that response as well. A successfully published save trace can
+therefore coexist with failed cleanup: this error does not imply rollback or establish that retrying
+is safe. Caller cancellation does not replace this cleanup failure during deferred trace completion;
+ordinary operation failures with clean teardown retain their existing cancellation presentation.
+Output capture starts before the owner handshake and finishes after process cleanup. A failure
+while finishing capture or retiring its publisher cannot replace the retained operation receipt.
+This separates the operation from cleanup; it does not aggregate every native close,
+termination, and wait error or change their existing precedence.
 
 The CLI detaches the daemon's stdin writer immediately after spawning it. Published child handles
 therefore cannot retain that writer; one shared reference owns it until foreground-owner cleanup

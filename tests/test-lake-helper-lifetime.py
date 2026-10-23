@@ -130,7 +130,14 @@ def cleanup_receipts(base, fixture):
                 failure = json.loads((root / "owner.out").read_text())
                 assert failure["ok"] is False, failure
                 assert failure["error"]["code"] == "internalError", failure
-                assert failure["error"]["data"]["operationResponse"] == response, failure
+                data = failure["error"]["data"]
+                assert data["reason"] == "helperCleanupFailed", failure
+                assert data["operationResponse"] == response, failure
+                assert "temporaryDirectory" in data["cleanup"], failure
+                if response["ok"]:
+                    assert data["operationOutcome"] == {"status": "succeeded"}, failure
+                else:
+                    assert data["operationOutcome"] == {"status": "failed", "error": response["error"]}, failure
                 stopped([json.loads(receipt.read_text())["pid"]])
                 print("owned helper cleanup retains typed response:", index, "passed", flush=True)
             finally:
@@ -148,6 +155,7 @@ def cleanup_receipts(base, fixture):
 
 def direct(base, compiler, helper):
     fixture = REPO / ".lake/build/bin" / ("beam-lake-helper-client-fixture" + EXE)
+    subprocess.run([str(fixture), "--helper-outcomes"], check=True, timeout=30)
     subprocess.run([str(fixture), "--process-job-exited-groups"], check=True, timeout=30)
     cleanup_receipts(base, fixture)
     for scenario in [f"early-deadline-{i}" for i in range(8)] + [

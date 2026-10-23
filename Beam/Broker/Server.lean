@@ -121,6 +121,17 @@ private def liftBrokerFailureIO (act : IO (Except BrokerFailure α)) : HandlerM 
     | .ok value => pure <| .ok value
     | .error failure => pure <| .error failure.toResponseFailure
 
+namespace Internal
+
+/-- Deferred trace completion still reports failed cleanup after caller cancellation. Ordinary
+operation failures with clean cleanup retain the existing cancellation presentation. -/
+def presentLakeHelperFailure (cancelRef? : Option (IO.Ref Bool))
+    (failure : BrokerFailure) : IO ResponseFailure :=
+  if LakeHelperJob.isCleanupFailure failure then pure failure.toResponseFailure
+  else RequestCancellation.backendFailure cancelRef? failure.toResponseFailure
+
+end Internal
+
 private def withFailureProgress
     (fileProgress? : Option SyncFileProgress)
     (act : HandlerM α) : HandlerM α :=
@@ -2383,7 +2394,7 @@ private def saveOleanCore
       | .ok () => pure ()
       | .error failure =>
           let failure ← liftHandlerIO <|
-            RequestCancellation.backendFailure req.cancelRef? failure.toResponseFailure
+            Internal.presentLakeHelperFailure req.cancelRef? failure
           throw failure
     liftHandlerIO <| producersSettled.set true
     liftHandlerIO plan.ready

@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Broker.LakeHelper
+import BeamTest.Broker.HelperOutcomeTest
 
 open Lean Beam.Broker
 
@@ -28,7 +29,7 @@ private def checkExitedGroups : IO Unit := do
       stdin := .piped, stdout := .null, stderr := .null
       setsid := true
     }
-    let scope ← Beam.ProcessJob.withChild child fun scope => do
+    let completed ← Beam.ProcessJob.withChild child fun scope => do
       child.stdin.putStr "exit\n"
       child.stdin.flush
       awaitExited scope
@@ -36,6 +37,8 @@ private def checkExitedGroups : IO Unit := do
         unless (← scope.poll) == .exited do
           throw <| IO.userError "exit observation consumed the retained child identity"
       return scope
+    discard <| IO.ofExcept completed.cleanup
+    let scope ← IO.ofExcept completed.operation
     -- An escaped observation cannot touch the old PID after scope teardown.
     let rejected ← try scope.poll *> pure false catch _ => pure true
     unless rejected do throw <| IO.userError "closed process scope still allowed observation"
@@ -44,7 +47,7 @@ private def checkExitedGroups : IO Unit := do
       cmd := (← IO.appPath).toString, args := #["--process-job-exit"]
       stdin := .piped, stdout := .null, stderr := .null, setsid := true
     }
-    Beam.ProcessJob.withChild child fun scope => do
+    let completed ← Beam.ProcessJob.withChild child fun scope => do
       child.stdin.putStr "exit\n"
       child.stdin.flush
       awaitExited scope
@@ -52,18 +55,19 @@ private def checkExitedGroups : IO Unit := do
       for _ in [:2] do
         unless (← scope.poll) == .notChild do
           throw <| IO.userError "lost ownership was not retained by the process scope"
+    discard <| IO.ofExcept completed.cleanup
+    discard <| IO.ofExcept completed.operation
   let child ← IO.Process.spawn {
     cmd := (← IO.appPath).toString, args := #["--process-job-exit"]
     stdin := .piped, stdout := .null, stderr := .null, setsid := true
   }
   -- This child waits for permission forever unless exceptional teardown kills and waits for it.
-  let failed ← try
-    Beam.ProcessJob.withChild child fun _ => (throw <| IO.userError "fixture action failed" : IO Unit)
-    pure false
-  catch error =>
-    unless error.toString.contains "fixture action failed" do throw error
-    pure true
-  unless failed do throw <| IO.userError "process scope lost its action failure"
+  let completed ← Beam.ProcessJob.withChild child fun _ =>
+    (throw <| IO.userError "fixture action failed" : IO Unit)
+  discard <| IO.ofExcept completed.cleanup
+  match completed.operation with
+  | .error (.userError "fixture action failed") => pure ()
+  | _ => throw <| IO.userError "process scope lost its action failure"
   IO.println "process scopes: retained exit, lost ownership, and closed observation passed"
 
 private def runHelper (args : List String) : IO Unit := do
@@ -141,6 +145,7 @@ private def cleanupFaultHelper (directory : System.FilePath) : IO Unit := do
 def main (args : List String) : IO Unit := do
   match args with
   | ["lake-helper", "write-save-trace", directory] => cleanupFaultHelper directory
+  | ["--helper-outcomes"] => BeamTest.Broker.HelperOutcomeTest.run
   | ["--process-job-exit"] => do
       unless (← (← IO.getStdin).getLine).trimAscii == "exit" do
         throw <| IO.userError "fixture expected exit permission after job assignment"

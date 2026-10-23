@@ -24,6 +24,38 @@ private def checkErrorCode
 private def checkCancelledResponse (resp : Beam.Broker.Response) : IO Unit :=
   checkErrorCode "cancelled broker request" "requestCancelled" resp
 
+private def checkCancelledHelperCleanup : IO Unit := do
+  let cancelled ← IO.mkRef true
+  let original : Beam.Broker.BrokerFailure := {
+    code := .contentModified
+    message := "original trace failure"
+    data? := some <| Json.mkObj [("snapshot", toJson (42 : Nat))]
+  }
+  for operation in #[Except.error original,
+      Except.ok (Beam.Broker.Response.success (Json.mkObj [("traceWritten", toJson true)]))] do
+    for cleanupFails in [false, true] do
+      let completion : Beam.Broker.LakeHelperJob.Completion := {
+        operation := .ok operation
+        jobCleanup := if cleanupFails then .error (IO.userError "trace cleanup") else .ok ()
+        directoryCleanup := .ok ()
+      }
+      let result : Except Beam.Broker.BrokerFailure Json :=
+        Beam.Broker.LakeHelperJob.Internal.projectCompletion .writeSaveTrace completion
+      match result with
+      | .ok _ =>
+          unless !cleanupFails do throw <| IO.userError "cleanup failure became trace success"
+      | .error failure =>
+          let presented ← Beam.Broker.Internal.presentLakeHelperFailure (some cancelled) failure
+          if cleanupFails then
+            unless (toJson presented.toResponse).compress == (toJson failure.toResponse).compress do
+              throw <| IO.userError "cancellation replaced typed helper cleanup failure"
+          else
+            checkCancelledResponse presented.toResponse
+  -- A matching reason under a different failure code is not the helper cleanup category.
+  let other : Beam.Broker.BrokerFailure := {
+    original with data? := some <| Json.mkObj [("reason", toJson "helperCleanupFailed")] }
+  checkCancelledResponse (← Beam.Broker.Internal.presentLakeHelperFailure (some cancelled) other).toResponse
+
 private def checkStaleHandleIsolation
     (server : Beam.Broker.ServerRuntime)
     (req : Beam.Broker.Request) : IO Unit := do
@@ -50,6 +82,7 @@ private def checkStaleHandleIsolation
   checkCancelledResponse replacementResp
 
 def checkCancellationAndLifetime : IO Unit := do
+  checkCancelledHelperCleanup
   let root := System.FilePath.mk s!"/tmp/beam-request-handle-{← IO.monoNanosNow}"
   IO.FS.createDirAll root
   let root ← Beam.resolveExistingPath root

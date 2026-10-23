@@ -165,6 +165,93 @@ private partial def awaitHelperResponse
 
 namespace LakeHelperJob
 
+/-- A typed operation receipt survives both concrete resource finalizers. -/
+structure Completion where
+  operation : Except IO.Error (Except BrokerFailure Response)
+  jobCleanup : Except IO.Error Unit
+  directoryCleanup : Except IO.Error Unit
+  outputCleanup : Except IO.Error Unit := .ok ()
+
+/-- Cleanup failure must remain visible even when the caller has since cancelled its request. -/
+def isCleanupFailure (failure : BrokerFailure) : Bool :=
+  failure.code == .internalError && failure.data?.any fun data =>
+    (data.getObjValAs? String "reason").toOption == some "helperCleanupFailed"
+
+private def decodeResponse [FromJson β]
+    (operation : LakeHelperOperation) (response : Response) : Except BrokerFailure β := do
+  match response with
+  | .successResult result _ =>
+      match fromJson? result with
+      | .ok decoded => pure decoded
+      | .error err =>
+          throw {
+            code := .internalError
+            message := s!"target Lake helper '{operation.key}' returned an invalid result: {err}"
+          }
+  | .errorResult failure =>
+      let error := failure.error
+      let some code := BrokerFailureCode.ofName? error.code
+        | throw {
+            code := .internalError
+            message :=
+              s!"target Lake helper '{operation.key}' returned unknown error code '{error.code}'"
+            data? := some <| Json.mkObj [("helperError", toJson error)]
+          }
+      throw { code, message := error.message, data? := error.data? }
+
+namespace Internal
+
+/-- Capture directory removal after the job outcome, including setup failure before spawning.
+The concrete finalizer argument allows deterministic failure tests without permission races. -/
+def complete (action : IO (Beam.ProcessJob.Completion (Except BrokerFailure Response)))
+    (removeDirectory : IO Unit) : BaseIO Completion := do
+  let (operation, jobCleanup) ← match ← action.toBaseIO with
+    | .ok job => pure (job.operation, job.cleanup)
+    | .error error => pure (.error error, .ok ())
+  let directoryCleanup ← removeDirectory.toBaseIO
+  return { operation, jobCleanup, directoryCleanup }
+
+/-- Render only after every owned cleanup attempt. A cleanup error is an overall failure even
+when the operation succeeded; its receipt does not imply rollback or that retry is safe. -/
+def projectCompletion [FromJson β] (operation : LakeHelperOperation)
+    (completion : Completion) : Except BrokerFailure β := Id.run do
+  let result : Except BrokerFailure β := match completion.operation with
+    | .error error => .error {
+        code := .internalError
+        message := s!"target Lake helper '{operation.key}' failed: {error}"
+      }
+    | .ok (.error failure) => .error failure
+    | .ok (.ok response) => decodeResponse operation response
+  let cleanupFields :=
+    (match completion.jobCleanup with
+    | .ok () => []
+    | .error error => [("processJob", toJson error.toString)]) ++
+    (match completion.directoryCleanup with
+    | .ok () => []
+    | .error error => [("temporaryDirectory", toJson error.toString)]) ++
+    (match completion.outputCleanup with
+    | .ok () => []
+    | .error error => [("outputCapture", toJson error.toString)])
+  if cleanupFields.isEmpty then return result
+  let operationOutcome := match result with
+    | .ok _ => Json.mkObj [("status", toJson "succeeded")]
+    | .error failure => Json.mkObj [
+        ("status", toJson "failed"), ("error", toJson failure.toResponseFailure.error)]
+  let responseFields := match completion.operation with
+    | .ok (.ok response) => [("operationResponse", toJson response)]
+    | _ => []
+  return .error {
+    code := .internalError
+    message := s!"target Lake helper '{operation.key}' cleanup failed; its operation outcome is recorded separately"
+    data? := some <| Json.mkObj <|
+      [("reason", toJson "helperCleanupFailed"),
+       ("operation", toJson operation.key),
+       ("operationOutcome", operationOutcome),
+       ("cleanup", Json.mkObj cleanupFields)] ++ responseFields
+  }
+
+end Internal
+
 /-- Internal owned-job primitive. Explicit wait policies support bounded fixture requests;
 production callers use the typed operation wrappers below. -/
 def runRequest [ToJson α] [FromJson β]
@@ -181,71 +268,47 @@ def runRequest [ToJson α] [FromJson β]
           | throw <| IO.userError "new helper output buffer was already closed"
         pure publisher
   let capture ← IO.mkRef (none : Option Beam.WorkspaceOutput.Capture)
-  let operationResponse ← IO.mkRef (none : Option Response)
-  let response ←
+  let completion ← try
+      if ← helperCancelled control then
+        pure { operation := .ok (.error cancelledHelper), jobCleanup := .ok (), directoryCleanup := .ok () }
+      else
+        let deadline? : Option HelperDeadline ← match waitPolicy with
+          | .cancellable => pure none
+          | .timeout milliseconds => pure <| some {
+              timeoutMs := milliseconds
+              expiresAtMs := (← IO.monoMsNow) + milliseconds
+            }
+        let temporary ← IO.FS.createTempDir
+        let completed ← Internal.complete (do
+          let directory := temporary / "job"
+          Beam.ensurePrivateDir "target Lake helper job directory" directory
+          IO.FS.writeFile (LakeHelperJob.requestPath directory) (toJson request).compress
+          let child ← IO.Process.spawn {
+            toStdioConfig := helperStdio
+            cmd := helper.toString
+            args := #["lake-helper", operation.key, directory.toString]
+            setsid := true
+          }
+          let completed ← Beam.ProcessJob.withChild child fun scope => do
+            -- Establish both drains before allowing configuration code to write either pipe.
+            capture.set (some (← Beam.WorkspaceOutput.Capture.start child.stdout child.stderr publisher))
+            if let some failure ← helperInterruption? control deadline? then return .error failure
+            -- The helper cannot evaluate project code until its Windows job is assigned.
+            child.stdin.putStr "go\n"
+            child.stdin.flush
+            awaitHelperResponse scope directory control deadline?
+          pure completed)
+          (IO.FS.removeDirAll temporary)
+        pure completed
+    catch error => pure {
+      operation := .error error, jobCleanup := .ok (), directoryCleanup := .ok () }
+  -- Pipe capture settles only after the process job; its failure cannot replace that receipt.
+  let outputCleanup ← (do
     try
-      if ← helperCancelled control then return .error cancelledHelper
-      let deadline? : Option HelperDeadline ← match waitPolicy with
-        | .cancellable => pure none
-        | .timeout milliseconds => pure <| some {
-            timeoutMs := milliseconds
-            expiresAtMs := (← IO.monoMsNow) + milliseconds
-          }
-      IO.FS.withTempDir fun temporary => do
-        let directory := temporary / "job"
-        Beam.ensurePrivateDir "target Lake helper job directory" directory
-        IO.FS.writeFile (LakeHelperJob.requestPath directory) (toJson request).compress
-        let child ← IO.Process.spawn {
-          toStdioConfig := helperStdio
-          cmd := helper.toString
-          args := #["lake-helper", operation.key, directory.toString]
-          setsid := true
-        }
-        Beam.ProcessJob.withChild child fun scope => do
-          -- Establish both drains before allowing configuration code to write either pipe.
-          capture.set (some (← Beam.WorkspaceOutput.Capture.start child.stdout child.stderr publisher))
-          if let some failure ← helperInterruption? control deadline? then return .error failure
-          -- The helper cannot evaluate project code until its Windows job is assigned.
-          child.stdin.putStr "go\n"
-          child.stdin.flush
-          let response ← awaitHelperResponse scope directory control deadline?
-          if let .ok completed := response then operationResponse.set (some completed)
-          return response
-    catch error =>
-      return .error {
-        code := .internalError
-        message := s!"target Lake helper '{operation.key}' failed: {error}"
-        -- Publication may already have committed. Preserve the typed operation receipt
-        -- when later process-job or temporary-directory cleanup fails.
-        data? := (← operationResponse.get).map fun response =>
-          Json.mkObj [("operationResponse", toJson response)]
-      }
+      if let some capture ← capture.get then discard <| capture.finish
     finally
-      try
-        if let some capture ← capture.get then discard <| capture.finish
-      finally
-        publisher.retire
-  let response ← match response with
-    | .error failure => return .error failure
-    | .ok response => pure response
-  match response with
-  | .successResult result _ =>
-      match fromJson? result with
-      | .ok decoded => pure <| .ok decoded
-      | .error err =>
-          pure <| .error {
-            code := .internalError
-            message := s!"target Lake helper '{operation.key}' returned an invalid result: {err}"
-          }
-  | .errorResult failure =>
-      let error := failure.error
-      let some code := BrokerFailureCode.ofName? error.code
-        | return .error {
-            code := .internalError
-            message :=
-              s!"target Lake helper '{operation.key}' returned unknown error code '{error.code}'"
-          }
-      pure <| .error { code, message := error.message, data? := error.data? }
+      publisher.retire).toBaseIO
+  return Internal.projectCompletion operation { completion with outputCleanup }
 
 end LakeHelperJob
 
