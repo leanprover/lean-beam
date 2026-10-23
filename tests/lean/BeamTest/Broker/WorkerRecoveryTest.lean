@@ -41,8 +41,13 @@ private inductive Recovery where
   | update
   | refresh
 
+private inductive SourceFault where
+  | missing
+  | invalidUtf8
+
 private def runCase (description : Beam.Runtime.Description) (root : System.FilePath)
-    (code : JsonRpc.ErrorCode) (cancelled : Bool) (recovery : Recovery) : IO Unit := do
+    (code : JsonRpc.ErrorCode) (cancelled : Bool) (recovery : Recovery)
+    (sourceFault? : Option SourceFault := none) : IO Unit := do
   IO.FS.createDirAll root
   IO.FS.writeFile (root / "lakefile.toml") "name = \"Main\"\n[[lean_lib]]\nname = \"Main\"\n"
   IO.FS.writeFile (root / "Main.lean") "def mainValue : Nat := 42\n"
@@ -137,6 +142,32 @@ private def runCase (description : Beam.Runtime.Description) (root : System.File
       | .sync => .syncFile { path := "Main.lean" }
       | .update => .updateFile { path := "Main.lean" }
       | .refresh => .refreshFile { path := "Main.lean" }
+    if let some sourceFault := sourceFault? then
+      require "invalid-source recovery starts with a recorded worker failure" workerFailure
+      let source := root / "Main.lean"
+      let validSource ← IO.FS.readBinFile source
+      try
+        match sourceFault with
+        | .missing => IO.FS.removeFile source
+        | .invalidUtf8 => IO.FS.writeBinFile source (ByteArray.mk #[0xff])
+        let rejected ← call server recoveryRequest
+        require "recovery rejects unavailable or invalid UTF-8 source"
+          (rejected.error?.map (·.code) == some "invalidParams")
+        let retained ← doc server uri
+        require "failed source admission preserves the accepted document"
+          (DocumentState.basis retained == DocumentState.basis observed &&
+           retained.rawSourceHash == observed.rawSourceHash &&
+           retained.documentHash == observed.documentHash)
+        require "failed source admission preserves the original worker failure"
+          (toJson retained.workerError? == toJson observed.workerError?)
+        require "failed source admission preserves the checkpoint association"
+          (retained.checkpointedVersion? == observed.checkpointedVersion?)
+        require "failed source admission never closes or reopens the worker"
+          ((← closes.get) == 0 && (← opens.get) == 0)
+        require "failed source admission preserves checkpoint bytes"
+          ((← paths.mapM IO.FS.readBinFile) == checkpoint)
+      finally
+        IO.FS.writeBinFile source validSource
     discard <| result (← call server recoveryRequest)
     let recovered ← doc server uri
     require "fresh synchronization recovers only an explicitly failed worker"
@@ -618,6 +649,10 @@ def run (description : Beam.Runtime.Description) (root : System.FilePath) : IO U
       ("ordinary-error", .contentModified, false, .sync)] do
     runCase description (root / name) code cancelled recovery
     IO.println s!"worker recovery: {name} passed"
+  for (name, fault) in [("missing-source", SourceFault.missing), ("invalid-utf8", .invalidUtf8)] do
+    for (command, recovery) in [("sync", Recovery.sync), ("update", .update)] do
+      runCase description (root / s!"{name}-{command}") .workerCrashed false recovery (some fault)
+      IO.println s!"worker recovery: {name} preserves failed state before {command} recovery passed"
   runRealExit description (root / "real-exit")
   runImporterRecovery description (root / "edited-importer") true
   IO.println "worker recovery: edited-source update invalidates its importer passed"
