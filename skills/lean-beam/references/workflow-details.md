@@ -170,8 +170,11 @@ What is not a valid checkpoint target:
   data when deciding recovery; never treat failed sync as save-ready.
   Local remedies are in `error.data.remedyCommand` and on their own stderr line.
   `sessionRecoveryRequired` (exit `1`) includes the generation when known; obey its
-  `recoveryPrecondition` and independently verify that the matching owner and daemon have stopped
-  before running recovery. An unavailable endpoint alone is insufficient evidence
+  `recoveryPrecondition` and independently verify that the matching owner, daemon, and all other
+  producers have stopped before running recovery. An unavailable endpoint alone is insufficient
+  evidence. `status` state `unresponsive` means the endpoint did not validate, including incomplete
+  or malformed replies; `sessionUnresponsive` (exit `1`) preserves the descriptor and refuses
+  recovery. Resume or inspect the original owner and daemon through their supervisor before retrying
 - `--text-file` and `--handle-file` require regular-file targets and allow ordinary symlinks;
   directories, devices, FIFOs, and symlink loops observed at admission fail with
   `invalidParams`/exit `2` before dispatch. The target check and later open are separate operations,

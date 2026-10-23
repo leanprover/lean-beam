@@ -54,7 +54,7 @@ structure WorkspaceBinding where
   plugin : String
   toolchain : String
   bundleId : String
-  deriving ToJson
+  deriving ToJson, BEq
 
 instance : FromJson WorkspaceBinding where
   fromJson? json := do
@@ -90,7 +90,7 @@ structure SessionDescriptor where
   /-- Canonical owning root retained from the admitted runtime, independent of component layout. -/
   installationRoot : String
   startedAt : String
-  deriving ToJson
+  deriving ToJson, BEq
 
 instance : FromJson SessionDescriptor where
   fromJson? json := do

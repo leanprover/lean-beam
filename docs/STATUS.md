@@ -231,13 +231,15 @@ client protocol.
   `lean-beam --root ROOT stop` changes the descriptor to `draining`, and that fence remains until normal
   owner cleanup has reaped the daemon leader after graceful or process-group teardown. If the daemon
   instead exits abnormally during that drain, Beam restores the exact conservative fence so status
-  reports `recoveryRequired` rather than treating leader exit as successful cleanup.
+  retains a fence rather than treating leader exit as successful cleanup.
   Ordinary lookups take no mutation lock, create no control files, use the frozen workspace
   configuration, and preserve unsafe session state. A competing owner computes its proposed
   configuration but cannot replace a mismatched live owner.
-- `lean-beam status` projects internal descriptor observations onto four public states: `absent`,
-  `running`, `stopping`, and `recoveryRequired`. Root inference selects the nearest
-  Lean/Lake project. Automated callers should pass
+- `lean-beam status` projects internal descriptor observations onto five public states: `absent`,
+  `running`, `stopping`, `recoveryRequired`, and `unresponsive`. `unresponsive` means an endpoint
+  did not validate as the expected generation, including incomplete or malformed replies; it is not
+  proof of producer settlement. Recovery refuses that state and preserves the descriptor.
+  Root inference selects the nearest Lean/Lake project. Automated callers should pass
   an explicit canonical `--root`; `stop` and `recover` require one. Successful lifecycle commands
   use one top-level `ok`/`result` envelope; `serve` projects its private backend warm-up onto the
   public running-session result instead of exposing broker workspace or epoch fields. `stop`
@@ -245,8 +247,9 @@ client protocol.
   state in its result when immediate shutdown delivery produces a typed warning.
 - Abnormal or ambiguous state is never reclaimed automatically. The descriptor remains as a fence
   after an unexpected broker/owner exit; an unexpected broker exit preserves the live descriptor,
-  whose unavailable endpoint projects to `recoveryRequired`. Once the operator has established that
-  the matching session is no longer authoritative, `lean-beam --root ROOT recover --generation ID` quarantines
+  whose failed connection-establishment probe projects to `recoveryRequired`. After independently
+  establishing that the matching owner, daemon, and every other producer have stopped,
+  `lean-beam --root ROOT recover --generation ID` quarantines
   that exact descriptor without signalling persisted PIDs. Stop and recovery require the invoking
   executable to belong to the recorded owning installation, even when its plugin, selector, or
   provenance is unusable. Opaque or malformed descriptors cannot establish that ownership and must

@@ -269,7 +269,7 @@ Machine clients should pass an explicit `--root` and invoke the typed wrapper op
 CLI failures print one `{ "ok": false, "error": { "code": "...", "message": "..." } }` response on
 stdout and a concise diagnostic on stderr. Broker error codes, data, and file progress are preserved.
 Local CLI codes include `setupError`, `brokerUnavailable`, `noLiveSession`,
-`sessionRecoveryRequired`, and `internalError`.
+`sessionRecoveryRequired`, `sessionUnresponsive`, and `internalError`.
 Local argument echoes use bounded previews. `error.data.argument` identifies the field, an escaped
 preview, and `omittedChars`; individual argument previews retain at most 128 Unicode characters.
 Generic usage-message previews retain at most 512 characters. CLI error diagnostics escape terminal
@@ -277,7 +277,8 @@ control characters. Local remedies appear in `error.data.remedyCommand`; command
 printable text also appear verbatim on their own stderr line. A control-bearing remedy is labelled
 as an escaped display on stderr; use the exact JSON command for execution.
 `sessionRecoveryRequired` includes the recorded `generation` when known, plus a
-`recoveryPrecondition`: independently verify that the matching owner and daemon have stopped.
+`recoveryPrecondition`: independently verify that the matching owner, daemon, and all other
+producers have stopped.
 An unavailable endpoint does not prove that they have stopped. Invalid descriptors require
 operator diagnosis; no generation or recovery command is invented for them.
 Unexpected IO faults use `internalError`, rather than being classified as invalid arguments.
@@ -575,8 +576,13 @@ tool_timeout_sec = 600
 
 ## Sessions And Recovery
 
-`lean-beam status` reports the public session state as `absent`, `running`, `stopping`, or
-`recoveryRequired`, together with the resolved workspace and session directory. Human-facing
+`lean-beam status` reports the public session state as `absent`, `running`, `stopping`,
+`recoveryRequired`, or `unresponsive`, together with the resolved workspace and session directory.
+`unresponsive` means the endpoint did not validate as the expected generation; this includes
+timeouts, incomplete or malformed replies, and interrupted probes. It does not establish that the
+owner, daemon, or other producers stopped. `serve`, `stop`, and `recover` preserve this descriptor
+and fail with `sessionUnresponsive` (exit `1`), without suggesting a recovery command. Resume or
+inspect the original owner and daemon through their supervisor before retrying. Human-facing
 commands infer a Lean/Lake project root from the current directory and its ancestors. Automated
 callers should pass an explicit root; `stop` and `recover` always require one.
 
@@ -635,8 +641,9 @@ Use a stable external session directory when ownership must remain fenced while 
 deleted and recreated; deleting a project-local `.beam` necessarily deletes its default fence.
 
 An abnormal owner or broker exit, including a nonzero broker exit after stopping begins, leaves the
-descriptor as a safety fence. After independently
-establishing that the recorded generation is no longer authoritative, quarantine that exact record
+descriptor as a safety fence. A connection-establishment failure retains explicit operator recovery;
+it is not proof that the recorded generation has stopped. After independently establishing that the
+matching owner, daemon, and every other producer have stopped, quarantine that exact record
 without signalling its recorded PIDs:
 
 ```bash

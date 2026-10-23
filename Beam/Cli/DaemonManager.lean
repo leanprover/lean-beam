@@ -244,6 +244,18 @@ def requestDaemonShutdown
     }
     requestTimeoutMs (fun _ => pure ()) (.wrapper identity)
 
+/-- A failed endpoint probe never establishes producer settlement. Only connection establishment
+failure retains the existing independent-operator recovery path. -/
+inductive ProbeFailureDisposition where
+  | manualRecoveryRequired
+  | unresponsive
+  deriving BEq, Repr
+
+def probeFailureDisposition : BrokerClientFailure → ProbeFailureDisposition
+  | .transport .connect _ => .manualRecoveryRequired
+  | .transport .send _ | .transport .receive _ | .invalidResponse _ | .streamCallback _
+  | .requestTimeout _ | .interrupted => .unresponsive
+
 inductive RegistryUnsafeReason where
   | endpointProbeFailed (failure : BrokerClientFailure)
   | wrongEndpointRoot (daemonRoot : String)
@@ -260,6 +272,8 @@ inductive RegistryObservation where
   | draining (entry : SessionDescriptor)
   | selectorMismatch (entry : SessionDescriptor)
   | recoveryRequired (blocker : RegistryBlocker)
+  /-- The endpoint did not validate; this includes incomplete or malformed replies. -/
+  | unresponsive (entry : SessionDescriptor) (failure : BrokerClientFailure)
 
 /-- Descriptor selection without a separate endpoint probe. Ordinary project calls use this
 read-only boundary, verify the generation through the request connection's greeting, and then send
@@ -300,7 +314,9 @@ private def observeProjectRegistryAt
           entry.identity entry.capability with
       | .exact => pure <| .live entry
       | .probeFailed failure =>
-          pure <| .recoveryRequired (.unusable entry (.endpointProbeFailed failure))
+          pure <| match probeFailureDisposition failure with
+          | .manualRecoveryRequired => .recoveryRequired (.unusable entry (.endpointProbeFailed failure))
+          | .unresponsive => .unresponsive entry failure
       | .wrongRoot daemonRoot =>
           pure <| .recoveryRequired (.unusable entry (.wrongEndpointRoot daemonRoot))
       | .wrongGeneration daemonRoot =>
@@ -807,10 +823,25 @@ def RegistryBlocker.generation? : RegistryBlocker → Option String
   | .unusable entry _ => some entry.daemonId
   | .invalid _ => none
 
+/-- Failure to validate an endpoint is not authority to replace its generation. -/
+def unresponsiveSessionFailure (root sessionDir : System.FilePath)
+    (entry : SessionDescriptor) (failure : BrokerClientFailure)
+    (diagnostics? : Option String := none) : CliFailure :=
+  let message := s!"Beam session {entry.daemonId} for {root} did not validate as the expected generation; " ++
+    "its descriptor was preserved. Resume or inspect the original owner and daemon before retrying."
+  let data := [("generation", toJson entry.daemonId), ("detail", toJson failure.detail),
+    ("root", toJson root.toString), ("sessionDir", toJson sessionDir.toString)] ++
+    diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics))
+  { CliFailure.make "sessionUnresponsive" message with
+    failure.error.data? := some <| Json.mkObj data }
+
 /-- Recovery guidance is conditional: a failed probe does not establish owner death. -/
 def RegistryBlocker.cliFailure (root sessionDir : System.FilePath)
-    (blocker : RegistryBlocker) (diagnostics? : Option String := none) : CliFailure :=
-  let precondition := "Independently verify that the matching owner and daemon have stopped " ++
+    (blocker : RegistryBlocker) (diagnostics? : Option String := none) : CliFailure := Id.run do
+  if let .unusable entry (.endpointProbeFailed failure) := blocker then
+    if probeFailureDisposition failure == .unresponsive then
+      return unresponsiveSessionFailure root sessionDir entry failure diagnostics?
+  let precondition := "Independently verify that the matching owner, daemon, and all other producers have stopped " ++
     "before recovery; an unavailable endpoint does not establish this."
   let summary := match blocker with
     | .unusable _ (.endpointProbeFailed _) => "the recorded endpoint could not confirm this generation"
@@ -819,7 +850,7 @@ def RegistryBlocker.cliFailure (root sessionDir : System.FilePath)
     s!"Beam session for {root} requires recovery: {summary}. {precondition}"
   let data := [("detail", toJson blocker.statusDetail), ("recoveryPrecondition", toJson precondition)] ++
     diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics))
-  match blocker with
+  return match blocker with
   | .unusable entry _ =>
       failure.withRemedy (wrapperSessionCommand root sessionDir (.recoverGeneration entry.daemonId))
         (("generation", toJson entry.daemonId) :: data)
@@ -900,6 +931,8 @@ def shutdownRegisteredProjectDaemon
         throw <| selectorMismatchFailure root control.dir entry
     | .recoveryRequired blocker =>
         throw <| blocker.cliFailure root control.dir
+    | .unresponsive entry failure =>
+        throw <| unresponsiveSessionFailure root control.dir entry failure
     : CliM ShutdownPlan).run
   match plan with
   | .none => pure .absent
@@ -916,7 +949,12 @@ inductive RecoveryResult where
   | absent
   | recoveredGeneration (generation : String) (quarantinedPath : System.FilePath)
 
-private def quarantineRegistry (control : ProjectControl) : IO System.FilePath := do
+private def quarantineRegistry (control : ProjectControl)
+    (entry : SessionDescriptor) : CliM System.FilePath := do
+  let changed := CliFailure.setup
+    "Beam session descriptor changed while recovery checked its endpoint; the descriptor was preserved"
+  let .current current ← readRegistryAt control.registry | throw changed
+  unless current == entry do throw changed
   let nonce ← IO.monoNanosNow
   let quarantine := control.dir / s!"beam-daemon.recovered-{nonce}.json"
   IO.FS.rename control.registry quarantine
@@ -966,8 +1004,11 @@ def recoverProjectDaemon
             throw <| CliFailure.setup <|
               s!"Beam session {entry.daemonId} has an authenticated endpoint that serves another " ++
               s!"generation for {daemonRoot}; recovery preserved the descriptor"
-        | .probeFailed _ =>
-            let quarantine ← quarantineRegistry control
+        | .probeFailed failure =>
+            if probeFailureDisposition failure == .unresponsive then
+              throw <| unresponsiveSessionFailure root control.dir entry failure
+            -- This is still explicit operator recovery, not a proof that producers have stopped.
+            let quarantine ← quarantineRegistry control entry
             pure <| .recoveredGeneration entry.daemonId quarantine
     | .invalid (.unsafeLeaf detail) =>
         throw <| CliFailure.setup detail
@@ -1045,6 +1086,8 @@ private def startOwnedProjectDaemon
       throw <| selectorMismatchFailure desired.root control.dir entry
   | .recoveryRequired blocker =>
       throw <| blocker.cliFailure desired.root control.dir
+  | .unresponsive entry failure =>
+      throw <| unresponsiveSessionFailure desired.root control.dir entry failure
   publishOwnedProjectDaemon control desired
 
 private def waitForOwnedDaemonExit

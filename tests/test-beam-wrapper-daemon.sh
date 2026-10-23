@@ -1015,6 +1015,48 @@ if [ -e "$registry" ]; then
   exit 1
 fi
 
+# A paused live daemon must not become replaceable merely because its greeting times out.
+start_owner "$tmp1" "owner-unresponsive"
+unresponsive_pid="$(read_json_field "$registry" pid)"
+unresponsive_generation="$(read_json_field "$registry" daemonId)"
+unresponsive_descriptor="$(cat "$registry")"
+kill -STOP "$unresponsive_pid"
+paused_daemon_pid="$unresponsive_pid"
+unresponsive_status="$("$beam_script" --root "$tmp1" status)"
+assert_json_field_equals "paused daemon status" "$unresponsive_status" result.state unresponsive
+assert_json_field_equals "paused daemon generation" "$unresponsive_status" result.generation "$unresponsive_generation"
+for operation in recover serve stop; do
+  operation_args=()
+  if [ "$operation" = "recover" ]; then
+    operation_args=(--generation "$unresponsive_generation")
+  fi
+  set +e
+  "$beam_script" --root "$tmp1" "$operation" ${operation_args[@]+"${operation_args[@]}"} \
+    > "$tmp1/unresponsive-$operation.out" 2> "$tmp1/unresponsive-$operation.err"
+  operation_status="$?"
+  set -e
+  if [ "$operation_status" -ne 1 ]; then
+    echo "expected $operation to preserve the unresponsive generation, got $operation_status" >&2
+    exit 1
+  fi
+  assert_json_field_equals "paused $operation" "$(cat "$tmp1/unresponsive-$operation.out")" error.code sessionUnresponsive
+  if [ "$(cat "$registry")" != "$unresponsive_descriptor" ] || \
+      ! kill -0 "$hold_pid" 2>/dev/null || ! kill -0 "$unresponsive_pid" 2>/dev/null; then
+    echo "unresponsive admission changed the descriptor or its live owner/daemon" >&2
+    exit 1
+  fi
+  if grep -Fq "recover --generation" "$tmp1/unresponsive-$operation.err"; then
+    echo "uncertain session errors must not suggest recovery" >&2
+    exit 1
+  fi
+done
+kill -CONT "$unresponsive_pid"
+paused_daemon_pid=""
+resumed_status="$("$beam_script" --root "$tmp1" status)"
+assert_json_field_equals "resumed original daemon" "$resumed_status" result.state running
+assert_json_field_equals "resumed original generation" "$resumed_status" result.generation "$unresponsive_generation"
+stop_hold_process true "$registry" "$tmp1/owner-unresponsive.err"
+
 # If the daemon exits abnormally after drain begins, leader exit is not proof of successful cleanup.
 # Restore the exact generation to a conservative recovery-required fence instead of admitting a
 # replacement owner.

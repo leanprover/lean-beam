@@ -43,6 +43,8 @@ def doctor (home : System.FilePath) (inspect : System.FilePath → CliM (List St
         s!"daemon endpoint: {Beam.Daemon.endpointSummary (Beam.Daemon.registryEndpoint entry)}",
         s!"daemon config hash: {entry.configHash}"]
     | .draining entry => pure ["daemon status: draining", s!"daemon generation: {entry.daemonId}"]
+    | .unresponsive entry failure => pure ["daemon status: unresponsive (endpoint not validated)",
+        s!"daemon generation: {entry.daemonId}", s!"daemon probe error: {failure.detail}"]
     | .absent => pure ["daemon status: absent"]
     | .selectorMismatch entry => pure ["daemon status: session selector mismatch",
         sessionSelectorMismatchMessage root (← Beam.Daemon.controlDirFor root opts.explicitControlDir?) entry]

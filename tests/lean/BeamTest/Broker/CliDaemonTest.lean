@@ -1059,6 +1059,71 @@ private def writeTestRegistryEntry
   }
   IO.FS.writeFile registryPath ((toJson entry).pretty ++ "\n")
 
+private def checkProbeFailureDispositions
+    (root : System.FilePath) (entry : Beam.Daemon.SessionDescriptor) : IO Unit := do
+  let error := IO.userError "probe fixture failure"
+  let samples : List (Beam.Broker.BrokerClientFailure × Beam.Cli.ProbeFailureDisposition) := [
+    (.transport .connect error, .manualRecoveryRequired),
+    (.transport .send error, .unresponsive),
+    (.transport .receive error, .unresponsive),
+    (.invalidResponse "malformed greeting", .unresponsive),
+    (.streamCallback error, .unresponsive),
+    (.requestTimeout 2000, .unresponsive),
+    (.interrupted, .unresponsive)]
+  let control ← Beam.Daemon.controlDir root
+  for (failure, expected) in samples do
+    require s!"probe disposition for {repr failure}"
+      (Beam.Cli.probeFailureDisposition failure == expected)
+    let blocker := Beam.Cli.RegistryBlocker.unusable entry (.endpointProbeFailed failure)
+    let cli := blocker.cliFailure root control (some "original incident context")
+    let some data := cli.failure.error.data? | throw <| IO.userError "missing probe failure data"
+    requireJsonString "probe failure preserves generation" "generation" entry.daemonId data
+    let detail ← IO.ofExcept <| data.getObjValAs? String "detail"
+    requireSubstring "probe failure preserves detail" failure.detail detail
+    requireJsonString "probe failure preserves incident context" "diagnostics" "original incident context" data
+    require "probe failures exit 1" (cli.exitCode == 1)
+    match expected with
+    | .manualRecoveryRequired =>
+        require "manual recovery is conditional, not proof of settlement"
+          (cli.failure.error.code == "sessionRecoveryRequired" && cli.remedyCommand?.isSome)
+        let precondition ← IO.ofExcept <| data.getObjValAs? String "recoveryPrecondition"
+        requireSubstring "all producer lifetimes remain an operator prerequisite" "all other producers" precondition
+    | .unresponsive =>
+        require "uncertain probes never advertise recovery"
+          (cli.failure.error.code == "sessionUnresponsive" && cli.remedyCommand?.isNone &&
+            (data.getObjVal? "remedyCommand").toOption.isNone)
+
+private def checkRecoveryGenerationRecheck : IO Unit := do
+  let root := System.FilePath.mk s!"/tmp/beam-recovery-generation-test-{← IO.monoNanosNow}"
+  try
+    IO.FS.createDirAll root
+    let endpoint ← withBrokerListener fun _ endpoint => pure endpoint
+    let .tcp port := endpoint
+    writeTestRegistryEntry root port
+    let registry ← Beam.Daemon.registryPath root
+    let .current entry ← Beam.Daemon.readRegistry root
+      | throw <| IO.userError "missing recovery fixture descriptor"
+    let replacements : List (String × Beam.Daemon.SessionDescriptor) := [
+      ("generation", { entry with daemonId := "replacement-generation", capability := "replacement-capability" }),
+      ("capability", { entry with capability := "replacement-capability" }),
+      ("root", { entry with workspace := { entry.workspace with root := (root / "different-workspace").toString } }),
+      ("installation", { entry with installationRoot := (root / "different-installation").toString })]
+    for (label, replacement) in replacements do
+      IO.FS.writeFile registry ((toJson entry).pretty ++ "\n")
+      let replacementText := (toJson replacement).pretty ++ "\n"
+      let admit := fun (_ : Beam.Daemon.SessionDescriptor) => IO.FS.writeFile registry replacementText
+      let failure ← expectCliErrorMessage s!"recovery must recheck the {label}" <|
+        Beam.Cli.recoverProjectDaemon admit root entry.daemonId
+      requireSubstring "recovery descriptor recheck" "descriptor changed" failure
+      require "recovery must preserve the replacement descriptor"
+        ((← IO.FS.readFile registry) == replacementText)
+    let control ← Beam.Daemon.controlDir root
+    for leaf in ← control.readDir do
+      require "recovery must not quarantine a replacement generation"
+        (!leaf.fileName.startsWith "beam-daemon.recovered-")
+  finally
+    if ← root.pathExists then IO.FS.removeDirAll root
+
 private def checkTypedRegistryReads : IO Unit := do
   let root := System.FilePath.mk s!"/tmp/beam-typed-registry-test-{← IO.monoNanosNow}"
   try
@@ -1111,6 +1176,7 @@ private def checkTypedRegistryReads : IO Unit := do
     | .current entry =>
         require "current registry should preserve its generation capability"
           (entry.capability == "test-capability")
+        checkProbeFailureDispositions root entry
     | state => throw <| IO.userError s!"current registry was classified as {state.status}"
 
     let longGeneration := String.ofList <| List.replicate 100000 'x'
@@ -1552,6 +1618,7 @@ def main : IO Unit := do
   OutputTest.check
   checkBrokerConnectionClosedIncident
   checkTypedRegistryReads
+  checkRecoveryGenerationRecheck
   checkDaemonFailureIncidentRetention
   checkDoctorDaemonFailureIncidentLines
   checkDaemonFailureIncidentDoesNotRecreateRoot

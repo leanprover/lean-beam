@@ -27,6 +27,7 @@ private inductive SessionState where
   | running
   | stopping
   | recoveryRequired
+  | unresponsive
   deriving BEq, Repr
 
 private instance : ToJson SessionState where
@@ -35,6 +36,7 @@ private instance : ToJson SessionState where
     | .running => "running"
     | .stopping => "stopping"
     | .recoveryRequired => "recoveryRequired"
+    | .unresponsive => "unresponsive"
 
 private structure SessionStatus where
   state : SessionState
@@ -244,6 +246,9 @@ private def sessionStatus (opts : CliOptions) : CliM Unit := do
     | .recoveryRequired blocker =>
         pure <| mkSessionStatus .recoveryRequired root sessionDir blocker.generation?
           (some blocker.statusDetail)
+    | .unresponsive entry failure =>
+        pure <| mkSessionStatus .unresponsive root sessionDir (some entry.daemonId)
+          (some failure.detail)
   printResponse <| Response.success (toJson result)
 
 private def dispatchCommand (installation : Installation) (opts : CliOptions) : CliM Unit := do

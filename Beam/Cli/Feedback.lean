@@ -109,6 +109,9 @@ private def collectDaemonPayload
       pure (Json.null, Json.null, warnings.push "no live Beam daemon was available for stats/open-files")
   | .draining _ =>
       pure (Json.null, Json.null, warnings.push "the Beam daemon is draining")
+  | .unresponsive entry failure =>
+      pure (Json.null, Json.null, warnings.push
+        s!"Beam session {entry.daemonId} endpoint did not validate: {failure.detail}")
   | .selectorMismatch entry =>
       let controlDir ← Beam.Daemon.controlDirFor root explicitControlDir?
       pure (Json.null, Json.null, warnings.push <|
