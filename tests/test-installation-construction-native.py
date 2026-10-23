@@ -4,7 +4,8 @@
 """Exercise real two-target standalone construction against a private home, install root, and elan home.
 
 Requires the exact targets below in the host elan home. Never writes outside its own temporary root
-except the checkout's `.lake` build output, as any installer run does."""
+except the checkout's `.lake` build output, as any installer run does. Keep two cache-disabled
+constructions for the independent rebuild check before using a fixture-owned cache in later cases."""
 
 import hashlib
 import json
@@ -84,6 +85,13 @@ assert not (install_root / "state").exists(), "construction persisted state outs
 assert not list(install_root.glob(".staging-*")), "construction retained a staging tree"
 print("construction left no build directories or persistent cache", flush=True)
 
+# Both constructions above are cache-disabled. Later cases share only this owned fixture cache,
+# leaving the independent rebuild comparison and the host SDK caches untouched.
+fixture_cache = validation / "lake-cache"
+fixture_cache.mkdir()
+assert not list(fixture_cache.iterdir())
+env["LAKE_CACHE_DIR"] = str(fixture_cache)
+
 # An upgraded root may still hold an earlier construction cache; the installer neither reads,
 # removes, nor extends it.
 legacy = install_root / "state/install-bundles/linux-x86_64/legacy-entry"
@@ -91,6 +99,7 @@ legacy.mkdir(parents=True)
 (legacy / "sentinel").write_text("earlier construction cache")
 legacy_before = sorted(str(path.relative_to(install_root)) for path in (install_root / "state").rglob("*"))
 install(*options)
+assert any(path.is_file() for path in fixture_cache.rglob("*")), "fixture cache was not populated"
 assert (install_root / "current").resolve() == generation
 assert (legacy / "sentinel").read_text() == "earlier construction cache"
 assert sorted(str(path.relative_to(install_root)) for path in (install_root / "state").rglob("*")) == legacy_before
@@ -145,5 +154,12 @@ assert record_path.read_bytes() == record_bytes
 assert len(list((install_root / "versions").iterdir())) == 1
 assert not list(install_root.glob(".staging-*")), "failed qualification retained a staging tree"
 print("staged-plugin qualification failure on a later target preserved publication", flush=True)
+
+# Warm construction and failed qualification must not mutate the immutable installed generation,
+# including through cache-linked build outputs.
+for artifact in record["artifacts"]:
+    path = generation / artifact["destination"]
+    assert not path.is_symlink() and path.stat().st_nlink == 1, path
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == artifact["hash"], path
 
 shutil.rmtree(validation)

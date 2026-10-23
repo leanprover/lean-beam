@@ -224,6 +224,12 @@ Current Beam coverage includes:
   typed operation and cleanup failures without recursively deleting unexpected contents.
   [tests/test-install-lock.sh](../tests/test-install-lock.sh) covers shell installer exit statuses,
   lock and staging cleanup failures, preserved contents, and success reporting after lock release.
+  The installer suite also runs [tests/test-installation-construction-native.py](../tests/test-installation-construction-native.py):
+  two cache-disabled two-target constructions for the independent rebuild comparison, followed by
+  fixture-owned Lake cache reuse for legacy-state and later-target failure cases.
+  The cache stays inside the fixture's temporary root. Compiler qualification, installed hashes,
+  immutable generation reuse, and failure publication checks remain active; retained artifacts
+  are rehashed after the warm and failure cases and must have independent inodes.
 - MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, installed smoke, released
   official-client interoperability, and external legacy/modern conformance coverage
 
