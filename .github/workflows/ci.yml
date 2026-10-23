@@ -26,8 +26,15 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       toolchains: ${{ steps.matrix.outputs.toolchains }}
+      macos: ${{ steps.coverage.outputs.macos }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Determine macOS coverage
+        id: coverage
+        run: python3 scripts/ci-macos.py >> "$GITHUB_OUTPUT"
 
       - name: Validate and export toolchains
         id: matrix
@@ -37,7 +44,8 @@ jobs:
 
   macos-platform:
     name: macos-platform
-    if: vars.BEAM_FULL_MACOS_CI != 'true'
+    needs: toolchains
+    if: ${{ !cancelled() && vars.BEAM_FULL_MACOS_CI != 'true' && (needs.toolchains.result != 'success' || needs.toolchains.outputs.macos != 'false') }}
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
