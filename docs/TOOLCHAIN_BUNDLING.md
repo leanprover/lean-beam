@@ -235,10 +235,10 @@ configuration hashes; helper and workspace-init requests cannot supply replaceme
 
 Startup captures the installation record without requiring a usable project runtime. Owner creation
 checks existing control-directory safety without creating state, then admits its target. Acquisition
-creates or revalidates the private directory only after admission succeeds; rejection preserves
-existing state. Reuse compares the retained binding and workspace instance before dispatch. Local
-admission observes cancellation; the obsolete
-external CLI, compiler, and Elan discovery probes have been removed.
+creates or revalidates the private directory only after admission succeeds. Target-admission
+rejection preserves existing session state. Reuse compares the retained binding and workspace
+instance before dispatch. Local admission observes cancellation; the obsolete external CLI,
+compiler, and Elan discovery probes have been removed.
 
 | Operation | Runtime effects |
 | --- | --- |
