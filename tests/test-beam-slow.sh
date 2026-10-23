@@ -68,8 +68,8 @@ if [ "${BEAM_MCP_STDIO_SERVER_TRACE:-1}" != "0" ]; then
 fi
 run_step "MCP stdio stress" env ${mcp_stdio_env[@]+"${mcp_stdio_env[@]}"} \
   python3 tests/test-mcp-stdio.py \
-    --iterations 4 \
-    --restart-cycles 3 \
+    --iterations "${BEAM_MCP_STDIO_ITERATIONS:-4}" \
+    --restart-cycles "${BEAM_MCP_STDIO_RESTART_CYCLES:-3}" \
     --timeout "$mcp_stdio_timeout"
 
 run_step "MCP multi-toolchain workspaces" \

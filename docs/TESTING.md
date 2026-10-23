@@ -687,33 +687,51 @@ base and head parents from its event, and every changed path is a regular, non-e
 file in `docs/`, `skills/lean-beam/`, or the root `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`,
 and `AGENTS.md`. Additions and deletions are checked too; renaming source to Markdown still runs
 macOS. Unknown paths, symlinks, mode changes, an empty change list, unavailable Git history, and
-invalid event metadata retain macOS coverage. Main pushes, manual runs, and full matrix mode
+invalid event metadata retain exhaustive macOS coverage. Main pushes, manual runs, and full matrix mode
 always retain their existing macOS coverage. All Linux checks, including fast-suite Markdown link
 and skill-budget checks, still run for documentation changes.
 
 The `toolchains` job exports this decision through [scripts/ci-macos.py](../scripts/ci-macos.py).
-A failed job or missing decision also retains the combined macOS job. Its checkout uses
+A failed job or missing decision also retains exhaustive combined macOS coverage. Its checkout uses
 `fetch-depth: 2` to include both PR merge parents. Run
 `python3 tests/test-ci-macos.py` for the Git history, path, rename, file-kind, and fallback cases.
 
-The combined `macos-platform` job covers every test family.
-It runs shell lint, fast broker tests, LSP tests, MCP conformance and SDK tests, the slow suite,
-pinned-toolchain qualification, native installation/relocation, and installer tests as separate
-steps in one checkout.
+The combined `macos-platform` job has two profiles. Verified product source PRs use the
+representative `platform` profile. Main pushes, manual runs, CI/test-driver changes, build or
+toolchain configuration changes, and uncertain classifications use the exhaustive `full` profile.
+Full matrix mode remains exhaustive for PRs too.
+
+| Family | macOS product PR (`platform`) | macOS `full` profile |
+| --- | --- | --- |
+| Native processes and filesystems | [test-macos-platform.sh](../tests/test-macos-platform.sh): native filesystem/privacy contracts, backend and transport, prune locking, CLI session lifecycle, installation manifest/staging/lookup/entrypoints, and complete prune guards | Complete fast suite |
+| Lean plugin | Complete LSP suite | Complete LSP suite |
+| MCP clients | Existing conformance, official SDK, and modern alpha checks | Same checks |
+| Wrapper and stdio lifecycle | All slow-suite scenarios, with one stdio iteration and one restart cycle | All slow-suite scenarios, with four stdio iterations and three restart cycles |
+| Installation | The slow suite's real pinned/saved-project toolchain construction and loading, focused shell publication checks, native staging and prune guards | Complete installer suite, including all validated SDKs, agent/configuration cases, independent cold rebuilds, and construction/qualification failures |
+| Native distribution and save | Complete pinned native installation/relocation qualification, including save/replay and installed CLI/MCP; slow save/checkpoint cases also run | Same qualification plus full fast and installer coverage |
+
+Pure Lean unit/model matrices and the exhaustive installer permutations stay in every Linux PR
+run and in macOS `full` runs. The representative profile reduces repeated cross-platform work;
+it does not replace exhaustive macOS qualification for release preparation. Use a main/manual
+run or the full fork matrix when that qualification is required.
+
 The job shares Lean setup and incremental build outputs; each suite keeps its own temporary
 projects and homes. Independent test steps continue after another test fails, while a failed step
 still fails the job. The job has a 120-minute timeout.
 
 Each layout runs shell lint once per operating system, separately from the slow suite. The slow
-suite owns the full MCP stdio harness, including four iterations and three restart cycles; the fast
+suite owns the MCP stdio harness, defaulting to four iterations and three restart cycles; the fast
 suite retains protocol, projection, HTTP bridge, and installed stdio smoke coverage. `test-lsp.sh` builds its own prerequisites, so the
 workflow does not run a separate build before it. The local aggregate and default defensive
 validation commands also run shell lint once before their product suites.
+`BEAM_MCP_STDIO_ITERATIONS` and `BEAM_MCP_STDIO_RESTART_CYCLES` select repetitions; the workflow
+sets both to one only for the verified macOS PR platform profile. Timeouts and scenario assertions
+are unchanged.
 
 Linux retains the separate parallel jobs and the exact toolchain compatibility matrix in both
 modes. The combined macOS job runs toolchain qualification once at the repository-pinned Lean
 version. Full mode runs the complete per-version macOS compatibility matrix.
-Installer tests still prebuild every toolchain in `validated-lean-toolchains`.
+The exhaustive installer suite still prebuilds every toolchain in `validated-lean-toolchains`.
 Native toolchain jobs retain Linux x86_64/aarch64 and Windows coverage in both modes. Full mode
 also runs native macOS x86_64/aarch64 jobs.
 

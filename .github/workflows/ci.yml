@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       toolchains: ${{ steps.matrix.outputs.toolchains }}
-      macos: ${{ steps.coverage.outputs.macos }}
+      macos-profile: ${{ steps.coverage.outputs.profile }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -45,7 +45,7 @@ jobs:
   macos-platform:
     name: macos-platform
     needs: toolchains
-    if: ${{ !cancelled() && vars.BEAM_FULL_MACOS_CI != 'true' && (needs.toolchains.result != 'success' || needs.toolchains.outputs.macos != 'false') }}
+    if: ${{ !cancelled() && vars.BEAM_FULL_MACOS_CI != 'true' && (needs.toolchains.result != 'success' || needs.toolchains.outputs.macos-profile != 'skip') }}
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
@@ -73,8 +73,12 @@ jobs:
         run: bash scripts/lint-shell.sh
 
       - name: Beam Fast Test
-        if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' && (needs.toolchains.result != 'success' || needs.toolchains.outputs.macos-profile != 'platform') }}
         run: bash tests/test-beam-fast.sh
+
+      - name: Native Platform PR Test
+        if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' && needs.toolchains.result == 'success' && needs.toolchains.outputs.macos-profile == 'platform' }}
+        run: bash tests/test-macos-platform.sh
 
       - name: LSP Test
         if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' }}
@@ -100,6 +104,9 @@ jobs:
 
       - name: Beam Slow Test
         if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' }}
+        env:
+          BEAM_MCP_STDIO_ITERATIONS: ${{ needs.toolchains.result == 'success' && needs.toolchains.outputs.macos-profile == 'platform' && '1' || '4' }}
+          BEAM_MCP_STDIO_RESTART_CYCLES: ${{ needs.toolchains.result == 'success' && needs.toolchains.outputs.macos-profile == 'platform' && '1' || '3' }}
         run: bash tests/test-beam-slow.sh
 
       - name: Pinned Lean Toolchain Compatibility Test
@@ -127,7 +134,7 @@ jobs:
             .native-test/**/.beam/*.json
 
       - name: Beam Install Test
-        if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' && (needs.toolchains.result != 'success' || needs.toolchains.outputs.macos-profile != 'platform') }}
         run: bash tests/test-beam-install.sh
 
   native-toolchain:
