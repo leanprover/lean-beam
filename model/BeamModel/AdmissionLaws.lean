@@ -127,6 +127,12 @@ theorem retire_valid (state : State) (hv : Valid state) : Valid state.retire := 
   obtain ⟨old, ho, rfl⟩ := List.mem_map.mp he
   exact hv old ho
 
+theorem revoke_reading_valid (state : State) (uri : String) (hv : Valid state) :
+    Valid (state.revokeReading uri) := by
+  intro entry he
+  obtain ⟨old, ho, rfl⟩ := List.mem_map.mp he
+  exact hv old ho
+
 theorem fence_valid (state : State) (permit : Permit) (hv : Valid state) :
     Valid (state.fence permit) := by
   intro entry he

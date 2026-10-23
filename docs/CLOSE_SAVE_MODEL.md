@@ -179,6 +179,10 @@ boundaries. A typed worker failure establishes settlement for cleanup but does n
 preparation or readiness. This correspondence is tested runtime sequencing, not a theorem about
 handler/helper I/O.
 
+Trace preparation completing does not establish that its dependency inputs match the imports
+actually loaded by the worker. That binding is a separate implementation obligation; neither
+`traceComplete` nor the abstract `current` predicate proves imported-artifact provenance.
+
 After preparation completes, the broker validates the captured workspace generation, backend
 owner, accepted document basis, and cancellation state, then claims publication. That final
 cancellation check is the cutoff: later cancellation cannot revoke the claim. Same-workspace changes
