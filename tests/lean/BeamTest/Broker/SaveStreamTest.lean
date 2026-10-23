@@ -19,9 +19,9 @@ private def waitForSaveStreamBroker (label : String) (endpoint : Beam.Broker.End
   try
     waitForBrokerReadyForRoot endpoint root
   catch error =>
-    let exitCode? ← broker.tryWait
+    -- Failure reporting must not reap the child before the existing cleanup scope does.
     throw <| IO.userError
-      s!"save-stream {label} startup failed (root={root}, daemonExit={repr exitCode?}): {error}"
+      s!"save-stream {label} startup failed (root={root}, daemonPid={broker.pid}): {error}"
 
 private def expectNoTrackedLeanDoc (payload : Json) (path : String) : IO Unit := do
   let session ← IO.ofExcept <| payload.getObjVal? "session"
