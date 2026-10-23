@@ -48,16 +48,39 @@ fi
 write_runtime_manifest() {
   local payload="$1"
   local path="$2"
-  python3 - "$payload" "$path" <<'PYFIXTURE'
+  local schema="${3:-4}"
+  python3 - "$payload" "$path" "$schema" <<'PYFIXTURE'
 import json,sys
-payload,path=sys.argv[1:]
+payload,path,schema=sys.argv[1:]
 paths=['libexec/beam-cli','libexec/lean-beam-mcp','runtimes/0/daemon','runtimes/0/plugin','LICENSE']
-json.dump({'schemaVersion':4,'payloadHash':payload,'sourceCommit':None,
+json.dump({'schemaVersion':int(schema),'payloadHash':payload,'sourceCommit':None,
  'components':{'frontends':{'cli':paths[0],'mcp':paths[1],'compilerRevision':'a'*40},'license':'LICENSE','targets':[
  {'lean':'/fixture/lean/bin/lean','daemon':paths[2],'plugin':paths[3], 'toolchain':'fixture-toolchain',
  'compilerRevision':'a'*40,'leanVersion':'fixture-lean','lakeVersion':'fixture-lake'}]},
  'artifacts':[{'source':p,'destination':p,'hash':'0'*64} for p in paths]},open(path,'w'))
 PYFIXTURE
+}
+
+mixed_runtime_state() {
+  python3 - "$install_root" "$current_runtime" "$old_runtime" "$1" <<'PYSTATE'
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+root, current, old, unsupported = map(Path, sys.argv[1:])
+files = [root / '.lean-beam-install-root', current / 'manifest.json',
+         current / 'bin/lean-beam', current / 'libexec/beam-cli',
+         old / 'manifest.json', old / 'libexec/beam-cli',
+         unsupported / 'manifest.json', unsupported / 'retained.txt']
+print(json.dumps({
+    'current': os.readlink(root / 'current'),
+    'files': {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in files},
+    'members': sorted(str(path) for runtime in [current, old, unsupported]
+                      for path in runtime.rglob('*')),
+}, sort_keys=True))
+PYSTATE
 }
 
 write_lock_owner() {
@@ -164,6 +187,56 @@ assert_output_contains "prune dry run" "$dry_run_out" \
   'dry run only; rerun `lean-beam prune --apply` to remove these paths'
 assert_file "$old_runtime/manifest.json"
 
+# Unsupported schema headers model retained generations; they are never decoded or executed.
+# Keep the valid old generation sorted before the remnant, to catch partial removal on refusal.
+retired_root="$tmp_root/manually-retired"
+mkdir "$retired_root"
+for schema in 2 3; do
+  unsupported_payload="$(printf 'c%063d' "$schema")"
+  unsupported_runtime="$versions_root/$unsupported_payload"
+  mkdir "$unsupported_runtime"
+  write_runtime_manifest "$unsupported_payload" "$unsupported_runtime/manifest.json" "$schema"
+  printf 'retained schema %s\n' "$schema" > "$unsupported_runtime/retained.txt"
+  resolved_unsupported_runtime="$(beam_test_realpath "$unsupported_runtime")"
+  mixed_before="$(mixed_runtime_state "$unsupported_runtime")"
+  for operation in preview apply; do
+    mixed_args=()
+    if [ "$operation" = apply ]; then
+      mixed_args+=(--apply)
+    fi
+    mixed_out="$tmp_root/schema-$schema-$operation.out"
+    mixed_err="$tmp_root/schema-$schema-$operation.err"
+    if "$install_root/current/bin/lean-beam" prune ${mixed_args[@]+"${mixed_args[@]}"} \
+        >"$mixed_out" 2>"$mixed_err"; then
+      echo "expected mixed schema-$schema $operation to refuse the whole prune plan" >&2
+      exit 1
+    fi
+    assert_contains_literal "$mixed_err" \
+      "refusing to prune runtime with invalid manifest: $resolved_unsupported_runtime/manifest.json"
+    assert_contains_literal "$mixed_err" "unsupported install manifest schemaVersion $schema"
+    assert_contains_literal "$mixed_err" "review runtime: $resolved_unsupported_runtime"
+    assert_contains_literal "$mixed_err" 'stop all its users'
+    # shellcheck disable=SC2016
+    assert_contains_literal "$mixed_err" 'rerun `lean-beam prune`'
+    assert_contains_literal "$mixed_err" 'unknown ownership'
+    assert_not_contains "$mixed_out" 'Beam install prune'
+    assert_not_contains "$mixed_out" 'removed runtime'
+    if [ "$(mixed_runtime_state "$unsupported_runtime")" != "$mixed_before" ]; then
+      echo "mixed schema-$schema $operation changed retained runtime state" >&2
+      exit 1
+    fi
+    assert_not_exists "$install_root/.install-lock"
+  done
+  # This owned fixture has no live users; model an operator moving only the known old remnant.
+  mv "$unsupported_runtime" "$retired_root/$unsupported_payload"
+  recovered_preview="$("$install_root/current/bin/lean-beam" prune)"
+  assert_output_contains "schema-$schema recovery" "$recovered_preview" \
+    "old runtime: $resolved_old_runtime"
+  assert_output_contains "schema-$schema recovery" "$recovered_preview" 'old runtimes: 1'
+  assert_output_not_contains "schema-$schema recovery" "$recovered_preview" \
+    "old runtime: $resolved_current_runtime"
+done
+
 permission_lock_err="$tmp_root/permission-lock.err"
 chmod u-w "$install_root"
 set +e
@@ -233,6 +306,11 @@ apply_runtime_out="$("$install_root/current/bin/lean-beam" prune --apply)"
 assert_output_contains "runtime prune apply" "$apply_runtime_out" 'removed runtimes: 1'
 assert_not_exists "$old_runtime"
 assert_file "$current_runtime/manifest.json"
+for schema in 2 3; do
+  unsupported_payload="$(printf 'c%063d' "$schema")"
+  assert_file "$retired_root/$unsupported_payload/manifest.json"
+  assert_contains_literal "$retired_root/$unsupported_payload/retained.txt" "retained schema $schema"
+done
 
 mkdir "$versions_root/unmarked"
 unmarked_err="$tmp_root/unmarked.err"

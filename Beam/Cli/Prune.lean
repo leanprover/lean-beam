@@ -145,8 +145,14 @@ private def validatedRuntimePayload (versionsRoot : System.FilePath)
       match runtime.error with
       | .missingManifest =>
           fail s!"refusing to prune unmarked runtime directory: {resolved}"
-      | .invalidManifest _ =>
-          fail s!"refusing to prune runtime with invalid manifest: {resolved / "manifest.json"}"
+      | .invalidManifest message =>
+          fail <| String.intercalate "\n" [
+            s!"refusing to prune runtime with invalid manifest: {resolved / "manifest.json"}",
+            message,
+            s!"review runtime: {resolved}",
+            "For a known retired runtime, stop all its users and preserve it outside `versions`; then rerun `lean-beam prune`.",
+            "Keep the current runtime, symlinked entries, and entries of unknown ownership in place."
+          ]
       | .mismatchedPayload _ =>
           fail <| s!"refusing to prune runtime with mismatched manifest payloadHash: {resolved}"
       | .invalidInstallRootMarker _ =>
