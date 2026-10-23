@@ -201,12 +201,20 @@ compilation, is not a complete checkpoint. Its sync result has `readiness.saveRe
 use `lake build` for this compilation pipeline. This also applies to declaration-scoped
 `set_option compiler.postponeCompile true in`, whose option resets before the end of the file.
 
+### Project Configuration Changes
+
 Beam assumes Lake workspace configuration remains unchanged for the lifetime of the running Lean
 server. The server and existing file workers are not guaranteed to pick up edits to a lakefile,
 manifest, package override, `lean-toolchain`, Lean options, plugins, or dynamic libraries. After any
 such change, run `lean-beam --root ROOT stop` before the next command that uses the Lean server;
-`lean-beam refresh` only reopens the file within the current server and is not sufficient. Beam does
-not detect this configuration drift, so reusing a running session after such an edit is unsupported.
+use the original installation and the same session-directory selection. For MCP, drop and recreate
+the workspace, restarting the MCP server when changing its installation. `lean-beam refresh` only
+reopens the file within the current server and is not sufficient.
+
+Beam does recheck runtime admission: a changed project selector or installation can reject reuse.
+This is not general configuration-change detection or live reload. If only the selector changed,
+restoring the retained runtime can restore admission; other configuration edits still require a
+fresh server. See [toolchain-change recovery](SETUP.md#changing-the-project-toolchain).
 
 ## Worker Errors And Document Recovery
 

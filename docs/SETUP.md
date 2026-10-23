@@ -18,6 +18,8 @@ Beam detects the project root from the current directory or `--root`.
 After installation, go directly to [the CLI workflow](#use-beam-from-a-lean-project) or
 [MCP setup](#mcp-setup). Session recovery and installed-state maintenance are covered afterward.
 
+Before replacing an existing installation, follow [Before An Upgrade](#before-an-upgrade).
+
 ## Use Beam Bundled With Lean
 
 This path requires a Lean distribution that includes Beam; an ordinary elan toolchain need not
@@ -74,9 +76,9 @@ These forms install:
 - project runtimes for the selected toolchains (the repo-pinned toolchain by default)
 
 Each install rebuilds the runtime binaries from the current source checkout before staging the
-immutable runtime payload and its provenance manifest. After reinstalling, restart active MCP client
-sessions so they launch the new runtime instead of continuing to use an already-running server
-process.
+immutable runtime payload and its provenance manifest. Stop existing owners and MCP servers before
+upgrading, then restart clients against the new installation; changing a launcher does not retarget
+an already-running process.
 
 The installer includes the matching Lean/Lake shared libraries with Beam's commands and selected
 project runtimes. No separate library setup is required.
@@ -573,6 +575,44 @@ args = []
 tool_timeout_sec = 600
 ```
 
+## Before An Upgrade
+
+Keep the original installation available until its foreground owners and MCP servers have stopped.
+For each CLI session, use that installation's command with the same root and session-directory
+selection, for example:
+
+```bash
+"/path/to/original/installation/bin/lean-beam" --root "/workspace/a" \
+  --session-dir "/workspace/control" stop
+```
+
+`stop` acknowledges the transition to stopping; wait for the foreground owner to finish cleanup.
+Stop MCP servers through their clients too. If cleanup fails or remains pending, preserve the old
+installation and session state and follow [Sessions And Recovery](#sessions-and-recovery) before
+starting a replacement. A timeout is not evidence that the old generation has stopped.
+
+Then update the installation, restart clients, and inspect `lean-beam --version` and
+`lean-beam-mcp --version` to confirm their identity. A live MCP client's `beam_version` reports the
+server it is actually using. Prune old standalone versions only after these steps.
+
+## Changing The Project Toolchain
+
+A running session retains its selected runtime. Changing `lean-toolchain` does not retarget that
+session: runtime admission can reject an unavailable target, a target outside the installation, or
+a mismatch with the retained workspace. For CLI use, stop the original owner using its original
+installation and exact session selection, then start `serve` with the installation that contains
+the new target. Stop does not require the newly selected target to be usable.
+
+For MCP, call `lean_drop_workspace` with the retained workspace descriptor before using another
+target. A standalone MCP installation can select another target in its recorded component set;
+a bundled MCP server requires the new toolchain's server. Restart the MCP server if its installation
+generation changed. Drop invalidates the old workspace's handles.
+
+If only the selector changed and restoring it resolves to the original runtime, admission can
+succeed again without recreation. This does not reload other project configuration. Changes to a
+lakefile, manifest, dependencies, Lean options, plugins, or dynamic libraries still require a fresh
+Lean server; see [configuration changes](SYNC_AND_DIAGNOSTICS.md#project-configuration-changes).
+
 ## Sessions And Recovery
 
 `lean-beam status` reports the public session state as `absent`, `running`, `stopping`, or
@@ -650,6 +690,15 @@ typed old descriptor under a `beam-daemon.recovered-*.json` name for diagnosis. 
 descriptors cannot establish installation ownership: preserve them, independently stop their
 original owner, then archive the descriptor explicitly as an operator. There is no force bypass.
 
+The descriptor to preserve is `beam-daemon.json` inside the selected session directory: normally
+`<root>/.beam/beam-daemon.json`, or `<session-dir>/beam-daemon.json` for an explicit selection.
+With `BEAM_SESSION_ROOT`, use the resolved per-root directory reported by `status` or `doctor`,
+not the base directory. For an old or malformed descriptor, first stop the original owner and
+establish that its daemon and workers can no longer act on the workspace. Then move only that exact
+descriptor to a distinct archive path that does not already exist. Preserve its contents for
+diagnosis; do not rewrite its schema, remove the whole session directory, or signal a PID copied
+from the record. If the original owner cannot be identified or stopped, leave the fence in place.
+
 For a current descriptor, the selected `--root` must match its recorded workspace;
 using the same session directory with an unrelated root cannot quarantine the session. `status`
 reports this as `sessionSelectorMismatch`, not as a lifecycle state or recovery requirement.
@@ -672,6 +721,11 @@ lean-beam prune
 
 The preview validates the Beam ownership marker, requires the command to come from the current
 installed runtime, and checks every candidate's manifest. It never selects the current runtime.
+An old unsupported manifest schema, including a schema-2 or schema-3 standalone runtime mixed with
+current schema-4 runtimes, prevents planning; Beam does not silently skip it or authorize its
+deletion. After stopping all users of the old runtime, preserve and move only the exact reported
+runtime directory outside `versions`, then rerun the preview. Do not apply that procedure to the
+current runtime or to an unknown, foreign, or symlinked entry without establishing its ownership.
 Stop foreground owners through their original installation and restart agents and MCP clients
 before removing an old version. A different installation cannot control those owners after the
 original version is removed.
@@ -701,7 +755,7 @@ agents and MCP clients first. Move only the exact reported runtime directory out
 `BEAM_INSTALL_ROOT/versions` and preserve it for inspection, then rerun the installer. Do not remove
 the whole `versions` directory. `lean-beam prune` deliberately refuses invalid state and the current
 runtime, so it is not the repair path for this case. Use the same recovery when reinstalling refuses
-to reuse a older runtime manifest schema.
+to reuse an older runtime manifest schema.
 
 If pruning reports an invalid install-root marker, preserve the whole install root for inspection.
 Do not recreate that ownership marker in place. Stop active Beam clients, rename the exact
