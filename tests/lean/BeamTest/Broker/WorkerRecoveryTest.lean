@@ -277,12 +277,20 @@ private def runImporterRecovery (description : Beam.Runtime.Description) (root :
             savedNotification.set (some text)
             return
           if text.contains diagnosticsBarrierMethod then
-            -- Register the importer's pending barrier before releasing invalidation. This
-            -- observes the native diagnostic without depending on pre-request retention.
+            -- Register the importer's pending barrier, then observe the real invalidation
+            -- diagnostic before forwarding its request. Native diagnostic delivery and barrier
+            -- completion are asynchronous; neither a sleep nor request registration orders them.
             if let some notification ← savedNotification.get then
               savedNotification.set none
               original.stdin.putStr notification
               original.stdin.flush
+              let entries ← original.pending.snapshotEntries
+              require "importer invalidation expects one pending barrier" (entries.size == 1)
+              let some (_, pending) := entries[0]?
+                | throw <| IO.userError "missing importer invalidation barrier"
+              waitUntil "native importer stale diagnostic" do
+                pure <| (← pending.diagnosticsRef.get).any fun diagnostic =>
+                  diagnostic.message.contains "Imports are out of date"
           original.stdin.putStr text
         } }
       set { state with workspaces := state.workspaces.insert workspaceId {
