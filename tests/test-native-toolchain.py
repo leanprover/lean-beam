@@ -478,9 +478,9 @@ def qualify(args, lean_prefix, scratch):
         # Current Lake defers this compilation to leanir. A zero-build checkpoint must reject it
         # without invalidating the artifact family already published by Lake.
         postponed_config = config.replace("maxRecDepth = 777", 'maxRecDepth = 777\ncompiler.postponeCompile = true')
-        for selected_config, selected_source in [
-            (postponed_config, "module\npublic def value : Nat := 3\n"),
-            (config, "module\nset_option compiler.postponeCompile true in\npublic def value : Nat := 4\n"),
+        for variant, selected_config, selected_source in [
+            ("lake-option", postponed_config, "module\npublic def value : Nat := 3\n"),
+            ("source-option", config, "module\nset_option compiler.postponeCompile true in\npublic def value : Nat := 4\n"),
         ]:
             (project / "lakefile.toml").write_text(selected_config)
             source.write_text("module\npublic def value : Nat := 3\n")
@@ -507,8 +507,20 @@ def qualify(args, lean_prefix, scratch):
                         raise AssertionError(postponed_log.read_text())
                     assert json.loads(call("sync", "Demo.lean").stdout)["ok"]
                     unsupported = call("save", "Demo.lean", ok=False)
+                    # Retain the actual subprocess failure before JSON decoding can obscure it.
+                    evidence = {
+                        "variant": variant, "argv": unsupported.args,
+                        "returncode": unsupported.returncode,
+                        "stdout": unsupported.stdout, "stderr": unsupported.stderr,
+                    }
+                    receipt = project / ".beam" / f"deferred-compilation-{variant}.json"
+                    receipt.parent.mkdir(parents=True, exist_ok=True)
+                    write_report(receipt, evidence)
                     assert unsupported.returncode != 0, unsupported
-                    failure = json.loads(unsupported.stdout)["error"]
+                    try:
+                        failure = json.loads(unsupported.stdout)["error"]
+                    except json.JSONDecodeError as error:
+                        raise AssertionError(f"deferred-compilation save returned invalid JSON: {evidence}") from error
                     assert failure["code"] == "saveUnsupportedSetup", failure
                     assert failure["data"]["sync"]["readiness"]["reason"] == "deferredCompilation", failure
                     assert "compiler.postponeCompile" in failure["message"] and "lake build" in failure["message"], failure
