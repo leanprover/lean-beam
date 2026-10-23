@@ -222,6 +222,8 @@ Current Beam coverage includes:
   Fast and native SDK qualification also run `beam-prune-lock-test` for cleanup before and after
   PID initialization, immediate reacquisition, untouched contending locks, and preservation of
   typed operation and cleanup failures without recursively deleting unexpected contents.
+  [tests/test-install-lock.sh](../tests/test-install-lock.sh) covers shell installer exit statuses,
+  lock and staging cleanup failures, preserved contents, and success reporting after lock release.
 - MCP protocol-family selection, projection, modern and legacy stdio, HTTP bridge, installed smoke, released
   official-client interoperability, and external legacy/modern conformance coverage
 

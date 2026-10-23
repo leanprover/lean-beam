@@ -20,13 +20,32 @@ if [ "${1:-}" = --run-case ]; then
   prepare_install_environment() {
     mkdir -p "$install_root"
     acquire_install_lock
+    if [ "$scenario" = early-exit-release-failure ]; then
+      printf 'unexpected contents\n' >"$install_lock_dir/retained.txt"
+      exit 0
+    fi
   }
   prepare_install_version() {
-    if [ "$scenario" = staging-failure ]; then
-      printf 'unexpected contents\n' >"$install_lock_dir/retained.txt"
-      echo 'construction failed with fixture status 73' >&2
-      return 73
-    fi
+    case "$scenario" in
+      staging-failure)
+        printf 'unexpected contents\n' >"$install_lock_dir/retained.txt"
+        echo 'construction failed with fixture status 73' >&2
+        return 73
+        ;;
+      staging-cleanup-failure)
+        printf 'retained staging\n' >"$1/retained.txt"
+        remove_owned_staging_dir() {
+          [ -d "$install_lock_dir" ] || {
+            echo 'install lock was released before staging cleanup' >&2
+            exit 75
+          }
+          echo 'fixture refused staging cleanup' >&2
+          exit 74
+        }
+        echo 'construction failed with fixture status 73' >&2
+        return 73
+        ;;
+    esac
     rmdir "$1"
     prepared_version_root="$install_root/fixture-runtime"
   }
@@ -77,21 +96,18 @@ fi
 tmp_root="$(mktemp -d /tmp/beam-install-lock-XXXXXX)"
 trap 'rm -rf -- "$tmp_root"' EXIT
 
-for scenario in success publication-failure blocked-release operation-and-release-failure \
-    staging-failure pid-release-failure retry-release; do
+for case_spec in success:0 publication-failure:72 blocked-release:1 operation-and-release-failure:71 \
+    staging-failure:73 staging-cleanup-failure:73 pid-release-failure:1 retry-release:0 \
+    early-exit-release-failure:1; do
+  scenario="${case_spec%:*}"
+  expected="${case_spec##*:}"
   case_root="$tmp_root/$scenario"
   mkdir "$case_root"
   set +e
-  bash "$0" --run-case "$scenario" "$case_root" >"$case_root/stdout" 2>"$case_root/stderr"
+  bash "$repo_root/tests/test-install-lock.sh" --run-case "$scenario" "$case_root" \
+    >"$case_root/stdout" 2>"$case_root/stderr"
   status="$?"
   set -e
-  expected=1
-  case "$scenario" in
-    success|retry-release) expected=0 ;;
-    publication-failure) expected=72 ;;
-    operation-and-release-failure) expected=71 ;;
-    staging-failure) expected=73 ;;
-  esac
   if [ "$status" -ne "$expected" ]; then
     cat "$case_root/stderr" >&2
     echo "$scenario: expected status $expected, got $status" >&2
@@ -103,7 +119,7 @@ for scenario in success publication-failure blocked-release operation-and-releas
     assert_not_contains "$case_root/stdout" 'Install Complete'
   fi
   case "$scenario" in
-    blocked-release|operation-and-release-failure|staging-failure)
+    blocked-release|operation-and-release-failure|staging-failure|early-exit-release-failure)
       assert_contains_literal "$case_root/install/.install-lock/retained.txt" 'unexpected contents'
       assert_not_exists "$case_root/install/.install-lock/pid"
       assert_contains_literal "$case_root/stderr" \
@@ -119,9 +135,25 @@ for scenario in success publication-failure blocked-release operation-and-releas
   case "$scenario" in
     publication-failure) assert_contains_literal "$case_root/stderr" 'publication failed with fixture status 72' ;;
     operation-and-release-failure) assert_contains_literal "$case_root/stderr" 'registration failed with fixture status 71' ;;
-    staging-failure) assert_contains_literal "$case_root/stderr" 'construction failed with fixture status 73' ;;
+    staging-failure|staging-cleanup-failure)
+      assert_contains_literal "$case_root/stderr" 'construction failed with fixture status 73'
+      ;;
   esac
-  [ -z "$(find "$case_root/install" -name '.staging-*' -print)" ]
+  if [ "$scenario" = staging-cleanup-failure ]; then
+    assert_contains_literal "$case_root/stderr" 'fixture refused staging cleanup'
+    assert_contains_literal "$case_root/stderr" 'failed to remove Beam install staging directory:'
+    assert_not_contains "$case_root/stderr" 'released before staging cleanup'
+    retained_staging="$(find "$case_root/install" -name '.staging-*' -print)"
+    assert_contains_literal "$retained_staging/retained.txt" 'retained staging'
+  else
+    [ -z "$(find "$case_root/install" -name '.staging-*' -print)" ]
+  fi
+  case "$scenario" in
+    staging-failure|staging-cleanup-failure|retry-release|early-exit-release-failure)
+      assert_not_exists "$case_root/published"
+      ;;
+    *) assert_contains_literal "$case_root/published" 'published' ;;
+  esac
 done
 
 echo 'installer lock cleanup checks passed'

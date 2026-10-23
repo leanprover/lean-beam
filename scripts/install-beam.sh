@@ -443,26 +443,28 @@ acquire_install_lock() {
   require_path_within "$install_lock_dir" "$install_root" "install lock"
   if mkdir "$install_lock_dir"; then
     install_lock_owned=1
-    trap 'cleanup_failed_install "$?"' EXIT
+    trap 'cleanup_install "$?" || exit "$?"' EXIT
     printf '%s\n' "$$" >"$install_lock_dir/pid"
   else
     die "another Beam install appears to be running: $install_lock_dir"
   fi
 }
 
-cleanup_failed_install() {
+cleanup_install() {
   local status="$1"
   trap - EXIT
-  if ! release_install_lock; then
-    if [ "$status" -eq 0 ]; then status=1; fi
-  fi
+  # Keep the install lock until owned staging cleanup has finished. A cleanup validator may
+  # exit, so isolate it without replacing the original operation's status or skipping release.
   if [ -n "$active_staging_root" ]; then
     if ! (remove_owned_staging_dir "$active_staging_root"); then
       echo "failed to remove Beam install staging directory: $active_staging_root" >&2
       if [ "$status" -eq 0 ]; then status=1; fi
     fi
   fi
-  exit "$status"
+  if ! release_install_lock; then
+    if [ "$status" -eq 0 ]; then status=1; fi
+  fi
+  return "$status"
 }
 
 symlink_target_text() {
@@ -1628,11 +1630,7 @@ main() {
   publish_runtime "$prepared_version_root"
   register_requested_mcp_servers
   install_requested_skills
-  if ! release_install_lock; then
-    trap - EXIT
-    return 1
-  fi
-  trap - EXIT
+  cleanup_install 0
   print_install_summary ${prepared_selected_toolchains[@]+"${prepared_selected_toolchains[@]}"}
 }
 
