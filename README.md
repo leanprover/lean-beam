@@ -22,7 +22,6 @@ flowchart TB
       cliRuntime["ServerRuntime<br/>single workspace"]
       cliAdapter --> cliRuntime
     end
-    shared["shared typed operations<br/>admission + dispatch"]
     subgraph mcpOwner["MCP lifetime"]
       direction TB
       mcpAdapter["lean-beam-mcp<br/>multiplexed stdio"]
@@ -37,15 +36,14 @@ flowchart TB
 
   cli --> cliAdapter
   mcp --> mcpAdapter
-  cliRuntime -. uses .-> shared
-  mcpRuntime -. uses .-> shared
   cliRuntime -- Beam requests --> backends
   mcpRuntime -- Beam requests --> backends
 ```
 
 Beam keeps the agent-facing surface small. The CLI and MCP paths share typed operations and broker
 runtime code, but each owns its transport and runtime lifetime. Those runtime instances own request
-routing plus one or more Lean LSP sessions with the Beam plugin loaded.
+routing plus one or more Lean LSP sessions with the Beam plugin loaded. See the
+[architecture message paths](docs/ARCHITECTURE.md) for the complete component and lifetime flows.
 
 Beam lets a client try Lean commands or tactics at specific positions in saved files without
 changing those files. The central Beam extension is speculative execution through
