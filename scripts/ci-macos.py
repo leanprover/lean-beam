@@ -15,6 +15,21 @@ import sys
 ROOT_DOCUMENTS = {"AGENTS.md", "CHANGELOG.md", "CONTRIBUTING.md", "README.md"}
 ROOT_SOURCES = {"lean-toolchain", "validated-lean-toolchains", "compatible-lean-release-lines",
                 "lake-manifest.json", "lakefile.toml"}
+# These complete leaves remain in the platform driver, Slow, or native qualification. Keep
+# orchestration and partially executed variants out: changing them still requires full coverage.
+PLATFORM_TEST_LEAVES = {
+    "tests/test-system-contracts.py", "tests/test-installation-manifest.py",
+    "tests/test-installation-construction.py", "tests/test-installation-lookup.py",
+    "tests/test-installation-entrypoints.py", "tests/test-beam-prune.sh",
+    "tests/test-install-publication.sh", "tests/test-install-lock.sh",
+    "tests/test-mcp-stdio.py", "tests/test-beam-wrapper-daemon.sh",
+    "tests/test-beam-save-olean.sh", "tests/test-beam-checkpoint-hashes.py",
+    "tests/test-beam-wrapper-probe.sh", "tests/test-beam-wrapper-runtime.sh",
+    "tests/test-beam-wrapper-toolchain.sh", "tests/test-beam-wrapper-sync-save.sh",
+    "tests/test-beam-wrapper-handle.sh", "tests/test-beam-wrapper-diagnostics.sh",
+    "tests/test-beam-deferred-save.py", "tests/test-native-provenance.py",
+    "tests/lib/installed-mcp-smoke.py", "tests/lib/bundled-mcp-lifetime.py",
+}
 
 
 class Profile(Enum):
@@ -41,13 +56,26 @@ def documentation_path(path):
 
 def source_path(path):
     return (path.startswith(("Beam/", "native/", "scripts/"))
-            or ("/" not in path and path.endswith(".lean")))
+            or ("/" not in path and path.endswith(".lean")) or platform_test_path(path))
+
+
+def platform_test_path(path):
+    if path in PLATFORM_TEST_LEAVES:
+        return True
+    if path.endswith("/lakefile.lean"):
+        return False
+    return ((path.startswith("tests/lean/BeamTest/") and path.endswith(("Test.lean", "TestMain.lean")))
+            or (path.startswith(("tests/lean/BeamTest/Fixtures/", "tests/scenario/docs/",
+                                 "tests/interactive/")) and path.endswith(".lean"))
+            or (path.startswith("tests/interactive/expected/") and path.endswith(".out"))
+            or (path.startswith("tests/scenario/") and path.count("/") == 2 and path.endswith(".scn")))
 
 
 def exhaustive_path(path):
     return (path in ROOT_SOURCES or path == "lakefile.lean"
             or (path.startswith("scripts/") and path.endswith(".cmake"))
-            or path.startswith((".github/", "tests/", "scripts/ci-", "scripts/check-",
+            or (path.startswith("tests/") and not platform_test_path(path))
+            or path.startswith((".github/", "scripts/ci-", "scripts/check-",
                                 "scripts/lint-", "scripts/validate-", "scripts/codex-",
                                 "scripts/extended-ci.py", "scripts/pr-message.sh")))
 

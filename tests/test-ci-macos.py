@@ -105,6 +105,12 @@ class MacOSCoverageTest(unittest.TestCase):
 
     def test_ci_and_driver_changes_use_full_profile(self):
         for path in ["tests/test-probe.py", "tests/fixtures/data.json", ".github/workflows/ci.yml",
+                     "tests/test-beam-fast.sh", "tests/test-beam-slow.sh", "tests/test-beam-install.sh",
+                     "tests/test-beam-wrapper.sh", "tests/test-lsp.sh", "tests/test-macos-platform.sh",
+                     "tests/test-native-toolchain.py", "tests/test-lake-helper-lifetime.py",
+                     "tests/lean/BeamTest/TestHarness.lean", "tests/lean/BeamTest/LSP/TestRunner.lean",
+                     "tests/lean/BeamTest/LSP/ScenarioRunner.lean", "tests/lsp-coverage/cases.json",
+                     "tests/lean/BeamTest/Fixtures/lakefile.lean", "tests/interactive/lakefile.lean",
                      "scripts/ci-macos.py", "scripts/validate-defensive.sh", "scripts/check-links.sh",
                      "scripts/build-toolchain.cmake", "scripts/install-toolchain.cmake",
                      "scripts/toolchain-manifest.cmake", "lean-toolchain", "validated-lean-toolchains",
@@ -113,6 +119,32 @@ class MacOSCoverageTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.git("reset", "--hard", self.base)
                 self.write(path, "changed\n")
+                self.assertEqual(self.profile(self.pull_request()), coverage.Profile.FULL)
+
+    def test_regressions_and_complete_leaves_can_accompany_product_changes(self):
+        for path in ["tests/lean/BeamTest/Broker/ProtocolTest.lean",
+                     "tests/lean/BeamTest/Broker/BackendProcessTestMain.lean",
+                     "tests/lean/BeamTest/Fixtures/Deps/DepA.lean",
+                     "tests/scenario/docs/CloseFixture.lean", "tests/scenario/closePending.scn",
+                     "tests/interactive/proofBasis.lean", "tests/interactive/expected/proofBasis.out",
+                     "tests/test-system-contracts.py", "tests/test-installation-entrypoints.py",
+                     "tests/test-beam-prune.sh", "tests/test-install-lock.sh",
+                     "tests/test-mcp-stdio.py", "tests/test-beam-wrapper-daemon.sh",
+                     "tests/test-beam-wrapper-sync-save.sh", "tests/test-beam-deferred-save.py",
+                     "tests/test-beam-checkpoint-hashes.py", "tests/test-native-provenance.py",
+                     "tests/lib/installed-mcp-smoke.py", "tests/lib/bundled-mcp-lifetime.py"]:
+            with self.subTest(path=path):
+                self.git("reset", "--hard", self.base)
+                self.write("Beam/Probe.lean", "product change\n")
+                self.write(path, "regression change\n")
+                self.assertEqual(self.profile(self.pull_request()), coverage.Profile.PLATFORM)
+
+    def test_unknown_test_neighbors_stay_full(self):
+        for path in ["tests/test-mcp-stdio-extra.py", "tests/lean/BeamTest/Unknown.lean",
+                     "tests/interactive/expected/proofBasis.txt", "tests/scenario/nested/extra.scn"]:
+            with self.subTest(path=path):
+                self.git("reset", "--hard", self.base)
+                self.write(path)
                 self.assertEqual(self.profile(self.pull_request()), coverage.Profile.FULL)
 
     def test_unknown_paths_and_metadata_use_full_profile(self):
@@ -156,6 +188,10 @@ class MacOSCoverageTest(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "requires POSIX file modes and symlinks")
     def test_markdown_links_and_executables(self):
         (self.root / "docs/Link.md").symlink_to("../Beam/Probe.lean")
+        self.assertEqual(self.profile(self.pull_request()), coverage.Profile.FULL)
+        self.git("reset", "--hard", self.base)
+        (self.root / "tests").mkdir()
+        (self.root / "tests/test-mcp-stdio.py").symlink_to("../Beam/Probe.lean")
         self.assertEqual(self.profile(self.pull_request()), coverage.Profile.FULL)
         self.git("reset", "--hard", self.base)
         self.git("config", "core.filemode", "true")

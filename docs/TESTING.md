@@ -697,10 +697,14 @@ A failed job or missing decision also retains exhaustive combined macOS coverage
 `python3 tests/test-ci-macos.py` for the Git history, path, rename, file-kind, and fallback cases.
 
 The combined `macos-platform` job has two profiles. Verified product source PRs use the
-representative `platform` profile. Main pushes, manual runs, CI/test changes, build or
+representative `platform` profile. Main pushes, manual runs, CI/test-orchestration changes, build or
 toolchain configuration changes, and uncertain classifications use the exhaustive `full` profile.
-Any change under `tests/`, including a new regression test or fixture accompanying product code,
-selects `full`. Full matrix mode remains exhaustive for PRs too.
+Ordinary Lean regression modules and LSP fixtures can accompany product changes without forcing
+`full`. So can the fixed `PLATFORM_TEST_LEAVES` allowlist in `scripts/ci-macos.py`: these leaves
+are already executed completely by the platform driver, Slow, or native qualification. Suite
+scripts, test runners, build files, coverage configuration, and unknown tests still select `full`.
+The helper-lifetime test also stays `full`: its native variant omits the source-only Git-dependency
+cases. Full matrix mode remains exhaustive for PRs too.
 
 | Family | macOS product PR (`platform`) | macOS `full` profile |
 | --- | --- | --- |
