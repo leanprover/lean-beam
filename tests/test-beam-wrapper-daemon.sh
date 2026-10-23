@@ -601,8 +601,8 @@ if "$beam_script" --root "$tmp1" serve > "$second_owner_out" 2> "$second_owner_e
   exit 1
 fi
 assert_json_field_equals "second owner rejection" "$(cat "$second_owner_out")" error.code setupError
-if ! grep -Fq "already owned" "$second_owner_err"; then
-  echo "expected duplicate-owner failure to identify the active owner" >&2
+if ! grep -Fq "existing Beam session descriptor" "$second_owner_err"; then
+  echo "expected duplicate-owner failure to identify the existing descriptor" >&2
   cat "$second_owner_err" >&2
   exit 1
 fi
@@ -872,7 +872,7 @@ if "$beam_script" --root "$tmp1" serve \
   cat "$drift_owner_out" >&2
   exit 1
 fi
-if ! grep -Fq "already owned by a foreground process" "$drift_owner_err"; then
+if ! grep -Fq "existing Beam session descriptor" "$drift_owner_err"; then
   echo "expected duplicate-owner diagnostics" >&2
   cat "$drift_owner_err" >&2
   exit 1
@@ -1039,7 +1039,9 @@ for operation in recover serve stop; do
     echo "expected $operation to preserve the unresponsive generation, got $operation_status" >&2
     exit 1
   fi
-  assert_json_field_equals "paused $operation" "$(cat "$tmp1/unresponsive-$operation.out")" error.code sessionUnresponsive
+  expected_code="sessionUnresponsive"
+  if [ "$operation" = "serve" ]; then expected_code="setupError"; fi
+  assert_json_field_equals "paused $operation" "$(cat "$tmp1/unresponsive-$operation.out")" error.code "$expected_code"
   if [ "$(cat "$registry")" != "$unresponsive_descriptor" ] || \
       ! kill -0 "$hold_pid" 2>/dev/null || ! kill -0 "$unresponsive_pid" 2>/dev/null; then
     echo "unresponsive admission changed the descriptor or its live owner/daemon" >&2
@@ -1257,7 +1259,9 @@ for command in serve stop; do
     echo "expected crashed-session $command to exit 1, got $crashed_status" >&2
     exit 1
   fi
-  assert_json_field_equals "crashed $command" "$(cat "$tmp1/crashed-$command.out")" error.code sessionRecoveryRequired
+  expected_code="sessionRecoveryRequired"
+  if [ "$command" = "serve" ]; then expected_code="setupError"; fi
+  assert_json_field_equals "crashed $command" "$(cat "$tmp1/crashed-$command.out")" error.code "$expected_code"
   assert_json_field_equals "crashed $command generation" "$(cat "$tmp1/crashed-$command.out")" error.data.generation "$owner_loss_generation"
 done
 if [ ! -e "$registry" ]; then

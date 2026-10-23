@@ -578,13 +578,21 @@ tool_timeout_sec = 600
 
 `lean-beam status` reports the public session state as `absent`, `running`, `stopping`,
 `recoveryRequired`, or `unresponsive`, together with the resolved workspace and session directory.
+`running` means the selected generation answered an authenticated workspace probe. It is a
+point-in-time session check; it does not establish Lean worker readiness or successful elaboration.
 `unresponsive` means the endpoint did not validate as the expected generation; this includes
 timeouts, incomplete or malformed replies, and interrupted probes. It does not establish that the
-owner, daemon, or other producers stopped. `serve`, `stop`, and `recover` preserve this descriptor
+owner, daemon, or other producers stopped. `stop` and `recover` preserve this descriptor
 and fail with `sessionUnresponsive` (exit `1`), without suggesting a recovery command. Resume or
 inspect the original owner and daemon through their supervisor before retrying. Human-facing
 commands infer a Lean/Lake project root from the current directory and its ancestors. Automated
 callers should pass an explicit root; `stop` and `recover` always require one.
+
+`serve` checks the selected session descriptor locally, without probing its endpoint. Any existing
+descriptor blocks a replacement owner. A matching-root descriptor marked `live` produces `setupError` with
+the recorded generation, recorded and requested configuration hashes, and an exact `status` command
+to inspect it. This refusal makes no claim that its owner is alive; `status` supplies endpoint
+diagnostics before any decision to stop or recover the session.
 
 Attaching commands use the owner's frozen configuration and do not rebuild a competing desired
 configuration. A second owner resolves its proposed configuration and reports any mismatch while

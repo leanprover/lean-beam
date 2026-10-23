@@ -1124,6 +1124,55 @@ private def checkRecoveryGenerationRecheck : IO Unit := do
   finally
     if ← root.pathExists then IO.FS.removeDirAll root
 
+private def checkServeDoesNotProbe : IO Unit := do
+  let root := System.FilePath.mk s!"/tmp/beam-serve-no-probe ' {← IO.monoNanosNow}"
+  let runtime : Beam.Runtime.Description := {
+    command := "/missing/lean", plugin := "/missing/plugin", toolchain := "test"
+    identity := ⟨"/missing/installation", "test-bundle"⟩
+    daemonBin := "/missing/beam-daemon"
+  }
+  let desired : Beam.Cli.DesiredConfig := { root, runtime }
+  try
+    for matching in [true, false] do
+      withBrokerListener (fun listener endpoint => do
+        let .tcp port := endpoint
+        writeTestRegistryEntry root port
+        let registry ← Beam.Daemon.registryPath root
+        let .current entry ← Beam.Daemon.readRegistry root
+          | throw <| IO.userError "missing serve admission fixture"
+        let entry := { entry with configHash := if matching then desired.configHash else "different-config" }
+        let original := (toJson entry).pretty ++ "\n"
+        IO.FS.writeFile registry original
+        let result ← (Beam.Cli.withProjectDaemonOwner (fun _ => pure desired) root none
+          (fun _ => pure ())).run
+        -- Only our marker may be queued on this otherwise silent listener. A hidden probe would
+        -- leave an earlier connection here, even if its timeout or failure were later ignored.
+        let marker ← Beam.Broker.Transport.connect endpoint
+        try
+          Beam.Broker.Transport.sendMsg marker "no-serve-probe"
+          let accepted ← Beam.Broker.Transport.accept listener
+          try
+            let deadline := (← IO.monoNanosNow) + 5000000000
+            require "serve must not connect to the recorded endpoint"
+              ((← Beam.Broker.Transport.recvMsgUntil accepted deadline) == some "no-serve-probe")
+          finally
+            Beam.Broker.Transport.closeConnection accepted
+        finally
+          Beam.Broker.Transport.closeConnection marker
+        let .error failure := result | throw <| IO.userError "serve replaced an existing descriptor"
+        require "existing descriptors produce setupError" (failure.failure.error.code == "setupError")
+        let control ← Beam.Daemon.controlDir root
+        require "serve gives the exact status selector"
+          (failure.remedyCommand? == some (Beam.Cli.wrapperSessionCommand root control .status))
+        let some data := failure.failure.error.data? | throw <| IO.userError "missing serve failure data"
+        requireJsonString "serve preserves recorded generation" "generation" entry.daemonId data
+        requireJsonString "serve identifies recorded configuration" "recordedConfigHash" entry.configHash data
+        requireJsonString "serve identifies requested configuration" "requestedConfigHash" desired.configHash data
+        require "serve preserves descriptor bytes" ((← IO.FS.readFile registry) == original)
+      ) (backlog := 3)
+  finally
+    if ← root.pathExists then IO.FS.removeDirAll root
+
 private def checkTypedRegistryReads : IO Unit := do
   let root := System.FilePath.mk s!"/tmp/beam-typed-registry-test-{← IO.monoNanosNow}"
   try
@@ -1617,6 +1666,7 @@ def main : IO Unit := do
   checkStderrCaptureDoesNotJoinInheritedPipe
   OutputTest.check
   checkBrokerConnectionClosedIncident
+  checkServeDoesNotProbe
   checkTypedRegistryReads
   checkRecoveryGenerationRecheck
   checkDaemonFailureIncidentRetention

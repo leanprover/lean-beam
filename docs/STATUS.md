@@ -236,7 +236,10 @@ client protocol.
   configuration, and preserve unsafe session state. A competing owner computes its proposed
   configuration but cannot replace a mismatched live owner.
 - `lean-beam status` projects internal descriptor observations onto five public states: `absent`,
-  `running`, `stopping`, `recoveryRequired`, and `unresponsive`. `unresponsive` means an endpoint
+  `running`, `stopping`, `recoveryRequired`, and `unresponsive`. `running` means the selected generation
+  answered an authenticated workspace probe; it does not establish Lean worker readiness.
+  `serve` refuses any existing descriptor without probing its endpoint and directs a matching-root
+  descriptor marked `live` to `status` with `setupError`. `unresponsive` means an endpoint
   did not validate as the expected generation, including incomplete or malformed replies; it is not
   proof of producer settlement. Recovery refuses that state and preserves the descriptor.
   Root inference selects the nearest Lean/Lake project. Automated callers should pass

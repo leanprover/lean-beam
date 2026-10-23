@@ -759,9 +759,15 @@ def RegistryUnsafeReason.message : RegistryUnsafeReason → String
   | .wrongGeneration daemonRoot =>
       s!"the recorded endpoint serves another Beam generation for {daemonRoot}"
 
-private def activeOwnerMessage (root : System.FilePath) : String :=
-  s!"Beam session for {root} is already owned by a foreground process; " ++
-    "interrupt that 'lean-beam serve' process before starting another owner"
+private def existingSessionFailure (root sessionDir : System.FilePath)
+    (entry : SessionDescriptor) (requestedConfigHash : String) : CliFailure :=
+  let mismatch := if entry.configHash == requestedConfigHash then "" else
+    s!" Its recorded configuration {entry.configHash} differs from requested configuration {requestedConfigHash}."
+  (CliFailure.setup <|
+    s!"An existing Beam session descriptor for {root} prevents starting another owner.{mismatch} " ++
+    "Inspect the recorded session:").withRemedy (wrapperSessionCommand root sessionDir .status)
+      [("generation", toJson entry.daemonId), ("recordedConfigHash", toJson entry.configHash),
+        ("requestedConfigHash", toJson requestedConfigHash)]
 
 private def configMismatchMessage
     (root : System.FilePath)
@@ -1074,20 +1080,16 @@ private def publishOwnedProjectDaemon
 private def startOwnedProjectDaemon
     (control : ProjectControl)
     (desired : DesiredConfig) : CliM OwnedProjectDaemon := do
-  match ← observeProjectRegistryAt desired.root control.registry with
+  -- Any existing descriptor fences startup; endpoint responsiveness cannot change that decision.
+  match ← selectProjectRegistryAt desired.root control.registry with
   | .absent => pure ()
-  | .live entry =>
-      if entry.configHash == desired.configHash then
-        throw <| CliFailure.setup (activeOwnerMessage desired.root)
-      else
-        throw <| configMismatchFailure desired.root control.dir entry desired.configHash
+  | .selected entry =>
+      throw <| existingSessionFailure desired.root control.dir entry desired.configHash
   | .draining entry => throw <| CliFailure.setup (drainingOwnerMessage desired.root entry)
   | .selectorMismatch entry =>
       throw <| selectorMismatchFailure desired.root control.dir entry
-  | .recoveryRequired blocker =>
-      throw <| blocker.cliFailure desired.root control.dir
-  | .unresponsive entry failure =>
-      throw <| unresponsiveSessionFailure desired.root control.dir entry failure
+  | .invalid problem =>
+      throw <| (RegistryBlocker.invalid problem).cliFailure desired.root control.dir
   publishOwnedProjectDaemon control desired
 
 private def waitForOwnedDaemonExit

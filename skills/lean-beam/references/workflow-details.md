@@ -175,6 +175,10 @@ What is not a valid checkpoint target:
   evidence. `status` state `unresponsive` means the endpoint did not validate, including incomplete
   or malformed replies; `sessionUnresponsive` (exit `1`) preserves the descriptor and refuses
   recovery. Resume or inspect the original owner and daemon through their supervisor before retrying
+- `serve` checks the selected descriptor locally without probing its endpoint. An existing
+  matching-root descriptor marked `live` fails with `setupError`, recorded/requested configuration hashes,
+  and an exact `status` remedy. This does not establish owner liveness. `status` state `running`
+  means an authenticated workspace probe succeeded, not that Lean elaboration is ready or complete
 - `--text-file` and `--handle-file` require regular-file targets and allow ordinary symlinks;
   directories, devices, FIFOs, and symlink loops observed at admission fail with
   `invalidParams`/exit `2` before dispatch. The target check and later open are separate operations,

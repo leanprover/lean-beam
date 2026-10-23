@@ -231,8 +231,8 @@ if sandbox_beam serve >"$duplicate_out" 2>"$duplicate_err"; then
   echo "expected a second sandbox owner to be rejected" >&2
   exit 1
 fi
-if ! grep -Fq 'already owned' "$duplicate_err"; then
-  echo "expected duplicate-owner diagnostics to identify the live owner" >&2
+if ! grep -Fq 'existing Beam session descriptor' "$duplicate_err"; then
+  echo "expected duplicate-owner diagnostics to identify the existing descriptor" >&2
   sed -n '1,160p' "$duplicate_err" >&2
   exit 1
 fi
