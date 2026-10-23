@@ -366,7 +366,9 @@ client protocol.
   Deferred compilation (`compiler.postponeCompile`, including declaration-scoped settings) also
   rejects zero-build saves; use `lake build` for that pipeline. See
   [SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md#command-model) for readiness and preservation guarantees.
-- Beam does not detect Lake workspace configuration changes during a running Lean session. After
+- Beam does not reload Lake workspace configuration during a running Lean session. Runtime-selection
+  checks can reject a changed `lean-toolchain`; they do not establish that other configuration is
+  unchanged. After
   editing a lakefile, manifest, package override, `lean-toolchain`, Lean options, plugins, or dynamic
   libraries, run `lean-beam --root ROOT stop`, then start a new `lean-beam serve` owner before the
   next wrapper command that uses the Lean server; `lean-beam refresh` does not restart the server.
@@ -387,6 +389,11 @@ client protocol.
   `lake build` accepts, even when its proof fails kernel replay. Restarting the session or refreshing
   affected importers does not repair checkpoints already published. See
   [external-build recovery](../skills/lean-beam/references/trust-and-validation.md#external-builds-and-retained-state).
+- Full file-worker crash recovery ([#339](https://github.com/leanprover/lean-beam/issues/339))
+  is deferred beyond 0.2.0. Recovery currently depends on an explicit worker-failure reply; a crash
+  need not produce one. After an observed failure, use `sync` to reopen the affected file as described
+  in [worker recovery](SYNC_AND_DIAGNOSTICS.md). A request that never receives a failure reply is
+  not covered by that recovery path; stop the session and wait for cleanup before starting a new one.
 - For open files in Lake workspaces, Beam uses Lean's native stale-dependency diagnostic when a synced
   source change makes an importer need refresh. Beam does not yet implement Lean's dynamic watched-file
   registration, so external source changes that never pass through `sync` remain outside the current

@@ -119,8 +119,8 @@ batch-only.
 Beam assumes Lake workspace configuration remains unchanged while the Lean server is running. After
 editing a lakefile, manifest, package override, `lean-toolchain`, Lean options, plugins, or dynamic
 libraries, run `lean-beam --root ROOT stop` before the next command that uses the Lean server.
-`lean-beam refresh` only reopens a file within the current server and is not sufficient. Beam does
-not detect this configuration drift.
+`lean-beam refresh` only reopens a file within the current server and is not sufficient. Runtime-selection checks can reject a changed `lean-toolchain`, but Beam does not reload workspace
+configuration in an existing server.
 
 ## Save Eligibility
 
