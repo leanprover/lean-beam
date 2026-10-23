@@ -67,7 +67,8 @@ withClosingDocument(request, lease => {
 ```
 
 This pseudocode describes the ownership scope. In the broker, `withDocumentAdmission` captures
-one permit before workspace admission helpers, source reads, or queued saves. Source acceptance
+one permit after path resolution and before workspace admission helpers, source-content reads, or
+queued saves. Request receipt and path validation do not themselves acquire a permit. Source acceptance
 and the transition to closing occur together under the state lock. The request scope releases
 only its own permit in `finally`, guarded by the workspace generation.
 
@@ -212,7 +213,7 @@ means the named regression is wired into that suite, not that its I/O behavior i
 
 | Invariant | Theorem / proof scope | Production boundary | Regression / suite | Unproved bridge or assumption |
 | --- | --- | --- | --- | --- |
-| Delayed reads stay invalid after ordinary fence and matching cleanup | Production `Admission.fence_release_rejects_same_uri`; abstract `Closing.old_read_after_close` | `withDocumentAdmission`, `fenceDocument`, matching `finally` release | CI Fast: `AdmissionTest`, `SaveOwnerTest.delayedAdmission` | Permit capture precedes asynchronous source work; `readSeq` orders acceptance. |
+| Delayed reads stay invalid after ordinary fence and matching cleanup | Production `Admission.fence_release_rejects_same_uri`; abstract `Closing.old_read_after_close` | `withDocumentAdmission`, `fenceDocument`, matching `finally` release | CI Fast: `AdmissionTest`, `SaveOwnerTest.delayedAdmission` | Permit capture follows path resolution and precedes source-content reads; `readSeq` orders acceptance. |
 | Reservation excludes new work; older permits stay invalid after cleanup | Production `Admission.reserve_blocks_admission`, `reserve_release_rejects_same_uri`; abstract `Closing.old_read_after_release` | Source acceptance plus `fenceDocument(reserve := true)` in one state transition | CI Fast: `AdmissionTest`; `test-save-finalization.py` exclusive, failure, and cancellation cases | Every implicit/explicit document operation uses admission; the state transition remains atomic. |
 | Cleanup cannot release a different request | Production `Admission.release_preserves_other_entry`, `release_idempotent`; abstract `Closing.foreign_release_unchanged` | `withDocumentAdmission` releases its captured permit only in the matching workspace generation | CI Fast: `AdmissionTest` retry/old cleanup; `SaveOwnerTest` replacement cases | Workspace generation and captured permit are retained across waits, not recaptured. |
 | Retirement invalidates permits and old finalizers | Production `Admission.retire_rejects_permit`; abstract `Closing.old_lease_after_replacement` | Backend detach/retire, `DocumentRef.withCurrentDocument` and session identity checks | CI Fast: `AdmissionTest`; `SaveOwnerTest` backend/workspace replacement; `PublicationClaimTest` exited-owner schedule | Runtime owner freshness and exact basis checks implement the abstract owner identity. |
