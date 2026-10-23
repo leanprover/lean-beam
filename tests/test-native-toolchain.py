@@ -330,8 +330,58 @@ def qualify(args, lean_prefix, scratch):
                 time.sleep(0.1)
             else:
                 raise AssertionError(owner_log.read_text())
+            # Document rejection must precede worker creation in the installed CLI too.
+            # serve deliberately ensures a backend session before accepting requests.
+            before = json.loads(call("stats").stdout)["result"]
+            assert before["session"]["openDocCount"] == 0, before
+            external = scratch / "project with spaces-other"
+            external.mkdir()
+            outside = external / "Other.lean"
+            outside.write_text("def outsideFixture : Nat := 1\n")
+            escape = project / "outside-link"
+            if os.name == "nt":
+                run(["cmd", "/d", "/c", "mklink", "/J", escape, external], env=env)
+            else:
+                escape.symlink_to(external, target_is_directory=True)
+            for path in [str(outside), "../project with spaces-other/Other.lean",
+                         "outside-link/Other.lean"]:
+                for operation in [("sync", path), ("refresh", path),
+                                  ("run-at", path, "1", "0", "0", "#check Nat")]:
+                    rejected = call(*operation, ok=False)
+                    assert rejected.returncode != 0, rejected
+                    failure = json.loads(rejected.stdout)["error"]
+                    assert failure["code"] == "invalidParams", failure
+                    assert "resolves outside workspace root" in failure["message"], failure
+                    assert "select a workspace containing the document" in failure["message"], failure
+            stats = json.loads(call("stats").stdout)["result"]
+            assert stats["session"] == before["session"], (before, stats)
+            assert stats["metrics"]["sessionStarts"] == before["metrics"]["sessionStarts"], (before, stats)
             updated = json.loads(call("update", "Demo.lean").stdout)
             version = updated["result"]["version"]
+            # Observe the actual volume rather than assuming that macOS folds path case.
+            case_root = project.with_name(project.name.swapcase())
+            case_probe = {
+                "platform": sys.platform,
+                "device": project.stat().st_dev,
+                "root": str(project),
+                "alias": str(case_root),
+                "case_insensitive": case_root.exists() and case_root.samefile(project),
+            }
+            case_evidence = project / ".beam" / "document-path-case.json"
+            case_evidence.parent.mkdir(exist_ok=True)
+            if case_probe["case_insensitive"]:
+                alias_update = call("update", str(case_root / source.name), ok=False)
+                case_probe.update(returncode=alias_update.returncode, stdout=alias_update.stdout,
+                                  stderr=alias_update.stderr)
+                write_report(case_evidence, case_probe)
+                assert alias_update.returncode == 0, case_probe
+                assert json.loads(alias_update.stdout)["result"]["version"] == version, case_probe
+                alias_stats = json.loads(call("stats").stdout)["result"]
+                case_probe["open_document_count"] = alias_stats["session"]["openDocCount"]
+                write_report(case_evidence, case_probe)
+                assert case_probe["open_document_count"] == 1, case_probe
+            else:
+                write_report(case_evidence, case_probe)
             probe = json.loads(call("run-at", "Demo.lean", str(version), tactic_line, "2", "trivial").stdout)
             assert probe["ok"], probe
             # Close before applying a source edit, then update the broker to the new saved text.

@@ -26,6 +26,15 @@ transport failures can instead exit nonzero with human-facing stderr and no JSON
 must check the exit status before parsing stdout. Clients that require structured live events and
 failures should use MCP.
 
+`lean-beam refresh` refreshes a tracked document from saved source and waits for diagnostics. It
+validates the path and reads the source before closing and reopening the document, so a rejected
+path or failed source read leaves the existing document open. If a newer source read was accepted
+while the refresh was reading, the refresh uses that newer snapshot without closing it. Refresh is
+therefore not equivalent to issuing `close` followed by `sync` as separate commands.
+
+Plain `close` performs cleanup without reading source contents and remains available after the
+source path disappears. It does not open a new document or start a Lean backend.
+
 The returned document `version` is the snapshot token for broker, MCP, and wrapper callers.
 Position- or range-bound operations reject missing or stale versions; clients can obtain the
 version from `lean-beam update`, the internal broker `update_file` operation, or MCP `lean_update`.
@@ -246,10 +255,13 @@ not an installed command-line interface or a supported machine protocol. Maintai
 ordering and correlation contract in the broker stream tests and
 [development guidance](DEVELOPMENT.md#internal-broker-stream-contract).
 
-The selected root chooses a workspace runtime; it is not a filesystem authorization boundary.
-Relative paths resolve below that root, while absolute paths may identify dependency sources. Beam
-can also execute Lean metaprogramming with IO, so callers that require filesystem isolation must
-sandbox the owner process itself.
+The selected root chooses a workspace runtime and bounds document admission. Paths used to read or
+open documents must resolve inside its canonical root, whether relative or absolute; symlink escapes
+are rejected before reading source
+contents or starting a document worker. To open an external file, select a workspace containing it.
+Normal Lean imports and navigation results remain available across that boundary. Lean
+metaprogramming can perform IO, so callers requiring OS filesystem isolation must sandbox the owner
+process itself.
 
 The wrapper's final stdout object may echo a caller-supplied `BEAM_REQUEST_ID` as a presentation
 convenience; internally generated cancellation IDs remain hidden. This decoration is not part of

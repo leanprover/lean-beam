@@ -106,7 +106,7 @@ private def operationDescription (syncOperation : String) : Operation → String
   | .release => "Release a stored Lean follow-up handle."
   | .update => "Read the current on-disk Lean source into the broker's LSP mirror and return its document version without waiting for diagnostics."
   | .sync => "Read the current on-disk Lean source into the broker's LSP mirror, wait for diagnostics and readiness, and return its document version. This never applies or recovers speculative text."
-  | .refresh => "Close the tracked LSP document, reread the current on-disk Lean source, and wait for fresh diagnostics."
+  | .refresh => "Refresh the tracked document from the current on-disk Lean source and wait for fresh diagnostics."
   | .save => "Read and synchronize the current on-disk Lean source, then write Lean/Lake build artifacts as a zero-build development checkpoint when possible."
   | .closeSave => "Read and synchronize the current on-disk Lean source, write the same Lean/Lake build artifacts when possible, and close the tracked LSP document."
   | .close => "Close the tracked LSP document."
@@ -130,7 +130,8 @@ def Operation.description (operation : Operation) (syncOperation : String := "th
       (if executesSuppliedLeanText operation then [speculativeCaveat] else [])
 
 private def pathField : String × Json :=
-  ("path", Beam.JsonSchema.string "Lean file path, absolute or relative to the project root.")
+  ("path", Beam.JsonSchema.string
+    "Lean file path, absolute or relative, resolving inside the workspace root.")
 
 private def versionField : String × Json :=
   ("version", Beam.JsonSchema.natural "Document version returned by a successful update or sync operation for this file.")

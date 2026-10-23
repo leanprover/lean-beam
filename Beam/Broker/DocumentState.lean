@@ -157,6 +157,10 @@ def recordFileProgressForBasis
 private def nextSnapshotSeq (docState : DocState) (snapshot : FileSnapshot) : Nat :=
   if snapshot.readSeq == 0 then docState.syncSnapshotSeq else snapshot.readSeq
 
+/-- Whether a newer ordered read has already been applied to this document. -/
+def FileSnapshot.isSupersededBy (snapshot : FileSnapshot) (docState : DocState) : Bool :=
+  snapshot.readSeq != 0 && snapshot.readSeq < docState.syncSnapshotSeq
+
 /-- Initialize tracked state by copying all hash representations from the same snapshot. -/
 private def FileSnapshot.toDocState (snapshot : FileSnapshot) (version : Nat) : DocState := {
   acceptedBasis := { version, acceptedSeq := snapshot.readSeq }
@@ -191,7 +195,7 @@ def syncFileDecision
         docs := docs.insert uri (snapshot.toDocState version)
       }
   | some docState =>
-      if snapshot.readSeq != 0 && snapshot.readSeq < docState.syncSnapshotSeq then
+      if snapshot.isSupersededBy docState then
         {
           action := .unchanged
           version := docState.version

@@ -2639,6 +2639,30 @@ def run_stateless_workspace_matrix(repo_root, fixture_root, timeout):
                 f"rejected workspace roots should not create workspace caches: {stats_before_valid_root}",
             )
 
+            # A valid workspace must not admit a document from another project or a readable
+            # external file. Check before the first valid sync so worker creation is observable.
+            escape = root_a / "outside-link"
+            escape.symlink_to(root_b, target_is_directory=True)
+            for path in [str(file_root), str(root_b / "PositionEmptyLine.lean"),
+                         "../project-b/PositionEmptyLine.lean", "outside-link/PositionEmptyLine.lean"]:
+                for tool, fields in [("lean_sync", {}),
+                                     ("lean_run_at", {"version": 1, "line": 0, "character": 0,
+                                                      "text": "#check Nat"})]:
+                    response = client.request("tools/call", {
+                        "name": tool, "arguments": {"path": path, **fields},
+                    })
+                    error = expect_tool_error_code(response, "invalidParams")
+                    require(
+                        "resolves outside workspace root" in error.get("message", "")
+                        and "select a workspace containing the document" in error["message"],
+                        f"external document should explain workspace recovery: {error}",
+                    )
+            rejected_stats = client.call_tool("beam_stats")["workspaces"][workspace_cache_key(root_a)]
+            require(rejected_stats["session"]["active"] is False,
+                    f"external documents started a backend session: {rejected_stats}")
+            require(rejected_stats["metrics"]["sessionStarts"] == 0,
+                    f"external documents started a worker: {rejected_stats}")
+
             first_a = client.call_tool("lean_sync", {"path": "PositionEmptyLine.lean"})
             require(
                 result_workspace_root(first_a, "first workspace A sync").resolve() == root_a.resolve(),

@@ -154,8 +154,8 @@ What is not a valid checkpoint target:
 - after every real source edit to a Lean file, save the file in the normal editor/file sense and
   then run `lean-beam update "Foo.lean"` before the next version-bound probe; use
   `lean-beam sync "Foo.lean"` when the workflow needs a diagnostics/readiness barrier
-- use `lean-beam refresh "Foo.lean"` when a tracked file needs `lean-beam close` plus `lean-beam sync`
-  as one step, especially after saving an upstream dependency
+- use `lean-beam refresh "Foo.lean"` to refresh a tracked document from saved source, especially after
+  saving an upstream dependency; see the [refresh contract](https://github.com/leanprover/lean-beam/blob/main/docs/SYNC_AND_DIAGNOSTICS.md#command-model)
 - treat `lean-beam sync` as the explicit supported boundary between real file edits and Beam daemon
   session state
 - after a completed broker operation, `lean-beam sync` returns ordered machine-readable JSON on

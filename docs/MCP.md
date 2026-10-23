@@ -102,11 +102,16 @@ This is deliberately a local-only descriptor. Remote workspaces and same-source 
 mirrors need a broader Source/Workspace split and a transport-safe descriptor; they are not modeled
 as client-chosen aliases for local roots.
 
-The descriptor selects the Lean runtime and toolchain; it is not a filesystem authorization
-boundary. Relative `path` values resolve under the canonical workspace root, while absolute paths
-are canonicalized independently of that root and may name dependency sources outside it. A remote
-transport must add an explicit Source model and authorization policy rather than treating this
-local descriptor as a sandbox.
+The descriptor selects the Lean runtime, toolchain and document root. Paths used to read or open a
+document, whether relative or absolute, must resolve inside the canonical workspace root. Beam
+rejects an external target, including
+a symlink that escapes the root, before reading its contents or opening a document worker. Select
+that target's own workspace to open it. Normal Lean imports and navigation results may still refer
+to external dependencies.
+
+This document-admission policy is not an OS filesystem sandbox: Lean metaprogramming can perform IO.
+A remote transport needs an explicit Source model and authorization policy, and callers requiring
+filesystem isolation must sandbox the owner process itself.
 
 ## Runtime Setup
 

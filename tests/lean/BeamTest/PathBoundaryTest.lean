@@ -62,4 +62,16 @@ private def unicodeRoot := rooted "données λ"
 #guard Beam.pathRelativeToRoot? unicodeRoot (unicodeRoot / "Málaga.lean") == some "Málaga.lean"
 #guard Beam.leanModuleNameForPath? unicodeRoot (unicodeRoot / "Málaga.lean") == some "Málaga"
 
+-- Admission compares canonical identities without changing the retained path spelling.
+#guard Beam.isCanonicalPathWithinRoot projectRoot projectRoot
+#guard Beam.isCanonicalPathWithinRoot projectRoot childPath
+#guard !Beam.isCanonicalPathWithinRoot projectRoot siblingPath
+#guard !Beam.isCanonicalPathWithinRoot projectRoot outsidePath
+#guard Beam.isCanonicalPathWithinRoot filesystemRoot childPath
+#guard Beam.isCanonicalPathWithinRoot trailingRoot childPath
+#guard Beam.isCanonicalPathWithinRoot unicodeRoot (unicodeRoot / "Málaga.lean")
+#guard Beam.isCanonicalPathWithinRoot (rooted "Beam-Root") childPath == System.Platform.isWindows
+#guard !Beam.isCanonicalPathWithinRoot (rooted "Beam-Root") siblingPath
+#guard !Beam.isCanonicalPathWithinRoot "C:\\beam-root" "D:\\beam-root\\Main.lean"
+
 end BeamTest.PathBoundaryTest

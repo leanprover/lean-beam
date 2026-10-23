@@ -295,7 +295,8 @@ Read those commands like this:
   version without waiting for diagnostics
 - `lean-beam run-at` tries speculative Lean text without editing the file
 - `lean-beam sync` waits for diagnostics/readiness after a real saved edit
-- `lean-beam refresh` is `lean-beam close` plus `lean-beam sync`
+- `lean-beam refresh` reads saved source before reopening the tracked document for fresh diagnostics;
+  see the [refresh contract](SYNC_AND_DIAGNOSTICS.md#command-model)
 - `lean-beam save` checkpoints one synced workspace module; it does not validate downstream importers
 - `lean-beam doctor` explains toolchain support and runtime bundle selection
 
@@ -438,6 +439,13 @@ The root must be an absolute path to an existing Lean/Lake project. No setup cal
 first ordinary Lean tool lazily creates or reuses the runtime for the canonical root. The same
 server process can serve several roots because every relevant request identifies its own workspace.
 There is no connection-wide current or default workspace.
+
+Paths used to read or open documents, whether relative or absolute, must resolve inside that
+workspace root. A path into
+another project or a symlink that escapes the root fails with `invalidParams` before Beam reads its
+contents or starts a document worker. Select a workspace containing the file instead; with the
+wrapper, use `lean-beam --root /path/to/other/project sync Other.lean`. Ordinary Lean dependency imports and
+navigation results can still refer to external sources.
 
 To evict one cached runtime after project-configuration changes, call `lean_drop_workspace` with:
 
