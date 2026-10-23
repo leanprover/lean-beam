@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Lean FRO LLC. All rights reserved.
 # Released under Apache 2.0 license as described in the file LICENSE.
 
-"""Check the representative driver selects its native boundaries and propagates failures."""
+"""Check platform driver boundaries, cleanup, failure propagation, and stdio repetition limits."""
 
 import json
 import os
@@ -76,8 +76,11 @@ class PlatformDriverTest(unittest.TestCase):
                        "tests/test-installation-construction.py", "tests/test-installation-lookup.py",
                        "tests/test-installation-entrypoints.py"]:
             self.assertIn(("python3", [script]), commands)
-        self.assertIn(("python3", ["tests/lib/process_watchdog.py", "--timeout", "30", "--",
-                                  ".lake/build/bin/beam-prune-lock-test"]), commands)
+        for command in ["beam-backend-process-test", "beam-cli-daemon-test"]:
+            self.assertIn((command, []), commands)
+        for command in ["beam-transport-test", "beam-prune-lock-test"]:
+            self.assertIn(("python3", ["tests/lib/process_watchdog.py", "--timeout", "30", "--",
+                                      f".lake/build/bin/{command}"]), commands)
         self.assertEqual(records[-1]["command"], "prune")
 
     def test_failure_stops_and_preserves_status(self):
@@ -85,6 +88,19 @@ class PlatformDriverTest(unittest.TestCase):
         self.assertEqual(result.returncode, 73, result)
         self.assertFalse(any(r["command"] == "prune" for r in records))
         self.assertFalse(any("tests/test-installation-entrypoints.py" in r["args"] for r in records))
+
+
+class StdioRepetitionsTest(unittest.TestCase):
+    def test_nonpositive_counts_are_rejected_before_starting_scenarios(self):
+        for option in ["--iterations", "--restart-cycles"]:
+            for value in ["0", "-1"]:
+                with self.subTest(option=option, value=value):
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "tests/test-mcp-stdio.py"), option, value],
+                        capture_output=True, text=True, timeout=15)
+                    self.assertEqual(result.returncode, 2, result)
+                    self.assertIn("must both be positive", result.stderr)
+                    self.assertEqual(result.stdout, "", result)
 
 
 if __name__ == "__main__":

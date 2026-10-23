@@ -40,7 +40,7 @@ def documentation_path(path):
 
 
 def source_path(path):
-    return (path.startswith(("Beam/", "BeamTest/", "native/", "scripts/"))
+    return (path.startswith(("Beam/", "native/", "scripts/"))
             or ("/" not in path and path.endswith(".lean")))
 
 

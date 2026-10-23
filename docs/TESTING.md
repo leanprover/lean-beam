@@ -697,9 +697,10 @@ A failed job or missing decision also retains exhaustive combined macOS coverage
 `python3 tests/test-ci-macos.py` for the Git history, path, rename, file-kind, and fallback cases.
 
 The combined `macos-platform` job has two profiles. Verified product source PRs use the
-representative `platform` profile. Main pushes, manual runs, CI/test-driver changes, build or
+representative `platform` profile. Main pushes, manual runs, CI/test changes, build or
 toolchain configuration changes, and uncertain classifications use the exhaustive `full` profile.
-Full matrix mode remains exhaustive for PRs too.
+Any change under `tests/`, including a new regression test or fixture accompanying product code,
+selects `full`. Full matrix mode remains exhaustive for PRs too.
 
 | Family | macOS product PR (`platform`) | macOS `full` profile |
 | --- | --- | --- |
@@ -725,8 +726,8 @@ suite retains protocol, projection, HTTP bridge, and installed stdio smoke cover
 workflow does not run a separate build before it. The local aggregate and default defensive
 validation commands also run shell lint once before their product suites.
 `BEAM_MCP_STDIO_ITERATIONS` and `BEAM_MCP_STDIO_RESTART_CYCLES` select repetitions; the workflow
-sets both to one only for the verified macOS PR platform profile. Timeouts and scenario assertions
-are unchanged.
+sets both to one only for the verified macOS PR platform profile. Both counts must be positive;
+zero or negative values fail before any scenario starts. Timeouts and scenario assertions are unchanged.
 
 Linux retains the separate parallel jobs and the exact toolchain compatibility matrix in both
 modes. The combined macOS job runs toolchain qualification once at the repository-pinned Lean

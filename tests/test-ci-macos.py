@@ -71,7 +71,7 @@ class MacOSCoverageTest(unittest.TestCase):
         self.assertFalse(self.required(self.pull_request()))
 
     def test_verified_source_uses_platform_profile(self):
-        for path in ["Beam/Probe.lean", "native/control_dir.c", "BeamTest/Probe.lean",
+        for path in ["Beam/Probe.lean", "native/control_dir.c",
                      "scripts/install-beam.sh"]:
             with self.subTest(path=path):
                 self.git("reset", "--hard", self.base)
@@ -83,7 +83,8 @@ class MacOSCoverageTest(unittest.TestCase):
                      "scripts/ci-macos.py", "scripts/validate-defensive.sh", "scripts/check-links.sh",
                      "scripts/build-toolchain.cmake", "scripts/install-toolchain.cmake",
                      "scripts/toolchain-manifest.cmake", "lean-toolchain", "validated-lean-toolchains",
-                     "compatible-lean-release-lines", "lake-manifest.json", "lakefile.toml", "lakefile.lean"]:
+                     "compatible-lean-release-lines", "lake-manifest.json", "lakefile.toml", "lakefile.lean",
+                     "tests/BeamTest/Probe.lean", "BeamTest/Probe.lean"]:
             with self.subTest(path=path):
                 self.git("reset", "--hard", self.base)
                 self.write(path, "changed\n")

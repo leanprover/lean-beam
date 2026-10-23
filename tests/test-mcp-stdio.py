@@ -3789,6 +3789,8 @@ def main():
         help="enable opt-in lean-beam-mcp and broker stderr trace output",
     )
     args = parser.parse_args()
+    if args.iterations < 1 or args.restart_cycles < 1:
+        parser.error("--iterations and --restart-cycles must both be positive")
     repo_root = Path(__file__).resolve().parents[1]
     fixture_root = repo_root / "tests" / "save_olean_project"
     require(fixture_root.exists(), f"missing MCP fixture root at {fixture_root}")
