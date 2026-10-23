@@ -1651,14 +1651,14 @@ private def DocumentRef.awaitOutcome
     document.recordWorkerFailure failure
     pure <| .error <| ← RequestCancellation.backendFailure pending.cancelRef? failure
 
-/-- Only explicit sync/update requests may reopen a failed worker, using their captured admission.
-Older source reads must not fence newer requests or close their document. -/
+/-- Fresh synchronization phases may reopen a failed worker using their captured admission.
+Older source reads must not fence newer requests or close their document. Ordinary use rejects
+recorded failures before reaching this path. -/
 private def syncAdmittedFileSnapshot
-    (req : WorkspaceRequest) (session : Session) (snapshot : FileSyncSnapshot)
-    (recoverWorker : Bool) : M (Except ResponseFailure SyncedFileSnapshot) := do
+    (req : WorkspaceRequest) (session : Session) (snapshot : FileSyncSnapshot) :
+    M (Except ResponseFailure SyncedFileSnapshot) := do
   if let some doc := session.docs.get? snapshot.uri then
-    if let some error := doc.workerError? then
-      unless recoverWorker do return .error { error }
+    if doc.workerError?.isSome then
       if snapshot.file.isSupersededBy doc then
         return .error <| responseFailureFor .contentModified
           "a newer source read was accepted before worker recovery; start a new sync/update request"
@@ -1898,8 +1898,7 @@ private def startTrackedDiagnosticsBarrierIO
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
     (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none)
     (reserveClose : Bool := false)
-    (refresh : Bool := false)
-    (recoverWorker : Bool := false) :
+    (refresh : Bool := false) :
     IO (Except ResponseFailure StartedTrackedBarrier) := do
   let snapshot ←
     match ← readRequestSyncSnapshot server req with
@@ -1916,7 +1915,7 @@ private def startTrackedDiagnosticsBarrierIO
       if reopen then
         if let .error failure ← fenceDocument req then return .error failure
       let session ← if reopen then closeFile session snapshot.uri else pure session
-      let synced ← match ← syncAdmittedFileSnapshot req session snapshot recoverWorker with
+      let synced ← match ← syncAdmittedFileSnapshot req session snapshot with
         | .error failure => return .error failure
         | .ok synced => pure synced
       let session := synced.session
@@ -2306,7 +2305,7 @@ private def handleSyncFileOp
   liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
   let diagnosticScope := request.diagnosticScope?.getD .errors
   let started ← liftFailureIO <| startTrackedDiagnosticsBarrierIO server req diagnosticScope
-    emitProgress? emitDiagnostic? (refresh := refresh) (recoverWorker := true)
+    emitProgress? emitDiagnostic? (refresh := refresh)
   liftHandlerIO <| traceBroker
     s!"sync_file await barrier clientRequestId={optionLabel req.clientRequestId?} uri={started.document.uri} version={started.document.version}"
   liftHandlerIO <| propagatePendingCancellation started.document.session started.pending
@@ -2371,7 +2370,7 @@ private def handleUpdateFileOp
   let snapshot ← liftFailureIO <| readRequestSyncSnapshot server req
   let updated ← liftFailureIO <| server.withRequestSessionState req do
     withSessionForSnapshot req.workspaceId snapshot (cancelRef? := req.cancelRef?) (output? := req.output?) fun session => do
-      let synced ← match ← syncAdmittedFileSnapshot req session snapshot true with
+      let synced ← match ← syncAdmittedFileSnapshot req session snapshot with
         | .error failure => return .error failure
         | .ok synced => pure synced
       updateSession synced.session

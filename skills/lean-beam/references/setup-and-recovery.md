@@ -69,6 +69,15 @@ Optional online references: the
 
 ## Recovery
 
+- On `workerCrashed` or `workerExited`, use `lean-beam sync PATH` (MCP: `lean_sync`) to reopen the
+  affected file and wait for readiness before further probes. A fresh `save` or `close-save` also
+  recovers during its initial synchronization. Reopening invalidates that worker's old handles and
+  elaborates saved source again; source-level effects can run again.
+- If a request stalls and you suspect an idle worker has died, use explicit `lean-beam refresh PATH`
+  (MCP: `lean_refresh`). Elapsed time or generic fatal progress alone does not establish worker exit.
+  Refresh resets the tracked document. An unresolved close-save still owns its file: cooperative
+  cancellation does not establish settlement, and recovery may require restarting the owning
+  session/runtime. See the [worker recovery contract](https://github.com/leanprover/lean-beam/blob/main/docs/SYNC_AND_DIAGNOSTICS.md#worker-errors-and-document-recovery).
 - Interrupting the owner or running `stop` performs bounded cleanup. If the owner is killed, the
   daemon shuts down cooperatively but the session fence remains.
 - After an abnormal owner or broker exit, the session stays fenced until

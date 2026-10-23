@@ -207,8 +207,9 @@ error without sending another request to Lean:
 - Use `sync` to reopen the file from saved source and wait for diagnostics/readiness.
 - Use `update` to submit the reopen without waiting for that result. Successful update is not a
   worker-health or readiness barrier.
-- Fresh `save` and `close-save` also return the recorded error; first recover with `update`, `sync`,
-  or an explicit `refresh`. Recovery remains subject to an existing close-save reservation.
+- A fresh `save` or `close-save` performs the same recovery during its initial synchronization,
+  before preparing artifacts or taking a new close-save reservation. Normal save serialization and
+  document admission still apply; an existing close-save owner cannot be bypassed.
 
 When Lean explicitly replies with `workerExited` or `workerCrashed`, Beam records the first error
 only for the session and accepted document revision that owned the request. Caller cancellation
@@ -222,8 +223,8 @@ Reopening elaborates saved source again, so source-level `#eval` or elaborator e
 it does not provide exactly-once execution. Other documents and their handles keep their existing
 session. Handles from the replaced worker become invalid. Recovery of unchanged source preserves
 its document version and checkpoint association, but establishes a new internal accepted revision.
-An actual source edit advances the
-version, invalidates the checkpoint, and notifies importing workers that their dependency is stale,
+An actual source edit advances the version, invalidates the checkpoint, and notifies importing
+workers that their dependency is stale,
 just like an ordinary source update. An update that reopens the worker returns `changed: true`.
 
 The internal broker's `open_docs` entry includes `workerError` while the failure is recorded and

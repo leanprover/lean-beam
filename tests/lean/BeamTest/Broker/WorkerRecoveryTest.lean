@@ -76,7 +76,6 @@ private def runCase (description : Beam.Runtime.Description) (root : System.File
     let closes ← IO.mkRef (0 : Nat)
     let opens ← IO.mkRef (0 : Nat)
     let dispatched ← IO.mkRef (0 : Nat)
-    let barriers ← IO.mkRef (0 : Nat)
     -- Inject one real typed response at the existing stream seam. The worker stays healthy,
     -- making an unintended second dispatch observable independently of upstream routing.
     server.withState do
@@ -86,7 +85,6 @@ private def runCase (description : Beam.Runtime.Description) (root : System.File
       let current := { original with stdin := { original.stdin with putStr := fun text => do
         if text.contains "textDocument/didClose" then closes.modify (· + 1)
         if text.contains "textDocument/didOpen" then opens.modify (· + 1)
-        if text.contains diagnosticsBarrierMethod then barriers.modify (· + 1)
         if text.contains runAtMethod then
           dispatched.modify (· + 1)
           unless ← intercepted.get do
@@ -135,20 +133,6 @@ private def runCase (description : Beam.Runtime.Description) (root : System.File
       discard <| requireObjVal "failed document" "workerError" file
       requireFieldAbsent "failed document" "fileProgress" file
       requireJsonBool "failure retains checkpoint association" "checkpointed" true file
-      if code == .workerExited then
-        for (label, payload) in [("save", RequestPayload.saveOlean { path := "Main.lean" }),
-            ("close-save", .close { path := "Main.lean", saveArtifacts? := some true })] do
-          let rejected ← call server payload
-          require "fresh save currently requires explicit worker recovery first"
-            (rejected.error?.map (·.code) == some (errorCodeName code))
-          require "rejected save performs no recovery or diagnostics barrier"
-            ((← closes.get) == 0 && (← opens.get) == 0 && (← barriers.get) == 0)
-          server.withState do
-            let some workspace := (← get).workspaces.get? workspaceId
-              | throw <| IO.userError "missing fresh-save trace workspace"
-            require "rejected fresh save does not retain a close reservation" (!workspace.documents.isClosing uri)
-          require "rejected fresh save leaves the checkpoint intact" ((← paths.mapM IO.FS.readBinFile) == checkpoint)
-          IO.println s!"worker recovery trace: fresh {label} -> {errorCodeName code}; no close/open, barrier or closing owner; checkpoint intact"
     let recoveryRequest : RequestPayload := match recovery with
       | .sync => .syncFile { path := "Main.lean" }
       | .update => .updateFile { path := "Main.lean" }
@@ -327,6 +311,105 @@ private def runImporterRecovery (description : Beam.Runtime.Description) (root :
     require "dependency invalidation never replaces the importer's worker basis"
       (DocumentState.basis (← doc server bUri) == DocumentState.basis beforeB)
     require "dependency recovery preserves the shared router" ((← session server).epoch == original.epoch)
+  finally
+    server.close
+
+/-- A newly issued save has the same recovery semantics as its initial sync. The original
+failed speculative request stays failed, and close-save reserves only the reopened document. -/
+private def runSaveRecovery (description : Beam.Runtime.Description) (root : System.FilePath)
+    (closeAfter edited : Bool) : IO Unit := do
+  IO.FS.createDirAll root
+  let source (value : Nat) := s!"import Lean\n\ndef mainValue : Nat := {value}\n"
+  IO.FS.writeFile (root / "lakefile.toml") "name = \"Main\"\n[[lean_lib]]\nname = \"Main\"\n"
+  IO.FS.writeFile (root / "Main.lean") (source 42)
+  IO.FS.writeFile (root / "Other.lean") "example : True := by\n  trivial\n"
+  let server ← ServerRuntime.create (BrokerConfig.ofRuntime root description) workspaceId
+  try
+    let prior : SaveOleanResult ← IO.ofExcept <| fromJson?
+      (← result (← call server (.saveOlean { path := "Main.lean" })))
+    let paths := #[prior.olean, prior.ilean, prior.c, prior.trace].map System.FilePath.mk
+    let checkpoint ← paths.mapM IO.FS.readBinFile
+    let sibling ← result (← call server (.syncFile { path := "Other.lean" }))
+    let siblingVersion : Nat ← IO.ofExcept <| sibling.getObjValAs? Nat "version"
+    let seed ← result (← call server (.runAt {
+      path := "Other.lean", version := siblingVersion, line := 1, character := 2
+      text := "skip", storeHandle? := some true
+    }))
+    let handle : Handle ← IO.ofExcept <| seed.getObjValAs? Handle "handle"
+    let original ← session server
+    let uri := sessionUri (root / "Main.lean")
+    let siblingUri := sessionUri (root / "Other.lean")
+    let before ← doc server uri
+    let siblingBefore ← doc server siblingUri
+    let failed ← call server (.runAt {
+      path := "Main.lean", version := prior.version, line := 2, character := 0
+      text := "#eval (IO.Process.forceExit 3 : IO Unit)"
+    })
+    require "save recovery starts from an observed worker crash"
+      (failed.error?.map (·.code) == some "workerCrashed" && (← doc server uri).workerError?.isSome)
+    require "the failed speculative request leaves the old checkpoint intact"
+      ((← paths.mapM IO.FS.readBinFile) == checkpoint)
+    let events ← IO.mkRef (#[] : Array String)
+    let replayed ← IO.mkRef false
+    server.withState do
+      let state ← get
+      let some workspace := state.workspaces.get? workspaceId
+        | throw <| IO.userError "missing save-recovery workspace"
+      let some current := workspace.lean.session?
+        | throw <| IO.userError "missing save-recovery session"
+      let current := { current with stdin := { current.stdin with putStr := fun text => do
+        for (method, event) in [("textDocument/didClose", "close"), ("textDocument/didOpen", "open"),
+            ("textDocument/didSave", "invalidate"), (diagnosticsBarrierMethod, "barrier"),
+            (saveArtifactsMethod, "prepare")] do
+          if text.contains method then events.modify (·.push event)
+        if text.contains runAtMethod then replayed.set true
+        original.stdin.putStr text
+      } }
+      set { state with workspaces := state.workspaces.insert workspaceId {
+        workspace with lean := { workspace.lean with session? := some current } } }
+    let text := source (if edited then 43 else 42)
+    if edited then IO.FS.writeFile (root / "Main.lean") text
+    let response ← result (← call server <| if closeAfter then
+        .close { path := "Main.lean", saveArtifacts? := some true }
+      else .saveOlean { path := "Main.lean" })
+    let savedJson ← if closeAfter then do
+        requireJsonBool "recovered close-save closes the saved document" "closed" true response
+        IO.ofExcept <| response.getObjVal? "saved"
+      else pure response
+    let completed : SaveOleanResult ← IO.ofExcept <| fromJson? savedJson
+    let version := before.version + (if edited then 1 else 0)
+    require "recovered save checkpoints the newly synchronized source"
+      (completed.version == version && completed.sourceHash == (Lake.Hash.ofText text).toString)
+    for path in #[completed.olean, completed.ilean, completed.c, completed.trace] do
+      require "recovered save publishes its complete artifact family"
+        (!(← IO.FS.readBinFile path).isEmpty)
+    let observed ← events.get
+    let expectedEvents := if edited then #["close", "open", "invalidate", "barrier", "prepare"]
+      else #["close", "open", "barrier", "prepare"]
+    require s!"recovery must precede save readiness and private production: {observed}"
+      (observed.extract 0 expectedEvents.size == expectedEvents)
+    require "fresh save only reopens once before optional close-after-save"
+      ((observed.filter (· == "open")).size == 1 &&
+       (observed.filter (· == "close")).size == if closeAfter then 2 else 1)
+    require "fresh save never replays the failed speculative request" (!(← replayed.get))
+    if closeAfter then
+      require "close-save removes the recovered document after publication" (!(← session server).docs.contains uri)
+    else
+      let recovered ← doc server uri
+      require "save retains the new healthy acceptance and checkpoint"
+        (recovered.workerError?.isNone && recovered.version == version &&
+         recovered.checkpointedVersion? == some version &&
+         DocumentState.basis recovered != DocumentState.basis before)
+    require "save recovery preserves sibling acceptance and shared backend"
+      (DocumentState.basis (← doc server siblingUri) == DocumentState.basis siblingBefore &&
+       (← session server).epoch == original.epoch)
+    requireJsonBool "sibling handle survives save recovery" "success" true
+      (← result (← call server (.runWith { path := "Other.lean", handle, text := "trivial" })))
+    server.withState do
+      let some workspace := (← get).workspaces.get? workspaceId
+        | throw <| IO.userError "save-recovery workspace disappeared"
+      require "save recovery releases its admission/reservation" workspace.documents.entries.isEmpty
+    IO.println s!"worker recovery: fresh save closeAfter={closeAfter} edited={edited} passed"
   finally
     server.close
 
@@ -571,5 +654,8 @@ def run (description : Beam.Runtime.Description) (root : System.FilePath) : IO U
   runQueuedReply description (root / "queued-reply")
   IO.println "worker recovery: withheld second reply released during recovery passed"
   runClosingReply description (root / "closing-reply")
+  for closeAfter in [false, true] do
+    for edited in [false, true] do
+      runSaveRecovery description (root / s!"save-{closeAfter}-{edited}") closeAfter edited
 
 end BeamTest.Broker.WorkerRecoveryTest
