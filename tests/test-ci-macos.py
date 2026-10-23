@@ -57,8 +57,9 @@ class MacOSCoverageTest(unittest.TestCase):
         return {"pull_request": {"base": {"sha": self.base}, "head": {"sha": head},
                                  "merge_commit_sha": merge}}
 
-    def required(self, event, repo=None, name="pull_request"):
-        return coverage.requires_macos(repo or self.root, name, event)[0]
+    def required(self, event, repo=None, name="pull_request", merge=None):
+        return coverage.requires_macos(repo or self.root, name, event,
+                                        merge or self.git("rev-parse", "HEAD"))[0]
 
     def test_regular_documentation(self):
         self.write("README.md", "updated\n")
@@ -120,10 +121,16 @@ class MacOSCoverageTest(unittest.TestCase):
     def test_checkout_and_parent_mismatch(self):
         self.write("docs/New.md")
         event = self.pull_request()
+        self.assertTrue(self.required(event, merge=self.base))
         event["pull_request"]["head"]["sha"] = self.base
         self.assertTrue(self.required(event))
-        event["pull_request"]["merge_commit_sha"] = self.base
-        self.assertTrue(self.required(event))
+
+    def test_creation_event_without_merge_revision(self):
+        self.write("docs/New.md")
+        event = self.pull_request()
+        event["pull_request"]["merge_commit_sha"] = None
+        self.assertFalse(self.required(event))
+        self.assertTrue(coverage.requires_macos(self.root, "pull_request", event, None)[0])
 
     def test_missing_repository(self):
         self.write("docs/New.md")
@@ -148,7 +155,8 @@ class MacOSCoverageTest(unittest.TestCase):
         for contents, expected in [(json.dumps(event), "false"), ("invalid JSON", "true")]:
             event_file.write_text(contents)
             result = subprocess.run([sys.executable, str(script)], env=dict(
-                self.env, GITHUB_EVENT_NAME="pull_request", GITHUB_EVENT_PATH=str(event_file)),
+                self.env, GITHUB_EVENT_NAME="pull_request", GITHUB_EVENT_PATH=str(event_file),
+                GITHUB_SHA=event["pull_request"]["merge_commit_sha"]),
                 capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result)
             self.assertEqual(result.stdout, f"macos={expected}\n", result)

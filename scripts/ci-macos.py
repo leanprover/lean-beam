@@ -27,12 +27,12 @@ def documentation_path(path):
             and (path in ROOT_DOCUMENTS or path.startswith(("docs/", "skills/lean-beam/"))))
 
 
-def requires_macos(repo, event_name, event):
+def requires_macos(repo, event_name, event, merge):
     if event_name != "pull_request":
         return True, "main, manual, and other events retain coverage"
     try:
         pr = event["pull_request"]
-        base, head, merge = pr["base"]["sha"], pr["head"]["sha"], pr["merge_commit_sha"]
+        base, head = pr["base"]["sha"], pr["head"]["sha"]
         if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)
                    for sha in (base, head, merge)):
             return True, "unverified PR revisions"
@@ -64,8 +64,11 @@ def requires_macos(repo, event_name, event):
 def main():
     try:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        # PR creation events can precede GitHub computing merge_commit_sha. The runner's
+        # GITHUB_SHA names the tested merge; verify its parents against the event instead.
         required, reason = requires_macos(Path(__file__).resolve().parent.parent,
-                                          os.environ.get("GITHUB_EVENT_NAME"), event)
+                                          os.environ.get("GITHUB_EVENT_NAME"), event,
+                                          os.environ.get("GITHUB_SHA"))
     except (KeyError, OSError, ValueError):
         required, reason = True, "event metadata could not be read"
     print(f"macos={str(required).lower()}")
