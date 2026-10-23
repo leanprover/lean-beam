@@ -642,8 +642,8 @@ Lean server; see [configuration changes](SYNC_AND_DIAGNOSTICS.md#project-configu
 
 ## Sessions And Recovery
 
-`lean-beam status` reports the public session state as `absent`, `running`, `stopping`,
-`recoveryRequired`, or `unresponsive`, together with the resolved workspace and session directory.
+`lean-beam status` reports the public session state as `absent`, `running`, `recoveryRequired`, or
+`unresponsive`, together with the resolved workspace and session directory.
 `running` means the selected generation answered an authenticated workspace probe. It is a
 point-in-time session check; it does not establish Lean worker readiness or successful elaboration.
 `unresponsive` means the endpoint did not validate as the expected generation; this includes
@@ -668,10 +668,20 @@ reaping. Abnormal session state reports explicit recovery guidance.
 
 Successful `serve`, `status`, `stop`, and `recover` commands emit the same top-level
 `{"ok": true, "result": ...}` shape. `serve` reports the public running session rather than its
-private backend warm-up request. `stop` reports whether it committed the transition to `stopping`;
-repeating it while already stopping returns `changed: false`. If the transition commits but its
-immediate authenticated shutdown delivery fails, the successful stopping result includes a typed
-warning. Recovery reports `state: "absent"` and whether it changed the selected session fence.
+private backend warm-up request. The first `stop` reports `state: "stopping"` and `changed: true`
+when it commits the shutdown request; this acknowledges the request, not completed cleanup.
+If the transition commits but its immediate authenticated shutdown delivery fails, the successful
+stopping result includes a typed warning. Recovery reports `state: "absent"` and whether it changed
+the selected session fence.
+
+A retained shutdown descriptor means completion is unconfirmed. `status` reports `recoveryRequired`;
+repeated `stop`, `serve`, and attached commands fail with `sessionRecoveryRequired` (exit `1`),
+the exact generation and a recovery command. This applies while an owner is finishing cleanup as
+well as after owner loss; it does not claim the owner died. Let the original owner finish, or have
+the client supervisor perform full cleanup of the original generation. Independently establish that
+the owner, daemon and every other producer stopped before recovering any remaining descriptor.
+Recovery still refuses a responding or uncertain endpoint. Clients should not wait indefinitely
+for a retained shutdown record to prove active progress; no automatic takeover is performed.
 
 The default session descriptor and lock live in `<root>/.beam`. This is intentional for
 project-scoped agent sandboxes: clients that can access the same workspace can discover the same

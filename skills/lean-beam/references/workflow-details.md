@@ -179,6 +179,11 @@ What is not a valid checkpoint target:
   matching-root descriptor marked `live` fails with `setupError`, recorded/requested configuration hashes,
   and an exact `status` remedy. This does not establish owner liveness. `status` state `running`
   means an authenticated workspace probe succeeded, not that Lean elaboration is ready or complete
+- the first successful `stop` acknowledges a shutdown request with `state: "stopping"`. A retained
+  shutdown descriptor means completion is unconfirmed: `status` reports `recoveryRequired`, and
+  repeated stop or attachment gives `sessionRecoveryRequired` with the exact generation and remedy.
+  Let the original owner finish, or perform full supervised cleanup of every original producer
+  before recovering any remaining descriptor. Neither the record nor its age establishes owner death
 - `--text-file` and `--handle-file` require regular-file targets and allow ordinary symlinks;
   directories, devices, FIFOs, and symlink loops observed at admission fail with
   `invalidParams`/exit `2` before dispatch. The target check and later open are separate operations,

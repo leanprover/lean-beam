@@ -230,13 +230,13 @@ client protocol.
   explicit
   `lean-beam --root ROOT stop` changes the descriptor to `draining`, and that fence remains until normal
   owner cleanup has reaped the daemon leader after graceful or process-group teardown. If the daemon
-  instead exits abnormally during that drain, Beam restores the exact conservative fence so status
-  retains a fence rather than treating leader exit as successful cleanup.
+  instead exits abnormally during that drain, Beam preserves the exact draining descriptor for
+  explicit recovery. Failed cleanup never changes a draining generation back to live.
   Ordinary lookups take no mutation lock, create no control files, use the frozen workspace
   configuration, and preserve unsafe session state. A competing owner computes its proposed
   configuration but cannot replace a mismatched live owner.
-- `lean-beam status` projects internal descriptor observations onto five public states: `absent`,
-  `running`, `stopping`, `recoveryRequired`, and `unresponsive`. `running` means the selected generation
+- `lean-beam status` projects internal descriptor observations onto four public states: `absent`,
+  `running`, `recoveryRequired`, and `unresponsive`. `running` means the selected generation
   answered an authenticated workspace probe; it does not establish Lean worker readiness.
   `serve` refuses any existing descriptor without probing its endpoint and directs a matching-root
   descriptor marked `live` to `status` with `setupError`. `unresponsive` means an endpoint
@@ -246,8 +246,11 @@ client protocol.
   an explicit canonical `--root`; `stop` and `recover` require one. Successful lifecycle commands
   use one top-level `ok`/`result` envelope; `serve` projects its private backend warm-up onto the
   public running-session result instead of exposing broker workspace or epoch fields. `stop`
-  distinguishes a newly committed transition from an already-stopping session and retains committed
-  state in its result when immediate shutdown delivery produces a typed warning.
+  acknowledges a newly committed shutdown request as `stopping` and retains committed state in its
+  result when immediate shutdown delivery produces a typed warning. A retained shutdown descriptor
+  means completion is unconfirmed: `status` reports `recoveryRequired`, and repeated stop or
+  attachment returns exact-generation manual recovery guidance. This makes no owner-death inference;
+  clients may let owned cleanup finish or perform full supervised recovery after every producer stops.
 - Abnormal or ambiguous state is never reclaimed automatically. The descriptor remains as a fence
   after an unexpected broker/owner exit; an unexpected broker exit preserves the live descriptor,
   whose failed connection-establishment probe projects to `recoveryRequired`. After independently

@@ -245,21 +245,22 @@ def requestDaemonShutdown
     requestTimeoutMs (fun _ => pure ()) (.wrapper identity)
 
 /-- A failed endpoint probe never establishes producer settlement. Only connection establishment
-failure retains the existing independent-operator recovery path. -/
+failure before delivery began retains the existing independent-operator recovery path. -/
 inductive ProbeFailureDisposition where
   | manualRecoveryRequired
   | unresponsive
   deriving BEq, Repr
 
-def probeFailureDisposition : BrokerClientFailure → ProbeFailureDisposition
-  | .transport .connect _ => .manualRecoveryRequired
-  | .transport .send _ | .transport .receive _ | .invalidResponse _ | .streamCallback _
-  | .requestTimeout _ | .interrupted => .unresponsive
+def probeFailureDisposition (failure : BrokerClientFailure) : ProbeFailureDisposition :=
+  match failure.cause, failure.delivery with
+  | .transport .connect _, .notSent => .manualRecoveryRequired
+  | _, _ => .unresponsive
 
 inductive RegistryUnsafeReason where
   | endpointProbeFailed (failure : BrokerClientFailure)
   | wrongEndpointRoot (daemonRoot : String)
   | wrongGeneration (daemonRoot : String)
+  | shutdownUnconfirmed
   deriving Repr
 
 inductive RegistryBlocker where
@@ -269,7 +270,6 @@ inductive RegistryBlocker where
 inductive RegistryObservation where
   | absent
   | live (entry : SessionDescriptor)
-  | draining (entry : SessionDescriptor)
   | selectorMismatch (entry : SessionDescriptor)
   | recoveryRequired (blocker : RegistryBlocker)
   /-- The endpoint did not validate; this includes incomplete or malformed replies. -/
@@ -305,7 +305,7 @@ private def observeProjectRegistryAt
   | .invalid problem => pure <| .recoveryRequired (.invalid problem)
   | .draining entry =>
       admitControl entry
-      pure <| .draining entry
+      pure <| .recoveryRequired (.unusable entry .shutdownUnconfirmed)
   | .selectorMismatch entry => pure <| .selectorMismatch entry
   | .selected entry =>
       admitControl entry
@@ -759,6 +759,7 @@ def RegistryUnsafeReason.message : RegistryUnsafeReason → String
   | .wrongEndpointRoot daemonRoot => s!"the recorded endpoint serves another root: {daemonRoot}"
   | .wrongGeneration daemonRoot =>
       s!"the recorded endpoint serves another Beam generation for {daemonRoot}"
+  | .shutdownUnconfirmed => "shutdown was requested, but its completion is unconfirmed"
 
 private def existingSessionFailure (root sessionDir : System.FilePath)
     (entry : SessionDescriptor) (requestedConfigHash : String) : CliFailure :=
@@ -780,10 +781,6 @@ private def configMismatchMessage
     "Interrupt its foreground owner, then start a new one with the desired configuration:\n" ++
     wrapperSessionCommand root sessionDir .serve
 
-private def drainingOwnerMessage (root : System.FilePath) (entry : SessionDescriptor) : String :=
-  s!"Beam session {entry.daemonId} for {root} is draining; " ++
-    "wait for its foreground owner to exit before starting or attaching to another session"
-
 def sessionSelectorMismatchMessage
     (root sessionDir : System.FilePath)
     (entry : SessionDescriptor) : String :=
@@ -797,7 +794,8 @@ private def registryRecoveryMessage
     (detail : String) : String :=
   s!"Beam cannot safely use or replace the daemon registry for {root}: {detail}. " ++
     "The session remains fenced; preserve its descriptor and use explicit recovery with the same " ++
-    "--root and --session-dir selection after stopping the matching owner or daemon"
+    "--root and --session-dir selection after independently stopping the matching owner, daemon, " ++
+    "and all other producers"
 
 private def generationRecoveryMessage
     (root : System.FilePath)
@@ -897,7 +895,6 @@ private def markRegistryDraining
 
 private inductive ShutdownPlan where
   | none
-  | alreadyStopping
   | committed (entry : SessionDescriptor)
 
 /-- Delivery of the authenticated shutdown request after the draining fence was committed. -/
@@ -906,10 +903,9 @@ inductive ProjectDaemonStopDelivery where
   | rejected (failure : ResponseFailure)
   | failed (failure : BrokerClientFailure)
 
-/-- Authoritative state committed by an explicit wrapper-session stop operation. -/
+/-- An explicit shutdown request result; acknowledgement does not establish cleanup completion. -/
 inductive ProjectDaemonStopResult where
   | absent
-  | alreadyStopping
   | stopping (delivery : ProjectDaemonStopDelivery)
 
 /-- Fence and request shutdown of the exact wrapper-owned generation without PID signalling. -/
@@ -928,12 +924,12 @@ def shutdownRegisteredProjectDaemon
     | .live entry =>
         match ← markRegistryDraining control entry with
         | .committed => pure <| ShutdownPlan.committed entry
-        | .alreadyDraining => pure ShutdownPlan.alreadyStopping
+        | .alreadyDraining =>
+            throw <| (RegistryBlocker.unusable entry .shutdownUnconfirmed).cliFailure root control.dir
         | .changedUnderfoot =>
             throw <| CliFailure.setup <|
               "Beam session descriptor changed while committing its draining fence; " ++
                 "the shutdown request was not sent"
-    | .draining _ => pure ShutdownPlan.alreadyStopping
     | .selectorMismatch entry =>
         throw <| selectorMismatchFailure root control.dir entry
     | .recoveryRequired blocker =>
@@ -943,7 +939,6 @@ def shutdownRegisteredProjectDaemon
     : CliM ShutdownPlan).run
   match plan with
   | .none => pure .absent
-  | .alreadyStopping => pure .alreadyStopping
   | .committed entry =>
       let delivery ←
         match ← requestDaemonShutdown (registryEndpoint entry) entry.identity entry.capability with
@@ -1002,7 +997,9 @@ def recoverProjectDaemon
         match ← registeredGenerationStatus root entry with
         | .exact =>
             throw <| CliFailure.setup <|
-              s!"Beam session {entry.daemonId} still responds; stop its foreground owner or use authenticated shutdown"
+              s!"Beam session {entry.daemonId} still responds. Let its original owner finish cleanup, " ++
+                "or use its supervisor to stop the original generation. Independently verify that " ++
+                "the owner, daemon, and all other producers have stopped before manual recovery"
         | .wrongRoot daemonRoot =>
             throw <| CliFailure.setup <|
               s!"Beam session {entry.daemonId} has an authenticated endpoint that serves another root " ++
@@ -1086,7 +1083,8 @@ private def startOwnedProjectDaemon
   | .absent => pure ()
   | .selected entry =>
       throw <| existingSessionFailure desired.root control.dir entry desired.configHash
-  | .draining entry => throw <| CliFailure.setup (drainingOwnerMessage desired.root entry)
+  | .draining entry =>
+      throw <| (RegistryBlocker.unusable entry .shutdownUnconfirmed).cliFailure desired.root control.dir
   | .selectorMismatch entry =>
       throw <| selectorMismatchFailure desired.root control.dir entry
   | .invalid problem =>
@@ -1185,21 +1183,6 @@ private def markOwnedRegistryDraining
   catch _ =>
     pure ()
 
-private def restoreOwnedRegistryRecoveryFence
-    (root controlDir : System.FilePath)
-    (entry : SessionDescriptor) : IO Unit := do
-  try
-    withExistingProjectControl root (explicitControlDir? := some controlDir) fun control => do
-      match ← readRegistryAt control.registry with
-      | .current current =>
-          if sameRegistryGeneration current entry && current.lifecycle == .draining then
-            -- A current `live` descriptor whose endpoint no longer responds projects to the public
-            -- `recoveryRequired` state. Restore that conservative fence after a failed drain.
-            writeExistingRegistry control { current with lifecycle := .live }
-      | .absent | .invalid _ => pure ()
-  catch _ =>
-    pure ()
-
 private def finishOwnedProjectDaemon
     (root : System.FilePath)
     (controlDir : System.FilePath)
@@ -1234,7 +1217,6 @@ private def finishOwnedProjectDaemon
     let finish ← finishOwnedDaemonChild owned exitCodeRef
     match finish.stderr with
     | .sourceFailed err =>
-        restoreOwnedRegistryRecoveryFence root controlDir owned.entry
         IO.eprintln s!"Beam daemon stderr source failed during cleanup: {err}"
     | .pipeStillOpen =>
         let tail := (← owned.started.stderrCapture.snapshot).trimAscii.toString
@@ -1245,11 +1227,9 @@ private def finishOwnedProjectDaemon
         match finish.process with
         | .exitedCleanly | .forcedReaped =>
             removeOwnedRegistry root controlDir owned.entry
-        | .exitedAbnormally _ =>
-            restoreOwnedRegistryRecoveryFence root controlDir owned.entry
-        | .unreaped =>
-            -- This combination is unreachable through `finishDaemonLogDrain`, but keeping the
-            -- conservative policy explicit makes both product components independently total.
+        | .exitedAbnormally _ | .unreaped =>
+            -- Failed or incomplete cleanup leaves the shutdown fence unchanged for explicit
+            -- recovery. Never make a generation attachable again after shutdown begins.
             pure ()
 
 def withProjectDaemonOwner
@@ -1293,7 +1273,8 @@ private def lookupProjectDaemon
   | .absent =>
       throw <| (CliFailure.make "noLiveSession" (missingOwnerMessage root control.dir) 3).withRemedy
         (wrapperSessionCommand root control.dir .serve)
-  | .draining entry => throw <| CliFailure.setup (drainingOwnerMessage root entry)
+  | .draining entry =>
+      throw <| (RegistryBlocker.unusable entry .shutdownUnconfirmed).cliFailure root control.dir
   | .selectorMismatch entry =>
       throw <| selectorMismatchFailure root control.dir entry
   | .invalid problem =>

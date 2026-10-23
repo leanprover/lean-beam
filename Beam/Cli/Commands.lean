@@ -140,11 +140,6 @@ private def stopProjectSession (runtime : RuntimeAccess) (opts : CliOptions) : C
   | .absent =>
       printResponse <| Response.success <|
         toJson ({ state := .absent, changed := false } : SessionTransitionResult)
-  | .alreadyStopping =>
-      printResponse <| Response.success <| toJson ({
-        state := .stopping
-        changed := false
-      } : SessionTransitionResult)
   | .stopping delivery =>
       let warning? ←
         match delivery with
@@ -233,7 +228,6 @@ private def sessionStatus (opts : CliOptions) : CliM Unit := do
     match ← observeProjectRegistry root opts.explicitControlDir? with
     | .absent => pure <| mkSessionStatus .absent root sessionDir
     | .live entry => pure <| mkSessionStatus .running root sessionDir (some entry.daemonId)
-    | .draining entry => pure <| mkSessionStatus .stopping root sessionDir (some entry.daemonId)
     | .selectorMismatch entry =>
         throw <| selectorMismatchFailure root sessionDir entry
     | .recoveryRequired blocker =>

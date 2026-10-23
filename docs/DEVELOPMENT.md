@@ -1053,8 +1053,10 @@ backporting those fixes or changing the supported-version floor is separate supp
 
 Cancellation polling returns the stop before interruption diagnostics are printed. Forced owner
 cleanup attempts child termination and exit collection before printing its diagnostic. A stderr
-capture failure restores the recovery fence before printing the source-failure diagnostic. Other
-cleanup work can remain after these messages, so blocked diagnostics can delay finalization.
+capture failure preserves the session descriptor before printing the source-failure diagnostic.
+Once shutdown changes the descriptor from `live` to `draining`, failed cleanup leaves that exact
+record for explicit recovery; it never rolls the lifecycle back to `live`. Other cleanup work can
+remain after these messages, so blocked diagnostics can delay finalization.
 `finally` runs when an action returns or throws; it cannot interrupt a blocked synchronous write.
 Owner shutdown therefore remains cooperative, and repeated ordinary signals do not force exit.
 

@@ -107,8 +107,6 @@ private def collectDaemonPayload
       pure (stats, openDocs, warnings)
   | .absent =>
       pure (Json.null, Json.null, warnings.push "no live Beam daemon was available for stats/open-files")
-  | .draining _ =>
-      pure (Json.null, Json.null, warnings.push "the Beam daemon is draining")
   | .unresponsive entry failure =>
       pure (Json.null, Json.null, warnings.push
         s!"Beam session {entry.daemonId} endpoint did not validate: {failure.detail}")

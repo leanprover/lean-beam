@@ -42,16 +42,15 @@ def doctor (home : System.FilePath) (inspect : System.FilePath → CliM (List St
         "daemon status: live", s!"daemon pid: {entry.pid}",
         s!"daemon endpoint: {Beam.Daemon.endpointSummary (Beam.Daemon.registryEndpoint entry)}",
         s!"daemon config hash: {entry.configHash}"]
-    | .draining entry => pure ["daemon status: draining", s!"daemon generation: {entry.daemonId}"]
     | .unresponsive entry failure => pure ["daemon status: unresponsive (endpoint not validated)",
         s!"daemon generation: {entry.daemonId}", s!"daemon probe error: {failure.detail}"]
     | .absent => pure ["daemon status: absent"]
     | .selectorMismatch entry => pure ["daemon status: session selector mismatch",
         sessionSelectorMismatchMessage root (← Beam.Daemon.controlDirFor root opts.explicitControlDir?) entry]
-    | .recoveryRequired (.invalid problem) => pure ["daemon status: recovery required",
-        s!"session descriptor error: {problem.detail}"]
-    | .recoveryRequired (.unusable _ reason) => pure ["daemon status: unsafe",
-        s!"daemon safety error: {reason.message}"])
+    | .recoveryRequired blocker => pure <|
+        ["daemon status: recovery required"] ++
+        blocker.generation?.toList.map (fun generation => s!"daemon generation: {generation}") ++
+        [s!"daemon recovery detail: {blocker.statusDetail}"])
   lines := lines ++ (← daemonFailureIncidentDoctorLines root opts.explicitControlDir?)
   try
     let inspection ← inspect root

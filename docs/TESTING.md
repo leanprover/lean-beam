@@ -197,9 +197,10 @@ Current Beam coverage includes:
   serving the other root, configuration-drift preservation of the owner and active request,
   explicit stop, committed-state reporting after shutdown delivery failure, cancellation of requests
   active during shutdown or owner loss, exact-generation cleanup that preserves a replacement
-  registry, idempotent repeated stop, a published draining fence while
+  registry, recovery guidance for repeated stop after unconfirmed shutdown, a published draining fence while
   a daemon is paused, rejection of attachment or replacement while that generation remains
-  published, forced process-group cleanup of the daemon and its backend,
+  published, forced process-group cleanup of the daemon and its backend, explicit recovery of an
+  exact retained shutdown record only after the fixture has independently settled its producers,
   holder reporting and recovery-required projection after an unexpected daemon crash, abrupt owner
   death through inherited-pipe EOF,
   read-only crash-fence lookup, four-state status projection, ambiguity-safe human root inference,

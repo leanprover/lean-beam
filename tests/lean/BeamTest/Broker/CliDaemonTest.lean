@@ -1176,7 +1176,7 @@ private def writeTestRegistryEntry
 private def checkProbeFailureDispositions
     (root : System.FilePath) (entry : Beam.Daemon.SessionDescriptor) : IO Unit := do
   let error := IO.userError "probe fixture failure"
-  let samples : List (Beam.Broker.BrokerClientFailure × Beam.Cli.ProbeFailureDisposition) := [
+  let samples : List (Beam.Broker.BrokerClientFailureCause × Beam.Cli.ProbeFailureDisposition) := [
     (.transport .connect error, .manualRecoveryRequired),
     (.transport .send error, .unresponsive),
     (.transport .receive error, .unresponsive),
@@ -1185,27 +1185,36 @@ private def checkProbeFailureDispositions
     (.requestTimeout 2000, .unresponsive),
     (.interrupted, .unresponsive)]
   let control ← Beam.Daemon.controlDir root
-  for (failure, expected) in samples do
-    require s!"probe disposition for {repr failure}"
-      (Beam.Cli.probeFailureDisposition failure == expected)
-    let blocker := Beam.Cli.RegistryBlocker.unusable entry (.endpointProbeFailed failure)
-    let cli := blocker.cliFailure root control (some "original incident context")
-    let some data := cli.failure.error.data? | throw <| IO.userError "missing probe failure data"
-    requireJsonString "probe failure preserves generation" "generation" entry.daemonId data
-    let detail ← IO.ofExcept <| data.getObjValAs? String "detail"
-    requireSubstring "probe failure preserves detail" failure.detail detail
-    requireJsonString "probe failure preserves incident context" "diagnostics" "original incident context" data
-    require "probe failures exit 1" (cli.exitCode == 1)
-    match expected with
-    | .manualRecoveryRequired =>
-        require "manual recovery is conditional, not proof of settlement"
-          (cli.failure.error.code == "sessionRecoveryRequired" && cli.remedyCommand?.isSome)
-        let precondition ← IO.ofExcept <| data.getObjValAs? String "recoveryPrecondition"
-        requireSubstring "all producer lifetimes remain an operator prerequisite" "all other producers" precondition
-    | .unresponsive =>
-        require "uncertain probes never advertise recovery"
-          (cli.failure.error.code == "sessionUnresponsive" && cli.remedyCommand?.isNone &&
-            (data.getObjVal? "remedyCommand").toOption.isNone)
+  let deliveries : List (String × Beam.Broker.BrokerRequestDelivery) := [
+    ("not sent", .notSent),
+    ("send attempted", .unconfirmed),
+    ("response received", .responseReceived (Beam.Broker.Response.success Json.null))]
+  for (cause, beforeSendExpected) in samples do
+    for (deliveryLabel, delivery) in deliveries do
+      let failure : Beam.Broker.BrokerClientFailure := { cause, delivery }
+      let expected := match delivery with
+        | .notSent => beforeSendExpected
+        | .unconfirmed | .responseReceived _ => .unresponsive
+      require s!"probe disposition for {repr failure} ({deliveryLabel})"
+        (Beam.Cli.probeFailureDisposition failure == expected)
+      let blocker := Beam.Cli.RegistryBlocker.unusable entry (.endpointProbeFailed failure)
+      let cli := blocker.cliFailure root control (some "original incident context")
+      let some data := cli.failure.error.data? | throw <| IO.userError "missing probe failure data"
+      requireJsonString "probe failure preserves generation" "generation" entry.daemonId data
+      let detail ← IO.ofExcept <| data.getObjValAs? String "detail"
+      requireSubstring "probe failure preserves detail" failure.detail detail
+      requireJsonString "probe failure preserves incident context" "diagnostics" "original incident context" data
+      require "probe failures exit 1" (cli.exitCode == 1)
+      match expected with
+      | .manualRecoveryRequired =>
+          require "manual recovery is conditional, not proof of settlement"
+            (cli.failure.error.code == "sessionRecoveryRequired" && cli.remedyCommand?.isSome)
+          let precondition ← IO.ofExcept <| data.getObjValAs? String "recoveryPrecondition"
+          requireSubstring "all producer lifetimes remain an operator prerequisite" "all other producers" precondition
+      | .unresponsive =>
+          require "uncertain probes never advertise recovery"
+            (cli.failure.error.code == "sessionUnresponsive" && cli.remedyCommand?.isNone &&
+              (data.getObjVal? "remedyCommand").toOption.isNone)
 
 private def checkRecoveryGenerationRecheck : IO Unit := do
   let root := System.FilePath.mk s!"/tmp/beam-recovery-generation-test-{← IO.monoNanosNow}"
@@ -1284,6 +1293,64 @@ private def checkServeDoesNotProbe : IO Unit := do
         requireJsonString "serve identifies requested configuration" "requestedConfigHash" desired.configHash data
         require "serve preserves descriptor bytes" ((← IO.FS.readFile registry) == original)
       ) (backlog := 3)
+  finally
+    if ← root.pathExists then IO.FS.removeDirAll root
+
+private def checkUnconfirmedShutdown : IO Unit := do
+  let root := System.FilePath.mk s!"/tmp/beam-unconfirmed-shutdown ' {← IO.monoNanosNow}"
+  try
+    let endpoint ← withBrokerListener fun _ endpoint => pure endpoint
+    let .tcp port := endpoint
+    writeTestRegistryEntry root port
+    let registry ← Beam.Daemon.registryPath root
+    let control ← Beam.Daemon.controlDir root
+    let .current original ← Beam.Daemon.readRegistry root
+      | throw <| IO.userError "missing shutdown fixture descriptor"
+    let entry := { original with lifecycle := .draining }
+    let bytes := (toJson entry).pretty ++ "\n"
+    IO.FS.writeFile registry bytes
+    match ← Beam.Cli.observeProjectRegistry root with
+    | .recoveryRequired (.unusable observed .shutdownUnconfirmed) =>
+        require "shutdown observation preserves the generation" (observed == entry)
+    | _ => throw <| IO.userError "unfinished shutdown must not promise an active owner"
+    require "status preserves the unconfirmed shutdown descriptor" ((← IO.FS.readFile registry) == bytes)
+    let .error doctorFailure ← (Beam.Cli.doctor root
+        (fun _ => throw <| Beam.Cli.CliFailure.setup "fixture inspection unavailable")
+        { explicitRoot? := some root }).run
+      | throw <| IO.userError "doctor fixture inspection unexpectedly succeeded"
+    let some doctorData := doctorFailure.failure.error.data?
+      | throw <| IO.userError "doctor dropped session diagnostics"
+    let diagnostics ← IO.ofExcept <| doctorData.getObjValAs? (List String) "diagnostics"
+    require "doctor classifies unconfirmed shutdown as requiring recovery"
+      (diagnostics.contains "daemon status: recovery required")
+    require "doctor retains the exact shutdown generation"
+      (diagnostics.contains s!"daemon generation: {entry.daemonId}")
+    require "doctor preserves the unconfirmed shutdown descriptor" ((← IO.FS.readFile registry) == bytes)
+    let actions : List (String × Beam.Cli.CliM Unit) := [
+      ("repeated stop", do
+        discard <| Beam.Cli.shutdownRegisteredProjectDaemon (fun _ => pure ()) root),
+      ("attachment", Beam.Cli.withProjectDaemon (fun _ => pure entry.configHash) root
+        (fun _ => throw <| Beam.Cli.CliFailure.internal (IO.userError "unexpected attachment")))]
+    for (label, action) in actions do
+      let .error failure ← action.run | throw <| IO.userError s!"{label} ignored the shutdown fence"
+      require label (failure.exitCode == 1 && failure.failure.error.code == "sessionRecoveryRequired")
+      requireSubstring "shutdown does not infer owner death" "completion is unconfirmed" failure.failure.error.message
+      require "shutdown remedy selects the exact generation"
+        (failure.remedyCommand? == some (Beam.Cli.wrapperSessionCommand root control
+          (.recoverGeneration entry.daemonId)))
+      let some data := failure.failure.error.data? | throw <| IO.userError "missing shutdown recovery data"
+      requireJsonString "shutdown recovery generation" "generation" entry.daemonId data
+      let precondition ← IO.ofExcept <| data.getObjValAs? String "recoveryPrecondition"
+      requireSubstring "all producers must stop before recovery" "all other producers" precondition
+      require "observation preserves the shutdown fence" ((← IO.FS.readFile registry) == bytes)
+    -- This fixture owns no processes. Its closed endpoint and complete lack of producers are
+    -- independently established here; the observation above does not establish those facts.
+    match ← cliValue <| Beam.Cli.recoverProjectDaemon (fun _ => pure ()) root entry.daemonId with
+    | .recoveredGeneration generation archived =>
+        require "manual recovery retains the exact shutdown generation" (generation == entry.daemonId)
+        require "manual recovery preserves shutdown evidence" ((← IO.FS.readFile archived) == bytes)
+    | _ => throw <| IO.userError "explicit shutdown recovery did not quarantine the fixture"
+    require "explicit recovery removes the original fence" (!(← registry.pathExists))
   finally
     if ← root.pathExists then IO.FS.removeDirAll root
 
@@ -1826,6 +1893,7 @@ def main : IO Unit := do
   OutputTest.check
   checkBrokerConnectionClosedIncident
   checkServeDoesNotProbe
+  checkUnconfirmedShutdown
   checkTypedRegistryReads
   checkRecoveryGenerationRecheck
   checkDaemonFailureIncidentRetention

@@ -490,6 +490,12 @@ if ! grep -Fq "still responds" "$tmp1/live-recover.err"; then
   cat "$tmp1/live-recover.err" >&2
   exit 1
 fi
+if ! grep -Fq "supervisor" "$tmp1/live-recover.err" || \
+    grep -Fq "use authenticated shutdown" "$tmp1/live-recover.err"; then
+  echo "expected recovery refusal to direct original-owner cleanup without a stop/recover loop" >&2
+  cat "$tmp1/live-recover.err" >&2
+  exit 1
+fi
 if [ "$(read_json_field "$registry" daemonId)" != "$daemon1_id" ] || \
     ! kill -0 "$owner1_pid" 2>/dev/null || ! kill -0 "$daemon1_pid" 2>/dev/null; then
   echo "live-generation recovery refusal must preserve the owner and descriptor" >&2
@@ -1060,13 +1066,14 @@ assert_json_field_equals "resumed original generation" "$resumed_status" result.
 stop_hold_process true "$registry" "$tmp1/owner-unresponsive.err"
 
 # If the daemon exits abnormally after drain begins, leader exit is not proof of successful cleanup.
-# Restore the exact generation to a conservative recovery-required fence instead of admitting a
-# replacement owner.
+# Preserve the exact draining descriptor until explicit recovery instead of rewriting its lifecycle
+# or admitting a replacement owner.
 start_owner "$tmp1" "owner-failed-drain"
 failed_drain_daemon_pid="$(read_json_field "$registry" pid)"
 failed_drain_daemon_id="$(read_json_field "$registry" daemonId)"
 kill -STOP "$failed_drain_daemon_pid"
 paused_daemon_pid="$failed_drain_daemon_pid"
+failed_drain_backend_pids="$(pgrep -P "$failed_drain_daemon_pid" || true)"
 kill -INT "$hold_pid"
 for _ in $(seq 1 40); do
   if [ -e "$registry" ] && [ "$(read_json_field "$registry" lifecycle)" = "draining" ]; then
@@ -1079,6 +1086,7 @@ if [ ! -e "$registry" ] || [ "$(read_json_field "$registry" lifecycle)" != "drai
   cat "$registry" >&2
   exit 1
 fi
+cp "$registry" "$tmp1/failed-drain-descriptor.json"
 kill -KILL "$failed_drain_daemon_pid"
 paused_daemon_pid=""
 if ! wait_for_exit "$hold_pid" "owner after abnormal exit during drain" 80 0.05; then
@@ -1090,10 +1098,13 @@ hold_pid=""
 if ! wait_for_exit "$failed_drain_daemon_pid" "daemon after abnormal exit during drain" 40 0.05; then
   exit 1
 fi
-if [ ! -e "$registry" ] || \
-    [ "$(read_json_field "$registry" daemonId)" != "$failed_drain_daemon_id" ] || \
-    [ "$(read_json_field "$registry" lifecycle)" != "live" ]; then
-  echo "expected abnormal drain exit to preserve the exact recovery fence" >&2
+for backend_pid in $failed_drain_backend_pids; do
+  if ! wait_for_exit "$backend_pid" "backend after abnormal exit during drain" 40 0.05; then
+    exit 1
+  fi
+done
+if ! cmp -s "$tmp1/failed-drain-descriptor.json" "$registry"; then
+  echo "expected abnormal drain exit to preserve the exact draining descriptor" >&2
   if [ -e "$registry" ]; then cat "$registry" >&2; fi
   exit 1
 fi
@@ -1103,9 +1114,16 @@ assert_json_field_equals \
 assert_json_field_equals \
   "failed-drain session generation" "$failed_drain_status" \
   result.generation "$failed_drain_daemon_id"
+assert_json_field_equals \
+  "failed-drain session detail" "$failed_drain_status" \
+  result.detail "shutdown was requested, but its completion is unconfirmed"
 if "$beam_script" --root "$tmp1" serve \
     > "$tmp1/failed-drain-replacement.out" 2> "$tmp1/failed-drain-replacement.err"; then
   echo "expected failed-drain recovery fence to reject a replacement owner" >&2
+  exit 1
+fi
+if ! cmp -s "$tmp1/failed-drain-descriptor.json" "$registry"; then
+  echo "expected failed-drain status and rejected serve to preserve the exact descriptor" >&2
   exit 1
 fi
 failed_drain_recovery="$(
@@ -1113,6 +1131,11 @@ failed_drain_recovery="$(
 )"
 assert_json_field_equals \
   "failed-drain recovery" "$failed_drain_recovery" result.changed true
+failed_drain_archive="$(json_text_field "$failed_drain_recovery" result.quarantinedPath)"
+if ! cmp -s "$tmp1/failed-drain-descriptor.json" "$failed_drain_archive"; then
+  echo "expected failed-drain recovery to archive the exact draining descriptor" >&2
+  exit 1
+fi
 
 start_owner "$tmp1" "owner-draining-fence"
 draining_daemon_pid="$(read_json_field "$registry" pid)"
@@ -1142,13 +1165,18 @@ if ! kill -0 "$hold_pid" 2>/dev/null || ! kill -0 "$draining_daemon_pid" 2>/dev/
   exit 1
 fi
 draining_status="$("$beam_script" --root "$tmp1" status)"
-assert_json_field_equals "draining session status" "$draining_status" result.state stopping
+assert_json_field_equals "draining session status" "$draining_status" result.state recoveryRequired
 assert_json_field_equals \
   "draining session status generation" "$draining_status" result.generation "$draining_daemon_id"
-repeated_stop_json="$("$beam_script" --root "$tmp1" stop)"
-assert_json_field_equals "repeated session stop response" "$repeated_stop_json" ok true
-assert_json_field_equals "repeated session stop state" "$repeated_stop_json" result.state stopping
-assert_json_field_equals "repeated session stop changed" "$repeated_stop_json" result.changed false
+cp "$registry" "$tmp1/unfinished-shutdown-descriptor.json"
+if "$beam_script" --root "$tmp1" stop > "$tmp1/repeated-stop.out" 2> "$tmp1/repeated-stop.err"; then
+  echo "expected a repeated stop to report unconfirmed shutdown completion" >&2
+  exit 1
+fi
+assert_json_file_field_equals "repeated session stop" "$tmp1/repeated-stop.out" \
+  error.code sessionRecoveryRequired "$tmp1/repeated-stop.err"
+assert_json_file_field_equals "repeated session stop generation" "$tmp1/repeated-stop.out" \
+  error.data.generation "$draining_daemon_id" "$tmp1/repeated-stop.err"
 draining_lookup_out="$tmp1/draining-lookup.out"
 draining_lookup_err="$tmp1/draining-lookup.err"
 if "$beam_script" --root "$tmp1" stats > "$draining_lookup_out" 2> "$draining_lookup_err"; then
@@ -1156,7 +1184,7 @@ if "$beam_script" --root "$tmp1" stats > "$draining_lookup_out" 2> "$draining_lo
   cat "$draining_lookup_out" >&2
   exit 1
 fi
-if ! grep -Fq "is draining" "$draining_lookup_err"; then
+if ! grep -Fq "completion is unconfirmed" "$draining_lookup_err"; then
   echo "expected ordinary commands to report the draining generation" >&2
   cat "$draining_lookup_err" >&2
   exit 1
@@ -1169,7 +1197,7 @@ if "$beam_script" --root "$tmp1" serve \
   cat "$replacement_owner_out" >&2
   exit 1
 fi
-if ! grep -Fq "is draining" "$replacement_owner_err"; then
+if ! grep -Fq "completion is unconfirmed" "$replacement_owner_err"; then
   echo "expected replacement-owner rejection to identify the draining generation" >&2
   cat "$replacement_owner_err" >&2
   exit 1
@@ -1178,6 +1206,10 @@ if [ "$(read_json_field "$registry" daemonId)" != "$draining_daemon_id" ] || \
     [ "$(read_json_field "$registry" pid)" != "$draining_daemon_pid" ]; then
   echo "replacement attempt changed the draining generation fence" >&2
   cat "$registry" >&2
+  exit 1
+fi
+if ! cmp -s "$tmp1/unfinished-shutdown-descriptor.json" "$registry"; then
+  echo "rejected stop, attachment, or serve changed the unfinished descriptor" >&2
   exit 1
 fi
 if ! wait_for_exit "$hold_pid" "owner after forced draining-fence cleanup" 300 0.05; then
@@ -1208,6 +1240,20 @@ fi
 if [ -e "$registry" ]; then
   echo "expected the draining fence to disappear only after the daemon was reaped" >&2
   cat "$registry" >&2
+  exit 1
+fi
+
+# Restore the exact unfinished record only after the supervised owner, daemon, backends and
+# request have all settled. Clients can then explicitly recover this abandoned fence.
+cp "$tmp1/unfinished-shutdown-descriptor.json" "$registry"
+abandoned_status="$("$beam_script" --root "$tmp1" status)"
+assert_json_field_equals "abandoned shutdown status" "$abandoned_status" result.state recoveryRequired
+assert_json_field_equals "abandoned shutdown generation" "$abandoned_status" result.generation "$draining_daemon_id"
+abandoned_recovery="$("$beam_script" --root "$tmp1" recover --generation "$draining_daemon_id")"
+assert_json_field_equals "abandoned shutdown recovery" "$abandoned_recovery" result.changed true
+abandoned_archive="$(json_text_field "$abandoned_recovery" result.quarantinedPath)"
+if ! cmp -s "$tmp1/unfinished-shutdown-descriptor.json" "$abandoned_archive"; then
+  echo "abandoned shutdown recovery did not preserve the exact descriptor" >&2
   exit 1
 fi
 
