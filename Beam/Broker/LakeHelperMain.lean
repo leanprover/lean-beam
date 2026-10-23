@@ -34,13 +34,6 @@ private def runPrepareSave (resolve : System.FilePath → IO Beam.Runtime.Descri
   | .ok spec => pure <| Response.success (toJson spec)
   | .error failure => pure failure.toResponse
 
-private def runWriteSaveTrace (resolve : System.FilePath → IO Beam.Runtime.Description)
-    (directory : System.FilePath) : IO Response := do
-  let request : LakeHelperWriteTraceRequest ← readRequest directory
-  discard <| resolve request.root
-  lakeHelperWriteLeanSaveTrace request
-  pure <| Response.success (toJson ({} : LakeHelperAck))
-
 /-- Arm owner-loss handling before installation binding or arbitrary Lake configuration code. -/
 def main (bind : IO (System.FilePath → IO Beam.Runtime.Description))
     (args : List String) : IO Unit := do
@@ -60,7 +53,6 @@ def main (bind : IO (System.FilePath → IO Beam.Runtime.Description))
     match operation with
     | .serverEnv => runServerEnv resolve directory
     | .prepareSave => runPrepareSave resolve directory
-    | .writeSaveTrace => runWriteSaveTrace resolve directory
   catch error => pure <| BrokerFailure.toResponse {
     code := .internalError, message := error.toString
   }

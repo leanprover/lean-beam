@@ -150,7 +150,7 @@ filesystem or lock behavior. The implementation boundaries below complement the 
 
 ## Publication implementation
 
-The worker and Lake helper receive per-attempt private destinations. The worker validates duplicate
+The worker receives per-attempt private destinations. The worker validates duplicate
 paths and module companion shape before writing. A temporary directory adapts `Lean.writeModule`'s
 fixed companion names to independently supplied paths; its cleanup finishes before the terminal
 handler acknowledgement. Serialization writes directly into the private destinations, so a failed
@@ -161,10 +161,10 @@ Every private output candidate ends in `.candidate`, including `.ilean` candidat
 The internal artifact request omits the caller's cancellation reference. Cancellation is recorded
 by the public request registry but is not forwarded to the worker; the broker awaits its typed
 terminal completion before disposing acknowledged private paths. A cancellation check then rejects
-the save before starting trace preparation. The trace helper likewise runs without caller
-cancellation during its existing 30-second response wait. Its acknowledged success permits cleanup;
-the final publication guard still rejects a cancelled caller. Worker/channel failure or a helper
-timeout does not establish producer settlement and may retain the attempt's directories and claims.
+the save before starting trace preparation. The broker finalizes the private trace locally, then
+checks cancellation before claiming canonical publication. Local finalization has no outstanding
+producer when it returns, including on failure. Worker/channel failure does not establish producer
+settlement and may retain the attempt's directories and claims.
 
 After preparation completes, the broker validates the captured workspace generation, backend
 owner, accepted document basis, and cancellation state, then claims publication. That final
@@ -232,8 +232,7 @@ The four post-serialization cancellation schedules in `SaveOwnerTest` hold the r
 accept public cancellation, and prove that close-save reservations remain held while a sibling
 continuation progresses. On release, ordinary save and close-save, with and without module companions, must
 report cancellation, preserve canonical bytes/mtimes/hash caches and the healthy owner, and remove
-every private directory and claim. The trace-helper cancellation schedule similarly releases real
-helper work before asserting cleanup. These checks do not prove cleanup after arbitrary daemon
+every private directory and claim. These checks do not prove cleanup after arbitrary daemon
 shutdown or channel loss.
 
 Bare JSON-RPC errors, including watchdog owner-loss errors, do not acknowledge handler completion.

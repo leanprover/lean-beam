@@ -161,6 +161,7 @@ run_quiet_test installation-entrypoints python3 tests/test-installation-entrypoi
 run_quiet_test lake-helper-lifetime python3 tests/lib/process_watchdog.py \
   --timeout 180 -- python3 tests/test-lake-helper-lifetime.py
 run_quiet_test lake-save-preflight python3 tests/test-lake-save-preflight.py
+run_quiet_test save-trace-format python3 tests/test-save-trace-format.py
 # Additional gated cancellation schedules need aggregate headroom under load; case deadlines stay bounded.
 run_quiet_test save-finalization python3 tests/lib/process_watchdog.py \
   --timeout 240 -- python3 tests/test-save-finalization.py

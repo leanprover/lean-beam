@@ -575,24 +575,18 @@ private def checkLakeHelperOutputCodec : IO Unit := do
   for includeOptional in [false, true] do
     let fields := required ++ if includeOptional then optional else []
     let wire := Json.mkObj <| fields.map (fun field => (field, toJson (path field))) ++ [
-      ("root", toJson pathRoot), ("traceMetadata", Json.mkObj [("depHash", toJson ("retained" : String))]),
+      ("traceMetadata", Json.mkObj [("depHash", toJson ("retained" : String))]),
       ("moduleName", toJson ("Saved" : String))
     ]
-    let decoded ← IO.ofExcept <| fromJson? (α := LakeHelperSaveSpec) wire
+    let decoded ← IO.ofExcept <| fromJson? (α := LeanSaveSpec) wire
     require "helper specification preserves the flat golden wire shape"
       ((toJson decoded).compress == wire.compress)
-    let broker : LeanSaveSpec := { toLakeHelperSaveSpec := decoded, helper := "/fixture/helper" }
-    let request := broker.toLakeHelperSaveSpec.toLakeHelperWriteTraceRequest
-    let again ← IO.ofExcept <| fromJson? (α := LakeHelperWriteTraceRequest) (toJson request)
-    require "helper to broker to writer preserves outputs" (again.toLeanSaveOutputs == decoded.toLeanSaveOutputs)
-    require "helper to broker to writer preserves trace metadata"
-      (again.traceMetadata.compress == decoded.traceMetadata.compress)
     for field in fields do
       require "path data preserves Unicode, quotes, backslashes and native spelling"
-        ((← IO.ofExcept <| (toJson again).getObjValAs? String field) == path field)
+        ((← IO.ofExcept <| (toJson decoded).getObjValAs? String field) == path field)
     for field in optional do
       require "optional fields have explicit absence semantics"
-        (((toJson again).getObjVal? field).isOk == includeOptional)
+        (((toJson decoded).getObjVal? field).isOk == includeOptional)
 
 private def checkLakeSaveTraceOutputs : IO Unit := do
   let temp ← IO.Process.output { cmd := "mktemp", args := #["-d"] }
@@ -608,8 +602,8 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
       IO.FS.writeFile path s!"artifact {path.fileName.getD ""}\n"
     let depTrace := Lake.BuildTrace.ofHash (Lake.Hash.ofNat 73) "save inputs"
     let trace := root / "Saved.trace"
-    let request : LakeHelperWriteTraceRequest := {
-      root := "/fixture"
+    let spec : LeanSaveSpec := {
+      moduleName := "Saved"
       oleanPath := olean
       ileanPath := ilean
       cPath := c
@@ -618,7 +612,7 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
       tracePath := trace
       traceMetadata := toJson (Lake.BuildMetadata.ofBuild depTrace Json.null {})
     }
-    lakeHelperWriteLeanSaveTrace request
+    writeLeanSaveTrace spec
     let metadata ← IO.ofExcept <| Lake.BuildMetadata.parse (← IO.FS.readFile trace)
     require "save trace preserves dependency hash" (metadata.depHash == depTrace.hash)
     let some outputs := metadata.outputs?
@@ -634,57 +628,19 @@ private def checkLakeSaveTraceOutputs : IO Unit := do
     let actual ← IO.ofExcept <| outputs.getObjVal? "rs"
     let expected := toJson (Lake.artifactWithExt (← Lake.computeHash irSig) "ir.sig")
     require "save trace includes current IR signature" (actual.compress == expected.compress)
+    let original ← IO.FS.readBinFile trace
+    let unsupported := { spec with traceMetadata :=
+      spec.traceMetadata.setObjVal! "schemaVersion" (toJson ("unknown trace format" : String)) }
+    let rejected ← try writeLeanSaveTrace unsupported *> pure false catch _ => pure true
+    require "unknown target trace schema is rejected" rejected
+    require "unsupported schema preserves the prior trace" ((← IO.FS.readBinFile trace) == original)
     IO.FS.removeFile trace
     IO.FS.removeFile c
-    let rejected ← try lakeHelperWriteLeanSaveTrace request *> pure false catch _ => pure true
+    let rejected ← try writeLeanSaveTrace spec *> pure false catch _ => pure true
     require "missing C output rejects save trace" rejected
     require "missing C output must not publish trace" (!(← trace.pathExists))
   finally
     IO.FS.removeDirAll root
-
-private def checkTypedLakeSaveTraceFailure : IO Unit := do
-  let missingHelper :=
-    System.FilePath.mk s!"/tmp/beam-missing-lake-helper-{← IO.monoNanosNow}"
-  let unusedPath := System.FilePath.mk "/tmp/beam-unused-save-artifact"
-  let request : LakeHelperWriteTraceRequest := {
-    root := "/fixture"
-    oleanPath := unusedPath
-    ileanPath := unusedPath
-    cPath := unusedPath
-    tracePath := unusedPath
-    traceMetadata := Json.null
-  }
-  let spec : LeanSaveSpec := {
-    moduleName := "Unused"
-    oleanPath := unusedPath
-    ileanPath := unusedPath
-    cPath := unusedPath
-    tracePath := unusedPath
-    helper := missingHelper
-    root := "/fixture", traceMetadata := request.traceMetadata
-  }
-  -- Two failed process starts may fail at different steps. Use a deterministic helper failure
-  -- to test preservation, without depending on process startup and pipe-close timing.
-  let cancelled ← IO.mkRef true
-  let control : LakeHelperControl := { cancelRef? := some cancelled }
-  let expected ← runLakeHelperWriteSaveTrace missingHelper request control
-  let actual ← writeLeanSaveTrace spec control
-  match expected, actual with
-  | .error (.operation expected), .error (.operation actual)
-  | .error (.cleanup expected), .error (.cleanup actual) =>
-      require "cancelled helper has the expected failure code" (expected.code == .requestCancelled)
-      require "write save trace should preserve the helper failure code"
-        (actual.code == expected.code)
-      require "write save trace should preserve the helper failure message"
-        (actual.message == expected.message)
-      require "write save trace should preserve the helper failure data"
-        (actual.data? == expected.data?)
-  | .error _, .error _ =>
-      throw <| IO.userError "write save trace changed the helper failure category"
-  | .ok _, _ =>
-      throw <| IO.userError "cancelled target Lake helper unexpectedly succeeded"
-  | _, .ok _ =>
-      throw <| IO.userError "write save trace unexpectedly discarded the helper failure"
 
 private def checkDocumentVersionMismatchErrorData : IO Unit := do
   let data := documentVersionMismatchErrorData 1 2
@@ -3397,7 +3353,6 @@ def main : IO Unit := do
   checkFailureResponseConversions
   checkLakeHelperOutputCodec
   checkLakeSaveTraceOutputs
-  checkTypedLakeSaveTraceFailure
   checkDocumentVersionMismatchErrorData
   checkReadinessBoundary
   checkStaleDirectDepHints

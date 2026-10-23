@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Lean FRO LLC. All rights reserved.
 # Released under Apache 2.0 license as described in the file LICENSE.
-"""Lake loading follows request cancellation; trace publication keeps its deadline."""
+"""Lake loading follows request cancellation and preserves operation outcomes through cleanup."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -108,7 +108,7 @@ def cleanup_receipts(base, fixture):
         print("cleanup receipt permission fault: requires unprivileged POSIX permissions", flush=True)
         return
     responses = [
-        {"ok": True, "result": {"traceWritten": True, "tracePath": "fixture.trace"}},
+        {"ok": True, "result": {"env": [], "moreServerArgs": []}},
         {"ok": False, "error": {"code": "contentModified", "message": "fixture changed",
                                  "data": {"reason": "fixture", "snapshot": 42}}},
     ]
@@ -118,7 +118,7 @@ def cleanup_receipts(base, fixture):
         marker, receipt = root / "operation-finished", root / "job-receipt.json"
         request = {"response": response, "marker": str(marker), "receipt": str(receipt)}
         with (root / "owner.out").open("w") as stdout, (root / "owner.err").open("w") as stderr:
-            owner = subprocess.Popen([str(fixture), str(fixture), "write-save-trace", "5000"],
+            owner = subprocess.Popen([str(fixture), str(fixture), "server-env"],
                                      stdin=subprocess.PIPE, stdout=stdout, stderr=stderr, text=True,
                                      env=child_environment(root))
             try:
@@ -158,39 +158,27 @@ def direct(base, compiler, helper):
     subprocess.run([str(fixture), "--helper-outcomes"], check=True, timeout=30)
     subprocess.run([str(fixture), "--process-job-exited-groups"], check=True, timeout=30)
     cleanup_receipts(base, fixture)
-    for scenario in [f"early-deadline-{i}" for i in range(8)] + [
-            "success", "abrupt", "deadline", "cancel", "parent-loss"]:
-        early = scenario.startswith("early-deadline-")
+    for scenario in ["success", "abrupt", "cancel", "parent-loss"]:
         root = project(base, compiler, "direct-" + scenario,
                        stall=scenario not in ["success", "abrupt"], abrupt=scenario == "abrupt")
         cancelled = root / "cancel"
-        timeout = "0" if early else "15000" if scenario == "deadline" else "30000"
-        # No override for parent loss: exercise the production server-env wait policy.
         arguments = [str(fixture), str(helper), "server-env"]
-        if scenario != "parent-loss":
-            arguments.append(timeout)
         if scenario == "cancel":
             arguments.append(str(cancelled))
         stdout_path, stderr_path = root / "owner.out", root / "owner.err"
-        before_exec = None
-        if early and sys.platform.startswith("linux"):
-            # Delay the new child's setsid relative to its owner's immediate cleanup.
-            affinity = {min(os.sched_getaffinity(0))}
-            before_exec = lambda: os.sched_setaffinity(0, affinity)
         # File capture avoids waiting on an unread, platform-sized stdout pipe buffer.
         with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
             owner = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=stdout,
-                                     stderr=stderr, text=True, env=child_environment(root),
-                                     preexec_fn=before_exec)
+                                     stderr=stderr, text=True, env=child_environment(root))
             owner.stdin.write(json.dumps({"root": str(root)}))
             owner.stdin.close()
             try:
-                pids = [] if early else entered(root, owner)
+                pids = entered(root, owner)
                 if scenario == "cancel":
                     cancelled.touch()
                 elif scenario == "parent-loss":
                     owner.kill()
-                owner.wait(timeout=5 if early else 20)
+                owner.wait(timeout=20)
                 if scenario != "parent-loss":
                     assert owner.returncode == 0, stderr_path.read_text()
                     response = json.loads(stdout_path.read_text(encoding="utf-8"))
@@ -206,11 +194,7 @@ def direct(base, compiler, helper):
                     elif scenario == "abrupt":
                         assert response["error"]["code"] == "workerExited", response
                         assert response["error"]["data"]["recovery"] == {"kind": "newHelper"}, response
-                    else:
-                        assert "timed out" in response["error"]["message"], response
                 stopped(pids)
-                if early:
-                    assert not (root / "helper.pid").exists(), "expired request reached project code"
                 print("owned helper:", scenario, "passed", flush=True)
             finally:
                 if owner.poll() is None:

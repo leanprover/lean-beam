@@ -9,6 +9,7 @@ import Beam.Broker.LakeHelperMain
 import BeamTest.TestHarness
 import BeamTest.Broker.SaveOwnerTest
 import BeamTest.Broker.PrivatePublicationTest
+import BeamTest.Broker.SaveTraceFixture
 import BeamTest.Broker.WorkerRecoveryTest
 
 private structure Fixture where
@@ -31,8 +32,6 @@ private def gateHelper (args : List String) : IO Unit := do
   let some gateDirectory ← IO.getEnv "BEAM_TEST_SAVE_GATE_DIR" | return
   let gateDirectory := System.FilePath.mk gateDirectory
   unless ← (gateDirectory / "enabled").pathExists do return
-  if operation == "write-save-trace" then
-    IO.FS.writeFile (gateDirectory / "trace-entered") "entered"
   unless (← IO.getEnv "BEAM_TEST_SAVE_GATE_OP") == some operation do return
   let ready := Lean.Json.mkObj [
     ("job", Lean.toJson directory)
@@ -60,6 +59,8 @@ def main (args : List String) : IO Unit := do
     toolchain := "library fixture", identity := ⟨(← IO.currentDir), "library fixture"⟩
   }
   match fixture.args with
+  | ["save-trace-fixture", root] =>
+      BeamTest.Broker.SaveTraceFixture.write (System.FilePath.mk root)
   | ["worker-recovery-test", root] =>
       BeamTest.Broker.WorkerRecoveryTest.run description (← Beam.resolveExistingPath root)
   | ["private-publication-test", root] =>

@@ -121,18 +121,6 @@ private def liftBrokerFailureIO (act : IO (Except BrokerFailure α)) : HandlerM 
     | .ok value => pure <| .ok value
     | .error failure => pure <| .error failure.toResponseFailure
 
-namespace Internal
-
-/-- Deferred trace completion still reports failed cleanup after caller cancellation. Ordinary
-operation failures with clean cleanup retain the existing cancellation presentation. -/
-def presentLakeHelperFailure (cancelRef? : Option (IO.Ref Bool))
-    (failure : LakeHelperJob.Failure) : IO ResponseFailure :=
-  match failure with
-  | .cleanup cause => pure cause.toResponseFailure
-  | .operation cause => RequestCancellation.backendFailure cancelRef? cause.toResponseFailure
-
-end Internal
-
 private def withFailureProgress
     (fileProgress? : Option SyncFileProgress)
     (act : HandlerM α) : HandlerM α :=
@@ -2387,17 +2375,10 @@ private def saveOleanCore
         s!"save_olean saved text hash {saveResult.textHash}, expected synced hash {started.documentHash}")
         |>.withOptionalFileProgress barrierProgress?
     withFailureProgress barrierProgress? <| liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
-    liftHandlerIO <| producersSettled.set false
-    -- Defer caller cancellation through the helper's existing bounded trace wait, so a normal
-    -- cancellation can dispose the private outputs after their producer has actually finished.
-    withFailureProgress barrierProgress? do
-      match ← liftHandlerIO <| writeLeanSaveTrace privateSpec (← requestHelperControl none req.output?) with
-      | .ok () => pure ()
-      | .error failure =>
-          let failure ← liftHandlerIO <|
-            Internal.presentLakeHelperFailure req.cancelRef? failure
-          throw failure
-    liftHandlerIO <| producersSettled.set true
+    -- Local finalization has no outstanding producer when it returns, including on failure.
+    let traceResult ← liftHandlerIO <| (writeLeanSaveTrace privateSpec).toBaseIO
+    withFailureProgress barrierProgress? <| liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
+    withFailureProgress barrierProgress? <| liftHandlerIO <| IO.ofExcept traceResult
     liftHandlerIO plan.ready
     withFailureProgress barrierProgress? <| liftFailureIO <|
       Internal.withDocumentPublication server started.document.session started.document.uri

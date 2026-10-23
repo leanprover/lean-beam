@@ -65,10 +65,6 @@ structure LocalLeanSaveSpec extends LeanSaveOutputs where
   moduleName : String
   depTrace : BuildTrace
 
-/-- Broker-side preparation retains only serialized target metadata and its admitted helper. -/
-structure LeanSaveSpec extends LakeHelperSaveSpec where
-  helper : FilePath
-
 structure SourceSnapshot where
   hash : Hash
   mtime : MTime
@@ -218,9 +214,7 @@ def requestSaveSpecification
     sourceMTimeSec := snapshot.mtime.sec
     sourceMTimeNsec := snapshot.mtime.nsec.toNat
   }
-  match ← runLakeHelperPrepareSave helper request control with
-  | .error failure => pure <| .error failure
-  | .ok spec => pure <| .ok { toLakeHelperSaveSpec := spec, helper }
+  runLakeHelperPrepareSave helper request control
 
 private def hashDescr (path : FilePath) (ext : String) : IO ArtifactDescr :=
   return artifactWithExt (← computeHash path) ext
@@ -257,25 +251,23 @@ private def writeTraceAtomically
       pure ()
     throw e
 
-private def writeLeanSaveTraceWithMetadata
-    (request : LakeHelperWriteTraceRequest) : IO Unit := do
-  let metadata : BuildMetadata ← IO.ofExcept <| fromJson? request.traceMetadata
-  let outputs ← leanSaveOutputs request.toLeanSaveOutputs
-  let metadata := { metadata with outputs? := some <| toJson outputs }
-  let tracePath := request.tracePath
-  writeTraceAtomically tracePath fun stagedTrace =>
-    BuildMetadata.writeFile stagedTrace metadata
-
-/-- Broker trace publication always crosses the helper boundary. -/
-def writeLeanSaveTrace (spec : LeanSaveSpec) (control : LakeHelperControl := {}) :
-    IO (Except LakeHelperJob.Failure Unit) := do
-  let request : LakeHelperWriteTraceRequest := spec.toLakeHelperSaveSpec.toLakeHelperWriteTraceRequest
-  match ← runLakeHelperWriteSaveTrace spec.helper request control with
-  | .ok _ => pure (.ok ())
-  | .error failure => pure (.error failure)
+/-- Finalize the target-prepared trace locally after the artifact producer has settled.
+The supported Lake trace schema and artifact hashes are qualified across supported SDKs. -/
+def writeLeanSaveTrace (spec : LeanSaveSpec) : IO Unit := do
+  let schema ← IO.ofExcept <| spec.traceMetadata.getObjValAs? String "schemaVersion"
+  let expectedSchema ← IO.ofExcept <|
+    (toJson (BuildMetadata.ofStub (Hash.ofNat 0))).getObjValAs? String "schemaVersion"
+  unless schema == expectedSchema do
+    throw <| IO.userError s!"unsupported Lake trace schema '{schema}'; use lake build instead"
+  let outputs ← leanSaveOutputs spec.toLeanSaveOutputs
+  -- Preserve the target's dependency metadata; only completed output descriptors change.
+  let metadata := spec.traceMetadata.setObjVal! "outputs" (toJson outputs)
+  writeTraceAtomically spec.tracePath fun stagedTrace => do
+    IO.FS.createDirAll (stagedTrace.parent.getD ".")
+    IO.FS.writeFile stagedTrace metadata.pretty
 
 def lakeHelperSaveSpec
-    (request : LakeHelperSaveRequest) (leanCmd : String) : IO (Except BrokerFailure LakeHelperSaveSpec) := do
+    (request : LakeHelperSaveRequest) (leanCmd : String) : IO (Except BrokerFailure LeanSaveSpec) := do
   let some sourceHash := Hash.ofString? request.sourceHash
     | return .error {
         code := .invalidParams
@@ -296,13 +288,9 @@ def lakeHelperSaveSpec
   | .ok spec =>
       let traceMetadata := toJson (BuildMetadata.ofBuild spec.depTrace Json.null {})
       pure <| .ok {
-        root := FilePath.mk request.root
         moduleName := spec.moduleName
         toLeanSaveOutputs := spec.toLeanSaveOutputs
         traceMetadata
       }
-
-def lakeHelperWriteLeanSaveTrace (request : LakeHelperWriteTraceRequest) : IO Unit :=
-  writeLeanSaveTraceWithMetadata request
 
 end Beam.Broker

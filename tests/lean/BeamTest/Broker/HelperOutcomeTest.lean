@@ -16,9 +16,9 @@ private def requireIOError (label : String) (result : Except IO.Error α)
   | .error (.userError actual) => require label (actual == message)
   | _ => throw <| IO.userError s!"{label}: missing original IO error"
 
-private def failureOf (result : Except LakeHelperJob.Failure α) : IO BrokerFailure :=
+private def failureOf (result : Except BrokerFailure α) : IO BrokerFailure :=
   match result with
-  | .error failure => pure failure.toBrokerFailure
+  | .error failure => pure failure
   | .ok _ => throw <| IO.userError "expected helper failure"
 
 private def checkScopeOutcomes : IO Unit := do
@@ -148,13 +148,12 @@ private def checkHelperOutcomes : IO Unit := do
             if outputFails then .error (IO.userError "output cleanup") else .ok ()
           let completed := { completed with outputCleanup }
           require "directory removal runs once" ((← removals.get) == 1)
-          let projected : Except LakeHelperJob.Failure Json :=
-            LakeHelperJob.Internal.projectCompletion .writeSaveTrace completed
+          let projected : Except BrokerFailure Json :=
+            LakeHelperJob.Internal.projectCompletion .prepareSave completed
           let clean : LakeHelperJob.Completion := {
             completed with jobCleanup := .ok (), directoryCleanup := .ok (), outputCleanup := .ok () }
           let original : Except BrokerFailure Json :=
-            (LakeHelperJob.Internal.projectCompletion .writeSaveTrace clean).mapError
-              LakeHelperJob.Failure.toBrokerFailure
+            LakeHelperJob.Internal.projectCompletion .prepareSave clean
           match outcome, original with
           | .ok (.successResult expected _), .ok actual =>
               require "helper success decodes unchanged" (actual.compress == expected.compress)
@@ -197,13 +196,13 @@ private def checkHelperOutcomes : IO Unit := do
             | .ok expected, .ok actual => require "clean success unchanged" (actual.compress == expected.compress)
             | .error expected, .error actual =>
               require "clean typed failure unchanged"
-                ((toJson actual.toBrokerFailure.toResponse).compress == (toJson expected.toResponse).compress)
+                ((toJson actual.toResponse).compress == (toJson expected.toResponse).compress)
             | _, _ => throw <| IO.userError "clean operation changed category"
   let completed ← LakeHelperJob.Internal.complete
     (throw <| IO.userError "setup IO failure") (throw <| IO.userError "directory cleanup")
   requireIOError "setup IO failure retained" completed.operation "setup IO failure"
   requireIOError "outer cleanup does not erase setup failure" completed.directoryCleanup "directory cleanup"
-  let projected : Except LakeHelperJob.Failure Json := LakeHelperJob.Internal.projectCompletion .serverEnv completed
+  let projected : Except BrokerFailure Json := LakeHelperJob.Internal.projectCompletion .serverEnv completed
   let failure ← failureOf projected
   require "setup and cleanup fail overall" (failure.code == .internalError)
 
@@ -216,7 +215,7 @@ private def checkInvalidResponse : IO Unit := do
       jobCleanup := .error (IO.userError "cleanup")
       directoryCleanup := .ok ()
     }
-    let result : Except LakeHelperJob.Failure LeanServerLakeEnv :=
+    let result : Except BrokerFailure LeanServerLakeEnv :=
       LakeHelperJob.Internal.projectCompletion .serverEnv completion
     let failure ← failureOf result
     let info := failure.data?.getD Json.null
@@ -233,8 +232,8 @@ private def checkEarlyOutputRetirement : IO Unit :=
       let output ← Beam.WorkspaceOutput.Buffer.create
       let some publisher ← output.borrow | throw <| IO.userError "fixture could not borrow publisher"
       let cancelRef ← IO.mkRef cancelled
-      let result : Except LakeHelperJob.Failure Json ← LakeHelperJob.runRequest
-        (temporary / "missing-helper") .serverEnv Json.null .cancellable {
+      let result : Except BrokerFailure Json ← LakeHelperJob.runRequest
+        (temporary / "missing-helper") .serverEnv Json.null {
           cancelRef? := some cancelRef, output? := some publisher }
       let failure ← failureOf result
       -- Depending on spawn semantics, a missing executable either fails setup or exits

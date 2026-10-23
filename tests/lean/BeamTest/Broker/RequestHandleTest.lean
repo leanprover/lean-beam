@@ -24,47 +24,6 @@ private def checkErrorCode
 private def checkCancelledResponse (resp : Beam.Broker.Response) : IO Unit :=
   checkErrorCode "cancelled broker request" "requestCancelled" resp
 
-private def checkCancelledHelperCleanup : IO Unit := do
-  let cancelled ← IO.mkRef true
-  let original : Beam.Broker.BrokerFailure := {
-    code := .contentModified
-    message := "original trace failure"
-    data? := some <| Json.mkObj [("snapshot", toJson (42 : Nat))]
-  }
-  for operation in #[Except.error original,
-      Except.ok (Beam.Broker.Response.success (Json.mkObj [("traceWritten", toJson true)]))] do
-    for cleanupFails in [false, true] do
-      let completion : Beam.Broker.LakeHelperJob.Completion := {
-        operation := .ok operation
-        jobCleanup := if cleanupFails then .error (IO.userError "trace cleanup") else .ok ()
-        directoryCleanup := .ok ()
-      }
-      let result : Except Beam.Broker.LakeHelperJob.Failure Json :=
-        Beam.Broker.LakeHelperJob.Internal.projectCompletion .writeSaveTrace completion
-      match result with
-      | .ok _ =>
-          unless !cleanupFails do throw <| IO.userError "cleanup failure became trace success"
-      | .error failure =>
-          let presented ← Beam.Broker.Internal.presentLakeHelperFailure (some cancelled) failure
-          if cleanupFails then
-            unless (toJson presented.toResponse).compress == (toJson failure.toBrokerFailure.toResponse).compress do
-              throw <| IO.userError "cancellation replaced typed helper cleanup failure"
-          else
-            checkCancelledResponse presented.toResponse
-  -- Operation data cannot supply the internal cleanup category.
-  let ordinary : Beam.Broker.BrokerFailure := {
-    original with
-    code := .internalError
-    data? := some <| Json.mkObj [("reason", toJson "helperCleanupFailed")] }
-  let completion : Beam.Broker.LakeHelperJob.Completion := {
-    operation := .ok (.error ordinary), jobCleanup := .ok (), directoryCleanup := .ok () }
-  let projected : Except Beam.Broker.LakeHelperJob.Failure Json :=
-    Beam.Broker.LakeHelperJob.Internal.projectCompletion .writeSaveTrace completion
-  match projected with
-  | .ok _ => throw <| IO.userError "ordinary operation failure became success"
-  | .error failure =>
-      checkCancelledResponse (← Beam.Broker.Internal.presentLakeHelperFailure (some cancelled) failure).toResponse
-
 private def checkStaleHandleIsolation
     (server : Beam.Broker.ServerRuntime)
     (req : Beam.Broker.Request) : IO Unit := do
@@ -91,7 +50,6 @@ private def checkStaleHandleIsolation
   checkCancelledResponse replacementResp
 
 def checkCancellationAndLifetime : IO Unit := do
-  checkCancelledHelperCleanup
   let root := System.FilePath.mk s!"/tmp/beam-request-handle-{← IO.monoNanosNow}"
   IO.FS.createDirAll root
   let root ← Beam.resolveExistingPath root

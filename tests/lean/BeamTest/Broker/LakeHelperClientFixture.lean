@@ -71,26 +71,17 @@ private def checkExitedGroups : IO Unit := do
   IO.println "process scopes: retained exit, lost ownership, and closed observation passed"
 
 private def runHelper (args : List String) : IO Unit := do
-  unless LakeHelperOperation.serverEnv.waitPolicy == .cancellable &&
-      LakeHelperOperation.prepareSave.waitPolicy == .cancellable &&
-      LakeHelperOperation.writeSaveTrace.waitPolicy == .timeout 30000 do
-    throw <| IO.userError "unexpected production Lake helper wait policy"
   let helper :: operation :: options := args
-    | throw <| IO.userError "expected HELPER OPERATION [TIMEOUT-MS [CANCEL-FILE]]"
+    | throw <| IO.userError "expected HELPER OPERATION [CANCEL-FILE]"
   let some operation := LakeHelperOperation.ofString? operation
     | throw <| IO.userError "invalid fixture operation"
   let request ← IO.ofExcept <| Json.parse (← (← IO.getStdin).readToEnd)
-  let waitPolicy ← match options.head? with
-    | none => pure operation.waitPolicy
-    | some value => match value.toNat? with
-      | some timeout => pure (LakeHelperWaitPolicy.timeout timeout)
-      | none => throw <| IO.userError "invalid fixture timeout"
   let cancelled ← IO.mkRef false
   let output ← Beam.WorkspaceOutput.Buffer.create
   let some publisher ← output.borrow
     | throw <| IO.userError "new fixture output buffer was closed"
   let done ← IO.mkRef false
-  let watcher? ← (options[1]?).mapM fun path =>
+  let watcher? ← options.head?.mapM fun path =>
     IO.asTask (prio := Task.Priority.dedicated) do
       repeat
         if ← done.get then break
@@ -98,8 +89,8 @@ private def runHelper (args : List String) : IO Unit := do
           cancelled.set true
           break
         IO.sleep 10
-  let result : Except LakeHelperJob.Failure Json ← try
-    LakeHelperJob.runRequest helper operation request waitPolicy {
+  let result : Except BrokerFailure Json ← try
+    LakeHelperJob.runRequest helper operation request {
       cancelRef? := some cancelled, output? := some publisher }
   finally
     done.set true
@@ -116,7 +107,7 @@ private def runHelper (args : List String) : IO Unit := do
   stderr.flush
   let response := match result with
     | .ok value => Response.success value
-    | .error failure => failure.toBrokerFailure.toResponse
+    | .error failure => failure.toResponse
   IO.println (toJson response).compress
 
 /-- Exercise a real post-response temporary-directory cleanup failure without a production hook. -/
@@ -144,7 +135,7 @@ private def cleanupFaultHelper (directory : System.FilePath) : IO Unit := do
 /-- Non-shipped client for exercising owned helper messages and retained-child cleanup. -/
 def main (args : List String) : IO Unit := do
   match args with
-  | ["lake-helper", "write-save-trace", directory] => cleanupFaultHelper directory
+  | ["lake-helper", "server-env", directory] => cleanupFaultHelper directory
   | ["--helper-outcomes"] => BeamTest.Broker.HelperOutcomeTest.run
   | ["--process-job-exit"] => do
       unless (← (← IO.getStdin).getLine).trimAscii == "exit" do

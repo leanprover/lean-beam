@@ -565,18 +565,16 @@ unowned provisional process.
 Target-built Lake helpers evaluate project configuration outside the frontend's Lean runtime.
 Each helper request owns one child and observes the broker request's cancellation flag. Loading
 the server environment and preparing a save have no fixed response deadline: both evaluate Lake
-workspace configuration, which can take longer than 30 seconds. Save-trace publication retains a
-30-second monotonic response deadline. This policy does not change daemon readiness or backend initialization
-deadlines. Request and response JSON use a private temporary directory with bounded
-message size; project stdout/stderr do not carry protocol data. A completed response is published
-atomically before the owner terminates and reaps the helper. Cancellation and deadline failure
-also attempt termination and final collection before returning a typed broker failure; cleanup
-failures remain visible as described below. Owner loss terminates the
-helper even during an unbounded server-environment wait. A cold load still holds the broker state
+workspace configuration, which can take longer than 30 seconds. This policy does not change
+daemon readiness or backend initialization deadlines. Request and response JSON use a private
+temporary directory with bounded message size; project stdout/stderr do not carry protocol data. A completed response is published
+atomically before the owner terminates and reaps the helper. Cancellation also attempts termination
+and final collection before returning a typed broker failure; cleanup failures remain visible as
+described below. Owner loss terminates the helper even during an unbounded server-environment wait. A cold load still holds the broker state
 mutex; removing its deadline does not provide concurrent workspace loading. MCP workspace drop
 remains a global execution fence: cancel an earlier stalled request before awaiting drop.
-The typed operation wrappers select this policy without a caller override. The internal
-`LakeHelperJob.runRequest` primitive accepts an explicit policy for bounded lifetime fixtures.
+The typed operation wrappers use this cancellation policy without a caller deadline override.
+The test harness supplies its own external watchdog.
 
 The helper waits for an owner handshake before binding its installation or evaluating project
 code. One process-job scope owns assignment, observation, termination, and the final child wait.
@@ -593,20 +591,22 @@ cleanup, and output-capture cleanup separately until the broker response is form
 failure makes the overall result `internalError` with reason `helperCleanupFailed`. Its data records
 the failed cleanup phases and the original operation outcome, including its error code, message,
 and data. If the client accepted a typed helper response, `operationResponse` retains that response
-as well; arrival of a response file alone does not establish acceptance. Successful private trace
-writing can therefore coexist with failed cleanup. The broker promotes the canonical checkpoint
-later, under its publication checks; a helper receipt does not establish that this promotion occurred,
-imply rollback, or establish that retrying is safe. Caller cancellation does not replace this cleanup
-failure during deferred trace completion;
-ordinary operation failures with clean teardown retain their existing cancellation presentation.
-The operation-versus-cleanup category remains typed through this decision; diagnostic JSON fields
-do not determine cancellation precedence.
+as well; arrival of a response file alone does not establish acceptance. A completed preparation
+reply can therefore coexist with failed cleanup. The reply does not establish canonical checkpoint
+publication, rollback, or safe retry.
 Output capture starts before the owner handshake and finishes after process cleanup. A failure
 while finishing capture or retiring its publisher cannot replace the retained operation receipt.
 This refers to thrown finalization errors. Best-effort drain observations such as a failed source or
 a pipe still open at the drain deadline remain capture results, not helper cleanup failures.
 This separates the operation from cleanup; it does not aggregate every native close,
 termination, and wait error or change their existing precedence.
+
+The broker finalizes save traces after the artifact worker has acknowledged completion. It hashes
+the private outputs, fills the output descriptors in the target-prepared dependency metadata, and
+writes a private trace atomically before canonical publication. This does not evaluate project code
+or start another helper. The metadata schema must match the broker's supported Lake format;
+independent target-SDK readers qualify metadata and binary artifact hashes across supported versions.
+Cancellation is checked after local trace finalization and again by the final publication guard.
 
 The CLI detaches the daemon's stdin writer immediately after spawning it. Published child handles
 therefore cannot retain that writer; one shared reference owns it until foreground-owner cleanup
