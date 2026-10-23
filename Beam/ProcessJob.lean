@@ -4,7 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: Emilio J. Gallego Arias
 -/
 
-import Lean
+import Beam.System
 import Std.Sync.Mutex
 
 namespace Beam.ProcessJob
@@ -33,7 +33,7 @@ private def poll (child : IO.Process.Child cfg) : IO State := do
     -- Windows tryWait observes the original Child handle without closing or reaping it.
     return if (← child.tryWait).isSome then .exited else .running
   -- POSIX tryWait reaps, so retain the non-consuming waitid observation here.
-  match ← pollPosix child.pid with
+  match ← pollPosix (Beam.processChildPid child) with
   | 0 => pure .running
   | 1 => pure .exited
   | 2 => pure .notChild
@@ -67,7 +67,7 @@ def requestTermination (child : IO.Process.Child cfg) : IO Unit := do
       -- before accepting a failed TerminateProcess. Windows tryWait does not reap.
       if (← child.tryWait).isNone then throw error
   else
-    terminatePosix child.pid
+    terminatePosix (Beam.processChildPid child)
 
 end Internal
 
@@ -95,7 +95,7 @@ outside this scope. Native loss of ownership is retained here and forbids furthe
 -/
 def withChild (child : IO.Process.Child cfg) (action : Scope → IO α) : IO α := do
   let ownership ← Std.Mutex.new Ownership.retained
-  let job ← try attach child.pid
+  let job ← try attach (Beam.processChildPid child)
     catch error =>
       terminateAndWait child
       throw error

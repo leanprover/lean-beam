@@ -709,7 +709,7 @@ private def acquireBackendSession
     env := env
     cwd := root.toString
   }
-  let proc ← BackendProcess.create child.pid child.tryWait child.kill
+  let proc ← BackendProcess.create (Beam.processChildPid child) child.tryWait child.kill
   let stderrCapture ← startBackendStderrCaptureOrTerminate proc child.stderr
   let (session, initializeTask) ←
     try

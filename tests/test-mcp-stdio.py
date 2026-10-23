@@ -2561,6 +2561,67 @@ def run_parallel_progress_smoke_repro(
     )
 
 
+def run_workspace_pipe_cleanup(repo_root, fixture_root, timeout):
+    for modern in (False, True):
+        family = "modern" if modern else "legacy"
+        with tempfile.TemporaryDirectory(prefix=f"lean-beam-mcp-pipes-{family}-") as tmp:
+            root = Path(tmp) / "project"
+            copy_project_fixture(fixture_root, root)
+            (root / "PipeCleanup.lean").write_text(
+                "theorem pipeCleanup : 1 = 1 := by\n  rfl\n", encoding="utf-8")
+            client = McpClient(repo_root, root, timeout, label=f"workspace-pipes-{family}")
+            try:
+                if modern:
+                    expect_result(client.modern_request("server/discover"))
+                else:
+                    client.initialize()
+                request = client.modern_request if modern else client.request
+
+                def tool(name, arguments):
+                    result = expect_result(request("tools/call", {
+                        "name": name, "arguments": arguments,
+                    }))
+                    require(not result.get("isError"), f"{family} {name}: {result}")
+                    return result["structuredContent"]
+
+                def pipes():
+                    targets = {}
+                    for entry in Path(f"/proc/{client.proc.pid}/fd").iterdir():
+                        try:
+                            target = os.readlink(entry)
+                        except FileNotFoundError:
+                            continue
+                        if target.startswith("pipe:"):
+                            targets[entry.name] = target
+                    return targets
+
+                tool("beam_stats", {})
+                initial_pipes = set(pipes().values()) if sys.platform == "linux" else None
+                for cycle in range(3):
+                    updated = tool("lean_update", {"path": "PipeCleanup.lean"})
+                    probe = tool("lean_run_at", {
+                        "path": "PipeCleanup.lean", "version": updated["version"],
+                        "line": 1, "character": 2, "text": "rfl",
+                    })
+                    require(probe.get("success"), f"{family} cycle {cycle}: {probe}")
+                    dropped = tool("lean_drop_workspace", {})
+                    require(dropped.get("dropped"), f"{family} cycle {cycle}: {dropped}")
+                    stats = tool("beam_stats", {})
+                    require(stats.get("workspaces") == {}, f"{family} drop retained workspace: {stats}")
+                    if initial_pipes is not None:
+                        deadline = time.monotonic() + min(timeout, 5)
+                        while True:
+                            retained = {fd: target for fd, target in pipes().items()
+                                        if target not in initial_pipes}
+                            if not retained:
+                                break
+                            require(time.monotonic() < deadline,
+                                    f"{family} drop cycle {cycle} retained process pipes: {retained}")
+                            time.sleep(0.02)
+            finally:
+                client.close()
+
+
 def run_stateless_workspace_matrix(repo_root, fixture_root, timeout):
     with tempfile.TemporaryDirectory(prefix="lean-beam-mcp-stateless-workspaces-") as tmp:
         tmp_root = Path(tmp)
@@ -3842,6 +3903,7 @@ def main():
             server_trace=args.server_trace,
         )
         run_stateless_workspace_matrix(repo_root, fixture_root, args.timeout)
+        run_workspace_pipe_cleanup(repo_root, fixture_root, args.timeout)
         return
     run_modern_protocol_smoke(repo_root, fixture_root, args.timeout)
     run_process_identity_snapshot(repo_root, args.timeout)
@@ -3858,6 +3920,7 @@ def main():
         server_trace=args.server_trace,
     )
     run_stateless_workspace_matrix(repo_root, fixture_root, args.timeout)
+    run_workspace_pipe_cleanup(repo_root, fixture_root, args.timeout)
     run_cross_process_handle_rejection(repo_root, fixture_root, args.timeout)
     run_lifecycle_matrix(repo_root, fixture_root, args.timeout)
     run_blank_line_regression(repo_root, fixture_root, args.timeout)

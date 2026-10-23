@@ -29,6 +29,11 @@ A Lean release line is the canonical `major.minor` family recorded in
   qualification probe for their exact fingerprint.
   Shims must name the Lean/Lake API boundary they support and should be removed when the support
   window no longer needs them.
+- The tested Lean SDKs 4.33.1, 4.34.1, 4.35.0, and 4.36.0-rc1 declare `IO.Process.Child.pid` with a
+  consuming child argument, but their C runtime implementations borrow that argument.
+  Beam uses the borrowed `Beam.processChildPid` declaration
+  to avoid retaining child objects and their standard-stream pipe handles. Remove this declaration
+  when every supported SDK borrows the child in `IO.Process.Child.pid`.
 - Lean nightly toolchain distributions, qualified separately on Linux by
   [Lean Nightly](../.github/workflows/nightly.yml) through the native build/install interface.
   Each run selects one dated SDK and records its compiler identity. Standalone installations require

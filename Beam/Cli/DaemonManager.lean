@@ -690,7 +690,7 @@ private def startDaemonEntry
           if (← started.child.tryWait).isSome then
             pure <| Except.error "Beam daemon exited immediately after reporting readiness"
           else
-            let entry ← registryEntryFor desired identity capability started.child.pid.toNat endpoint
+            let entry ← registryEntryFor desired identity capability (Beam.processChildPid started.child).toNat endpoint
             pure (Except.ok entry)
       | .error detail => pure (Except.error detail)
     catch err =>

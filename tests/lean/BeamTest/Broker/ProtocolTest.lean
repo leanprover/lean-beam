@@ -1257,7 +1257,7 @@ private def withFixtureChild
     (args : IO.Process.SpawnArgs)
     (act : IO.Process.Child args.toStdioConfig → BackendProcess → IO α) : IO α := do
   let child ← IO.Process.spawn args
-  let process ← BackendProcess.create child.pid child.tryWait child.kill
+  let process ← BackendProcess.create (Beam.processChildPid child) child.tryWait child.kill
   try act child process
   finally cleanupFixtureChild process
 
@@ -1631,7 +1631,7 @@ private def exitedSessionWithInheritedStdio
   }
   let pending ← PendingRequestStore.create
   let stderrCapture ← startBackendStderrCapture child.stderr
-  let proc ← BackendProcess.create child.pid child.tryWait child.kill
+  let proc ← BackendProcess.create (Beam.processChildPid child) child.tryWait child.kill
   let some (.exited _) ← proc.waitForExit 1000
     | throw <| IO.userError "inherited-stdio fixture leader did not exit"
   pure {
@@ -2278,7 +2278,7 @@ private partial def waitForUnreapedExit
     (tries : Nat := 200) : IO Unit := do
   let status ← IO.Process.output {
     cmd := "ps"
-    args := #["-p", toString child.pid, "-o", "stat="]
+    args := #["-p", toString (Beam.processChildPid child), "-o", "stat="]
   }
   if status.exitCode == 0 && status.stdout.trimAscii.toString.startsWith "Z" then
     pure ()
