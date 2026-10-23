@@ -12,7 +12,7 @@ OS security sandbox. Do not run untrusted Lean metaprograms through Beam as a se
 | Successful probe | The speculative execution succeeded in its selected elaboration context; inspect messages and the resulting state. |
 | Empty goals alone | Neither semantic success nor declaration acceptance: failed or aborted probes can also leave no goals. |
 | `saveReady` (CLI) / `save_ready` (MCP) | The snapshot is eligible for checkpointing. Warnings, including `sorry`, can remain. |
-| Successful save | Beam wrote the accepted server snapshot and its build record; batch elaboration was not rerun. |
+| Successful save | Beam wrote the accepted server snapshot; its build record uses dependency metadata at save time, not a witness of the imports loaded by that worker. Batch elaboration was not rerun. |
 | Successful clean `lake build` | Batch-build evidence for the selected targets and build inputs, subject to the project's cache policy. |
 
 Elaboration and kernel checking use the selected imports, definitions, options, and axioms.
@@ -24,6 +24,20 @@ MCP workspace and wait for cleanup, before external builds or configuration chan
 session afterward. Unreported edits/builds while affected state is retained, and uncoordinated
 writers using different session roots, are outside this workflow. Beam does not promise to discover
 or reconcile them automatically.
+
+## External builds and retained state
+
+An external rebuild while Beam retains affected importers is unsupported. It can leave `sync`
+reporting readiness while `save` combines an old imported environment with current build metadata.
+Incremental `lake build` may then reuse an invalid checkpoint, including one whose proof is rejected
+by kernel replay. A successful incremental build is not a check of this mismatch.
+
+Stop/drop the owning session and wait for cleanup before rebuilding, then recreate it. If the
+external rebuild already happened, recreate the session before continuing; refreshing every affected
+importer renews those document states but does not repair artifacts already published. Check results
+with a fresh source build that does not reuse the affected artifacts or cached copies, or with kernel
+replay (`lake check` on the versions below). These checks do not replace trusted challenge matching
+when independent confirmation of the intended statement is required.
 
 ## Independent confirmation
 

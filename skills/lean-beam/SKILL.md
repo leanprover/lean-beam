@@ -132,6 +132,9 @@ use them only for context-free syntax checks.
 
 ## When To Stop Probing
 
+Before external `lake build`, stop the CLI owner or drop the MCP workspace and wait for cleanup;
+recreate the session afterward.
+
 - The probe result should become real source: edit, save, `update`/`sync`.
 - Probes stop clarifying the problem: change approach rather than repeating variants.
 - `sync` fails with `syncBarrierIncomplete`: follow `error.data.recoveryPlan`, saving only the

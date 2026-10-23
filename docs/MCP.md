@@ -176,8 +176,12 @@ A slow or hung load can therefore block broker-backed tool calls, workspace admi
 for other workspaces in the same MCP process. This loading step has no fixed response deadline.
 Send `notifications/cancelled` to request [soft cancellation](STATUS.md#soft-cancellation).
 Active loading may need to settle before its resources can be released. `lean_drop_workspace`
-waits for earlier requests and does not itself interrupt a stalled load. This is a current
-concurrency limitation; workspaces are not isolated from each other's cold-load latency.
+waits for earlier requests and does not itself interrupt a stalled load. If loading never settles,
+stop the MCP server through its client or process supervisor and restart it after its owned processes
+have stopped. Cooperative shutdown can also wait on the load; if it cannot finish, use the supervisor's
+process-termination facilities and verify that old worker/helper processes have stopped before
+starting a replacement. Closing a connection or starting another server does not establish cleanup.
+This is a current concurrency limitation; workspaces are not isolated from each other's cold-load latency.
 
 Reuse admission observes the selected installation outside the server-wide runtime mutex. The
 server checks the retained workspace instance again before dispatch and when binding the broker

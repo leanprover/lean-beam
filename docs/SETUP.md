@@ -593,6 +593,7 @@ selection, for example:
 Stop MCP servers through their clients too. If cleanup fails or remains pending, preserve the old
 installation and session state and follow [Sessions And Recovery](#sessions-and-recovery) before
 starting a replacement. A timeout is not evidence that the old generation has stopped.
+Do not run `recover` while the original owner, daemon, or any of its producers may still be running.
 
 Then update the installation, restart clients, and inspect `lean-beam --version` and
 `lean-beam-mcp --version` to confirm their identity. A live MCP client's `beam_version` reports the

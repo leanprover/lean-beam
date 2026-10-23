@@ -381,8 +381,12 @@ client protocol.
   [trust and proof confirmation](../skills/lean-beam/references/trust-and-validation.md) for the
   ownership assumptions and separate comparator workflow.
 - After a dependency edit, report it through `update`/`sync`, checkpoint as needed, and refresh affected
-  importers before using their results. For an external rebuild, stop/drop the owning session first
-  and recreate it afterward; retained server state is not reconciled automatically.
+  importers before using their results. Before an external rebuild, stop/drop the owning session
+  and wait for cleanup; recreate it afterward. If an external rebuild bypasses this boundary, `sync`
+  can still report readiness and `save` can publish a checkpoint from stale imports that incremental
+  `lake build` accepts, even when its proof fails kernel replay. Restarting the session or refreshing
+  affected importers does not repair checkpoints already published. See
+  [external-build recovery](../skills/lean-beam/references/trust-and-validation.md#external-builds-and-retained-state).
 - For open files in Lake workspaces, Beam uses Lean's native stale-dependency diagnostic when a synced
   source change makes an importer need refresh. Beam does not yet implement Lean's dynamic watched-file
   registration, so external source changes that never pass through `sync` remain outside the current
