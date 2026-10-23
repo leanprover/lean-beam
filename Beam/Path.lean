@@ -33,9 +33,11 @@ partial def resolvePathForCreation (path : System.FilePath) : IO System.FilePath
   catch
   | .noFileOrDirectory .. =>
       let some parent := path.parent
-        | throw <| IO.userError s!"cannot resolve a creation parent for '{path}'"
+        | throw <| IO.Error.invalidArgument (some path.toString) 0
+            "cannot resolve a creation parent"
       let some name := path.fileName
-        | throw <| IO.userError s!"cannot resolve a creation leaf for '{path}'"
+        | throw <| IO.Error.invalidArgument (some path.toString) 0
+            "cannot resolve a creation leaf"
       -- Resolve before normalizing: lexical normalization would give the wrong meaning to `..`
       -- after an existing symbolic-link ancestor. Normalize only the rebuilt canonical path.
       pure <| ((← resolvePathForCreation parent) / name).normalize

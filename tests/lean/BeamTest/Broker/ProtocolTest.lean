@@ -2418,13 +2418,34 @@ private def heldSourceWriter
     fifo.toString, writerReady.toString, releaseWriter.toString]
 }
 
+/-- Capture one real regular-file read, then hold only its return; later reads remain independent. -/
+private def heldSourceRead (path : System.FilePath) :
+    IO ((System.FilePath → IO ByteArray) × Task (Option Unit) × IO Unit) := do
+  let path ← Beam.resolveExistingPath path
+  let armed ← Std.Mutex.new true
+  let entered ← IO.Promise.new
+  let released ← IO.Promise.new
+  let readSource := fun selected => do
+    let bytes ← IO.FS.readBinFile selected
+    let hold ← armed.atomically do
+      let active ← get
+      let hold := active && Beam.sameCanonicalPath selected path
+      if hold then set false
+      pure hold
+    if hold then
+      entered.resolve ()
+      discard <| IO.wait released.result?
+    pure bytes
+  pure (readSource, entered.result?, do released.resolve ())
+
 /-- A controlled LSP channel records document operations and answers the real sync barrier. -/
 private def withDocumentAdmissionSession
     (root : System.FilePath)
     (act : ServerRuntime → IO.Ref (Array (String × Json)) → IO Unit)
-    (replyBarrier : PendingRequest → Json → IO Unit := PendingRequest.resolveResponse) : IO Unit := do
+    (replyBarrier : PendingRequest → Json → IO Unit := PendingRequest.resolveResponse)
+    (readSource : System.FilePath → IO ByteArray := IO.FS.readBinFile) : IO Unit := do
   let workspaceId := "document-admission"
-  let runtime ← ServerRuntime.create { root } workspaceId
+  let runtime ← ServerRuntime.create { root } workspaceId (readSource := readSource)
   try
     withShutdownObservedSession workspaceId root (root / "shutdown") .exit fun initial => do
       let writes ← IO.mkRef (#[] : Array (String × Json))
@@ -2481,6 +2502,195 @@ private def withDocumentAdmissionSession
       try act runtime writes
       finally runtime.close
   finally runtime.close
+
+private def requireSourceInputFailure (label : String) (response : Response) : IO Unit := do
+  let some error := response.error?
+    | throw <| IO.userError s!"{label}: expected a document input failure"
+  require s!"{label}: expected invalidParams, got {error.code}: {error.message}"
+    (error.code == "invalidParams")
+
+private def requireReleasedDocumentScopes (label : String) (runtime : ServerRuntime) : IO Unit :=
+  runtime.state.atomically do
+    for (_, workspace) in (← get).workspaces.toList do
+      require s!"{label}: document scopes are released" workspace.documents.entries.isEmpty
+
+private def checkDocumentSourceInputs : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-source-inputs-{← IO.monoNanosNow}"
+  IO.FS.createDirAll base
+  let root ← Beam.resolveExistingPath base
+  let main := root / "Main.lean"
+  let reads ← IO.mkRef (0 : Nat)
+  let readSource := fun (path : System.FilePath) => do
+    reads.modify (· + 1)
+    -- Record a forbidden call before an assertion that the handler may catch; never block on FIFO.
+    require "a content reader receives only regular sources" ((← path.metadata).type == .file)
+    IO.FS.readBinFile path
+  let cold ← ServerRuntime.create { root } "document-admission" (readSource := readSource)
+  try
+    IO.FS.writeFile main "def sourceInputFixture : Nat := 1\n"
+    IO.FS.writeFile (root / "notes.txt") "ordinary notes\n"
+    IO.FS.writeFile (root / "UPPER.LEAN") "def uppercaseFixture := 1\n"
+    IO.FS.createDirAll (root / "Directory.lean")
+    admissionSymlink main (root / "Alias.txt")
+    admissionSymlink (root / "notes.txt") (root / "Notes.lean")
+    admissionSymlink (root / "Missing.lean") (root / "Dangling.lean")
+    admissionSymlink (root / "Loop.lean") (root / "Loop.lean")
+    let fifo := root / "Stream.lean"
+    let made ← IO.Process.output { cmd := "mkfifo", args := #[fifo.toString] }
+    require "source-kind fixture creates a nonregular input" (made.exitCode == 0)
+    let rejected := #["Missing.lean", "Absent/Child.lean", "Absent/../Main.lean", "Main.lean/x", "",
+      "Directory.lean", "notes.txt", "UPPER.LEAN", "Notes.lean", "Dangling.lean",
+      "Loop.lean", "Stream.lean"]
+    for path in rejected do
+      for request in documentAdmissionRequests "document-admission" path do
+        let response ← cold.dispatchRequest request
+        requireSourceInputFailure s!"cold source {path}" response
+        if #["Missing.lean", "Dangling.lean", "Loop.lean"].contains path then
+          require "resolution errors do not assert that the target is absent"
+            (response.error?.any (·.message.contains "cannot be resolved"))
+        requireReleasedDocumentScopes "rejected cold source" cold
+    require "rejected source inputs never invoke the content reader" ((← reads.get) == 0)
+    cold.state.atomically do
+      let some workspace := (← get).workspaces.get? "document-admission"
+        | throw <| IO.userError "source-input workspace is missing"
+      require "rejected source inputs never allocate a backend"
+        (workspace.lean.session?.isNone && workspace.metrics.sessionStarts == 0)
+    withDocumentAdmissionSession root (readSource := readSource) fun runtime writes => do
+      for path in #["Main.lean", "Alias.txt"] do
+        require "aliases follow the canonical Lean target" (← runtime.dispatchRequest {
+          workspaceId? := some "document-admission", payload := .updateFile { path }
+        }).ok
+      require "aliases of one Lean target share didOpen"
+        ((← writes.get).map Prod.fst == #["textDocument/didOpen"])
+      for (path, text) in #[("Empty.lean", ""), ("Space λ.lean", "-- λ\r\ndef crlfFixture := 1\r\n"),
+          ("Malformed.lean", "this is not valid Lean\n")] do
+        IO.FS.writeFile (root / path) text
+        require "source admission does not filter source contents" (← runtime.dispatchRequest {
+          workspaceId? := some "document-admission", payload := .updateFile { path }
+        }).ok
+      let before ← writes.get
+      let readCount ← reads.get
+      for path in rejected do
+        for request in documentAdmissionRequests "document-admission" path do
+          requireSourceInputFailure s!"warm source {path}" (← runtime.dispatchRequest request)
+      require "rejected warm inputs do not read source" ((← reads.get) == readCount)
+      require "rejected warm inputs do not write document operations" ((← writes.get) == before)
+      requireReleasedDocumentScopes "rejected warm source" runtime
+      -- A formerly admitted source can cease to be a regular file; cleanup still owns its URI.
+      IO.FS.removeFile main
+      IO.FS.createDir main
+      requireSourceInputFailure "refresh of a replaced source" (← runtime.dispatchRequest {
+        workspaceId? := some "document-admission", payload := .refreshFile { path := "Main.lean" }
+      })
+      require "failed refresh preserves the tracked document" ((← writes.get) == before)
+      for (path, closed) in #[("Never.lean", false), ("notes.txt", false),
+          ("Main.lean", true), ("Main.lean", false)] do
+        let result ← requireResponseResult "plain close removal" (← runtime.dispatchRequest {
+          workspaceId? := some "document-admission", payload := .close { path }
+        })
+        requireJsonBool "plain close removal" "closed" closed result
+      require "plain close sends exactly one didClose"
+        (((← writes.get).filter (fun write => write.1 == "textDocument/didClose")).size == 1)
+      require "cleanup never reads contents" ((← reads.get) == readCount)
+      requireSourceInputFailure "an unresolvable cleanup path" (← runtime.dispatchRequest {
+        workspaceId? := some "document-admission"
+        payload := .close { path := "Absent/../Main.lean" }
+      })
+      requireReleasedDocumentScopes "plain close" runtime
+  finally
+    try cold.close
+    finally IO.FS.removeDirAll base
+
+private def checkSourceEncoding : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-source-encoding-{← IO.monoNanosNow}"
+  IO.FS.createDirAll base
+  let root ← Beam.resolveExistingPath base
+  let path := root / "Encoding.lean"
+  let source := "-- valid λ\r\ndef encodingFixture := 1\r\n"
+  let invalid := ByteArray.mk #[0xff]
+  let requireEncodingFailure := fun label response => do
+    requireSourceInputFailure label response
+    require s!"{label}: identifies invalid encoding"
+      (response.error?.any (·.message.contains "not valid UTF-8"))
+  let cold ← ServerRuntime.create { root } "document-admission"
+  try
+    IO.FS.writeBinFile path invalid
+    for request in documentAdmissionRequests "document-admission" path.toString do
+      requireEncodingFailure "cold source encoding" (← cold.dispatchRequest request)
+    requireReleasedDocumentScopes "cold source encoding" cold
+    cold.state.atomically do
+      let some workspace := (← get).workspaces.get? "document-admission"
+        | throw <| IO.userError "source-encoding workspace is missing"
+      require "invalid source encoding never allocates a backend"
+        (workspace.lean.session?.isNone && workspace.metrics.sessionStarts == 0)
+    withDocumentAdmissionSession root fun runtime writes => do
+      IO.FS.writeFile path source
+      let before ← requireResponseResult "valid UTF-8 source" (← runtime.dispatchRequest {
+        workspaceId? := some "document-admission", payload := .updateFile { path := path.toString }
+      })
+      let version ← IO.ofExcept <| before.getObjValAs? Nat "version"
+      let sent ← writes.get
+      IO.FS.writeBinFile path invalid
+      for request in documentAdmissionRequests "document-admission" path.toString do
+        requireEncodingFailure "warm source encoding" (← runtime.dispatchRequest request)
+      require "invalid source encoding preserves the tracked document" ((← writes.get) == sent)
+      requireReleasedDocumentScopes "warm source encoding" runtime
+      IO.FS.writeFile path source
+      let repaired ← requireResponseResult "repaired UTF-8 source" (← runtime.dispatchRequest {
+        workspaceId? := some "document-admission", payload := .updateFile { path := path.toString }
+      })
+      require "repair preserves the last accepted source version"
+        ((← IO.ofExcept <| repaired.getObjValAs? Nat "version") == version)
+      requireJsonBool "repair preserves the last accepted source contents" "changed" false repaired
+      IO.FS.writeBinFile path invalid
+      for closed in #[true, false] do
+        let result ← requireResponseResult "close an invalid UTF-8 source" (← runtime.dispatchRequest {
+          workspaceId? := some "document-admission", payload := .close { path := path.toString }
+        })
+        requireJsonBool "close an invalid UTF-8 source" "closed" closed result
+      require "invalid source cleanup sends exactly one didClose"
+        ((← writes.get).map Prod.fst == (sent.map Prod.fst).push "textDocument/didClose")
+      requireReleasedDocumentScopes "invalid source cleanup" runtime
+  finally
+    try cold.close
+    finally IO.FS.removeDirAll base
+
+private def checkSourceObservationFailures : IO Unit := do
+  let base := System.FilePath.mk s!"/tmp/beam-source-observation-{← IO.monoNanosNow}"
+  IO.FS.createDirAll base
+  let root ← Beam.resolveExistingPath base
+  let path := root / "Fault.lean"
+  let errors : Array (String × Option IO.Error) := #[
+    ("deleted during read", none),
+    ("permission", some <| .permissionDenied (some path.toString) 0 "fixture permission failure"),
+    ("resource", some <| .resourceExhausted (some path.toString) 0 "fixture resource failure"),
+    ("hardware", some <| .hardwareFault 0 "fixture hardware failure"),
+    ("invalid read argument", some <| .invalidArgument (some path.toString) 0 "fixture read failure"),
+    ("unexpected reader fault", some <| .userError "fixture unexpected reader fault")
+  ]
+  try
+    for (label, error?) in errors do
+      IO.FS.writeFile path "def observationFixture := 1\n"
+      let reads ← IO.mkRef (0 : Nat)
+      let readSource := fun selected => do
+        reads.modify (· + 1)
+        let bytes ← IO.FS.readBinFile selected
+        if let some error := error? then throw error
+        -- Exercise the actual mtime race, after strict admission and a successful content read.
+        IO.FS.removeFile selected
+        pure bytes
+      withDocumentAdmissionSession root (readSource := readSource) fun runtime writes => do
+        let response ← runtime.dispatchRequest {
+          workspaceId? := some "document-admission", payload := .updateFile { path := path.toString }
+        }
+        let some error := response.error?
+          | throw <| IO.userError s!"{label}: expected an observation failure"
+        require s!"{label}: preserves the observation failure category"
+          (error.code == if error?.isNone then "invalidParams" else "internalError")
+        require s!"{label}: exercises a real content read" ((← reads.get) == 1)
+        require s!"{label}: failure precedes backend document writes" (← writes.get).isEmpty
+        requireReleasedDocumentScopes label runtime
+  finally IO.FS.removeDirAll base
 
 private def checkDocumentAdmission : IO Unit := do
   let base := System.FilePath.mk s!"/tmp/beam-document-admission-{← IO.monoNanosNow}"
@@ -2631,11 +2841,9 @@ private def checkRefreshAdmittedIdentity (race : RefreshRace := .retargetAlias) 
   let base := System.FilePath.mk s!"/tmp/beam-refresh-admitted-identity-{← IO.monoNanosNow}"
   IO.FS.createDirAll (base / "workspace")
   let root ← Beam.resolveExistingPath (base / "workspace")
-  let fifo := root / "Refresh.lean"
+  let path := root / "Refresh.lean"
   let alias := root / "alias.lean"
   let outside := base / "Outside.lean"
-  let writerReady := base / "writer-ready"
-  let releaseWriter := base / "release-writer"
   let newerRead := race != .retargetAlias
   let heldBarrier ← Std.Mutex.new
     (race == .pendingSync, (none : Option (PendingRequest × Json)))
@@ -2648,11 +2856,11 @@ private def checkRefreshAdmittedIdentity (race : RefreshRace := .retargetAlias) 
     if let some (pending, result) := held? then pending.resolveResponse result
   let newerTask? ← IO.mkRef (none : Option (Task (Except IO.Error Response)))
   try
-    let result ← IO.Process.output { cmd := "mkfifo", args := #[fifo.toString] }
-    require "refresh fixture creates its owned FIFO" (result.exitCode == 0)
-    admissionSymlink fifo alias
+    IO.FS.writeFile path "def admittedFixture : Nat := 1\n"
+    let (readSource, readEntered, releaseRead) ← heldSourceRead path
+    admissionSymlink path alias
     IO.FS.writeFile outside "def outsideFixture := 2\n"
-    withDocumentAdmissionSession root (replyBarrier := fun pending result => do
+    withDocumentAdmissionSession root (readSource := readSource) (replyBarrier := fun pending result => do
       let hold ← heldBarrier.atomically do
         let (armed, _) ← get
         if armed then set (false, some (pending, result))
@@ -2663,7 +2871,7 @@ private def checkRefreshAdmittedIdentity (race : RefreshRace := .retargetAlias) 
         pending.resolveResponse result) fun runtime writes => do
       let newerDoc ← IO.mkRef (none : Option DocState)
       let newerPermit? ← IO.mkRef (none : Option DocumentAdmission.Permit)
-      let uri := sessionUri (← Beam.resolveExistingPath fifo)
+      let uri := sessionUri (← Beam.resolveExistingPath path)
       let prior ← BeamTest.Broker.DocumentFixture.accepted <|
         DocumentState.FileSnapshot.ofText "def prior := 0\n" default
       runtime.state.atomically do
@@ -2677,109 +2885,107 @@ private def checkRefreshAdmittedIdentity (race : RefreshRace := .retargetAlias) 
           nextFileSnapshotSeq := prior.syncSnapshotSeq + 1
           lean := { workspace.lean with session? := some session } }
         set { state with workspaces := state.workspaces.insert "document-admission" workspace }
-      withFixtureChild (heldSourceWriter fifo writerReady releaseWriter) fun _ writer => do
-        let task ← IO.asTask (prio := Task.Priority.dedicated) <| runtime.dispatchRequest {
-          workspaceId? := some "document-admission"
-          payload := .refreshFile { path := alias.toString }
-        }
-        try
-          require "refresh fixture reached its admitted read" (← waitForPath writerReady)
-          require "refresh does not close before its source read completes" (← writes.get).isEmpty
-          if newerRead then
-            -- The old read keeps the FIFO inode; a newer read observes the replacement file.
-            IO.FS.removeFile fifo
-            IO.FS.writeFile fifo "def newestFixture : Nat := 2\n"
-            if race == .pendingSync then
-              let newer ← IO.asTask (prio := .dedicated) <| runtime.dispatchRequest {
-                workspaceId? := some "document-admission"
-                payload := .syncFile { path := fifo.toString }
-              }
-              newerTask?.set (some newer)
-              let some (some ()) ← Beam.waitTaskWithTimeout barrierEntered.result? 5000
-                | throw <| IO.userError "newer sync did not reach its diagnostics barrier"
-              newerPermit?.set <| some <| ← runtime.state.atomically do
-                let some workspace := (← get).workspaces.get? "document-admission"
-                  | throw <| IO.userError "pending-sync fixture workspace is missing"
-                let some (permit, phase) := workspace.documents.entries.head?
-                  | throw <| IO.userError "pending sync has no admission permit"
-                require "newer sync retains a live permit" (phase == .reading && permit.uri == uri)
-                pure permit
-            else
-              let updated ← runtime.dispatchRequest {
-                workspaceId? := some "document-admission"
-                payload := .updateFile { path := fifo.toString }
-              }
-              require "a newer source read completes while refresh is held" updated.ok
-            newerDoc.set <| ← runtime.state.atomically do
-              let state ← get
-              pure <| state.workspaces.get? "document-admission"
-                |>.bind (·.lean.session?) |>.bind (·.docs.get? uri)
+      let task ← IO.asTask (prio := Task.Priority.dedicated) <| runtime.dispatchRequest {
+        workspaceId? := some "document-admission"
+        payload := .refreshFile { path := alias.toString }
+      }
+      try
+        let some (some ()) ← Beam.waitTaskWithTimeout readEntered 5000
+          | throw <| IO.userError "refresh fixture did not capture its admitted read"
+        require "refresh does not close before its source read completes" (← writes.get).isEmpty
+        if newerRead then
+          -- The old read retains its captured bytes; newer reads see the changed regular file.
+          IO.FS.writeFile path "def newestFixture : Nat := 2\n"
+          if race == .pendingSync then
+            let newer ← IO.asTask (prio := .dedicated) <| runtime.dispatchRequest {
+              workspaceId? := some "document-admission"
+              payload := .syncFile { path := path.toString }
+            }
+            newerTask?.set (some newer)
+            let some (some ()) ← Beam.waitTaskWithTimeout barrierEntered.result? 5000
+              | throw <| IO.userError "newer sync did not reach its diagnostics barrier"
+            newerPermit?.set <| some <| ← runtime.state.atomically do
+              let some workspace := (← get).workspaces.get? "document-admission"
+                | throw <| IO.userError "pending-sync fixture workspace is missing"
+              let some (permit, phase) := workspace.documents.entries.head?
+                | throw <| IO.userError "pending sync has no admission permit"
+              require "newer sync retains a live permit" (phase == .reading && permit.uri == uri)
+              pure permit
           else
-            IO.FS.removeFile alias
-            admissionSymlink outside alias
-          IO.FS.writeFile releaseWriter "release"
-          let some (.ok response) ← Beam.waitTaskWithTimeout task 5000
-            | throw <| IO.userError "refresh did not complete its admitted snapshot"
-          require "refresh of the admitted source succeeds" response.ok
-          let sent ← writes.get
-          let expected :=
-            if race == .pendingSync then
-              #["textDocument/didChange", "textDocument/didSave", diagnosticsBarrierMethod,
-                diagnosticsBarrierMethod]
-            else if newerRead then
-              #["textDocument/didChange", "textDocument/didSave", diagnosticsBarrierMethod]
-            else
-              #["textDocument/didClose", "textDocument/didOpen", diagnosticsBarrierMethod]
-          require "refresh only closes its current admitted source read" (sent.map Prod.fst == expected)
-          if newerRead then
-            let some newer ← newerDoc.get
-              | throw <| IO.userError "refresh fixture lost its newer document"
-            let current ← runtime.state.atomically do
-              let state ← get
-              pure <| state.workspaces.get? "document-admission"
-                |>.bind (·.lean.session?) |>.bind (·.docs.get? uri)
-            let some current := current
-              | throw <| IO.userError "old refresh erased the newer document"
-            require "old refresh preserves the newer read, source and accepted basis"
-              (DocumentState.basis current == DocumentState.basis newer &&
-                current.rawSourceHash == newer.rawSourceHash &&
-                current.syncSnapshotSeq == newer.syncSnapshotSeq)
-          if let some permit ← newerPermit?.get then
-            runtime.state.atomically do
-              let some workspace := (← get).workspaces.get? "document-admission"
-                | throw <| IO.userError "pending-sync fixture workspace is missing"
-              require "stale refresh does not revoke the newer pending sync"
-                ((workspace.documents.check permit).isOk)
-            let some newer ← newerTask?.get
-              | throw <| IO.userError "pending-sync fixture lost its task"
-            require "newer sync still awaits its controlled barrier" (!(← IO.hasFinished newer))
-            releaseBarrier
-            let some (.ok response) ← Beam.waitTaskWithTimeout newer 5000
-              | throw <| IO.userError "newer sync did not complete after its barrier"
-            require "newer sync succeeds after stale refresh" response.ok
-            runtime.state.atomically do
-              let some workspace := (← get).workspaces.get? "document-admission"
-                | throw <| IO.userError "pending-sync fixture workspace is missing"
-              require "refresh and newer sync release their own permits"
-                workspace.documents.entries.isEmpty
-          for (method, message) in sent do
-            let params ← IO.ofExcept <| message.getObjVal? "params"
-            if method == diagnosticsBarrierMethod then
-              require "refresh barrier retains the admitted canonical URI"
-                (params == toJson (WaitForDiagnosticsParams.mk uri (if newerRead then 2 else 1)))
-            else
-              let document ← IO.ofExcept <| params.getObjVal? "textDocument"
-              require "refresh retains the admitted canonical URI"
-                ((← IO.ofExcept <| document.getObjValAs? String "uri") == uri)
-        finally
+            let updated ← runtime.dispatchRequest {
+              workspaceId? := some "document-admission"
+              payload := .updateFile { path := path.toString }
+            }
+            require "a newer source read completes while refresh is held" updated.ok
+          newerDoc.set <| ← runtime.state.atomically do
+            let state ← get
+            pure <| state.workspaces.get? "document-admission"
+              |>.bind (·.lean.session?) |>.bind (·.docs.get? uri)
+        else
+          IO.FS.removeFile alias
+          admissionSymlink outside alias
+        releaseRead
+        let some (.ok response) ← Beam.waitTaskWithTimeout task 5000
+          | throw <| IO.userError "refresh did not complete its admitted snapshot"
+        require "refresh of the admitted source succeeds" response.ok
+        let sent ← writes.get
+        let expected :=
+          if race == .pendingSync then
+            #["textDocument/didChange", "textDocument/didSave", diagnosticsBarrierMethod,
+              diagnosticsBarrierMethod]
+          else if newerRead then
+            #["textDocument/didChange", "textDocument/didSave", diagnosticsBarrierMethod]
+          else
+            #["textDocument/didClose", "textDocument/didOpen", diagnosticsBarrierMethod]
+        require "refresh only closes its current admitted source read" (sent.map Prod.fst == expected)
+        if newerRead then
+          let some newer ← newerDoc.get
+            | throw <| IO.userError "refresh fixture lost its newer document"
+          let current ← runtime.state.atomically do
+            let state ← get
+            pure <| state.workspaces.get? "document-admission"
+              |>.bind (·.lean.session?) |>.bind (·.docs.get? uri)
+          let some current := current
+            | throw <| IO.userError "old refresh erased the newer document"
+          require "old refresh preserves the newer read, source and accepted basis"
+            (DocumentState.basis current == DocumentState.basis newer &&
+              current.rawSourceHash == newer.rawSourceHash &&
+              current.syncSnapshotSeq == newer.syncSnapshotSeq)
+        if let some permit ← newerPermit?.get then
+          runtime.state.atomically do
+            let some workspace := (← get).workspaces.get? "document-admission"
+              | throw <| IO.userError "pending-sync fixture workspace is missing"
+            require "stale refresh does not revoke the newer pending sync"
+              ((workspace.documents.check permit).isOk)
+          let some newer ← newerTask?.get
+            | throw <| IO.userError "pending-sync fixture lost its task"
+          require "newer sync still awaits its controlled barrier" (!(← IO.hasFinished newer))
           releaseBarrier
-          IO.FS.writeFile releaseWriter "release"
-          cleanupFixtureChild writer
-          let some _ ← Beam.waitTaskWithTimeout task 5000
-            | throw <| IO.userError "refresh fixture left a source read running"
-          if let some newer ← newerTask?.get then
-            let some _ ← Beam.waitTaskWithTimeout newer 5000
-              | throw <| IO.userError "refresh fixture left a newer sync running"
+          let some (.ok response) ← Beam.waitTaskWithTimeout newer 5000
+            | throw <| IO.userError "newer sync did not complete after its barrier"
+          require "newer sync succeeds after stale refresh" response.ok
+          runtime.state.atomically do
+            let some workspace := (← get).workspaces.get? "document-admission"
+              | throw <| IO.userError "pending-sync fixture workspace is missing"
+            require "refresh and newer sync release their own permits"
+              workspace.documents.entries.isEmpty
+        for (method, message) in sent do
+          let params ← IO.ofExcept <| message.getObjVal? "params"
+          if method == diagnosticsBarrierMethod then
+            require "refresh barrier retains the admitted canonical URI"
+              (params == toJson (WaitForDiagnosticsParams.mk uri (if newerRead then 2 else 1)))
+          else
+            let document ← IO.ofExcept <| params.getObjVal? "textDocument"
+            require "refresh retains the admitted canonical URI"
+              ((← IO.ofExcept <| document.getObjValAs? String "uri") == uri)
+      finally
+        releaseBarrier
+        releaseRead
+        let some _ ← Beam.waitTaskWithTimeout task 5000
+          | throw <| IO.userError "refresh fixture left a source read running"
+        if let some newer ← newerTask?.get then
+          let some _ ← Beam.waitTaskWithTimeout newer 5000
+            | throw <| IO.userError "refresh fixture left a newer sync running"
   finally IO.FS.removeDirAll base
 
 private def checkRefreshFencesOlderRead : IO Unit := do
@@ -2787,58 +2993,54 @@ private def checkRefreshFencesOlderRead : IO Unit := do
   IO.FS.createDirAll base
   let root ← Beam.resolveExistingPath base
   let path := root / "Refresh.lean"
-  let writerReady := root / "writer-ready"
-  let releaseWriter := root / "release-writer"
   try
-    let result ← IO.Process.output { cmd := "mkfifo", args := #[path.toString] }
-    require "older-read fixture creates its owned FIFO" (result.exitCode == 0)
-    withDocumentAdmissionSession root fun runtime writes => do
-      withFixtureChild (heldSourceWriter path writerReady releaseWriter) fun _ writer => do
-        let older ← IO.asTask (prio := .dedicated) <| runtime.dispatchRequest {
+    IO.FS.writeFile path "def admittedFixture : Nat := 1\n"
+    let (readSource, readEntered, releaseRead) ← heldSourceRead path
+    withDocumentAdmissionSession root (readSource := readSource) fun runtime writes => do
+      let older ← IO.asTask (prio := .dedicated) <| runtime.dispatchRequest {
+        workspaceId? := some "document-admission"
+        payload := .updateFile { path := path.toString }
+      }
+      try
+        let some (some ()) ← Beam.waitTaskWithTimeout readEntered 5000
+          | throw <| IO.userError "older source read did not capture its admitted contents"
+        IO.FS.writeFile path "def refreshedFixture : Nat := 2\n"
+        require "current refresh completes while an older read is held" (← runtime.dispatchRequest {
           workspaceId? := some "document-admission"
-          payload := .updateFile { path := path.toString }
-        }
-        try
-          require "older source read reaches its admitted stream" (← waitForPath writerReady)
-          IO.FS.removeFile path
-          IO.FS.writeFile path "def refreshedFixture : Nat := 2\n"
-          require "current refresh completes while an older read is held" (← runtime.dispatchRequest {
-            workspaceId? := some "document-admission"
-            payload := .refreshFile { path := path.toString }
-          }).ok
-          let before ← runtime.state.atomically do
-            let some workspace := (← get).workspaces.get? "document-admission"
-              | throw <| IO.userError "older-read fixture workspace is missing"
-            let some session := workspace.lean.session?
-              | throw <| IO.userError "older-read fixture session is missing"
-            DocumentState.requireDocState session.docs (sessionUri path)
-          let sent ← writes.get
-          IO.FS.writeFile releaseWriter "release"
-          let some (.ok response) ← Beam.waitTaskWithTimeout older 5000
-            | throw <| IO.userError "older admitted read did not finish"
-          let some error := response.error?
-            | throw <| IO.userError "old admission survived refresh"
-          require "current refresh rejects the older admission" (error.code == "contentModified")
-          requireJsonString "refresh retains a typed admission failure" "reason"
-            "documentAdmissionExpired" (← requireErrorData "older refresh admission" error)
-          require "older read sends no document operations after refresh" ((← writes.get) == sent)
-          runtime.state.atomically do
-            let some workspace := (← get).workspaces.get? "document-admission"
-              | throw <| IO.userError "older-read fixture workspace is missing"
-            let some session := workspace.lean.session?
-              | throw <| IO.userError "older-read fixture session is missing"
-            let current ← DocumentState.requireDocState session.docs (sessionUri path)
-            require "older read preserves the refreshed basis and contents"
-              (DocumentState.basis current == DocumentState.basis before &&
-                current.rawSourceHash == before.rawSourceHash &&
-                current.syncSnapshotSeq == before.syncSnapshotSeq)
-            require "refresh and old-read scopes release their own permits"
-              workspace.documents.entries.isEmpty
-        finally
-          IO.FS.writeFile releaseWriter "release"
-          cleanupFixtureChild writer
-          let some _ ← Beam.waitTaskWithTimeout older 5000
-            | throw <| IO.userError "older-read fixture left a source read running"
+          payload := .refreshFile { path := path.toString }
+        }).ok
+        let before ← runtime.state.atomically do
+          let some workspace := (← get).workspaces.get? "document-admission"
+            | throw <| IO.userError "older-read fixture workspace is missing"
+          let some session := workspace.lean.session?
+            | throw <| IO.userError "older-read fixture session is missing"
+          DocumentState.requireDocState session.docs (sessionUri path)
+        let sent ← writes.get
+        releaseRead
+        let some (.ok response) ← Beam.waitTaskWithTimeout older 5000
+          | throw <| IO.userError "older admitted read did not finish"
+        let some error := response.error?
+          | throw <| IO.userError "old admission survived refresh"
+        require "current refresh rejects the older admission" (error.code == "contentModified")
+        requireJsonString "refresh retains a typed admission failure" "reason"
+          "documentAdmissionExpired" (← requireErrorData "older refresh admission" error)
+        require "older read sends no document operations after refresh" ((← writes.get) == sent)
+        runtime.state.atomically do
+          let some workspace := (← get).workspaces.get? "document-admission"
+            | throw <| IO.userError "older-read fixture workspace is missing"
+          let some session := workspace.lean.session?
+            | throw <| IO.userError "older-read fixture session is missing"
+          let current ← DocumentState.requireDocState session.docs (sessionUri path)
+          require "older read preserves the refreshed basis and contents"
+            (DocumentState.basis current == DocumentState.basis before &&
+              current.rawSourceHash == before.rawSourceHash &&
+              current.syncSnapshotSeq == before.syncSnapshotSeq)
+          require "refresh and old-read scopes release their own permits"
+            workspace.documents.entries.isEmpty
+      finally
+        releaseRead
+        let some _ ← Beam.waitTaskWithTimeout older 5000
+          | throw <| IO.userError "older-read fixture left a source read running"
   finally IO.FS.removeDirAll base
 
 private def checkWorkspaceSnapshotResetIsolation : IO Unit := do
@@ -2846,33 +3048,21 @@ private def checkWorkspaceSnapshotResetIsolation : IO Unit := do
   let workspaceId := "snapshot-reset"
   let oldRoot := System.FilePath.mk s!"/tmp/beam-snapshot-old-{nonce}"
   let newRoot := System.FilePath.mk s!"/tmp/beam-snapshot-new-{nonce}"
-  let fifo := oldRoot / "Slow.lean"
-  let writerReady := oldRoot / "writer-ready"
-  let releaseWriter := oldRoot / "release-writer"
+  let path := oldRoot / "Slow.lean"
   IO.FS.createDirAll oldRoot
   IO.FS.createDirAll newRoot
-  let mkfifo ← IO.Process.output { cmd := "mkfifo", args := #[fifo.toString] }
-  unless mkfifo.exitCode == 0 do
-    throw <| IO.userError s!"failed to create snapshot-reset FIFO: {mkfifo.stderr}"
+  IO.FS.writeFile path "def slowSnapshot : Nat := 1\n"
+  let (readSource, readEntered, releaseRead) ← heldSourceRead path
   let runtime ← ServerRuntime.create ({ root := oldRoot } : BrokerConfig) workspaceId
+    (readSource := readSource)
   let requestTask ← IO.asTask (prio := Task.Priority.dedicated) <|
     runtime.dispatchRequest {
       payload := .updateFile { path := "Slow.lean" }
       workspaceId? := some workspaceId
     }
-  let writer ← IO.Process.spawn {
-    cmd := "python3"
-    args := #[
-      "-c",
-      "import pathlib, sys, time\nwith open(sys.argv[1], 'w') as stream:\n pathlib.Path(sys.argv[2]).write_text('ready')\n while not pathlib.Path(sys.argv[3]).exists(): time.sleep(0.01)\n stream.write('def slowSnapshot : Nat := 1\\n')",
-      fifo.toString,
-      writerReady.toString,
-      releaseWriter.toString
-    ]
-  }
   try
-    unless ← waitForPath writerReady do
-      throw <| IO.userError "snapshot-reset writer did not rendezvous with the broker read"
+    let some (some ()) ← Beam.waitTaskWithTimeout readEntered 5000
+      | throw <| IO.userError "snapshot-reset read did not capture its admitted contents"
     let oldGeneration ← runtime.state.atomically do
       let state ← get
       let some workspace := state.workspaces.get? workspaceId
@@ -2890,8 +3080,9 @@ private def checkWorkspaceSnapshotResetIsolation : IO Unit := do
         | throw <| IO.userError "snapshot-reset workspace disappeared after reset"
       pure workspace.generation
     require "workspace reset should allocate a fresh generation" (newGeneration != oldGeneration)
-    IO.FS.writeFile releaseWriter "release"
-    let response ← IO.ofExcept <| ← IO.wait requestTask
+    releaseRead
+    let some (.ok response) ← Beam.waitTaskWithTimeout requestTask 5000
+      | throw <| IO.userError "snapshot-reset request did not settle"
     require "an old-generation source snapshot should be rejected as stale"
       (response.error?.any fun err =>
         err.code == "contentModified" && err.message.contains "changed while")
@@ -2901,14 +3092,10 @@ private def checkWorkspaceSnapshotResetIsolation : IO Unit := do
         |>.isSome
     require "a stale snapshot should not start a backend in the replacement workspace"
       !leanSessionActive
-    -- Exercise cleanup after natural exit: tryWait will reap the writer itself.
-    waitForUnreapedExit writer
   finally
-    if !(← releaseWriter.pathExists) then
-      IO.FS.writeFile releaseWriter "release"
-    if (← writer.tryWait).isNone then
-      writer.kill
-      discard <| writer.wait
+    releaseRead
+    let some _ ← Beam.waitTaskWithTimeout requestTask 5000
+      | throw <| IO.userError "snapshot-reset fixture left a source read running"
     runtime.close
     if ← oldRoot.pathExists then
       IO.FS.removeDirAll oldRoot
@@ -3212,6 +3399,9 @@ def main : IO Unit := do
   checkExitedSessionCleanupFailure false .runtimeClose
   checkExitedSessionCleanupFailure true .runtimeClose
   checkDocumentAdmission
+  checkDocumentSourceInputs
+  checkSourceEncoding
+  checkSourceObservationFailures
   checkDocumentAdmissionBeforeRead
   checkRefreshAdmittedIdentity
   checkRefreshAdmittedIdentity .newerUpdate

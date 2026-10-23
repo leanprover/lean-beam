@@ -25,13 +25,13 @@ SETUP_TIMEOUT = 5
 RESPONSE_TIMEOUT = 0.2
 SHUTDOWN_TIMEOUT = 1
 DEADLINE_SCHEDULING_RESERVE = 2
-# The full helper runs two families, each with three valid requests and EOF shutdown.
+# Each family runs setup, sync, missing-file, non-Lean-file, and directory requests, then EOF shutdown.
 # close() can wait twice and join two readers; timeout diagnostics can run ps for five seconds.
 CLOSE_BUDGET = 2 * SHUTDOWN_TIMEOUT + 2
 DIAGNOSTIC_BUDGET = 5
 WATCHDOG_RESERVE = 5
 SMOKE_WATCHDOG_TIMEOUT = (
-    2 * (3 * SETUP_TIMEOUT + SHUTDOWN_TIMEOUT + CLOSE_BUDGET)
+    2 * (5 * SETUP_TIMEOUT + SHUTDOWN_TIMEOUT + CLOSE_BUDGET)
     + DIAGNOSTIC_BUDGET + WATCHDOG_RESERVE
 )
 
@@ -96,10 +96,17 @@ for line in sys.stdin:
         if arguments["path"] == "__beam_mcp_smoke_missing__.lean":
             result = complete({
                 "isError": mode != "missing-accepted", "structuredContent": {
-                    "code": "workerExited" if mode == "missing-wrong-code" else "internalError",
+                    "code": "workerExited" if mode == "missing-wrong-code" else "invalidParams",
                     "message": "missing " + arguments["path"]}})
             if mode == "missing-invalid-result-type":
                 result["resultType"] = "incomplete"
+            print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+            continue
+        source = Path(arguments["path"])
+        if source.parent.name.startswith("beam-input-smoke-"):
+            assert source.exists() and source.name in ("notes.txt", "Directory.lean")
+            result = complete({"isError": True, "structuredContent": {
+                "code": "invalidParams", "message": "unsupported source " + str(source)}})
             print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
             continue
         assert arguments["path"] == "PositionEmptyLine.lean"

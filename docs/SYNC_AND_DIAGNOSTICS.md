@@ -33,7 +33,10 @@ while the refresh was reading, the refresh uses that newer snapshot without clos
 therefore not equivalent to issuing `close` followed by `sync` as separate commands.
 
 Plain `close` performs cleanup without reading source contents and remains available after the
-source path disappears. It does not open a new document or start a Lean backend.
+source path disappears or becomes an unsupported kind. It does not open a new document or start a
+Lean backend. Its `closed` result is `true` when it removes a tracked document, and `false` for an
+unknown or already closed document. Both outcomes invalidate earlier source-read admissions for
+that identity; a fresh request may intentionally reopen it.
 
 The returned document `version` is the snapshot token for broker, MCP, and wrapper callers.
 Position- or range-bound operations reject missing or stale versions; clients can obtain the
@@ -304,11 +307,20 @@ not an installed command-line interface or a supported machine protocol. Maintai
 ordering and correlation contract in the broker stream tests and
 [development guidance](DEVELOPMENT.md#internal-broker-stream-contract).
 
-The selected root chooses a workspace runtime and bounds document admission. Paths used to read or
-open documents must resolve inside its canonical root, whether relative or absolute; symlink escapes
-are rejected before reading source
-contents or starting a document worker. To open an external file, select a workspace containing it.
-Normal Lean imports and navigation results remain available across that boundary. Lean
+The selected root chooses a workspace runtime and bounds document admission. A path used to read or
+open a document must resolve to an existing regular file inside its canonical root, with a canonical
+filename ending in `.lean`. The suffix is case-sensitive, matching Lean module-name selection.
+An alias named `Alias.txt` that resolves to `Main.lean` is accepted; `Alias.lean` resolving to
+`notes.txt` is rejected. Beam checks the canonical target before reading contents or starting a
+document worker. Missing paths, directories, cyclic or dangling symlinks, and unsupported source
+kinds return `invalidParams`; permission and unexpected I/O failures retain `internalError`.
+Resolution failures say that a path cannot be resolved, since the filesystem may not distinguish a
+missing target from an inaccessible ancestor. Source bytes must be valid UTF-8; invalid encoding
+returns `invalidParams` before starting a document worker and preserves any tracked document.
+Opening uses strict filesystem resolution, so `missing/../Main.lean` cannot bypass a missing
+intermediate directory. Empty files and malformed Lean syntax in valid UTF-8 remain source inputs:
+Lean reports syntax and elaboration diagnostics normally. To open an external file, select a workspace
+containing it. Normal Lean imports and navigation results remain available across that boundary. Lean
 metaprogramming can perform IO, so callers requiring OS filesystem isolation must sandbox the owner
 process itself.
 

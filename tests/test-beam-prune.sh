@@ -22,6 +22,7 @@ install_root="$tmp_root/install-root"
 versions_root="$install_root/versions"
 current_runtime="$versions_root/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 old_runtime="$versions_root/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+uninstalled_runtime="$tmp_root/uninstalled-runtime"
 beam_cli="$PWD/.lake/build/bin/beam-cli"
 race_pid=""
 lock_writer_pid=""
@@ -73,6 +74,7 @@ assert_lock_timeout() {
 }
 
 mkdir -p \
+  "$uninstalled_runtime/libexec" \
   "$current_runtime/bin" \
   "$current_runtime/libexec" \
   "$old_runtime/libexec"
@@ -84,9 +86,10 @@ printf '%s\n' \
 write_runtime_manifest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$current_runtime/manifest.json"
 write_runtime_manifest bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$old_runtime/manifest.json"
 cp scripts/lean-beam "$current_runtime/bin/lean-beam"
+cp "$beam_cli" "$uninstalled_runtime/libexec/beam-cli"
 cp "$beam_cli" "$current_runtime/libexec/beam-cli"
 cp "$beam_cli" "$old_runtime/libexec/beam-cli"
-python3 - "$PWD" "$current_runtime" "$old_runtime" <<'PYLIBRARIES'
+python3 - "$PWD" "$uninstalled_runtime" "$current_runtime" "$old_runtime" <<'PYLIBRARIES'
 import json
 import os
 from pathlib import Path
@@ -97,12 +100,17 @@ source = Path(sys.argv[1])
 libraries = json.loads(subprocess.check_output(
     ['lake', 'script', 'run', 'beamSharedRuntimeFiles'], cwd=source, text=True))
 for directory in map(Path, sys.argv[2:]):
+    executable = directory / 'libexec/beam-cli'
+    assert not executable.is_symlink() and executable.stat().st_nlink == 1, executable
     for library in libraries:
         relative = Path('libexec') / Path(library).name if os.name == 'nt' else Path(library)
         destination = directory / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source / '.lake/build' / library, destination)
 PYLIBRARIES
+# Darwin can identify a cache-linked build executable by its cache pathname,
+# breaking its relative library lookup. Launch an independent copy with matching libraries.
+beam_cli="$uninstalled_runtime/libexec/beam-cli"
 ln -s "$current_runtime" "$install_root/current"
 
 resolved_current_runtime="$(beam_test_realpath "$current_runtime")"
@@ -113,12 +121,12 @@ assert_output_contains "prune help" "$help_out" 'remove the displayed paths'
 assert_output_contains "prune help" "$help_out" \
   'Apply removes one validated path at a time and reports each successful removal immediately.'
 
-source_wrapper_err="$tmp_root/source-wrapper.err"
-if "$beam_cli" prune > /dev/null 2>"$source_wrapper_err"; then
-  echo "expected source-checkout prune to fail" >&2
+uninstalled_err="$tmp_root/uninstalled.err"
+if "$beam_cli" prune > /dev/null 2>"$uninstalled_err"; then
+  echo "expected uninstalled prune to fail" >&2
   exit 1
 fi
-assert_contains_literal "$source_wrapper_err" 'prune is only available from an installed Beam runtime'
+assert_contains_literal "$uninstalled_err" 'prune is only available from an installed Beam runtime'
 
 unknown_err="$tmp_root/unknown.err"
 if "$install_root/current/bin/lean-beam" prune --unknown > /dev/null 2>"$unknown_err"; then

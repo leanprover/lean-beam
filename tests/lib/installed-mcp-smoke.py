@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -20,7 +21,7 @@ stdio = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(stdio)
 
 
-def smoke(server, project_root, source, *, modern, server_trace):
+def smoke(server, project_root, source, unsupported_sources, *, modern, server_trace):
     timeout = float(os.environ.get("BEAM_MCP_SMOKE_TIMEOUT", "60"))
     shutdown_timeout = float(os.environ.get("BEAM_MCP_SMOKE_SHUTDOWN_TIMEOUT", "30"))
     client = stdio.McpClient(
@@ -63,9 +64,20 @@ def smoke(server, project_root, source, *, modern, server_trace):
             stdio.require(failure.get("isError") is True, f"missing file was accepted: {failure}")
             error = failure.get("structuredContent")
             stdio.require(isinstance(error, dict), f"missing-file error missing structuredContent: {failure}")
-            # The broker currently projects filesystem read failures as internalError.
-            stdio.require(error.get("code") == "internalError", f"unexpected missing-file error code: {failure}")
+            stdio.require(error.get("code") == "invalidParams", f"unexpected missing-file error code: {failure}")
             stdio.require(missing in error.get("message", ""), f"missing-file error omitted path: {failure}")
+            for path in unsupported_sources:
+                failure = stdio.expect_result(request("tools/call", {
+                    "name": "lean_sync",
+                    "arguments": {"path": path, "workspace": {"root": str(project_root)}},
+                }))
+                if modern:
+                    stdio.require_modern_result_envelope(failure, "unsupported-source lean_sync")
+                stdio.require(failure.get("isError") is True,
+                              f"unsupported source was accepted: {failure}")
+                error = failure.get("structuredContent")
+                stdio.require(isinstance(error, dict) and error.get("code") == "invalidParams",
+                              f"unexpected unsupported-source error code: {failure}")
             client.close_input()
             code = client.wait_for_exit_after_eof(shutdown_timeout)
         finally:
@@ -88,10 +100,17 @@ def main():
     parser.add_argument("--server-trace", action="store_true")
     args = parser.parse_args()
     root = args.project_root.resolve()
-    progress = {
-        family: smoke(args.server, root, args.source, modern=modern, server_trace=args.server_trace)
-        for family, modern in [("modern", True), ("legacy", False)]
-    }
+    with tempfile.TemporaryDirectory(prefix="beam-input-smoke-", dir=root) as scratch:
+        inputs = Path(scratch)
+        (inputs / "notes.txt").write_text("ordinary notes\n")
+        (inputs / "Directory.lean").mkdir()
+        unsupported = [str(path.relative_to(root)) for path in
+                       [inputs / "notes.txt", inputs / "Directory.lean"]]
+        progress = {
+            family: smoke(args.server, root, args.source, unsupported,
+                          modern=modern, server_trace=args.server_trace)
+            for family, modern in [("modern", True), ("legacy", False)]
+        }
     print(json.dumps({"ok": True, "progress": progress}, sort_keys=True))
 
 

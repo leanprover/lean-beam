@@ -160,6 +160,73 @@ private def resolveDocumentPath (root : System.FilePath) (path : System.FilePath
     IO System.FilePath :=
   Beam.resolvePathForCreation <| if path.isAbsolute then path else root / path
 
+private def documentBoundaryFailure (root path : System.FilePath) : ResponseFailure :=
+  responseFailureFor .invalidParams
+    s!"document '{path}' resolves outside workspace root '{root}'; select a workspace containing the document"
+
+/-- Only ordinary failures of observing a supplied source path are input errors. -/
+private def sourceObservationFailure?
+    (root path : System.FilePath) : IO.Error → Option ResponseFailure
+  | .noFileOrDirectory .. => some <| responseFailureFor .invalidParams
+      s!"document '{path}' cannot be resolved in workspace '{root}'"
+  | .inappropriateType .. => some <| responseFailureFor .invalidParams
+      s!"document '{path}' is not a regular source file in workspace '{root}'"
+  | _ => none
+
+/-- Invalid arguments are classified here only for filesystem path resolution, not arbitrary I/O. -/
+private def sourceResolutionFailure?
+    (root path : System.FilePath) (error : IO.Error) : Option ResponseFailure :=
+  match error with
+  | .invalidArgument .. => some <| responseFailureFor .invalidParams
+      s!"document path '{path}' cannot be resolved in workspace '{root}'"
+  | _ => sourceObservationFailure? root path error
+
+/-- Capture an existing regular Lean source; missing-suffix lookup never authorizes an open. -/
+private def resolveSourceDocumentPath
+    (root requested : System.FilePath) : IO (Except ResponseFailure System.FilePath) := do
+  let path := if requested.isAbsolute then requested else root / requested
+  let resolved : Except IO.Error System.FilePath ←
+    try pure <| .ok <| ← Beam.resolveExistingPath path
+    catch error => pure <| .error error
+  let path ← match resolved with
+    | .ok path => pure path
+    | .error error =>
+        if let .noFileOrDirectory .. := error then
+          -- Preserve containment errors for missing external paths, without collapsing an absent
+          -- intermediate directory into a successful source lookup (for example missing/../A.lean).
+          let missingPath? ← try
+              some <$> resolveDocumentPath root requested
+            catch
+            | .invalidArgument .. =>
+                -- The creation helper has no leaf for a missing `..` component. This optional
+                -- diagnostic refinement must not replace the original missing-source failure.
+                pure none
+            | failure => throw failure
+          if let some missingPath := missingPath? then
+            unless Beam.isCanonicalPathWithinRoot root missingPath do
+              return .error <| documentBoundaryFailure root missingPath
+        match sourceResolutionFailure? root path error with
+        | some failure => return .error failure
+        | none => throw error
+  unless Beam.isCanonicalPathWithinRoot root path do
+    return .error <| documentBoundaryFailure root path
+  let metadata : Except ResponseFailure IO.FS.Metadata ←
+    try pure <| .ok <| ← path.metadata
+    catch error =>
+      match sourceObservationFailure? root path error with
+      | some failure => pure <| .error failure
+      | none => throw error
+  let metadata ← match metadata with
+    | .ok metadata => pure metadata
+    | .error failure => return .error failure
+  unless metadata.type == .file do
+    return .error <| responseFailureFor .invalidParams
+      s!"document '{path}' is not a regular source file in workspace '{root}'"
+  unless path.toString.endsWith ".lean" do
+    return .error <| responseFailureFor .invalidParams
+      s!"document '{path}' is not a .lean source file in workspace '{root}'"
+  return .ok path
+
 def sessionUri (path : System.FilePath) : String :=
   (System.Uri.pathToUri path : String)
 
@@ -747,12 +814,23 @@ private structure SyncedFileSnapshot where
 private def readFileSyncSnapshot
     (root path : System.FilePath)
     (workspaceGeneration : Nat)
-    (readSeq : Nat) : IO FileSyncSnapshot := do
-  let text ← IO.FS.readFile path
-  let textMTime ← Lake.getFileMTime path
+    (readSeq : Nat)
+    (readSource : System.FilePath → IO ByteArray) : IO (Except ResponseFailure FileSyncSnapshot) := do
+  let contents : Except ResponseFailure (ByteArray × Lake.MTime) ← try
+      pure <| .ok (← readSource path, ← Lake.getFileMTime path)
+    catch error =>
+      match sourceObservationFailure? root path error with
+      | some failure => pure <| .error failure
+      | none => throw error
+  let (bytes, textMTime) ← match contents with
+    | .ok contents => pure contents
+    | .error failure => return .error failure
+  let some text := String.fromUTF8? bytes
+    | return .error <| responseFailureFor .invalidParams
+        s!"document '{path}' is not valid UTF-8 source in workspace '{root}'"
   let uri := sessionUri path
   let moduleName? := DocumentState.trackedModuleName? root path
-  pure {
+  pure <| .ok {
     workspaceGeneration
     path
     uri
@@ -1013,6 +1091,8 @@ structure ServerRuntime where
   state : Std.Mutex State
   private mode : ServerMode
   private admission? : Option WorkspaceAdmission
+  /-- Source-byte observation, after admission and ordering; never called under the state mutex. -/
+  private readSource : System.FilePath → IO ByteArray
   activeRequests : ActiveRequestRegistry
   private closeMutex : Std.Mutex Bool
   private closeDone : IO.Promise (Except IO.Error Unit)
@@ -1146,7 +1226,8 @@ def ServerRuntime.create
     (config : BrokerConfig)
     (workspaceId : WorkspaceId)
     (mode : ServerMode := .standalone none)
-    (admission? : Option WorkspaceAdmission := none) : IO ServerRuntime := do
+    (admission? : Option WorkspaceAdmission := none)
+    (readSource : System.FilePath → IO ByteArray := IO.FS.readBinFile) : IO ServerRuntime := do
   unless validWorkspaceId workspaceId do
     throw <| IO.userError "workspace id must be non-empty"
   match mode.validate with
@@ -1158,6 +1239,7 @@ def ServerRuntime.create
     state := ← Std.Mutex.new state
     mode
     admission?
+    readSource
     activeRequests := ← ActiveRequestRegistry.create
     closeMutex := ← Std.Mutex.new false
     closeDone := ← IO.Promise.new
@@ -1577,11 +1659,19 @@ private def withDocumentAdmission (server : ServerRuntime) (req : WorkspaceReque
   let cleanupOnly := match payload with
     | .close request => !request.saveArtifacts?.getD false
     | _ => false
+  if path.isEmpty then
+    return (responseFailureFor .invalidParams "document path must not be empty").toResponse
   let root ← if cleanupOnly then pure root else resolveRoot root
-  let path ← resolveDocumentPath root path
-  unless cleanupOnly || Beam.isCanonicalPathWithinRoot root path do
-    return (responseFailureFor .invalidParams
-      s!"document '{path}' resolves outside workspace root '{root}'; select a workspace containing the document").toResponse
+  let resolved ← if cleanupOnly then do
+      try pure <| .ok <| ← resolveDocumentPath root path
+      catch error =>
+        match sourceResolutionFailure? root path error with
+        | some failure => pure <| .error failure
+        | none => throw error
+    else resolveSourceDocumentPath root path
+  let path ← match resolved with
+    | .ok path => pure path
+    | .error failure => return failure.toResponse
   let admitted ← server.withRequestSessionState req do
     let some workspace := getWorkspace? (← get) req.workspaceId
       | return .error <| requestWorkspaceChangedFailure req
@@ -1879,7 +1969,7 @@ private def readRequestSyncSnapshot
     | .ok context => pure context
     | .error failure => return .error failure
   -- The scoped admission is captured before this read, and checked again before acceptance.
-  pure <| .ok <| ← readFileSyncSnapshot root document.path req.workspaceGeneration readSeq
+  readFileSyncSnapshot root document.path req.workspaceGeneration readSeq server.readSource
 
 private structure StartedTrackedBarrier where
   document : DocumentRef
@@ -2351,16 +2441,17 @@ private def handleSyncFileOp
 
 private def closeTrackedFileIfOpen
     (server : ServerRuntime)
-    (req : WorkspaceRequest) : HandlerM Unit :=
+    (req : WorkspaceRequest) : HandlerM Bool :=
   liftFailureIO <| server.withRequestSessionState req do
     if let .error failure ← fenceDocument req then return .error failure
     match ← storedSession? req.workspaceId with
     | some session =>
         let document ← requireRequestDocument req
+        let closed := (session.docs.get? document.permit.uri).isSome
         let session ← closeFile session document.permit.uri
         updateSession session
-        pure (.ok ())
-    | none => pure (.ok ())
+        pure (.ok closed)
+    | none => pure (.ok false)
 
 private def handleUpdateFileOp
     (server : ServerRuntime)
@@ -2394,8 +2485,8 @@ private def handleCloseOp
       emitProgress? emitDiagnostic? (closeAfter := true)
     finalizeSavedResponse saved true
   else
-    closeTrackedFileIfOpen server req
-    pure <| Response.success (Json.mkObj [("closed", toJson true)])
+    let closed ← closeTrackedFileIfOpen server req
+    pure <| Response.success (Json.mkObj [("closed", toJson closed)])
 
 private def runAtSetupProgressEmitter?
     (emitDiagnostic? : Option (StreamDiagnostic → IO Unit)) :

@@ -103,11 +103,18 @@ mirrors need a broader Source/Workspace split and a transport-safe descriptor; t
 as client-chosen aliases for local roots.
 
 The descriptor selects the Lean runtime, toolchain and document root. Paths used to read or open a
-document, whether relative or absolute, must resolve inside the canonical workspace root. Beam
-rejects an external target, including
-a symlink that escapes the root, before reading its contents or opening a document worker. Select
-that target's own workspace to open it. Normal Lean imports and navigation results may still refer
-to external dependencies.
+document must resolve to existing regular files inside the canonical workspace root, with canonical
+filenames ending in the case-sensitive suffix `.lean`. Relative paths and aliases are supported:
+`Alias.txt` resolving to `Main.lean` is accepted, while `Alias.lean` resolving to `notes.txt` is
+rejected. Unsupported source paths return `invalidParams` before reading contents or opening a
+worker. Source contents must be valid UTF-8; invalid encoding also returns `invalidParams` before
+opening a worker. Select an external target's own workspace to open it. Normal Lean imports and
+navigation results may still refer to external dependencies.
+
+Plain `lean_close` cleans up tracked identity even after a source is deleted or becomes an
+unsupported kind. Its `closed` value reports actual tracked removal: `true` once, then `false` for
+repeated or unknown closes. Both outcomes fence earlier source reads; a fresh request can reopen
+the document. Close does not start a worker or read source contents.
 
 This document-admission policy is not an OS filesystem sandbox: Lean metaprogramming can perform IO.
 A remote transport needs an explicit Source model and authorization policy, and callers requiring

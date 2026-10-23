@@ -131,7 +131,7 @@ def Operation.description (operation : Operation) (syncOperation : String := "th
 
 private def pathField : String × Json :=
   ("path", Beam.JsonSchema.string
-    "Lean file path, absolute or relative, resolving inside the workspace root.")
+    "Absolute or relative path to a regular .lean source inside the workspace root.")
 
 private def versionField : String × Json :=
   ("version", Beam.JsonSchema.natural "Document version returned by a successful update or sync operation for this file.")
@@ -249,7 +249,7 @@ def Operation.inputSchema : Operation → Json
   | .save | .closeSave =>
       inputObject [pathField, saveDiagnosticScopeField] #["path"]
   | .close =>
-      inputObject [pathField] #["path"]
+      inputObject [("path", string "Document path to close, including a deleted source.")] #["path"]
 
 /-- Reject fields outside the closed schema owned by one Lean operation. -/
 def Operation.validateInputFields (operation : Operation) (input : Json) : Except String Unit :=

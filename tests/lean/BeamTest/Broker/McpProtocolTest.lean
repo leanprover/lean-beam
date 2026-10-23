@@ -1536,6 +1536,9 @@ private def checkDocumentAdmission : IO Unit := do
     IO.FS.createDirAll root
     IO.FS.writeFile (root / "lean-toolchain") "fixture\n"
     IO.FS.writeFile outside "def outsideFixture := 1\n"
+    IO.FS.writeFile (root / "notes.txt") "ordinary notes\n"
+    IO.FS.writeBinFile (root / "Invalid.lean") (ByteArray.mk #[0xff])
+    IO.FS.createDirAll (root / "Directory.lean")
     let canonicalRoot ← Beam.resolveExistingPath root
     let canonicalOutside ← Beam.resolveExistingPath outside
     let opts : Beam.Mcp.Server.Options := {
@@ -1564,6 +1567,25 @@ private def checkDocumentAdmission : IO Unit := do
       requireJsonString "external document failure" "message"
         s!"document '{canonicalOutside}' resolves outside workspace root '{canonicalRoot}'; select a workspace containing the document"
         error
+    let mut id := 20
+    for path in #["Missing.lean", "notes.txt", "Directory.lean", "Invalid.lean", ""] do
+      for (tool, fields) in #[("lean_sync", []),
+          ("lean_run_at", [("version", toJson (1 : Nat)), ("line", toJson (0 : Nat)),
+            ("character", toJson (0 : Nat)), ("text", toJson "#check Nat")])] do
+        let response ← handleRpcRequestWithNotifications state opts notifications
+          "source input admission" id "tools/call" <| some <| toolCallParams tool <|
+            withWorkspace root <| Json.mkObj (("path", toJson path) :: fields)
+        id := id + 1
+        let result ← requireObjVal "source input response" "result" response
+        requireJsonBool "source input result" "isError" true result
+        let error ← requireObjVal "source input result" "structuredContent" result
+        requireJsonString "source input failure" "code" "invalidParams" error
+    let close ← handleRpcRequestWithNotifications state opts notifications
+      "unknown source close" id "tools/call" <| some <| toolCallParams "lean_close" <|
+        withWorkspace root <| Json.mkObj [("path", toJson "Missing.lean")]
+    let closeResult ← requireObjVal "unknown source close" "result" close
+    let closed ← requireObjVal "unknown source close" "structuredContent" closeResult
+    requireJsonBool "unknown source close" "closed" false closed
     let workspaceId := (Beam.Workspace.Descriptor.ofRoot canonicalRoot).cacheKey
     let workspaces ← legacyStatsWorkspaces state opts notifications "external document stats" 4
     let stats ← requireObjVal "external document stats" workspaceId workspaces
@@ -1598,7 +1620,7 @@ private def checkIdempotentLifecycleTools : IO Unit := do
       "lifecycle stats after sync workspaces" workspaceId workspaces
     requireJsonString "lifecycle stats workspace" "root" canonicalRoot.toString workspaceStats
 
-    for (id, label) in #[(4, "first"), (5, "repeated")] do
+    for (id, label, closed) in #[(4, "first", true), (5, "repeated", false)] do
       let closeResp ← handleRpcRequestWithNotifications state opts notifications
         s!"{label} lean close" id "tools/call" <| some <| toolCallParams "lean_close" <|
           withWorkspace root <| Json.mkObj [
@@ -1608,7 +1630,7 @@ private def checkIdempotentLifecycleTools : IO Unit := do
       requireJsonBool s!"{label} lean_close result" "isError" false closeResult
       let closeStructured ←
         requireObjVal s!"{label} lean_close result" "structuredContent" closeResult
-      requireJsonBool s!"{label} lean_close structured result" "closed" true closeStructured
+      requireJsonBool s!"{label} lean_close structured result" "closed" closed closeStructured
 
     let firstDropResp ← handleRpcRequestWithNotifications state opts notifications
       "first lean drop workspace" 6 "tools/call" <|
