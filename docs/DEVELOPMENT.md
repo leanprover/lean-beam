@@ -603,9 +603,14 @@ termination, and wait error or change their existing precedence.
 
 The broker finalizes save traces after the artifact worker has acknowledged completion. It hashes
 the private outputs, fills the output descriptors in the target-prepared dependency metadata, and
-writes a private trace atomically before canonical publication. This does not evaluate project code
-or start another helper. The metadata schema must match the broker's supported Lake format;
-independent target-SDK readers qualify metadata and binary artifact hashes across supported versions.
+writes the fresh private candidate before canonical publication. Its `IO.FS.withFile` handle stays
+local, and an explicit flush reports buffered I/O failures before readiness. Exclusive creation
+rejects an occupied candidate; a missing private parent is not recreated. The publication plan owns
+cleanup and canonical promotion, so no second trace staging file or asynchronous writer is needed.
+This does not evaluate project code or start another helper. The metadata schema must match the
+broker's supported Lake format; independent target-SDK readers qualify metadata and binary artifact
+hashes across supported versions. Flushing reports buffered I/O failures; it does not add crash
+recovery or a filesystem durability guarantee.
 Cancellation is checked after local trace finalization and again by the final publication guard.
 
 The CLI detaches the daemon's stdin writer immediately after spawning it. Published child handles

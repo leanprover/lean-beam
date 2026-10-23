@@ -161,10 +161,10 @@ Every private output candidate ends in `.candidate`, including `.ilean` candidat
 The internal artifact request omits the caller's cancellation reference. Cancellation is recorded
 by the public request registry but is not forwarded to the worker; the broker awaits its typed
 terminal completion before disposing acknowledged private paths. A cancellation check then rejects
-the save before starting trace preparation. The broker finalizes the private trace locally, then
-checks cancellation before claiming canonical publication. Local finalization has no outstanding
-producer when it returns, including on failure. Worker/channel failure does not establish producer
-settlement and may retain the attempt's directories and claims.
+the save before starting trace preparation. The broker writes and flushes a fresh private trace
+candidate locally, then checks cancellation before claiming canonical publication. Local finalization
+has no outstanding producer when it returns, including on failure. Worker/channel failure does not
+establish producer settlement and may retain the attempt's directories and claims.
 
 After preparation completes, the broker validates the captured workspace generation, backend
 owner, accepted document basis, and cancellation state, then claims publication. That final

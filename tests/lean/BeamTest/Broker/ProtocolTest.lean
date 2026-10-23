@@ -588,60 +588,6 @@ private def checkLakeHelperOutputCodec : IO Unit := do
       require "optional fields have explicit absence semantics"
         (((toJson decoded).getObjVal? field).isOk == includeOptional)
 
-private def checkLakeSaveTraceOutputs : IO Unit := do
-  let temp ← IO.Process.output { cmd := "mktemp", args := #["-d"] }
-  require "save trace fixture directory" (temp.exitCode == 0)
-  let root := System.FilePath.mk temp.stdout.trimAscii.toString
-  try
-    let olean := root / "Saved.olean"
-    let ilean := root / "Saved.ilean"
-    let c := root / "Saved.c"
-    let ir := root / "Saved.ir"
-    let irSig := root / "Saved.ir.sig"
-    for path in #[olean, ilean, c, ir, irSig] do
-      IO.FS.writeFile path s!"artifact {path.fileName.getD ""}\n"
-    let depTrace := Lake.BuildTrace.ofHash (Lake.Hash.ofNat 73) "save inputs"
-    let trace := root / "Saved.trace"
-    let spec : LeanSaveSpec := {
-      moduleName := "Saved"
-      oleanPath := olean
-      ileanPath := ilean
-      cPath := c
-      irPath? := some ir
-      irSigPath? := some irSig
-      tracePath := trace
-      traceMetadata := toJson (Lake.BuildMetadata.ofBuild depTrace Json.null {})
-    }
-    writeLeanSaveTrace spec
-    let metadata ← IO.ofExcept <| Lake.BuildMetadata.parse (← IO.FS.readFile trace)
-    require "save trace preserves dependency hash" (metadata.depHash == depTrace.hash)
-    let some outputs := metadata.outputs?
-      | throw <| IO.userError "save trace omitted output descriptors"
-    -- Decode with this toolchain's Lake type, then inspect the serialized artifact descriptors.
-    -- In particular, an optional C descriptor must be present because Beam wrote generated C.
-    let decoded ← IO.ofExcept <| fromJson? (α := Lake.ModuleOutputDescrs) outputs
-    let outputs := toJson decoded
-    for (key, path, ext) in [("i", ilean, "ilean"), ("c", c, "c")] do
-      let actual ← IO.ofExcept <| outputs.getObjVal? key
-      let expected := toJson (Lake.artifactWithExt (← Lake.computeHash path) ext)
-      require s!"save trace includes current {ext} output" (actual.compress == expected.compress)
-    let actual ← IO.ofExcept <| outputs.getObjVal? "rs"
-    let expected := toJson (Lake.artifactWithExt (← Lake.computeHash irSig) "ir.sig")
-    require "save trace includes current IR signature" (actual.compress == expected.compress)
-    let original ← IO.FS.readBinFile trace
-    let unsupported := { spec with traceMetadata :=
-      spec.traceMetadata.setObjVal! "schemaVersion" (toJson ("unknown trace format" : String)) }
-    let rejected ← try writeLeanSaveTrace unsupported *> pure false catch _ => pure true
-    require "unknown target trace schema is rejected" rejected
-    require "unsupported schema preserves the prior trace" ((← IO.FS.readBinFile trace) == original)
-    IO.FS.removeFile trace
-    IO.FS.removeFile c
-    let rejected ← try writeLeanSaveTrace spec *> pure false catch _ => pure true
-    require "missing C output rejects save trace" rejected
-    require "missing C output must not publish trace" (!(← trace.pathExists))
-  finally
-    IO.FS.removeDirAll root
-
 private def checkDocumentVersionMismatchErrorData : IO Unit := do
   let data := documentVersionMismatchErrorData 1 2
     (currentVersion? := some 2)
@@ -3352,7 +3298,6 @@ def main : IO Unit := do
   checkSyncFileResultDecode
   checkFailureResponseConversions
   checkLakeHelperOutputCodec
-  checkLakeSaveTraceOutputs
   checkDocumentVersionMismatchErrorData
   checkReadinessBoundary
   checkStaleDirectDepHints

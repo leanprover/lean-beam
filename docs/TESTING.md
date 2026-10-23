@@ -165,8 +165,9 @@ Additional Beam lanes:
   validated or release-line-compatible bundle qualification, admission diagnostics, module save/replay
   (including the required `.ir.sig` companion), and stale-import diagnostic wording compatibility
 - [tests/test-save-trace-format.py](../tests/test-save-trace-format.py): independent target-Lake
-  decoding and artifact-hash verification of a broker-written trace. Repeat `--lean-prefix <SDK>`
-  to check the same trace against several SDKs without rebuilding them.
+  decoding and artifact-hash verification of a broker-written trace, plus a POSIX file-size-limit
+  regression for buffered write failure. Fast and native qualification run it. Repeat
+  `--lean-prefix <SDK>` to check the same trace against several SDKs without rebuilding them.
 - [tests/test-native-toolchain.py](../tests/test-native-toolchain.py) `<SDK-prefix>`: native
   build/install, relocation, installed-runtime, and save/replay qualification for any supplied SDK
 - [tests/test-mcp-conformance.sh](../tests/test-mcp-conformance.sh): external MCP `2025-11-25`

@@ -164,6 +164,8 @@ def qualify(args, lean_prefix, scratch):
             run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "30", "--",
                  REPO / ".lake/build/bin" / f"{executable}{EXE}"], env=build_env)
         run([sys.executable, "-X", "utf8", REPO / "tests/test-system-contracts.py"], env=build_env)
+        run([sys.executable, "-X", "utf8", REPO / "tests/test-save-trace-format.py",
+             "--lean-prefix", lean_prefix], env=build_env)
         run([sys.executable, "-X", "utf8", REPO / "tests/test-installation-manifest.py"], env=build_env)
         run([sys.executable, "-X", "utf8", REPO / "tests/test-installation-construction.py"], env=build_env)
         # Native platform jobs also qualify real Elan links, including Windows junctions,

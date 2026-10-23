@@ -9,7 +9,6 @@ import Beam.Broker.LakeHelperMain
 import BeamTest.TestHarness
 import BeamTest.Broker.SaveOwnerTest
 import BeamTest.Broker.PrivatePublicationTest
-import BeamTest.Broker.SaveTraceFixture
 import BeamTest.Broker.WorkerRecoveryTest
 
 private structure Fixture where
@@ -59,8 +58,6 @@ def main (args : List String) : IO Unit := do
     toolchain := "library fixture", identity := ⟨(← IO.currentDir), "library fixture"⟩
   }
   match fixture.args with
-  | ["save-trace-fixture", root] =>
-      BeamTest.Broker.SaveTraceFixture.write (System.FilePath.mk root)
   | ["worker-recovery-test", root] =>
       BeamTest.Broker.WorkerRecoveryTest.run description (← Beam.resolveExistingPath root)
   | ["private-publication-test", root] =>

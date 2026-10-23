@@ -2376,7 +2376,7 @@ private def saveOleanCore
         |>.withOptionalFileProgress barrierProgress?
     withFailureProgress barrierProgress? <| liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
     -- Local finalization has no outstanding producer when it returns, including on failure.
-    let traceResult ← liftHandlerIO <| (writeLeanSaveTrace privateSpec).toBaseIO
+    let traceResult ← liftHandlerIO <| (writePrivateSaveTrace privateSpec).toBaseIO
     withFailureProgress barrierProgress? <| liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
     withFailureProgress barrierProgress? <| liftHandlerIO <| IO.ofExcept traceResult
     liftHandlerIO plan.ready

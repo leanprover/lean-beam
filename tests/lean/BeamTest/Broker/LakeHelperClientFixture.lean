@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Broker.LakeHelper
 import BeamTest.Broker.HelperOutcomeTest
+import BeamTest.Broker.SaveTraceFixture
 
 open Lean Beam.Broker
 
@@ -135,6 +136,10 @@ private def cleanupFaultHelper (directory : System.FilePath) : IO Unit := do
 /-- Non-shipped client for exercising owned helper messages and retained-child cleanup. -/
 def main (args : List String) : IO Unit := do
   match args with
+  | ["save-trace-fixture", root] =>
+      BeamTest.Broker.SaveTraceFixture.write (System.FilePath.mk root)
+  | ["write-prepared-trace", root] =>
+      BeamTest.Broker.SaveTraceFixture.writePrepared (System.FilePath.mk root)
   | ["lake-helper", "server-env", directory] => cleanupFaultHelper directory
   | ["--helper-outcomes"] => BeamTest.Broker.HelperOutcomeTest.run
   | ["--process-job-exit"] => do

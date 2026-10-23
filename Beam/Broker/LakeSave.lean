@@ -232,28 +232,9 @@ private def leanSaveOutputs (outputs : LeanSaveOutputs) : IO ModuleOutputDescrs 
   pure <| mkModuleOutputDescrsCompat(
     isModule, olean, oleanServer?, oleanPrivate?, ilean, ir?, irSig?, c, bc?)
 
-private def stagedTracePath (tracePath : FilePath) : IO FilePath := do
-  let pid ← IO.Process.getPID
-  pure <| FilePath.mk s!"{tracePath}.beam-save-trace-tmp-{pid}-{← IO.monoNanosNow}"
-
-private def writeTraceAtomically
-    (tracePath : FilePath)
-    (writeStaged : FilePath → IO Unit) : IO Unit := do
-  let stagedTrace ← stagedTracePath tracePath
-  try
-    writeStaged stagedTrace
-    IO.FS.rename stagedTrace tracePath
-  catch e =>
-    try
-      if ← stagedTrace.pathExists then
-        IO.FS.removeFile stagedTrace
-    catch _ =>
-      pure ()
-    throw e
-
-/-- Finalize the target-prepared trace locally after the artifact producer has settled.
-The supported Lake trace schema and artifact hashes are qualified across supported SDKs. -/
-def writeLeanSaveTrace (spec : LeanSaveSpec) : IO Unit := do
+/-- Write one fresh private candidate after the artifact producer has settled.
+The publication plan owns the directory, cleanup, and eventual canonical rename. No handle escapes. -/
+def writePrivateSaveTrace (spec : LeanSaveSpec) : IO Unit := do
   let schema ← IO.ofExcept <| spec.traceMetadata.getObjValAs? String "schemaVersion"
   let expectedSchema ← IO.ofExcept <|
     (toJson (BuildMetadata.ofStub (Hash.ofNat 0))).getObjValAs? String "schemaVersion"
@@ -262,9 +243,10 @@ def writeLeanSaveTrace (spec : LeanSaveSpec) : IO Unit := do
   let outputs ← leanSaveOutputs spec.toLeanSaveOutputs
   -- Preserve the target's dependency metadata; only completed output descriptors change.
   let metadata := spec.traceMetadata.setObjVal! "outputs" (toJson outputs)
-  writeTraceAtomically spec.tracePath fun stagedTrace => do
-    IO.FS.createDirAll (stagedTrace.parent.getD ".")
-    IO.FS.writeFile stagedTrace metadata.pretty
+  IO.FS.withFile spec.tracePath .writeNew fun handle => do
+    handle.putStr metadata.pretty
+    -- Report buffered write failures before readiness; handle finalization cannot report them.
+    handle.flush
 
 def lakeHelperSaveSpec
     (request : LakeHelperSaveRequest) (leanCmd : String) : IO (Except BrokerFailure LeanSaveSpec) := do
