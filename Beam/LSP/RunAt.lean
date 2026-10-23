@@ -183,31 +183,24 @@ def mkExecutionArtifacts
   return {
     messages := protocolMessages
     traces := protocolTraces
-    hasErrors := protocolMessages.any (fun message => message.severity == .error)
+    -- Match MessageLog.hasErrors and SnapshotTree.runAndReport: silence affects presentation,
+    -- not failure. Use the final log, after enclosing commands have consumed or downgraded
+    -- expected errors (for example, #guard_msgs and Verso documentation examples).
+    hasErrors := messages.any (fun message => message.severity == .error)
   }
 
 def mkExecutionResult
     (error? : Option String)
     (artifacts : ExecutionArtifacts)
     (proofState? : Option ProofState := none) : Result :=
-  match error? with
-  | some error =>
-      if artifacts.hasErrors then
-        { success := false, messages := artifacts.messages, traces := artifacts.traces, proofState? }
-      else
-        {
-          success := false
-          messages := artifacts.messages.push (mkMessage .error error)
-          traces := artifacts.traces
-          proofState?
-        }
-  | none =>
-      {
-        success := !artifacts.hasErrors
-        messages := artifacts.messages
-        traces := artifacts.traces
-        proofState?
-      }
+  let failed := error?.isSome || artifacts.hasErrors
+  let messages :=
+    if failed && !artifacts.messages.any (fun message => message.severity == .error) then
+      artifacts.messages.push <| mkMessage .error <|
+        error?.getD "elaboration failed without visible diagnostics"
+    else
+      artifacts.messages
+  { success := !failed, messages, traces := artifacts.traces, proofState? }
 
 def withInnerCancelToken (k : IO.CancelToken → RequestM α) : RequestM α := do
   let rc ← readThe RequestContext
@@ -477,22 +470,19 @@ private def collectNewTacticArtifacts
   pure (messages, traces)
 
 private def classifyTacticException
-    (ex : Exception)
-    (messages : List Lean.Message) : Elab.Tactic.TacticM (Option String) := do
+    (ex : Exception) : Elab.Tactic.TacticM String := do
   if ex.isInterrupt then
     throw ex
   match ex with
   | .internal id _ =>
-      if id != abortTacticExceptionId then
+      if !isAbortExceptionId id then
         throw ex
-      -- `abortTactic` is Lean's tactic-control exception for a failed tactic. If diagnostics were
-      -- already emitted, those are the user-level error; otherwise retain a fallback message.
-      if messages.any (·.severity == .error) then
-        pure none
-      else
-        pure (some "tactic aborted without diagnostics")
+      -- Lean's elaboration-abort exceptions include failed term elaboration inside `run_tac`.
+      -- Always retain the failure. Result construction prefers visible diagnostics over this
+      -- fallback; hidden errors must not turn an aborted request into a successful result.
+      pure "tactic aborted without visible diagnostics"
   | _ =>
-      pure (some (← ex.toMessageData.toString))
+      ex.toMessageData.toString
 
 def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (text : String) :
     RequestM (Result × Option StoredHandleState) := do
@@ -514,21 +504,24 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
             let saved ← Elab.Tactic.saveState
             let initialMsgCount := (← Core.getMessageLog).toList.length
             let initialTraceCount := (← getTraces).size
-            try
-              Elab.Tactic.evalTactic stx
-              Elab.Term.synthesizeSyntheticMVarsNoPostponing
-              -- Lean lifts local recursive definitions and checks their termination when
-              -- finalizing the enclosing declaration. A standalone tactic probe has no such
-              -- finalization step, so it must not report these pending definitions as solved.
-              unless (← Elab.Term.getLetRecsToLift).isEmpty do
-                throwError "Local recursive declarations are not supported in runAt tactics. Add the declaration to the document and sync before probing."
-              let (messages, traces) ← collectNewTacticArtifacts initialMsgCount initialTraceCount
-              return { disposition := .keepAdvanced, error? := none, messages, traces }
-            catch ex =>
-              let (messages, traces) ← collectNewTacticArtifacts initialMsgCount initialTraceCount
-              let error? ← classifyTacticException ex messages
-              saved.restore (restoreInfo := true)
-              return { disposition := .restoreInitial, error?, messages, traces }
+            -- TacticM's ordinary catch backtracks messages too. Collect diagnostics using
+            -- Lean's non-backtracking catch, then explicitly restore the failed proof state.
+            Elab.Tactic.tryCatch
+              (do
+                Elab.Tactic.evalTactic stx
+                Elab.Term.synthesizeSyntheticMVarsNoPostponing
+                -- Lean lifts local recursive definitions and checks their termination when
+                -- finalizing the enclosing declaration. A standalone tactic probe has no such
+                -- finalization step, so it must not report these pending definitions as solved.
+                unless (← Elab.Term.getLetRecsToLift).isEmpty do
+                  throwError "Local recursive declarations are not supported in runAt tactics. Add the declaration to the document and sync before probing."
+                let (messages, traces) ← collectNewTacticArtifacts initialMsgCount initialTraceCount
+                return { disposition := .keepAdvanced, error? := none, messages, traces })
+              (fun ex => do
+                let (messages, traces) ← collectNewTacticArtifacts initialMsgCount initialTraceCount
+                let error ← classifyTacticException ex
+                saved.restore (restoreInfo := true)
+                return { disposition := .restoreInitial, error? := some error, messages, traces })
           run
       catch ex =>
         checkRequestCancelled

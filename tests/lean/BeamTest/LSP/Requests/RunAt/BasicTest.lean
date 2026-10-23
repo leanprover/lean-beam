@@ -114,6 +114,131 @@ def checkRunAtOneCommandOnly : ScenarioM Unit := do
     "runAtSupportsOneCommandOnly"
   closeDoc doc
 
+def checkRunAtElaborationAborts : ScenarioM Unit := do
+  let path := "tests/scenario/docs/RunAtElaborationAbort.lean"
+  let source ← IO.FS.readFile path
+  let some (_, line) := source.splitOn "\n" |>.zipIdx |>.find? (fun (text, _) =>
+      text.endsWith " -- probe")
+    | throw <| IO.userError "missing elaboration-abort probe position"
+  let position : Lean.Lsp.Position := { line, character := 2 }
+  let doc ← openDoc path
+  let initial ← collectDiagnostics doc
+  if initial.diagnostics.any (·.severity? == some .error) then
+    throw <| IO.userError "invalid elaboration-abort fixture"
+  let minted ← requireRunAtResponseSuccess "store elaboration-abort basis" <|
+    ← sendRunAt doc { line, character := 2, text := "skip", storeHandle := true }
+  let some handle := minted.handle?
+    | throw <| IO.userError "missing elaboration-abort basis handle"
+  let targets (result : Beam.LSP.RunAt.Result) := result.proofState?.map (·.goals.map (·.target))
+  let requireFailure (label : String) (needles : List String)
+      (result : Beam.LSP.RunAt.Result) : ScenarioM Unit := do
+    unless !result.success && result.handle?.isNone && targets result == targets minted do
+      throw <| IO.userError s!"{label}: expected failure with original goals and no handle: {(toJson result).compress}"
+    for needle in needles do
+      unless result.messages.any (fun msg => msg.severity == .error && msg.text.contains needle) do
+        throw <| IO.userError s!"{label}: missing error '{needle}': {(toJson result).compress}"
+  let synthesisErrors := ["don't know how to synthesize implicit argument",
+    "don't know how to synthesize placeholder"]
+  -- Term.evalTerm logs the actual errors before throwing abortTermElab. A normal Result must
+  -- retain those errors, including when a preceding tactic has already advanced the proof.
+  for text in ["run_tac pure _", "constructor\nrun_tac pure _"] do
+    let result : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+      ← sendRunAt doc { line, character := 2, text, storeHandle := true }
+    requireFailure text synthesisErrors result
+  for text in ["abort_term_probe", "abort_tactic_probe", "abort_command_probe"] do
+    let result : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+      ← sendRunAt doc { line, character := 2, text := s!"constructor\n{text}", storeHandle := true }
+    requireFailure text ["logged elaboration abort"] result
+  let bareAbort : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+    ← sendRunAt doc {
+      line, character := 2, text := "abort_without_diagnostics_probe", storeHandle := true
+    }
+  requireFailure "abort without diagnostics" ["tactic aborted without visible diagnostics"] bareAbort
+  -- Logged errors do not justify swallowing an unrelated internal exception.
+  let internalReq ← sendRunAt doc {
+    line, character := 2, text := "constructor\nunexpected_internal_probe"
+  }
+  expectErrorContains internalReq (Json.mkObj [("code", toJson "internalError")])
+  requireRunAtSolvesProof "internal exception preserves the document" doc position "constructor <;> trivial"
+  for linear in [false, true] do
+    let failed : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← runWithHandle doc handle {
+      text := "constructor\nrun_tac pure _", storeHandle := true, linear
+    }
+    requireFailure s!"aborted continuation (linear := {linear})" synthesisErrors failed
+    let reused ← runWithHandle doc handle { text := "constructor <;> trivial" }
+    if linear then
+      expectErrorContains reused invalidParamsJson
+    else
+      let solved ← requireRunAtResponseSuccess "reuse after aborted continuation" reused
+      unless targets solved == some #[] do
+        throw <| IO.userError "aborted continuation changed its parent handle"
+  requireRunAtSolvesProof "abort probes preserve the document" doc position "constructor <;> trivial"
+  -- Ordinary file elaboration must report the same diagnostic categories as the natural probe.
+  changeDoc doc { line, character := 2, delete := "constructor <;> trivial", insert := "run_tac pure _" }
+  let ordinary ← collectDiagnostics doc
+  for needle in synthesisErrors do
+    unless ordinary.diagnostics.any (fun diagnostic =>
+        diagnostic.severity? == some .error && diagnostic.message.contains needle) do
+      throw <| IO.userError s!"ordinary Lean is missing elaboration error '{needle}'"
+  changeDoc doc { line, character := 2, delete := "run_tac pure _", insert := "constructor <;> trivial" }
+  let restored ← collectDiagnostics doc
+  if restored.diagnostics.any (·.severity? == some .error) then
+    throw <| IO.userError "abort probes changed ordinary document elaboration"
+  closeDoc doc
+
+def checkRunAtSilentDiagnostics : ScenarioM Unit := do
+  let path := "tests/scenario/docs/RunAtElaborationAbort.lean"
+  let source ← IO.FS.readFile path
+  let doc ← openDoc path
+  syncDoc doc
+  let hiddenFailure := "elaboration failed without visible diagnostics"
+  for (marker, initialText, failures, successTexts) in [
+      ("command", "#silent_info_probe", [("#silent_error_probe", hiddenFailure),
+        ("set_option warningAsError true in\n#silent_warning_probe", hiddenFailure)],
+        ["#silent_info_probe", "#silent_warning_probe", "#guard_msgs in\n#silent_error_probe",
+          "#guard_msgs (drop error) in\n#check beamMissingExpectedProbe"]),
+      ("probe", "skip", [("silent_error_probe", hiddenFailure),
+        ("set_option warningAsError true in\nsilent_warning_probe", hiddenFailure),
+        ("silent_abort_probe", "tactic aborted without visible diagnostics"),
+        ("silent_then_throw_probe", "visible exception diagnostic"),
+        ("mixed_error_probe", "visible diagnostic")],
+        ["silent_info_probe\nconstructor <;> trivial", "silent_warning_probe\nconstructor <;> trivial",
+          "fail_if_success (exact (0 : Nat))\nconstructor <;> trivial"])] do
+    let some (_, line) := source.splitOn "\n" |>.zipIdx |>.find? (fun (text, _) =>
+        text.endsWith s!" -- {marker}")
+      | throw <| IO.userError s!"missing silent-diagnostic position {marker}"
+    let character := if marker == "command" then 0 else 2
+    let initial ← requireRunAtResponseSuccess "store silent-diagnostic basis" <|
+      ← sendRunAt doc { line, character, text := initialText, storeHandle := true }
+    let some handle := initial.handle?
+      | throw <| IO.userError "missing silent-diagnostic handle"
+    let requireFailure (text needle : String) (result : Beam.LSP.RunAt.Result) : ScenarioM Unit := do
+      unless !result.success && result.handle?.isNone && result.messages.size == 1 &&
+          result.messages.any (fun msg => msg.severity == .error && msg.text.contains needle) do
+        throw <| IO.userError s!"{text}: expected one visible error and no successor: {(toJson result).compress}"
+      if result.messages.any (·.text.contains "hidden diagnostic") then
+        throw <| IO.userError s!"{text}: exposed a silent diagnostic"
+    for (text, needle) in failures do
+      let direct : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+        ← sendRunAt doc { line, character, text, storeHandle := true }
+      requireFailure text needle direct
+      let continued : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+        ← runWithHandle doc handle { text, storeHandle := true }
+      requireFailure text needle continued
+    -- Silent information/warnings do not fail. Neither do errors handled by an enclosing
+    -- command or tactic: only the final log counts. Failed continuations leave the parent reusable.
+    for text in successTexts do
+      for req in [← sendRunAt doc { line, character, text, storeHandle := true },
+          ← runWithHandle doc handle { text, storeHandle := true }] do
+        let result ← requireRunAtResponseSuccess "handled or silent diagnostics" req
+        unless result.messages.isEmpty do
+          throw <| IO.userError s!"{text}: unexpected diagnostics: {(toJson result).compress}"
+        let some successor := result.handle?
+          | throw <| IO.userError s!"{text}: successful request omitted its successor handle"
+        releaseHandle doc successor
+    releaseHandle doc handle
+  closeDoc doc
+
 def checkRunAtTheoremProofFailure : ScenarioM Unit := do
   let doc ← openDoc "tests/lean/BeamTest/Fixtures/Deps/DepA.lean"
   syncDoc doc
@@ -236,6 +361,8 @@ def checkRunAtWithStandardLspInterference : ScenarioM Unit := do
 def run : ScenarioM Unit := do
   checkRunAtTacticPositions
   checkRunAtTacticSequences
+  checkRunAtElaborationAborts
+  checkRunAtSilentDiagnostics
   checkRunAtOneCommandOnly
   checkRunAtTheoremSuccessOmitsSilentMessages
   checkRunAtTheoremProofFailure

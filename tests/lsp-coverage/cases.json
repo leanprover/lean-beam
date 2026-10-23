@@ -97,6 +97,30 @@
       "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/BasicTest.lean#checkRunAtOneCommandOnly"
     },
     {
+      "id": "runAt.elaboration-aborts",
+      "method": "$/lean/runAt",
+      "coverage": ["isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/BasicTest.lean#checkRunAtElaborationAborts"
+    },
+    {
+      "id": "runWith.elaboration-aborts",
+      "method": "$/lean/runWith",
+      "coverage": ["handle-continuation", "failed-successor-no-handle"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/BasicTest.lean#checkRunAtElaborationAborts"
+    },
+    {
+      "id": "runAt.silent-diagnostics",
+      "method": "$/lean/runAt",
+      "coverage": ["isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/BasicTest.lean#checkRunAtSilentDiagnostics"
+    },
+    {
+      "id": "runWith.silent-diagnostics",
+      "method": "$/lean/runWith",
+      "coverage": ["handle-continuation", "failed-successor-no-handle"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/BasicTest.lean#checkRunAtSilentDiagnostics"
+    },
+    {
       "id": "runAt.theorem-proof-failure",
       "method": "$/lean/runAt",
       "coverage": ["theorem-proof-failure"],

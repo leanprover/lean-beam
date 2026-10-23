@@ -663,10 +663,15 @@ private def checkTypedLakeSaveTraceFailure : IO Unit := do
     helper := missingHelper
     root := "/fixture", traceMetadata := request.traceMetadata
   }
-  let expected ← runLakeHelperWriteSaveTrace missingHelper request
-  let actual ← writeLeanSaveTrace spec
+  -- Two failed process starts may fail at different steps. Use a deterministic helper failure
+  -- to test preservation, without depending on process startup and pipe-close timing.
+  let cancelled ← IO.mkRef true
+  let control : LakeHelperControl := { cancelRef? := some cancelled }
+  let expected ← runLakeHelperWriteSaveTrace missingHelper request control
+  let actual ← writeLeanSaveTrace spec control
   match expected, actual with
   | .error expected, .error actual =>
+      require "cancelled helper has the expected failure code" (expected.code == .requestCancelled)
       require "write save trace should preserve the helper failure code"
         (actual.code == expected.code)
       require "write save trace should preserve the helper failure message"
@@ -674,7 +679,7 @@ private def checkTypedLakeSaveTraceFailure : IO Unit := do
       require "write save trace should preserve the helper failure data"
         (actual.data? == expected.data?)
   | .ok _, _ =>
-      throw <| IO.userError "missing target Lake helper unexpectedly succeeded"
+      throw <| IO.userError "cancelled target Lake helper unexpectedly succeeded"
   | _, .ok _ =>
       throw <| IO.userError "write save trace unexpectedly discarded the helper failure"
 
