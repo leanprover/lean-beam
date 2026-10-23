@@ -696,7 +696,7 @@ private def checkCliRootParsing : IO Unit := do
   let missingRoot := System.FilePath.mk s!"/tmp/beam-cli-missing-root-{← IO.monoNanosNow}"
   expectUsageContains
     "missing explicit CLI root should use the workspace error boundary"
-    "workspace root does not resolve"
+    "workspace root does not exist"
     (Beam.Cli.parseCliOptions {} ["--root", missingRoot.toString, "serve"])
   expectUsageContains
     "relative session directory should be rejected"
@@ -1217,12 +1217,12 @@ private def checkTypedRegistryReads : IO Unit := do
     | .invalid (.unsafeLeaf detail) =>
         requireSubstring "symlinked registry detail" "symbolic links are not accepted" detail
     | state => throw <| IO.userError s!"symlinked registry was classified as {state.status}"
-    expectIoErrorContains "stop should reject a symlinked registry"
+    requireSubstring "stop should reject a symlinked registry"
       "symbolic links are not accepted"
-      (Beam.Cli.shutdownRegisteredProjectDaemon (fun _ => pure ()) root)
-    expectIoErrorContains "recovery should reject a symlinked registry"
+      (← expectCliErrorMessage "symlinked stop" <| Beam.Cli.shutdownRegisteredProjectDaemon (fun _ => pure ()) root)
+    requireSubstring "recovery should reject a symlinked registry"
       "symbolic links are not accepted"
-      (Beam.Cli.recoverProjectDaemon (fun _ => pure ()) root "fixture-generation")
+      (← expectCliErrorMessage "symlinked recover" <| Beam.Cli.recoverProjectDaemon (fun _ => pure ()) root "fixture-generation")
     require "registry operations must not mutate a symlink target"
       ((← IO.FS.readFile symlinkTarget) == targetText)
   finally
@@ -1558,6 +1558,13 @@ def main (args : List String) : IO UInt32 :=
   | ["--cli-error", "internal"] => Beam.Cli.run do
       let action : IO Unit := throw <| IO.userError "fixture unexpected fault"
       action
+  | ["--cli-error", "input-io", kind] => Beam.Cli.run do
+      let error : IO.Error := match kind with
+        | "missing" => .noFileOrDirectory "fixture-input" 2 "missing"
+        | "permission" => .permissionDenied (some "fixture-input") 13 "denied"
+        | "eio" => .hardwareFault 5 "fixture IO fault"
+        | _ => .resourceExhausted none 24 "fixture resource exhaustion"
+      throw <| Beam.Cli.CliFailure.inputFile "--text-file" "fixture-input" error
   | ["--cli-error", "broker"] => Beam.Cli.run do
       let failure : Beam.Broker.ResponseFailure := {
         error := {

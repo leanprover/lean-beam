@@ -227,12 +227,29 @@ def envFlag? (name : String) : IO (Option Bool) := do
   | some raw => pure <| some (parseEnvFlag raw)
   | none => pure none
 
+private def rootResolutionFailure (root : String) (error : IO.Error) : CliFailure :=
+  match error with
+  | .noFileOrDirectory .. => .usage s!"workspace root does not exist: {root}"
+  | .permissionDenied .. => .usage s!"permission denied while resolving workspace root: {root}"
+  | .inappropriateType .. => .usage s!"workspace root is not a directory: {root}"
+  | .invalidArgument .. => .usage s!"workspace root cannot be resolved: {root}"
+  | _ => .make "internalError" s!"cannot resolve workspace root '{root}': {error}"
+
 private def resolveExplicitRootArg (root : String) : CliM System.FilePath := do
-  let path ← match ← (Beam.resolveExistingPath (System.FilePath.mk root)).toBaseIO with
+  let requested := System.FilePath.mk root
+  let path ← match ← (Beam.resolveExistingPath requested).toBaseIO with
     | .ok path => pure path
-    | .error error => throw <| .usage s!"workspace root does not resolve (--root '{root}'): {error}"
-  unless ← path.isDir do
-    throw <| .usage s!"workspace root is not a directory (--root '{root}')"
+    | .error (.noFileOrDirectory ..) =>
+        -- realPath can mask permission failures and cycles as ENOENT. Refine using typed stat.
+        match ← requested.metadata.toBaseIO with
+        | .error error => throw <| rootResolutionFailure root error
+        | .ok _ => throw <| .usage s!"workspace root cannot be resolved: {root}"
+    | .error error => throw <| rootResolutionFailure root error
+  let metadata ← match ← path.metadata.toBaseIO with
+    | .ok metadata => pure metadata
+    | .error error => throw <| rootResolutionFailure root error
+  unless metadata.type == .dir do
+    throw <| .usage s!"workspace root is not a directory: {root}"
   pure path
 
 private def resolveSessionDirArg (dir : String) : CliM System.FilePath := do

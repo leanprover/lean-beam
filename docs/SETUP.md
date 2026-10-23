@@ -268,13 +268,19 @@ For alternate session directories, status details, and abnormal-exit recovery, s
 Machine clients should pass an explicit `--root` and invoke the typed wrapper operations. Ordinary
 CLI failures print one `{ "ok": false, "error": { "code": "...", "message": "..." } }` response on
 stdout and a concise diagnostic on stderr. Broker error codes, data, and file progress are preserved.
-Local CLI codes include `setupError`, `brokerUnavailable`, `noLiveSession`, and `internalError`.
+Local CLI codes include `setupError`, `brokerUnavailable`, `noLiveSession`,
+`sessionRecoveryRequired`, and `internalError`.
+Local remedy commands appear in `error.data.remedyCommand` and on their own stderr line.
+`sessionRecoveryRequired` includes the recorded `generation` when known, plus a
+`recoveryPrecondition`: independently verify that the matching owner and daemon have stopped.
+An unavailable endpoint does not prove that they have stopped. Invalid descriptors require
+operator diagnosis; no generation or recovery command is invented for them.
 Unexpected IO faults use `internalError`, rather than being classified as invalid arguments.
 
 | Exit status | Meaning |
 | --- | --- |
 | `0` | Completed command, explicit help, or version; inspect `result.success` for speculative Lean results. |
-| `1` | Broker, setup, transport, or unexpected internal failure. |
+| `1` | Broker, setup, session recovery, transport, or unexpected internal failure. |
 | `2` | Local argument/input error (`invalidParams`), with short relevant usage on stderr. Empty invocation is an error. |
 | `3` | No live wrapper owner (`noLiveSession`); the error gives the exact `serve` command to keep running. |
 | `130` | Request interruption (`requestCancelled`); this does not establish that the producer has stopped. |

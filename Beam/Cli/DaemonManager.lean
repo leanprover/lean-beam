@@ -807,6 +807,37 @@ def RegistryBlocker.generation? : RegistryBlocker → Option String
   | .unusable entry _ => some entry.daemonId
   | .invalid _ => none
 
+/-- Recovery guidance is conditional: a failed probe does not establish owner death. -/
+def RegistryBlocker.cliFailure (root sessionDir : System.FilePath)
+    (blocker : RegistryBlocker) (diagnostics? : Option String := none) : CliFailure :=
+  let precondition := "Independently verify that the matching owner and daemon have stopped " ++
+    "before recovery; an unavailable endpoint does not establish this."
+  let summary := match blocker with
+    | .unusable _ (.endpointProbeFailed _) => "the recorded endpoint could not confirm this generation"
+    | _ => blocker.statusDetail
+  let failure := CliFailure.make "sessionRecoveryRequired"
+    s!"Beam session for {root} requires recovery: {summary}. {precondition}"
+  let data := [("detail", toJson blocker.statusDetail), ("recoveryPrecondition", toJson precondition)] ++
+    diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics))
+  match blocker with
+  | .unusable entry _ =>
+      failure.withRemedy (wrapperSessionCommand root sessionDir (.recoverGeneration entry.daemonId))
+        (("generation", toJson entry.daemonId) :: data)
+  | .invalid _ =>
+      { failure with
+        failure.error.message := blocker.message root sessionDir
+        failure.error.data? := some <| Json.mkObj data }
+
+def selectorMismatchFailure (root sessionDir : System.FilePath)
+    (entry : SessionDescriptor) : CliFailure :=
+  (CliFailure.setup (sessionSelectorMismatchMessage root sessionDir entry)).withRemedy
+    (wrapperSessionCommand (System.FilePath.mk entry.workspace.root) sessionDir .status)
+
+private def configMismatchFailure (root sessionDir : System.FilePath)
+    (entry : SessionDescriptor) (expected : String) : CliFailure :=
+  (CliFailure.setup (configMismatchMessage root sessionDir entry expected)).withRemedy
+    (wrapperSessionCommand root sessionDir .serve)
+
 private inductive RegistryDrainTransition where
   | committed
   | alreadyDraining
@@ -848,12 +879,12 @@ def shutdownRegisteredProjectDaemon
     (admitControl : SessionDescriptor → IO Unit)
     (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none) :
-    IO ProjectDaemonStopResult := do
+    CliM ProjectDaemonStopResult := do
   let selected ← projectControl root explicitControlDir?
   if ← sessionDescriptorAbsent selected then
     return .absent
-  let plan : ShutdownPlan ← withProjectControl root
-      (explicitControlDir? := explicitControlDir?) fun control => do
+  let plan : ShutdownPlan ← ExceptT.mk <| withProjectControl root
+      (explicitControlDir? := explicitControlDir?) fun control => (do
     match ← observeProjectRegistryAt root control.registry admitControl with
     | .absent => pure ShutdownPlan.none
     | .live entry =>
@@ -861,14 +892,15 @@ def shutdownRegisteredProjectDaemon
         | .committed => pure <| ShutdownPlan.committed entry
         | .alreadyDraining => pure ShutdownPlan.alreadyStopping
         | .changedUnderfoot =>
-            throw <| IO.userError <|
+            throw <| CliFailure.setup <|
               "Beam session descriptor changed while committing its draining fence; " ++
                 "the shutdown request was not sent"
     | .draining _ => pure ShutdownPlan.alreadyStopping
     | .selectorMismatch entry =>
-        throw <| IO.userError <| sessionSelectorMismatchMessage root control.dir entry
+        throw <| selectorMismatchFailure root control.dir entry
     | .recoveryRequired blocker =>
-        throw <| IO.userError <| blocker.message root control.dir
+        throw <| blocker.cliFailure root control.dir
+    : CliM ShutdownPlan).run
   match plan with
   | .none => pure .absent
   | .alreadyStopping => pure .alreadyStopping
@@ -904,42 +936,45 @@ def recoverProjectDaemon
     (admitControl : SessionDescriptor → IO Unit)
     (root : System.FilePath)
     (generation : String)
-    (explicitControlDir? : Option System.FilePath := none) : IO RecoveryResult := do
+    (explicitControlDir? : Option System.FilePath := none) : CliM RecoveryResult := do
   let selected ← projectControl root explicitControlDir?
   if ← sessionDescriptorAbsent selected then
     return .absent
-  withProjectControl root (explicitControlDir? := explicitControlDir?) fun control => do
+  ExceptT.mk <| withProjectControl root (explicitControlDir? := explicitControlDir?) fun control => (do
     match ← readRegistryAt control.registry with
     | .absent =>
         pure .absent
     | .current entry =>
         admitControl entry
         unless generation == entry.daemonId do
-          throw <| IO.userError <|
-            s!"recovery generation '{generation}' does not match recorded generation '{entry.daemonId}'"
+          throw { CliFailure.usage
+            s!"recovery generation '{generation}' does not match recorded generation '{entry.daemonId}'" with
+            failure.error.data? := some <| Json.mkObj [
+              ("suppliedGeneration", toJson generation), ("generation", toJson entry.daemonId)] }
         unless ← entry.matchesRoot root do
-          throw <| IO.userError <|
+          throw <| CliFailure.setup <|
             s!"selected root {root} is not the workspace in session {entry.daemonId}; " ++
             s!"recorded workspace root: {entry.workspace.root}"
         match ← registeredGenerationStatus root entry with
         | .exact =>
-            throw <| IO.userError <|
+            throw <| CliFailure.setup <|
               s!"Beam session {entry.daemonId} still responds; stop its foreground owner or use authenticated shutdown"
         | .wrongRoot daemonRoot =>
-            throw <| IO.userError <|
+            throw <| CliFailure.setup <|
               s!"Beam session {entry.daemonId} has an authenticated endpoint that serves another root " ++
               s!"({daemonRoot}); recovery preserved the descriptor"
         | .wrongGeneration daemonRoot =>
-            throw <| IO.userError <|
+            throw <| CliFailure.setup <|
               s!"Beam session {entry.daemonId} has an authenticated endpoint that serves another " ++
               s!"generation for {daemonRoot}; recovery preserved the descriptor"
         | .probeFailed _ =>
             let quarantine ← quarantineRegistry control
             pure <| .recoveredGeneration entry.daemonId quarantine
     | .invalid (.unsafeLeaf detail) =>
-        throw <| IO.userError detail
+        throw <| CliFailure.setup detail
     | .invalid problem =>
-        throw <| IO.userError <| registryReadRecoveryMessage root control.dir problem
+        throw <| CliFailure.setup <| registryReadRecoveryMessage root control.dir problem
+    : CliM RecoveryResult).run
 
 private structure OwnedProjectDaemon where
   client : ProjectDaemonClient
@@ -982,22 +1017,8 @@ private def missingOwnerMessage
   s!"no live Beam session owner is registered for {root}; " ++
     s!"start this foreground owner and keep it running while using wrapper commands:\n{command}"
 
-private def startOwnedProjectDaemon
-    (control : ProjectControl)
-    (desired : DesiredConfig) : IO OwnedProjectDaemon := do
-  match ← observeProjectRegistryAt desired.root control.registry with
-  | .absent => pure ()
-  | .live entry =>
-      if entry.configHash == desired.configHash then
-        throw <| IO.userError (activeOwnerMessage desired.root)
-      else
-        throw <| IO.userError
-          (configMismatchMessage desired.root control.dir entry desired.configHash)
-  | .draining entry => throw <| IO.userError (drainingOwnerMessage desired.root entry)
-  | .selectorMismatch entry =>
-      throw <| IO.userError <| sessionSelectorMismatchMessage desired.root control.dir entry
-  | .recoveryRequired blocker =>
-      throw <| IO.userError <| blocker.message desired.root control.dir
+private def publishOwnedProjectDaemon
+    (control : ProjectControl) (desired : DesiredConfig) : IO OwnedProjectDaemon := do
   let (entry, started) ← startDaemonEntry desired control.dir
   try
     writeRegistry control entry
@@ -1009,6 +1030,23 @@ private def startOwnedProjectDaemon
     entry
     started
   }
+
+private def startOwnedProjectDaemon
+    (control : ProjectControl)
+    (desired : DesiredConfig) : CliM OwnedProjectDaemon := do
+  match ← observeProjectRegistryAt desired.root control.registry with
+  | .absent => pure ()
+  | .live entry =>
+      if entry.configHash == desired.configHash then
+        throw <| CliFailure.setup (activeOwnerMessage desired.root)
+      else
+        throw <| configMismatchFailure desired.root control.dir entry desired.configHash
+  | .draining entry => throw <| CliFailure.setup (drainingOwnerMessage desired.root entry)
+  | .selectorMismatch entry =>
+      throw <| selectorMismatchFailure desired.root control.dir entry
+  | .recoveryRequired blocker =>
+      throw <| blocker.cliFailure desired.root control.dir
+  publishOwnedProjectDaemon control desired
 
 private def waitForOwnedDaemonExit
     {cfg : IO.Process.StdioConfig}
@@ -1181,10 +1219,10 @@ def withProjectDaemonOwner
   let desired ← resolve root
   -- Allocate all fallible owner bookkeeping before the child and registry generation exist.
   let exitCodeRef ← IO.mkRef (none : Option UInt32)
-  let acquire : IO OwnedProjectDaemon :=
+  let acquire : IO (Except CliFailure OwnedProjectDaemon) :=
     withProjectControl root (explicitControlDir? := some controlDir) fun control =>
-      startOwnedProjectDaemon control desired
-  let owned ← acquire
+      (startOwnedProjectDaemon control desired).run
+  let owned ← ExceptT.mk acquire
   try
     act {
       client := owned.client
@@ -1205,15 +1243,16 @@ private def lookupProjectDaemon
   | .selected entry =>
       let expected ← requirement root
       unless entry.configHash == expected do
-        throw <| CliFailure.setup <| configMismatchMessage root control.dir entry expected
+        throw <| configMismatchFailure root control.dir entry expected
       pure <| .ofSessionDescriptor entry control.dir
   | .absent =>
-      throw <| CliFailure.make "noLiveSession" (missingOwnerMessage root control.dir) 3
+      throw <| (CliFailure.make "noLiveSession" (missingOwnerMessage root control.dir) 3).withRemedy
+        (wrapperSessionCommand root control.dir .serve)
   | .draining entry => throw <| CliFailure.setup (drainingOwnerMessage root entry)
   | .selectorMismatch entry =>
-      throw <| CliFailure.setup <| sessionSelectorMismatchMessage root control.dir entry
+      throw <| selectorMismatchFailure root control.dir entry
   | .invalid problem =>
-      throw <| CliFailure.setup <| (RegistryBlocker.invalid problem).message root control.dir
+      throw <| (RegistryBlocker.invalid problem).cliFailure root control.dir
 
 def withProjectDaemon
     (requirement : System.FilePath → CliM String)

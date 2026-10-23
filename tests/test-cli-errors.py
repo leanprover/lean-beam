@@ -88,6 +88,38 @@ class CliErrorsTest(unittest.TestCase):
         self.assertIn("--text-file", error["message"])
         self.assertIn(str(missing), error["message"])
 
+    def test_missing_root_has_concise_wording(self):
+        missing = self.root / "missing-workspace"
+        result = self.invoke("--root", missing, "status")
+        error = self.failure(result, "invalidParams", 2)
+        self.assertEqual(error["message"], f"workspace root does not exist: {missing}")
+        self.assertEqual(result.stderr.splitlines(), [f"beam: {error['message']}"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX symbolic link fixture")
+    def test_root_loop_is_not_reported_as_missing(self):
+        loop = self.root / "root-loop"
+        loop.symlink_to(loop)
+        self.addCleanup(loop.unlink)
+        result = self.invoke("--root", loop, "status")
+        self.assertEqual(self.failure(result, "invalidParams", 2)["message"],
+                         f"workspace root cannot be resolved: {loop}")
+
+    @unittest.skipIf(os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+                     "requires POSIX permissions and an unprivileged process")
+    def test_unreadable_root_ancestor_is_not_reported_as_missing(self):
+        ancestor = self.root / "unreadable-root-ancestor"
+        ancestor.mkdir()
+        self.addCleanup(ancestor.rmdir)
+        requested = ancestor / "workspace"
+        requested.mkdir()
+        self.addCleanup(requested.rmdir)
+        # Cleanup order restores access before removing the child.
+        self.addCleanup(ancestor.chmod, 0o700)
+        ancestor.chmod(0)
+        result = self.invoke("--root", requested, "status")
+        self.assertEqual(self.failure(result, "invalidParams", 2)["message"],
+                         f"permission denied while resolving workspace root: {requested}")
+
     def test_invalid_handle_has_one_usage_response(self):
         result = self.invoke("run-with", "Main.lean", "{invalid", "simp")
         self.assertIn("handle", self.failure(result, "invalidParams", 2)["message"])
@@ -95,7 +127,9 @@ class CliErrorsTest(unittest.TestCase):
     def test_no_live_owner_has_distinct_exit_and_exact_remedy(self):
         result = self.invoke("--root", self.root, "stats")
         error = self.failure(result, "noLiveSession", 3)
-        self.assertIn(f"lean-beam --root '{self.root}' --session-dir '{self.root / '.beam'}' serve", error["message"])
+        command = f"lean-beam --root '{self.root}' --session-dir '{self.root / '.beam'}' serve"
+        self.assertEqual(error["data"]["remedyCommand"], command)
+        self.assertEqual(result.stderr.splitlines()[-1], command)
         self.assertFalse((self.root / ".beam").exists())
 
     def test_absent_status_and_stop_still_succeed(self):
@@ -119,6 +153,17 @@ class CliErrorsTest(unittest.TestCase):
     def test_unexpected_io_fault_stays_internal(self):
         result = self.invoke("--cli-error", "internal", executable=self.fixture)
         self.assertEqual(self.failure(result, "internalError", 1)["message"], "fixture unexpected fault")
+
+    def test_input_file_io_classification(self):
+        for kind, code, exit_code in [("missing", "invalidParams", 2),
+                                      ("permission", "invalidParams", 2),
+                                      ("eio", "internalError", 1),
+                                      ("resources", "internalError", 1)]:
+            with self.subTest(kind=kind):
+                result = self.invoke("--cli-error", "input-io", kind, executable=self.fixture)
+                error = self.failure(result, code, exit_code)
+                self.assertIn("--text-file", error["message"])
+                self.assertIn("fixture-input", error["message"])
 
     def test_broker_failure_code_and_data_survive(self):
         result = self.invoke("--cli-error", "broker", executable=self.fixture)

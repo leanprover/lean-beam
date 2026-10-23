@@ -15,6 +15,7 @@ structure CliFailure where
   clientRequestId? : Option String := none
   diagnostic? : Option String := none
   usage? : Option String := none
+  remedyCommand? : Option String := none
   /-- Foreground serve already published readiness; a later fault cannot retract it. -/
   responsePublished : Bool := false
 
@@ -44,11 +45,24 @@ def CliFailure.broker (failure : Beam.Broker.ResponseFailure)
   exitCode := if failure.error.code == "requestCancelled" then 130 else 1
 }
 
-/-- Add input context at the filesystem boundary, without classifying unexpected exceptions. -/
+/-- Attach a copyable local remedy and its machine-readable prerequisites. -/
+def CliFailure.withRemedy (failure : CliFailure) (command : String)
+    (data : List (String × Lean.Json) := []) : CliFailure :=
+  { failure with
+    remedyCommand? := some command
+    diagnostic? := some <| ((failure.diagnostic?.getD failure.failure.error.message).splitOn "\n").headD ""
+    failure.error.data? := some <| Lean.Json.mkObj (("remedyCommand", Lean.toJson command) :: data) }
+
+/-- Expected input access failures are usage errors; unexpected IO faults retain their class. -/
+def CliFailure.inputFile (option path : String) (error : IO.Error) : CliFailure :=
+  let message := s!"cannot read {option} '{path}': {error}"
+  match error with
+  | .noFileOrDirectory .. | .permissionDenied .. => .usage message
+  | _ => .make "internalError" message
+
 def readCliFile (option path : String) : CliM String := do
   match ← (IO.FS.readFile (System.FilePath.mk path)).toBaseIO with
   | .ok text => pure text
-  | .error error =>
-      throw <| .usage s!"cannot read {option} '{path}': {error}"
+  | .error error => throw <| .inputFile option path error
 
 end Beam.Cli

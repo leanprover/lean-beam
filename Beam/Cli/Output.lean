@@ -249,6 +249,7 @@ def renderFailure (failure : CliFailure) : IO UInt32 := do
     (diagnostic.splitOn "\n").filter (fun line => !line.isEmpty)
   let diagnostic := if diagnostic.startsWith "beam:" then diagnostic else "beam: " ++ diagnostic
   IO.eprintln <| annotateRequestMessage failure.clientRequestId? diagnostic
+  if let some command := failure.remedyCommand? then IO.eprintln command
   if let some usage := failure.usage? then IO.eprintln usage
   return failure.exitCode
 

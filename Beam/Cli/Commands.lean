@@ -240,7 +240,7 @@ private def sessionStatus (opts : CliOptions) : CliM Unit := do
     | .live entry => pure <| mkSessionStatus .running root sessionDir (some entry.daemonId)
     | .draining entry => pure <| mkSessionStatus .stopping root sessionDir (some entry.daemonId)
     | .selectorMismatch entry =>
-        throw <| CliFailure.setup <| sessionSelectorMismatchMessage root sessionDir entry
+        throw <| selectorMismatchFailure root sessionDir entry
     | .recoveryRequired blocker =>
         pure <| mkSessionStatus .recoveryRequired root sessionDir blocker.generation?
           (some blocker.statusDetail)

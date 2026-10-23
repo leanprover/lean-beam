@@ -600,6 +600,7 @@ if "$beam_script" --root "$tmp1" serve > "$second_owner_out" 2> "$second_owner_e
   cat "$second_owner_out" >&2
   exit 1
 fi
+assert_json_field_equals "second owner rejection" "$(cat "$second_owner_out")" error.code setupError
 if ! grep -Fq "already owned" "$second_owner_err"; then
   echo "expected duplicate-owner failure to identify the active owner" >&2
   cat "$second_owner_err" >&2
@@ -1192,20 +1193,45 @@ assert_json_field_equals \
   "owner-loss session status" "$owner_loss_status" result.state recoveryRequired
 assert_json_field_equals \
   "owner-loss session status generation" "$owner_loss_status" result.generation "$owner_loss_generation"
-if ! grep -Fq "Beam daemon connect failed" "$owner_loss_err"; then
-  echo "expected the ordinary call itself to report the unavailable endpoint" >&2
-  cat "$owner_loss_err" >&2
-  exit 1
-fi
+python3 - "$owner_loss_out" "$owner_loss_err" "$owner_loss_generation" <<'PY_CHECK'
+import json, sys
+from pathlib import Path
+out, err, generation = sys.argv[1:]
+error = json.loads(Path(out).read_text())["error"]
+assert error["code"] == "sessionRecoveryRequired", error
+assert error["data"]["generation"] == generation, error
+assert "Beam daemon connect failed" in error["data"]["diagnostics"], error
+assert "does not establish" in error["data"]["recoveryPrecondition"], error
+command = error["data"]["remedyCommand"]
+assert Path(err).read_text().splitlines()[-1] == command
+assert command.endswith(f"recover --generation '{generation}'"), command
+PY_CHECK
+for command in serve stop; do
+  set +e
+  "$beam_script" --root "$tmp1" "$command" > "$tmp1/crashed-$command.out" 2> "$tmp1/crashed-$command.err"
+  crashed_status="$?"
+  set -e
+  if [ "$crashed_status" -ne 1 ]; then
+    echo "expected crashed-session $command to exit 1, got $crashed_status" >&2
+    exit 1
+  fi
+  assert_json_field_equals "crashed $command" "$(cat "$tmp1/crashed-$command.out")" error.code sessionRecoveryRequired
+  assert_json_field_equals "crashed $command generation" "$(cat "$tmp1/crashed-$command.out")" error.data.generation "$owner_loss_generation"
+done
 if [ ! -e "$registry" ]; then
   echo "ordinary owner-loss lookup must not mutate the stale registry" >&2
   exit 1
 fi
-if "$beam_script" --root "$tmp1" recover --generation wrong-generation \
-    > "$tmp1/recover-wrong.out" 2> "$tmp1/recover-wrong.err"; then
-  echo "expected recovery with the wrong generation to fail closed" >&2
+set +e
+"$beam_script" --root "$tmp1" recover --generation wrong-generation \
+    > "$tmp1/recover-wrong.out" 2> "$tmp1/recover-wrong.err"
+recover_wrong_status="$?"
+set -e
+if [ "$recover_wrong_status" -ne 2 ]; then
+  echo "expected recovery with the wrong generation to exit 2, got $recover_wrong_status" >&2
   exit 1
 fi
+assert_json_field_equals "wrong recovery generation" "$(cat "$tmp1/recover-wrong.out")" error.code invalidParams
 if [ ! -e "$registry" ]; then
   echo "wrong-generation recovery must preserve the session fence" >&2
   exit 1

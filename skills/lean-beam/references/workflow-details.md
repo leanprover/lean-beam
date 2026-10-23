@@ -167,7 +167,11 @@ What is not a valid checkpoint target:
   CLI failures; diagnostics and progress go to stderr. Exit `2` means local usage/input error;
   exit `3` (`noLiveSession`) includes the exact `serve` remedy; exit `130` (`requestCancelled`)
   reports interruption without establishing producer settlement. Preserve broker failure codes and
-  data when deciding recovery; never treat failed sync as save-ready
+  data when deciding recovery; never treat failed sync as save-ready.
+  Local remedies are in `error.data.remedyCommand` and on their own stderr line.
+  `sessionRecoveryRequired` (exit `1`) includes the generation when known; obey its
+  `recoveryPrecondition` and independently verify that the matching owner and daemon have stopped
+  before running recovery. An unavailable endpoint alone is insufficient evidence
 - every `lean-beam run-at` request probes one on-disk document version without changing its real
   elaboration state; Lean code can still perform external IO
 - `lean-beam run-at-handle` is the same style of isolated probe, but asks Lean to retain follow-up

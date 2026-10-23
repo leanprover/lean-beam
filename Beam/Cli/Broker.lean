@@ -29,6 +29,11 @@ private def withBrokerErrorContext
       | .streamCallback error => throw { CliFailure.internal error with clientRequestId? }
       | _ =>
           let message ← daemonFailureMessage root failure (some client.controlDir)
+          -- Only failed connection establishment is known to precede request submission.
+          if let .transport .connect _ := failure then
+            if let .recoveryRequired blocker ← observeProjectRegistry root (some client.controlDir) then
+              if blocker.generation? == some client.identity.daemonId then
+                throw { blocker.cliFailure root client.controlDir (some message) with clientRequestId? }
           let code := match failure with
             | .invalidResponse _ => "internalError"
             | _ => "brokerUnavailable"
