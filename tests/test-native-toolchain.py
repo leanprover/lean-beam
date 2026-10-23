@@ -56,6 +56,23 @@ def check_native_cli_usage(beam, env, management_commands):
     return help_result, invalid_command
 
 
+def record_document_rejection(result, cases, evidence_path):
+    observation = {
+        "command": [str(argument) for argument in result.args],
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+    cases.append(observation)
+    write_report(evidence_path, {"cases": cases})
+    assert result.returncode != 0, observation
+    try:
+        response = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise AssertionError(f"native document rejection returned invalid JSON: {observation!r}") from error
+    return response["error"]
+
+
 def mcp_smoke(mcp, source, *, cwd, env, trace=False):
     command = [sys.executable, str(REPO / "tests/lib/installed-mcp-smoke.py"),
                str(mcp), str(cwd), str(source)]
@@ -358,13 +375,14 @@ def qualify(args, lean_prefix, scratch):
                 run(["cmd", "/d", "/c", "mklink", "/J", escape, external], env=env)
             else:
                 escape.symlink_to(external, target_is_directory=True)
+            rejection_cases = []
+            rejection_evidence = project / ".beam" / "document-path-rejections.json"
             for path in [str(outside), "../project with spaces-other/Other.lean",
                          "outside-link/Other.lean"]:
                 for operation in [("sync", path), ("refresh", path),
                                   ("run-at", path, "1", "0", "0", "#check Nat")]:
                     rejected = call(*operation, ok=False)
-                    assert rejected.returncode != 0, rejected
-                    failure = json.loads(rejected.stdout)["error"]
+                    failure = record_document_rejection(rejected, rejection_cases, rejection_evidence)
                     assert failure["code"] == "invalidParams", failure
                     assert "resolves outside workspace root" in failure["message"], failure
                     assert "select a workspace containing the document" in failure["message"], failure
