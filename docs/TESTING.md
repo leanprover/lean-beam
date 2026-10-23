@@ -288,8 +288,10 @@ The MCP output fixture checks repeated empty-buffer wakeups, a completion tail b
 writer, shared storage including escaped envelope metadata, legacy delivery-time log filtering,
 immutable modern logging, and cancellation/reuse. The real helper fixture requires raw output
 notifications before the helper is released in both MCP protocol families.
-The held CLI fixture also clones a local git dependency and checks that normal Lake information
-and warnings remain visible while trace entries are hidden. CLI presentation tests put omission
+In the standalone fast suite, the held CLI fixture also clones a local git dependency and checks
+that normal Lake information and warnings remain visible while trace entries are hidden. Native
+qualification keeps its forbidden-Git shim active and runs the helper lifecycle and streaming
+cases without that dependency. CLI presentation tests put omission
 markers on separate lines and recover from truncated UTF-8 lines spanning multiple chunks.
 The fixture also checks completed requests, abrupt helper exit with a live descendant, explicit
 test deadlines, cancellation, and parent death, then cancellation/drop and

@@ -14,6 +14,15 @@ namespace BeamTest.Broker.SaveStreamTest
 
 open BeamTest.Broker.TestUtil
 
+private def waitForSaveStreamBroker (label : String) (endpoint : Beam.Broker.Endpoint)
+    (root : System.FilePath) (broker : IO.Process.Child nullBrokerStdio) : IO Unit := do
+  try
+    waitForBrokerReadyForRoot endpoint root
+  catch error =>
+    let exitCode? ← broker.tryWait
+    throw <| IO.userError
+      s!"save-stream {label} startup failed (root={root}, daemonExit={repr exitCode?}): {error}"
+
 private def expectNoTrackedLeanDoc (payload : Json) (path : String) : IO Unit := do
   let session ← IO.ofExcept <| payload.getObjVal? "session"
   let files ← IO.ofExcept <| session.getObjVal? "files"
@@ -61,7 +70,7 @@ private def checkCrlfSyncSaveReplay : IO Unit := do
   IO.FS.writeFile source crlf
   let broker ← spawnLeanBroker endpoint root
   try
-    waitForBrokerReadyForRoot endpoint root
+    waitForSaveStreamBroker "CRLF replay" endpoint root broker
     discard <| expectOk (← runClient endpoint Beam.Broker.Request.ensure)
     let synced ← runClient endpoint { payload := .syncFile { path := "SaveSmoke/B.lean" } }
     let result ← requireSyncFileResult "CRLF sync" (← expectOk synced)
@@ -110,7 +119,7 @@ private def checkUnsupportedSetupSyncVerdict : IO Unit := do
   writeSaveWarningFile root "-- unsupported setup"
   let broker ← spawnLeanBroker endpoint root
   try
-    waitForBrokerReadyForRoot endpoint root
+    waitForSaveStreamBroker "unsupported setup" endpoint root broker
     let requests : Array Beam.Broker.RequestPayload := #[
       .saveOlean { path := "SaveSmoke/B.lean", diagnosticScope? := some .all },
       .close {
@@ -159,7 +168,7 @@ def main : IO Unit := do
   copySaveProjectFixture root
   let broker ← spawnLeanBroker endpoint root
   try
-    waitForBrokerReadyForRoot endpoint root
+    waitForSaveStreamBroker "save and close" endpoint root broker
     discard <| expectOk (← runClient endpoint Beam.Broker.Request.ensure)
 
     writeSaveWarningFile root "-- default warning-only save"

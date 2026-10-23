@@ -209,7 +209,20 @@ def direct(base, compiler, helper):
                     owner.wait(timeout=5)
 
 
-def through_cli(base, compiler, cli):
+def local_git_dependency(base):
+    """Standalone log-filter coverage; native qualification deliberately forbids Git."""
+    dependency = base / "dependency-source"
+    dependency.mkdir()
+    (dependency / "lakefile.toml").write_text('name = "fixture_dep"\n', encoding="utf-8")
+    for arguments in [["init", "--quiet"], ["add", "lakefile.toml"],
+                      ["-c", "user.name=Beam Fixture", "-c", "user.email=fixture@example.invalid",
+                       "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture"]]:
+        subprocess.run(["git", *arguments], cwd=dependency, check=True,
+                       capture_output=True, text=True, timeout=10)
+    return dependency
+
+
+def through_cli(base, compiler, cli, dependency=None):
     scenarios = ["cold-success", "owner-loss"]
     signals = {}
     if os.name == "posix":
@@ -221,18 +234,9 @@ def through_cli(base, compiler, cli):
         if scenario == "cold-success":
             environment["BEAM_PROGRESS"] = "1"
             (root / "pulse-output").touch()
-            # A real local clone exercises Lake's trace entries without network access or
-            # another helper hold. Normal live logs must retain info/warnings, not git traces.
-            dependency = root / "dependency-source"
-            dependency.mkdir()
-            (dependency / "lakefile.toml").write_text('name = "fixture_dep"\n', encoding="utf-8")
-            for arguments in [["init", "--quiet"], ["add", "lakefile.toml"],
-                              ["-c", "user.name=Beam Fixture", "-c", "user.email=fixture@example.invalid",
-                               "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture"]]:
-                subprocess.run(["git", *arguments], cwd=dependency, env=environment,
-                               check=True, capture_output=True, text=True, timeout=10)
-            with (root / "lakefile.lean").open("a", encoding="utf-8") as config:
-                config.write(f'\nrequire fixture_dep from git {json.dumps(str(dependency))} @ "HEAD"\n')
+            if dependency is not None:
+                with (root / "lakefile.lean").open("a", encoding="utf-8") as config:
+                    config.write(f'\nrequire fixture_dep from git {json.dumps(str(dependency))} @ "HEAD"\n')
         command = [str(cli), "--root", str(root)]
         stdout_path, stderr_path = root / "owner.out", root / "owner.err"
 
@@ -298,9 +302,10 @@ def through_cli(base, compiler, cli):
                     served = json.loads(stdout_path.read_text(encoding="utf-8"))
                     assert served["ok"] is True and served["result"]["state"] == "running", served
                     output = stderr_path.read_text(encoding="utf-8")
-                    assert (root / ".lake/packages/fixture_dep/.git").exists(), "local dependency was not cloned"
-                    assert "info:" in output and "helper configuration warning" in output, output
-                    assert not any(line.startswith("trace:") for line in output.splitlines()), output
+                    if dependency is not None:
+                        assert (root / ".lake/packages/fixture_dep/.git").exists(), "local dependency was not cloned"
+                        assert "info:" in output and "helper configuration warning" in output, output
+                        assert not any(line.startswith("trace:") for line in output.splitlines()), output
                     registry = Path(served["result"]["sessionDir"]) / "beam-daemon.json"
                     port = json.loads(registry.read_text(encoding="utf-8"))["port"]
                     with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
@@ -453,8 +458,11 @@ def main():
         direct(base, compiler, helper)
         # These use distinct projects and processes. Overlap the two required real-time holds
         # instead of adding another serial 31-second wait to the fast suite.
+        # Keep native qualification's forbidden Git shim active. Its projects have no external
+        # dependency; the standalone fast suite owns the real-clone/log-threshold assertion.
+        dependency = None if args.native_prefix else local_git_dependency(base)
         with ThreadPoolExecutor(max_workers=2) as workers:
-            checks = [workers.submit(through_cli, base, compiler, cli),
+            checks = [workers.submit(through_cli, base, compiler, cli, dependency),
                       workers.submit(through_mcp, base, compiler, server)]
             for check in checks:
                 check.result()
