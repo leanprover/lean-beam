@@ -373,11 +373,16 @@ client protocol.
 - A Beam checkpoint contains the Lean server's accepted environment. Elaborators can
   distinguish server execution from batch execution, so exceptional custom elaboration can produce
   an artifact that differs from a fresh `lake build` artifact. Successful checkpoints are normally
-  sufficient during local development. Final batch evidence should come from a clean CI `lake build`;
+  sufficient during local development. Batch-build evidence should come from a clean CI `lake build`;
   if no successful clean CI result is available, run the one-time local batch-validation sequence in
   [SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md#development-checkpoints-and-batch-validation).
-- If you edit a dependency of the target file, downstream speculative results should be treated as
-  stale until rebuild or checkpoint.
+- Beam supports non-adversarial development, not independent proof validation or OS isolation.
+  Checkpoint readiness can include `sorry` warnings. See
+  [trust and proof confirmation](../skills/lean-beam/references/trust-and-validation.md) for the
+  ownership assumptions and separate comparator workflow.
+- After a dependency edit, report it through `update`/`sync`, checkpoint as needed, and refresh affected
+  importers before using their results. For an external rebuild, stop/drop the owning session first
+  and recreate it afterward; retained server state is not reconciled automatically.
 - For open files in Lake workspaces, Beam uses Lean's native stale-dependency diagnostic when a synced
   source change makes an importer need refresh. Beam does not yet implement Lean's dynamic watched-file
   registration, so external source changes that never pass through `sync` remain outside the current

@@ -37,7 +37,8 @@ Beam reads only the on-disk file and never edits `.lean` sources; you edit files
 1. Edit and save the file.
 2. `lean-beam update Foo.lean` and take `result.version` from its JSON.
 3. Probe with that version (`run-at`, `goals`, `hover`, ...).
-4. `lean-beam sync Foo.lean` when you need diagnostics and readiness (`result.readiness.saveReady`).
+4. `lean-beam sync Foo.lean` when you need diagnostics and readiness (`result.readiness.saveReady`;
+   MCP: `structuredContent.readiness.save_ready`).
 5. Optionally `lean-beam save MyPkg/Sub/Module.lean` to checkpoint a synced workspace module.
 
 ```bash
@@ -141,9 +142,14 @@ imports and lose the surrounding context. Use scratch files only for context-fre
 - `contentModified`, stale state, or rebuild trouble keeps appearing unexpectedly: inspect
   `open-files` and `doctor`, then stop and report it rather than working around it.
 
-Final validation belongs to a clean `lake build`, normally in CI. When no successful clean CI result
+Batch-build evidence comes from a clean `lake build`, normally in CI. When no successful clean CI result
 is available, or server-sensitive elaboration is suspected, run once outside the inner loop:
 `lean-beam --root ROOT stop && lake clean && lake build`. Do not do this after every checkpoint.
+
+Beam is a non-adversarial development tool. Checkpoint readiness can include `sorry` warnings; it
+is not proof acceptance. For independent confirmation, use the separate
+[trust and proof confirmation workflow](references/trust-and-validation.md), including a trusted
+challenge and external checkers. Do not add it to every inner-loop operation.
 
 ## References
 

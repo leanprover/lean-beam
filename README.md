@@ -109,10 +109,14 @@ running Lean server is not guaranteed to pick up Lake workspace configuration ch
 change, run `lean-beam --root ROOT stop`, then start a new foreground `lean-beam serve` wrapper
 session before the next wrapper command that uses the Lean server. A successful
 checkpoint is normally sufficient while working; do not add an expensive clean build to every Beam
-loop. Final project validation should come from CI running `lake build` from clean Lake artifacts.
+loop. Obtain batch-build evidence from CI running `lake build` from clean Lake artifacts.
 If no successful clean CI result is available, or server-sensitive elaboration is suspected, use the
 one-time local batch check described in the
 [sync and diagnostics contract](docs/SYNC_AND_DIAGNOSTICS.md#development-checkpoints-and-batch-validation).
+
+Beam is for non-adversarial development. Independent proof confirmation is a separate step; see
+[trust and proof confirmation](skills/lean-beam/references/trust-and-validation.md) for the guarantees,
+trusted assumptions, and version-specific comparator guidance.
 
 ## Install
 

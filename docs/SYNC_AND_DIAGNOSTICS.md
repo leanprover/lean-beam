@@ -280,8 +280,8 @@ cheaper during the edit and proof-development loop.
 For ordinary local development, a successful Beam checkpoint is enough; do not routinely pay for a
 clean local rebuild merely because Beam wrote an artifact. CI must independently run `lake build`
 from a clean checkout or clean Lake build directory, without restoring Beam-produced module
-artifacts into that job. Use the successful clean CI build as the final project-wide
-batch-validation result.
+artifacts into that job. This provides batch-build evidence for the selected project targets,
+not independent proof confirmation.
 
 If no successful clean CI result is available, or if server-sensitive elaboration is suspected,
 discard the development checkpoints and perform one clean local batch build:
@@ -293,9 +293,10 @@ lake build
 ```
 
 This sequence is not a required step after every Beam checkpoint; it is the local fallback when no
-successful clean CI result is available. A clean CI build remains the preferred
-project-wide batch-validation authority; `saveReady` and successful Beam checkpointing report
-acceptance of the current server snapshot.
+successful clean CI result is available. `saveReady` reports checkpoint eligibility; warnings such
+as `sorry` may remain. A clean build does not independently establish the intended theorem or its
+allowed axioms. See [trust and proof confirmation](../skills/lean-beam/references/trust-and-validation.md)
+for supported ownership assumptions and the separate comparator workflow.
 
 ## Reporting Surfaces
 

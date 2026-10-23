@@ -34,3 +34,5 @@ Use this reference as a short checklist of what not to assume in Lean `beam` wor
 - rely on successful Beam checkpoints for ordinary local development, ensure CI runs `lake build`
   from clean artifacts, and use local `lean-beam --root ROOT stop`, `lake clean`, and `lake build` once only
   when no successful clean CI result is available or server-sensitive elaboration is suspected
+- distinguish batch-build evidence from [independent proof confirmation](trust-and-validation.md);
+  readiness, empty goals, and checkpoint success do not replace the latter

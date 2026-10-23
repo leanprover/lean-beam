@@ -296,7 +296,7 @@ lean-beam refresh "T.lean"
 Practical boundary:
 
 - this is a targeted recovery loop, not a full dependency scheduler
-- if retries keep walking additional modules, or if you need final workspace trust, stop and run
+- if retries keep walking additional modules, or if you need project-wide batch-build evidence, stop and run
   `lake build`
 
 ## Cost Model
@@ -379,9 +379,13 @@ lake build
 
 Do not run this sequence merely because Beam saved a checkpoint: successful checkpoints are
 normally sufficient during the inner loop. Keep using targeted Beam probes and checkpoints instead
-of repeatedly cleaning the build directory. Final batch evidence should come from CI running `lake
+of repeatedly cleaning the build directory. Batch-build evidence should come from CI running `lake
 build` from clean artifacts, or from this one-time local fallback when no successful clean CI result
 is available.
+
+These builds are separate from [independent proof confirmation](trust-and-validation.md).
+Stop the owner before external builds and recreate it afterward; do not rely on retained server
+state noticing external build changes.
 
 ## Stats And Signs Of Good Use
 

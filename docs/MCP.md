@@ -381,6 +381,10 @@ should describe them as checkpoint success rather than batch-build or CI success
 run `lake build` from clean artifacts. If no successful clean CI result is available, perform the
 one-time clean local check outside MCP. See the
 [checkpoint contract](SYNC_AND_DIAGNOSTICS.md#development-checkpoints-and-batch-validation).
+`save_ready` means checkpoint eligibility, including snapshots with `sorry` warnings. Tool success,
+empty goals, and checkpoint success do not independently confirm a theorem. Follow
+[trust and proof confirmation](../skills/lean-beam/references/trust-and-validation.md) when that
+stronger acceptance is required.
 
 ## Process-Wide Utilities And Feedback
 

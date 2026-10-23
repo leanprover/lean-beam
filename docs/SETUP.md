@@ -375,7 +375,7 @@ options, plugins, or dynamic libraries, run `lean-beam --root ROOT stop`, then s
 `lean-beam serve` owner before the next wrapper command that uses the Lean server.
 `lean-beam refresh` reopens a file within the current server and is not sufficient for this case.
 
-### Final Batch Validation
+### Batch Builds And Proof Confirmation
 
 `lean-beam save` is an inner-loop development checkpoint from Lean's accepted server state. It
 includes structured Lake options, dynamic libraries, and plugins already applied by the file worker
@@ -383,8 +383,8 @@ and avoids repeated module builds. Modules with batch-only `moreLeanArgs` fail w
 `saveUnsupportedSetup`; move shared `-D` settings to `leanOptions`, or use `lake build` when the
 arguments are intentionally batch-only. A successful checkpoint is normally sufficient for local
 development, so do not run a clean build after every Beam loop. At the end of the development loop,
-use a successful CI `lake build` from a clean checkout or clean Lake build directory as the final
-batch-validation result.
+use a successful CI `lake build` from a clean checkout or clean Lake build directory as
+batch-build evidence.
 
 If no successful clean CI result is available, or when investigating code that may observe server
 mode, validate the project once from clean local Lake artifacts:
@@ -396,8 +396,11 @@ lake build
 ```
 
 This sequence is a completion fallback, not a step after every Beam checkpoint. The exact checkpoint
-contract and the distinction between the inner loop and final batch validation live in
+contract and the distinction between the inner loop and batch builds live in
 [SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md#development-checkpoints-and-batch-validation).
+
+Independent proof confirmation needs a separate trusted challenge and checking environment; follow
+[trust and proof confirmation](../skills/lean-beam/references/trust-and-validation.md).
 
 Detailed Lean workflow guidance lives in
 [../skills/lean-beam/SKILL.md](../skills/lean-beam/SKILL.md).
