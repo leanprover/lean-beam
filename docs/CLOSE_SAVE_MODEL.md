@@ -148,6 +148,33 @@ other processes, or crash recovery. Neither it nor the Closing proofs establish 
 filesystem or lock behavior. The implementation boundaries below complement the public
 [sync and diagnostics contract](SYNC_AND_DIAGNOSTICS.md).
 
+## Production publication gate
+
+[PublicationGate](../Beam/Broker/PublicationGate.lean) is the pure component used by the broker
+for claim allocation, matching release, and selection of workspace changes that must wait. It
+replaces the runtime's separate claim counter and optional claim; it does not add another registry.
+[PublicationGateLaws](../model/BeamModel/PublicationGateLaws.lean) proves that acquisition requires
+an empty gate, installs exactly the returned claim and advances its token, and that older cleanup
+cannot release a newly allocated claim. Matching release is idempotent and preserves allocation.
+Runtime-wide changes and the owning workspace select the claim's completion; other workspaces do not.
+
+The token belongs to one runtime lifetime and is not reset when a workspace is replaced. The
+completion payload is opaque to these definitions. Production stores a promise there, but promise
+resolution and producer settlement are not conclusions of these laws.
+
+`withDocumentPublication` still checks the captured owner, document basis and cancellation before
+claiming, in the same state-lock transition. Only successful acquisition enters the promotion
+callback. Its `finally` releases the matching claim before signalling completion; waiters retry
+against current ownership outside the lock. The existing `PublicationClaimTest` schedules in the
+Fast suite cover real publication, cancellation, affected-owner waits and failure cleanup. These
+are adapter evidence, separate from the direct-production laws.
+
+This gate represents the interval while publication or recovery is in progress, not checkpoint
+commitment. The abstract publication model still treats commit atomically. No refinement theorem
+connects it to filesystem effects here: private readiness, final identity validation, effect ordering,
+and completion signalling remain runtime obligations. This extraction preserves the existing
+serialization and cancellation contract without adding progress or recovery guarantees.
+
 ## Publication implementation
 
 The worker and Lake helper receive per-attempt private destinations. The worker validates duplicate

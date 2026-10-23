@@ -22,6 +22,7 @@ import Beam.Broker.Output
 import Beam.Broker.Pending
 import Beam.Broker.Protocol
 import Beam.Broker.Publication
+import Beam.Broker.PublicationGate
 import Beam.Broker.Transport
 import Beam.Broker.Lean
 import Beam.Broker.LakeSave
@@ -85,11 +86,6 @@ structure WorkspaceState where
   lean : SessionState := {}
   metrics : WorkspaceMetrics := {}
 
-private structure PublicationClaim where
-  token : Nat
-  workspaceId : WorkspaceId
-  done : IO.Promise Unit
-
 structure State where
   bootstrapConfig : BrokerConfig
   startMonoNanos : Nat := 0
@@ -97,8 +93,7 @@ structure State where
   workspaces : Std.TreeMap WorkspaceId WorkspaceState := {}
   streamSink? : Option (StreamMessage → IO Unit) := none
   currentClientRequestId? : Option String := none
-  private nextPublicationToken : Nat := 1
-  private publication? : Option PublicationClaim := none
+  private publication : PublicationGate.State (IO.Promise Unit) := .empty
 
 abbrev M := StateRefT State IO
 
@@ -1152,9 +1147,8 @@ private inductive PublicationAvailability (α : Type) where
 private partial def ServerRuntime.withPublicationAvailable
     (server : ServerRuntime) (workspaceId? : Option WorkspaceId) (act : M α) : IO α := do
   let result : PublicationAvailability α ← server.withState do
-    if let some claim := (← get).publication? then
-      if workspaceId?.all (· == claim.workspaceId) then
-        return .wait claim.done
+    if let some completion := (← get).publication.waitFor? workspaceId? then
+      return .wait completion
     .done <$> act
   match result with
   | .done value => pure value
@@ -1854,13 +1848,9 @@ def withDocumentPublication
     | .error failure => return .error failure
     | .ok () => pure ()
     let state ← get
-    if state.publication?.isSome then
-      return .error <| responseFailureFor .internalError "another save publication is already claimed"
-    let claim : PublicationClaim := {
-      token := state.nextPublicationToken, workspaceId := session.workspaceId, done := completion
-    }
-    set { state with
-      nextPublicationToken := state.nextPublicationToken + 1, publication? := some claim }
+    let some (publication, claim) := state.publication.claim session.workspaceId completion
+      | return .error <| responseFailureFor .internalError "another save publication is already claimed"
+    set { state with publication }
     pure (.ok claim)).run
   let claim ← match claimed with
     | .error failure => return .error failure
@@ -1871,8 +1861,7 @@ def withDocumentPublication
     try
       server.withState do
         let state ← get
-        if state.publication?.any (·.token == claim.token) then
-          set { state with publication? := none }
+        set { state with publication := state.publication.release claim.token }
     finally
       completion.resolve ()
 
