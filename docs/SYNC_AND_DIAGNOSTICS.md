@@ -314,9 +314,9 @@ An alias named `Alias.txt` that resolves to `Main.lean` is accepted; `Alias.lean
 `notes.txt` is rejected. Beam checks the canonical target before reading contents or starting a
 document worker. Missing paths, directories, cyclic or dangling symlinks, and unsupported source
 kinds return `invalidParams`; permission and unexpected I/O failures retain `internalError`.
-Resolution failures say that a path cannot be resolved, since the filesystem may not distinguish a
-missing target from an inaccessible ancestor. Source bytes must be valid UTF-8; invalid encoding
-returns `invalidParams` before starting a document worker and preserves any tracked document.
+Missing source targets are reported as `does not exist`; unresolvable paths such as symlink cycles
+are reported as `cannot be resolved`. Source bytes must be valid UTF-8; invalid encoding returns
+`invalidParams` before starting a document worker and preserves any tracked document.
 Opening uses strict filesystem resolution, so `missing/../Main.lean` cannot bypass a missing
 intermediate directory. Empty files and malformed Lean syntax in valid UTF-8 remain source inputs:
 Lean reports syntax and elaboration diagnostics normally. To open an external file, select a workspace

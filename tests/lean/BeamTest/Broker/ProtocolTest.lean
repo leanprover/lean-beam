@@ -2540,15 +2540,41 @@ private def checkDocumentSourceInputs : IO Unit := do
     require "source-kind fixture creates a nonregular input" (made.exitCode == 0)
     let rejected := #["Missing.lean", "Absent/Child.lean", "Absent/../Main.lean", "Main.lean/x", "",
       "Directory.lean", "notes.txt", "UPPER.LEAN", "Notes.lean", "Dangling.lean",
-      "Loop.lean", "Stream.lean"]
+      "Loop.lean", "Loop.lean/Child.lean", "Stream.lean"]
     for path in rejected do
       for request in documentAdmissionRequests "document-admission" path do
         let response ← cold.dispatchRequest request
         requireSourceInputFailure s!"cold source {path}" response
-        if #["Missing.lean", "Dangling.lean", "Loop.lean"].contains path then
-          require "resolution errors do not assert that the target is absent"
+        if #["Missing.lean", "Absent/Child.lean", "Absent/../Main.lean", "Dangling.lean"].contains path then
+          require "missing sources are reported directly"
+            (response.error?.any (·.message.contains "does not exist"))
+        if #["Loop.lean", "Loop.lean/Child.lean"].contains path then
+          require "unresolvable sources are not reported as missing"
             (response.error?.any (·.message.contains "cannot be resolved"))
         requireReleasedDocumentScopes "rejected cold source" cold
+    let denied := root / "Denied"
+    let deniedSource := denied / "Main.lean"
+    IO.FS.createDir denied
+    IO.FS.writeFile deniedSource "def deniedSourceFixture := 1\n"
+    let restricted ← IO.Process.output { cmd := "chmod", args := #["000", denied.toString] }
+    require "restrict source ancestor permissions" (restricted.exitCode == 0)
+    try
+      match ← deniedSource.metadata.toBaseIO with
+      | .error (.permissionDenied ..) =>
+          let response ← cold.dispatchRequest {
+            workspaceId? := some "document-admission"
+            payload := .updateFile { path := deniedSource.toString }
+          }
+          require "source resolution preserves a genuine permission failure"
+            (response.error?.any (·.code == "internalError"))
+          requireReleasedDocumentScopes "inaccessible source" cold
+          IO.println "source permission fixture: inaccessible ancestor retains internalError"
+      | .ok _ =>
+          IO.println "source permission fixture: process can access restricted ancestor; skipped"
+      | .error error => throw error
+    finally
+      let restored ← IO.Process.output { cmd := "chmod", args := #["700", denied.toString] }
+      require "restore source ancestor permissions" (restored.exitCode == 0)
     require "rejected source inputs never invoke the content reader" ((← reads.get) == 0)
     cold.state.atomically do
       let some workspace := (← get).workspaces.get? "document-admission"

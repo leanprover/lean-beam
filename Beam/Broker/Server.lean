@@ -164,11 +164,15 @@ private def documentBoundaryFailure (root path : System.FilePath) : ResponseFail
   responseFailureFor .invalidParams
     s!"document '{path}' resolves outside workspace root '{root}'; select a workspace containing the document"
 
+private def unresolvedSourceFailure (root path : System.FilePath) : ResponseFailure :=
+  responseFailureFor .invalidParams
+    s!"document path '{path}' cannot be resolved in workspace '{root}'"
+
 /-- Only ordinary failures of observing a supplied source path are input errors. -/
 private def sourceObservationFailure?
     (root path : System.FilePath) : IO.Error → Option ResponseFailure
   | .noFileOrDirectory .. => some <| responseFailureFor .invalidParams
-      s!"document '{path}' cannot be resolved in workspace '{root}'"
+      s!"document '{path}' does not exist in workspace '{root}'"
   | .inappropriateType .. => some <| responseFailureFor .invalidParams
       s!"document '{path}' is not a regular source file in workspace '{root}'"
   | _ => none
@@ -177,8 +181,7 @@ private def sourceObservationFailure?
 private def sourceResolutionFailure?
     (root path : System.FilePath) (error : IO.Error) : Option ResponseFailure :=
   match error with
-  | .invalidArgument .. => some <| responseFailureFor .invalidParams
-      s!"document path '{path}' cannot be resolved in workspace '{root}'"
+  | .invalidArgument .. => some <| unresolvedSourceFailure root path
   | _ => sourceObservationFailure? root path error
 
 /-- Capture an existing regular Lean source; missing-suffix lookup never authorizes an open. -/
@@ -205,9 +208,17 @@ private def resolveSourceDocumentPath
           if let some missingPath := missingPath? then
             unless Beam.isCanonicalPathWithinRoot root missingPath do
               return .error <| documentBoundaryFailure root missingPath
-        match sourceResolutionFailure? root path error with
-        | some failure => return .error failure
-        | none => throw error
+        -- realPath can report missing input for cycles or inaccessible ancestors too. A stat
+        -- after failed resolution preserves the typed cause; it never authorizes an open.
+        let observed : Except IO.Error IO.FS.Metadata ← match error with
+          | .noFileOrDirectory .. => path.metadata.toBaseIO
+          | _ => pure (.error error)
+        match observed with
+        | .ok _ => return .error <| unresolvedSourceFailure root path
+        | .error cause =>
+            match sourceResolutionFailure? root path cause with
+            | some failure => return .error failure
+            | none => throw cause
   unless Beam.isCanonicalPathWithinRoot root path do
     return .error <| documentBoundaryFailure root path
   let metadata : Except ResponseFailure IO.FS.Metadata ←
