@@ -395,68 +395,97 @@ private def checkPlainBrokerTaskCancellation : IO Unit := do
     | .ok () => pure ()
     | .error err => throw err
 
-private def serveGreetingWithoutReading
+private def interruptionGateTimeoutMs : Nat := 20000
+
+/-- Gate cancellation on an observed connection or request byte, never on elapsed time. -/
+private def serveInterruptionGate
     (listener : Beam.Broker.Transport.Listener)
     (identity : Beam.Broker.DaemonIdentity)
-    (greeted release : IO.Promise Unit) : IO Unit := do
+    (submit : Bool)
+    (entered release : IO.Promise Unit) : IO Unit := do
   let conn ← Beam.Broker.Transport.accept listener
   try
-    Beam.Broker.Transport.sendMsg conn <|
-      toJson (Beam.Broker.ServerHello.current identity) |>.compress
-    greeted.resolve ()
+    if submit then
+      Beam.Broker.Transport.sendMsg conn <|
+        toJson (Beam.Broker.ServerHello.current identity) |>.compress
+      let .tcp socket _ := conn
+      let received ← Std.Internal.UV.TCP.Socket.recv? socket 1
+      let received? ← try
+          Beam.waitTaskWithTimeout received.result? interruptionGateTimeoutMs
+        finally
+          -- A timed-out native read must not remain attached to this socket.
+          Std.Internal.UV.TCP.Socket.cancelRecv socket
+      let some (some received) := received?
+        | throw <| IO.userError "request-byte observation did not complete within its bound"
+      let some bytes ← IO.ofExcept received
+        | throw <| IO.userError "client disconnected before submitting its request"
+      require "request submission must begin with a frame header"
+        (bytes.size == 1 && bytes[0]! >= 48 && bytes[0]! <= 57)
+      -- Leave the large request body unread so the transport can remain blocked.
+    entered.resolve ()
     let some _ ← IO.wait release.result?
-      | throw <| IO.userError "blocked-send release promise dropped"
+      | throw <| IO.userError "interruption gate release promise dropped"
     pure ()
   finally
     Beam.Broker.Transport.closeConnection conn
 
 private def checkBrokerSendInterruption : IO Unit := do
-  withBrokerListener fun listener endpoint => do
-    let identity : Beam.Broker.DaemonIdentity := {
-      daemonId := "test-generation"
-      configHash := "test-config"
-    }
-    let greeted ← IO.Promise.new
-    let release ← IO.Promise.new
-    let interrupted ← IO.mkRef false
-    let serverTask ← IO.asTask (prio := Task.Priority.dedicated) <|
-      serveGreetingWithoutReading listener identity greeted release
-    let largeText := String.ofList (List.replicate (8 * 1024 * 1024) 'x')
-    let clientTask ← IO.asTask (prio := Task.Priority.dedicated) <|
-      Beam.Broker.sendRequestWithCallbacksInterruptiblyResult endpoint {
-        payload := .runAt {
-          path := "Secret.lean"
-          version := 1
-          line := 0
-          character := 0
-          text := largeText
-        }
-        workspaceId? := some Beam.Cli.projectDaemonWorkspaceId
-        clientRequestId? := some "blocked-send"
-        daemonCapability? := some "test-capability"
-      } interrupted.get (server := .wrapper identity)
-    let some _ ← IO.wait greeted.result?
-      | throw <| IO.userError "blocked-send greeting promise dropped"
-    IO.sleep 100
-    interrupted.set true
-    let result? ← Beam.waitTaskWithTimeout clientTask 2000
-    release.resolve ()
-    let some result := result?
-      | throw <| IO.userError "interrupt did not release a blocked Beam request send"
-    match result with
-    | .ok (.error failure@{ cause := .interrupted, .. }) =>
-        let cli := Beam.Cli.CliFailure.client failure failure.detail
-        require "partial-send interruption preserves cancellation exit" (cli.exitCode == 130)
-        require "partial-send interruption retains uncertainty"
-          (((cli.failure.error.data?.getD Json.null).getObjValAs? Bool "operationMayHaveCompleted").toOption == some true)
-    | .ok (.error failure) =>
-        throw <| IO.userError s!"blocked send reported {repr failure} instead of interruption"
-    | .ok (.ok response) =>
-        throw <| IO.userError s!"blocked send unexpectedly returned {toJson response}"
-    | .error err => throw err
-    match ← IO.wait serverTask with
-    | .ok () => pure ()
-    | .error err => throw err
+  let largeText := String.ofList (List.replicate (8 * 1024 * 1024) 'x')
+  for submit in [false, true] do
+    withBrokerListener fun listener endpoint => do
+      let identity : Beam.Broker.DaemonIdentity := {
+        daemonId := "test-generation"
+        configHash := "test-config"
+      }
+      let entered ← IO.Promise.new
+      let release ← IO.Promise.new
+      let interrupted ← IO.mkRef false
+      let serverTask ← IO.asTask (prio := Task.Priority.dedicated) <|
+        serveInterruptionGate listener identity submit entered release
+      let clientTask ← IO.asTask (prio := Task.Priority.dedicated) <|
+        Beam.Broker.sendRequestWithCallbacksInterruptiblyResult endpoint {
+          payload := .runAt {
+            path := "Secret.lean"
+            version := 1
+            line := 0
+            character := 0
+            text := if submit then largeText else "#check Nat"
+          }
+          workspaceId? := some Beam.Cli.projectDaemonWorkspaceId
+          clientRequestId? := some "interrupted-send"
+          daemonCapability? := some "test-capability"
+        } interrupted.get (server := .wrapper identity)
+      let result? ← try
+          let some (some _) ← Beam.waitTaskWithTimeout entered.result? interruptionGateTimeoutMs
+            | throw <| IO.userError "client did not reach its interruption gate within the bound"
+          interrupted.set true
+          Beam.waitTaskWithTimeout clientTask 2000
+        finally
+          interrupted.set true
+          release.resolve ()
+      let serverResult ← IO.wait serverTask
+      let some result := result?
+        | throw <| IO.userError "interrupt did not release the Beam client"
+      match result with
+      | .ok (.error failure@{ cause := .interrupted, .. }) =>
+          let cli := Beam.Cli.CliFailure.client failure failure.detail
+          require "interruption preserves cancellation exit" (cli.exitCode == 130)
+          if submit then
+            require "observed request bytes establish unconfirmed delivery"
+              (match failure.delivery with | .unconfirmed => true | _ => false)
+            require "partial-send interruption retains uncertainty"
+              (((cli.failure.error.data?.getD Json.null).getObjValAs? Bool "operationMayHaveCompleted").toOption == some true)
+          else
+            require "interruption before the greeting retains not-sent evidence"
+              (match failure.delivery with | .notSent => true | _ => false)
+            require "pre-send interruption must not claim an operation may have completed"
+              cli.failure.error.data?.isNone
+      | .ok (.error failure) =>
+          throw <| IO.userError s!"client reported {repr failure} instead of interruption"
+      | .ok (.ok response) =>
+          throw <| IO.userError s!"interrupted client unexpectedly returned {toJson response}"
+      | .error err => throw err
+      IO.ofExcept serverResult
 
 private def serveWrongDaemonGreeting
     (listener : Beam.Broker.Transport.Listener) : IO Bool := do
