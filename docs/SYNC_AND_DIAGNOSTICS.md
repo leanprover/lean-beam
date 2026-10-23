@@ -351,11 +351,15 @@ intentionally duplicates any matching diagnostics already consumed live. For syn
 `diagnostic_scope: "all"` widens streamed and replayed diagnostic output to warnings, information,
 and hints.
 
-Lean marks some editor-only messages as silent, including its decorative `Goals accomplished!`
-message. Beam removes silent diagnostics and speculative-execution messages at reception time. They
-do not appear in diagnostic streams, final diagnostic items or counts, `lean_todo`, or `runAt`
-messages. This rule is independent of `diagnostic_scope`: `"all"` means all user-facing severities,
-not Lean's private editor chatter.
+Beam omits Lean's silent messages, such as `Goals accomplished!`, from diagnostic streams, final
+diagnostic items or counts, `lean_todo`, and `runAt` messages. This rule is independent of
+`diagnostic_scope`: `"all"` does not reveal silent messages.
+
+For `runAt` and handle continuations, silence controls presentation rather than success. A remaining
+Lean message with error severity or a caught elaboration abort produces `success=false` and no
+successor handle. If no visible error is available, Beam supplies a short failure explanation.
+Beam uses the final messages after enclosing commands or tactics have handled expected errors,
+including consuming them with `#guard_msgs` or downgrading them in Verso documentation examples.
 
 Lean currently publishes Lake `setup-file` build lines as information diagnostics. Beam recognizes
 these observations best-effort and, at the MCP boundary, projects them separately from ordinary
