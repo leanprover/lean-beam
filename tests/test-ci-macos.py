@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("ci_macos", ROOT / "scripts/ci-macos.py")
@@ -27,8 +28,20 @@ class MacOSCoverageTest(unittest.TestCase):
         self.root = Path(self.temporary.name) / "repo with spaces"
         self.root.mkdir()
         self.env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                        GIT_CONFIG_PARAMETERS="",
                         GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
                         GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+        # Scope every Git subprocess, including the classifier and shallow clones. Automatic
+        # maintenance and filesystem monitoring have no place in a temporary history fixture.
+        settings = {"maintenance.auto": "false", "gc.auto": "0", "gc.autoDetach": "false",
+                    "core.fsmonitor": "false"}
+        self.env["GIT_CONFIG_COUNT"] = str(len(settings))
+        for index, (key, value) in enumerate(settings.items()):
+            self.env[f"GIT_CONFIG_KEY_{index}"] = key
+            self.env[f"GIT_CONFIG_VALUE_{index}"] = value
+        environment = patch.dict(os.environ, self.env)
+        environment.start()
+        self.addCleanup(environment.stop)
         self.git("init", "-q", "--object-format=sha1")
         for path in ["README.md", "docs/Old.md", "Beam/Probe.lean"]:
             self.write(path)
@@ -69,6 +82,18 @@ class MacOSCoverageTest(unittest.TestCase):
         self.write("docs/Guide λ.md")
         self.write("skills/lean-beam/EXAMPLES.md")
         self.assertFalse(self.required(self.pull_request()))
+
+    def test_fixture_git_does_not_start_automatic_services(self):
+        # Even a repository requesting maintenance must remain owned by this fixture.
+        self.git("config", "maintenance.auto", "true")
+        self.git("config", "gc.auto", "0")
+        trace = Path(self.temporary.name) / "git-trace.jsonl"
+        self.env["GIT_TRACE2_EVENT"] = str(trace)
+        self.commit()
+        children = [event.get("argv", []) for line in trace.read_text().splitlines()
+                    if (event := json.loads(line)).get("event") == "child_start"]
+        self.assertFalse(any("maintenance" in command or "gc" in command
+                             or "fsmonitor--daemon" in command for command in children), children)
 
     def test_verified_source_uses_platform_profile(self):
         for path in ["Beam/Probe.lean", "native/control_dir.c",
