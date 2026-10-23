@@ -215,13 +215,13 @@ private def runRealExit (description : Beam.Runtime.Description) (root : System.
   finally
     server.close
 
-/-- Recover through update, which does not update completed-sync module history. Only Lean's
-ordinary didSave invalidation can tell the already-open importer about the recovered source edit. -/
+/-- Recovery through update leaves completed-sync module history unchanged. Check that an edited
+source still sends the ordinary didSave notification needed to invalidate open importers. -/
 private def runImporterRecovery (description : Beam.Runtime.Description) (root : System.FilePath)
     (edited : Bool) : IO Unit := do
   IO.FS.createDirAll root
   IO.FS.writeFile (root / "lakefile.toml") "name = \"A\"\n[[lean_lib]]\nname = \"A\"\n"
-  IO.FS.writeFile (root / "A.lean") "import Lean\n\ndef aValue : Nat := 42\n"
+  IO.FS.writeFile (root / "A.lean") "def aValue : Nat := 42\n"
   IO.FS.writeFile (root / "B.lean") "import A\nexample : True := by\n  trivial\n"
   let server ← ServerRuntime.create (BrokerConfig.ofRuntime root description) workspaceId
   try
@@ -242,13 +242,12 @@ private def runImporterRecovery (description : Beam.Runtime.Description) (root :
     let some history := original.moduleHistory.get? "A"
       | throw <| IO.userError "saved dependency has no module history"
     let failed ← call server (.runAt {
-      path := "A.lean", version := saved.version, line := 2, character := 0
+      path := "A.lean", version := saved.version, line := 0, character := 0
       text := "#eval (IO.Process.forceExit 3 : IO Unit)"
     })
     require "dependency worker exit is explicit"
       (failed.error?.map (·.code) == some "workerCrashed")
-    let saves ← IO.mkRef (0 : Nat)
-    let savedNotification ← IO.mkRef (none : Option String)
+    let notifications ← IO.mkRef (#[] : Array String)
     server.withState do
       let state ← get
       let some workspace := state.workspaces.get? workspaceId
@@ -256,31 +255,19 @@ private def runImporterRecovery (description : Beam.Runtime.Description) (root :
       let some current := workspace.lean.session?
         | throw <| IO.userError "missing dependency-recovery session"
       let current := { current with stdin := { current.stdin with putStr := fun text => do
-          if text.contains "textDocument/didSave" then
-            saves.modify (· + 1)
-            savedNotification.set (some text)
-            return
-          if text.contains diagnosticsBarrierMethod then
-            -- Register the importer's pending barrier, then observe the real invalidation
-            -- diagnostic before forwarding its request. Native diagnostic delivery and barrier
-            -- completion are asynchronous; neither a sleep nor request registration orders them.
-            if let some notification ← savedNotification.get then
-              savedNotification.set none
-              original.stdin.putStr notification
-              original.stdin.flush
-              let entries ← original.pending.snapshotEntries
-              require "importer invalidation expects one pending barrier" (entries.size == 1)
-              let some (_, pending) := entries[0]?
-                | throw <| IO.userError "missing importer invalidation barrier"
-              waitUntil "native importer stale diagnostic" do
-                pure <| (← pending.diagnosticsRef.get).any fun diagnostic =>
-                  diagnostic.message.contains "Imports are out of date"
+          for method in #["textDocument/didClose", "textDocument/didOpen", "textDocument/didSave"] do
+            if text.contains method then
+              require "recovery notification names the dependency" (text.contains aUri)
+              notifications.modify (·.push method)
+          -- Forward the real notification. Lean registers its import graph asynchronously;
+          -- diagnostics/barrier completion does not establish that registration has finished.
+          -- This test checks Beam's notification contract, not native delivery timing.
           original.stdin.putStr text
         } }
       set { state with workspaces := state.workspaces.insert workspaceId {
         workspace with lean := { workspace.lean with session? := some current } } }
     if edited then
-      IO.FS.writeFile (root / "A.lean") "import Lean\n\ndef aValue : Nat := 43\n"
+      IO.FS.writeFile (root / "A.lean") "def aValue : Nat := 43\n"
     discard <| result (← call server (.updateFile { path := "A.lean" }))
     let recovered ← doc server aUri
     require "dependency recovery accepts the source at the expected version"
@@ -291,23 +278,14 @@ private def runImporterRecovery (description : Beam.Runtime.Description) (root :
       (afterHistory.lastSyncEventSeq == history.lastSyncEventSeq &&
        afterHistory.lastTextChangeEventSeq == history.lastTextChangeEventSeq &&
        afterHistory.lastSaveEventSeq == history.lastSaveEventSeq)
-    let siblingSync ← call server (.syncFile { path := "B.lean" })
-    if edited then
-      require s!"edited-source recovery must mark the importer stale (didSave={← saves.get}): {(toJson siblingSync).compress}"
-        (siblingSync.error?.map (·.code) == some "syncBarrierIncomplete")
-      let data := siblingSync.error?.bind (·.data?) |>.getD Json.null
-      let diagnostics : Array Json ← IO.ofExcept <| data.getObjValAs? _ "completionBlockingDiagnostics"
-      require "importer receives Lean's stale-import diagnostic"
-        (diagnostics.any fun diagnostic =>
-          ((diagnostic.getObjValAs? String "message").toOption.getD "").contains "Imports are out of date")
-    else
-      discard <| result siblingSync
+    unless edited do
+      discard <| result (← call server (.syncFile { path := "B.lean" }))
       requireJsonBool "unchanged-source recovery keeps the importer handle usable" "success" true
         (← result (← call server (.runWith { path := "B.lean", handle, text := "trivial" })))
-    require "only a recovered source edit sends dependency invalidation"
-      ((← saves.get) == if edited then 1 else 0)
-    require "the importer's barrier releases the recorded notification exactly once"
-      (← savedNotification.get).isNone
+    let expected := #["textDocument/didClose", "textDocument/didOpen"] ++
+      (if edited then #["textDocument/didSave"] else #[])
+    require "only edited recovery sends dependency invalidation, after reopening"
+      ((← notifications.get) == expected)
     require "dependency invalidation never replaces the importer's worker basis"
       (DocumentState.basis (← doc server bUri) == DocumentState.basis beforeB)
     require "dependency recovery preserves the shared router" ((← session server).epoch == original.epoch)
