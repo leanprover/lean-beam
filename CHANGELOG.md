@@ -55,6 +55,11 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   An explicit root can be inspected after Lean project markers disappear; setup failures still
   produce a nonzero exit status.
 
+### Documentation
+
+- Added a descriptive related-tools comparison for `lean-lsp-mcp`, Pantograph, and Beam's
+  saved-file probe layer.
+
 ### Fixed
 
 - Parse tactic `runAt` text and handle continuations as a tactic sequence, as in the body of a
