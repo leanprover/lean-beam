@@ -1175,9 +1175,9 @@ def withProjectDaemonOwner
     (explicitControlDir? : Option System.FilePath := none)
     (act : ProjectDaemonOwner → IO α) : IO α := do
   let controlDir ← controlDirFor root explicitControlDir?
-  -- Establish or validate the control boundary before bundle resolution can create project-local
-  -- `.beam` state for a previously unseen toolchain.
-  preparePrivateControlDir controlDir
+  -- Reject unsafe existing state before runtime selection, without creating session state for
+  -- a rejected target. Acquisition below creates or revalidates the private directory.
+  validateControlDirForObservation controlDir
   let desired ← resolve root
   -- Allocate all fallible owner bookkeeping before the child and registry generation exist.
   let exitCodeRef ← IO.mkRef (none : Option UInt32)

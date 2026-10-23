@@ -61,6 +61,39 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
     cli_h = h / record["components"]["frontends"]["cli"]
     mcp = g / record["components"]["frontends"]["mcp"]
     daemon = g / target["daemon"]
+    # Reject a target outside the installation before creating any session state. Existing
+    # private state belongs to its owner and must remain untouched when admission fails.
+    admission_env = dict(env, HOME=str(directory / "admission-home"),
+                         ELAN_HOME=str(directory / "admission-elan"))
+    admission_env.pop("BEAM_SESSION_ROOT", None)
+    for explicit in [False, True]:
+        for existing in [False, True]:
+            rejected_project = directory / f"rejected-project-{explicit}-{existing}"
+            rejected_project.mkdir()
+            (rejected_project / "lean-toolchain").write_text(str(foreign) + "\n")
+            (rejected_project / "lakefile.toml").write_text('name = "rejected_target"\n')
+            control = (directory / f"rejected-session-{existing}" if explicit
+                       else rejected_project / ".beam")
+            if existing:
+                control.mkdir(mode=0o700)
+                (control / "retained-owner-state").write_bytes(b"must not change\n")
+                control_mode = control.stat().st_mode
+            arguments = ["--root", str(rejected_project)]
+            if explicit:
+                arguments += ["--session-dir", str(control)]
+            refused = run(cli_g, *arguments, "serve", env=admission_env,
+                          cwd=rejected_project, ok=False)
+            assert "not a member of this Beam installation" in refused.stderr, refused.stderr
+            if existing:
+                assert [path.name for path in control.iterdir()] == ["retained-owner-state"]
+                assert (control / "retained-owner-state").read_bytes() == b"must not change\n"
+                assert control.stat().st_mode == control_mode
+            else:
+                assert not control.exists(), f"rejected target created session state: {control}"
+            if explicit:
+                assert not (rejected_project / ".beam").exists()
+    assert not Path(admission_env["HOME"]).exists()
+    assert not Path(admission_env["ELAN_HOME"]).exists()
     # Frontends and each separately compiled target carry independent shared-library closure.
     # Removing the selected core must fail even while the original SDK remains available.
     core = "libleanshared" + (".dll" if os.name == "nt" else ".dylib" if sys.platform == "darwin" else ".so")
