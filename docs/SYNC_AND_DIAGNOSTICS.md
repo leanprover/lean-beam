@@ -201,6 +201,15 @@ not detect this configuration drift, so reusing a running session after such an 
 
 ## Worker Errors And Document Recovery
 
+After Beam observes an explicit worker failure, ordinary use of that document returns the recorded
+error without sending another request to Lean:
+
+- Use `sync` to reopen the file from saved source and wait for diagnostics/readiness.
+- Use `update` to submit the reopen without waiting for that result. Successful update is not a
+  worker-health or readiness barrier.
+- Fresh `save` and `close-save` also return the recorded error; first recover with `update`, `sync`,
+  or an explicit `refresh`. Recovery remains subject to an existing close-save reservation.
+
 When Lean explicitly replies with `workerExited` or `workerCrashed`, Beam records the first error
 only for the session and accepted document revision that owned the request. Caller cancellation
 can change the returned error to `requestCancelled`; it does not erase the observed worker failure.
@@ -208,13 +217,14 @@ Late replies cannot mark a replacement document or session as failed. This also 
 ordinary source update was accepted before the error was recorded: the newer revision requires
 its own explicit error before Beam marks it as failed, even if it used the same worker.
 
-Ordinary operations on that failed document return its recorded worker error without dispatching
-another request to Lean. A fresh `update` or `sync` closes and reopens that document, using the
-newly read source; the failed operation is never replayed. Other documents and their handles keep
-their existing session. Recovery of unchanged source preserves its document version and checkpoint
-association, but establishes a new internal accepted revision. An actual source edit advances the
-version and invalidates the checkpoint as usual. An update that reopens the worker returns
-`changed: true`.
+Recovery does not automatically resubmit the failed request or its speculative `runAt` text.
+Reopening elaborates saved source again, so source-level `#eval` or elaborator effects can run again;
+it does not provide exactly-once execution. Other documents and their handles keep their existing
+session. Handles from the replaced worker become invalid. Recovery of unchanged source preserves
+its document version and checkpoint association, but establishes a new internal accepted revision.
+An actual source edit advances the
+version, invalidates the checkpoint, and notifies importing workers that their dependency is stale,
+just like an ordinary source update. An update that reopens the worker returns `changed: true`.
 
 The internal broker's `open_docs` entry includes `workerError` while the failure is recorded and
 omits obsolete `fileProgress`. Its `checkpointed` field still describes the saved source/artifacts,
@@ -222,8 +232,14 @@ not the health of the current worker. Worker recovery does not rewrite checkpoin
 
 Recording one worker error does not supply replies for other already-dispatched requests. With an
 older Lean watchdog, those requests may remain pending until Lean replies or a fresh sync/refresh
-closes the old worker and releases its queued replies. Reliable completion of those queued requests
-requires the upstream routing correction.
+can acquire the document and close its old worker, releasing queued replies. Single-document
+recovery requires admission: an unresolved close-save retains its closing owner, so `update`,
+`sync`, `refresh`, plain `close`, and new saves are rejected with `documentClosing`. Observing a
+worker error does not revoke that owner. Soft cancellation does not establish producer settlement
+or release its reservation. If the owner cannot settle on an affected Lean version, recovery may
+require restarting the owning workspace/session, with its existing cleanup and settlement rules;
+single-document recovery cannot bypass the reservation. Reliable completion of queued requests
+still requires the upstream routing correction.
 
 This behavior requires an explicit worker-error response. Generic fatal file progress also occurs
 for validly running workers with fatal elaboration diagnostics and is not evidence of worker exit.

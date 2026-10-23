@@ -190,6 +190,7 @@ private def rejectedClose (description : Beam.Runtime.Description) (root : Syste
 /-- Inject router replies at the existing stream boundary, before a worker task is launched. -/
 private def completionReply (description : Beam.Runtime.Description) (root gate : System.FilePath)
     (case : String) (closeAfter : Bool) : IO Unit := do
+  let workerCrash := case == "remote-worker-crashed" || case == "cancelled-remote-worker-crashed"
   let server ← ServerRuntime.create (BrokerConfig.ofRuntime root description) workspaceId
   try
     discard <| result (← call server (.syncFile { path := "Main.lean" }))
@@ -233,13 +234,16 @@ private def completionReply (description : Beam.Runtime.Description) (root gate 
           let some (id, request) := entries[0]?
             | throw <| IO.userError "missing intercepted save request"
           discard <| current.pending.remove id
-          if case == "cancelled-handler-failure" || case == "cancelled-remote-owner-loss" then
+          if case == "cancelled-handler-failure" || case == "cancelled-remote-owner-loss" ||
+              case == "cancelled-remote-worker-crashed" then
             let some _ ← ActiveRequestRegistry.markCancelled server.activeRequests
                 (some workspaceId) "completion-reply"
               | throw <| IO.userError "missing save caller cancellation identity"
             pure ()
           if case == "remote-invalid-params" then
             request.resolveError .invalidParams "bare remote parameter rejection"
+          else if workerCrash then
+            request.resolveError .workerCrashed "worker crashed during private save completion"
           else if case == "remote-owner-loss" || case == "cancelled-remote-owner-loss" then
             request.resolveError .contentModified "file worker terminated"
           else if case == "remote-cancelled" then
@@ -260,8 +264,9 @@ private def completionReply (description : Beam.Runtime.Description) (root gate 
       let some error := response.error? | throw <| IO.userError "injected save failure succeeded"
       let expected := if case == "remote-invalid-params" then "invalidParams"
         else if case == "remote-owner-loss" then "contentModified"
+        else if case == "remote-worker-crashed" then "workerCrashed"
         else if case == "cancelled-handler-failure" || case == "cancelled-remote-owner-loss" ||
-            case == "remote-cancelled" then "requestCancelled"
+            case == "cancelled-remote-worker-crashed" || case == "remote-cancelled" then "requestCancelled"
         else "internalError"
       require "save reply preserves public error presentation" (error.code == expected)
       require "save failure preserves barrier progress" (response.fileProgress?.any (·.done))
@@ -270,6 +275,11 @@ private def completionReply (description : Beam.Runtime.Description) (root gate 
         ((← session server).epoch == original.epoch)
       require "private preparation reply preserves the accepted document"
         (DocumentState.basis (← doc server uri) == DocumentState.basis before)
+      if workerCrash then
+        let error? := (← doc server uri).workerError?
+        require "private save records worker failure before cancellation presentation"
+          (error?.map (·.code) == some "workerCrashed" &&
+           error?.map (·.message) == some "worker crashed during private save completion")
       requireCheckpointUnchanged prior
       requirePrivateRetention saved (!settled)
       requireNoAdmissions server
@@ -462,7 +472,8 @@ def run (description : Beam.Runtime.Description) (root : System.FilePath)
   let closeAfter := !case.startsWith "ordinary-"
   let case := if closeAfter then case else (case.drop "ordinary-".length).toString
   if ["remote-invalid-params", "remote-owner-loss", "remote-cancelled", "malformed-completion",
-      "handler-failure", "cancelled-handler-failure", "cancelled-remote-owner-loss"].contains case then
+      "handler-failure", "cancelled-handler-failure", "cancelled-remote-owner-loss",
+      "remote-worker-crashed", "cancelled-remote-worker-crashed"].contains case then
     completionReply description root gate case closeAfter
     IO.println s!"save owner ({case}): passed"
     return

@@ -19,7 +19,8 @@ from mcp_test_util import shared_lib_name
 REPO = Path(__file__).resolve().parent.parent
 WORKSPACE = "save-finalization-test"
 REPLY_CASES = ["remote-invalid-params", "remote-owner-loss", "remote-cancelled",
-               "malformed-completion", "handler-failure", "cancelled-handler-failure", "cancelled-remote-owner-loss"]
+               "malformed-completion", "handler-failure", "cancelled-handler-failure", "cancelled-remote-owner-loss",
+               "remote-worker-crashed", "cancelled-remote-worker-crashed"]
 REPLY_CASES += ["ordinary-" + case for case in REPLY_CASES]
 WRITE_CASES = [prefix + case for prefix in ("", "ordinary-")
                for case in ("uncertain-save", "uncertain-save-flush")]

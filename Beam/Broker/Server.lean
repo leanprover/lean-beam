@@ -813,6 +813,8 @@ private def syncFileSnapshotDetailed
   let session ←
     match decision.action with
     | .open | .reopen =>
+      let changedSource := decision.action == .reopen &&
+        (session.docs.get? snapshot.uri).any (·.rawSourceHash != snapshot.file.rawSourceHash)
       let session ← if decision.action == .reopen then closeFile session snapshot.uri else pure session
       let param := toJson ({
         textDocument := {
@@ -823,7 +825,9 @@ private def syncFileSnapshotDetailed
         } : DidOpenTextDocumentParams
       })
       let session ← sendNotificationJson session "textDocument/didOpen" param
-      pure session
+      -- An edited recovery invalidates importers just like an ordinary change. Reopening
+      -- unchanged source must not make unrelated workers stale.
+      if changedSource then sendTextDocumentDidSave session snapshot.uri else pure session
     | .change =>
         let param := toJson ({
           textDocument := { uri := snapshot.uri, version? := some decision.version }
