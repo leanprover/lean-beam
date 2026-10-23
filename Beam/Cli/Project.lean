@@ -43,7 +43,8 @@ private def validateSessionSelection (opts : CliOptions) (root : System.FilePath
   if opts.explicitControlDir?.isNone then
     if let some base ← IO.getEnv "BEAM_SESSION_ROOT" then
       unless (System.FilePath.mk base).isAbsolute do
-        throw <| .usage s!"BEAM_SESSION_ROOT must be an absolute path, got '{base}'"
+        throw <| .argument "BEAM_SESSION_ROOT" base
+          (fun preview => s!"BEAM_SESSION_ROOT must be an absolute path, got '{preview}'")
   let dir ← Beam.Daemon.controlDirFor root opts.explicitControlDir?
   match ← Beam.observePrivateDir dir with
   | .absent | .privateDir => pure root

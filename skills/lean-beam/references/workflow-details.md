@@ -172,6 +172,14 @@ What is not a valid checkpoint target:
   `sessionRecoveryRequired` (exit `1`) includes the generation when known; obey its
   `recoveryPrecondition` and independently verify that the matching owner and daemon have stopped
   before running recovery. An unavailable endpoint alone is insufficient evidence
+- `--text-file` and `--handle-file` require regular-file targets and allow ordinary symlinks;
+  directories, devices, FIFOs, and symlink loops observed at admission fail with
+  `invalidParams`/exit `2` before dispatch. The target check and later open are separate operations,
+  so concurrent path replacement remains possible. Use `--stdin` or handle `-` for streaming. Input is read to EOF before the broker interrupt watcher
+  starts; on POSIX, SIGINT in this phase may exit `130` without JSON
+- local argument previews identify their field and omitted-character count in `error.data.argument`.
+  CLI error stderr escapes terminal controls. Control-bearing remedies are labelled escaped
+  displays; execute the exact command from `error.data.remedyCommand`, not that display
 - every `lean-beam run-at` request probes one on-disk document version without changing its real
   elaboration state; Lean code can still perform external IO
 - `lean-beam run-at-handle` is the same style of isolated probe, but asks Lean to retain follow-up

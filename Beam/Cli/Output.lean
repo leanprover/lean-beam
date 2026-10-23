@@ -245,12 +245,13 @@ def renderFailure (failure : CliFailure) : IO UInt32 := do
   unless failure.responsePublished do
     printResponse (.errorResult failure.failure) failure.clientRequestId?
   let diagnostic := failure.diagnostic?.getD failure.failure.error.message
-  let diagnostic := String.intercalate "; " <|
-    (diagnostic.splitOn "\n").filter (fun line => !line.isEmpty)
   let diagnostic := if diagnostic.startsWith "beam:" then diagnostic else "beam: " ++ diagnostic
-  IO.eprintln <| annotateRequestMessage failure.clientRequestId? diagnostic
-  if let some command := failure.remedyCommand? then IO.eprintln command
-  if let some usage := failure.usage? then IO.eprintln usage
+  IO.eprintln <| escapeDiagnosticText <| annotateRequestMessage failure.clientRequestId? diagnostic
+  if let some command := failure.remedyCommand? then
+    let display := escapeDiagnosticText command
+    if display == command then IO.eprintln command
+    else IO.eprintln s!"remedy (escaped display; exact command in error.data.remedyCommand): {display}"
+  if let some usage := failure.usage? then IO.eprintln <| escapeDiagnosticText usage
   return failure.exitCode
 
 /-- Catch unexpected IO faults once; they are never reclassified as user input errors. -/

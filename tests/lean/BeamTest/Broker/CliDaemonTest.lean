@@ -1113,6 +1113,20 @@ private def checkTypedRegistryReads : IO Unit := do
           (entry.capability == "test-capability")
     | state => throw <| IO.userError s!"current registry was classified as {state.status}"
 
+    let longGeneration := String.ofList <| List.replicate 100000 'x'
+    match ← (Beam.Cli.recoverProjectDaemon (fun _ => pure ()) root longGeneration).run with
+    | .ok _ => throw <| IO.userError "long mismatched generation unexpectedly recovered"
+    | .error failure =>
+        require "long recovery generation is a bounded usage failure"
+          (failure.exitCode == 2 && failure.failure.error.code == "invalidParams" &&
+            failure.failure.error.message.length < 1024)
+        let some data := failure.failure.error.data? | throw <| IO.userError "missing recovery argument data"
+        let argument ← IO.ofExcept <| data.getObjVal? "argument"
+        requireJsonString "recovery argument field" "field" "generation" argument
+        let omitted ← IO.ofExcept <| argument.getObjValAs? Nat "omittedChars"
+        require "long recovery generation keeps omitted length" (omitted == 99872)
+        require "local response must not echo the complete recovery generation" ((toJson (Beam.Broker.Response.errorResult failure.failure)).compress.length < 2048)
+
     let validText ← IO.FS.readFile registryPath
     let validJson ← IO.ofExcept <| Json.parse validText
     let eraseObjectField (json : Json) (field : String) : Json :=
@@ -1558,6 +1572,15 @@ def main (args : List String) : IO UInt32 :=
   | ["--cli-error", "internal"] => Beam.Cli.run do
       let action : IO Unit := throw <| IO.userError "fixture unexpected fault"
       action
+  | ["--cli-error", "pre-input", kind] => do
+      IO.eprintln "fixture-input-ready"
+      (← IO.getStderr).flush
+      Beam.Cli.run do
+        if kind == "text" then
+          discard <| Beam.Cli.parseTextArg "run-at fixture" ["--stdin"]
+        else
+          discard <| Beam.Cli.parseHandleArg "-"
+        throw <| Beam.Cli.CliFailure.setup "input fixture unexpectedly reached EOF"
   | ["--cli-error", "input-io", kind] => Beam.Cli.run do
       let error : IO.Error := match kind with
         | "missing" => .noFileOrDirectory "fixture-input" 2 "missing"

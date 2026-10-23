@@ -5,6 +5,9 @@
 
 import json
 import os
+import selectors
+import shlex
+import signal
 from pathlib import Path
 import subprocess
 import tempfile
@@ -30,9 +33,9 @@ class CliErrorsTest(unittest.TestCase):
         cls.env.pop("BEAM_SESSION_ROOT", None)
         cls.env.pop("BEAM_REQUEST_ID", None)
 
-    def invoke(self, *args, executable=None):
+    def invoke(self, *args, executable=None, timeout=15, input=None):
         return subprocess.run([str(executable or self.cli), *map(str, args)], cwd=self.root,
-                              env=self.env, text=True, capture_output=True, timeout=15)
+                              env=self.env, text=True, input=input, capture_output=True, timeout=timeout)
 
     def failure(self, result, code, exit_code):
         self.assertEqual(result.returncode, exit_code, result.stderr)
@@ -119,6 +122,147 @@ class CliErrorsTest(unittest.TestCase):
         result = self.invoke("--root", requested, "status")
         self.assertEqual(self.failure(result, "invalidParams", 2)["message"],
                          f"permission denied while resolving workspace root: {requested}")
+
+    def test_named_input_directories_are_usage_errors(self):
+        for option, args in self.named_input_commands(self.root):
+            with self.subTest(option=option):
+                error = self.failure(self.invoke(*args), "invalidParams", 2)
+                self.assertIn("requires a regular file", error["message"])
+                self.assertEqual(error["data"]["argument"]["field"], option)
+        self.assertFalse((self.root / ".beam").exists())
+
+    def named_input_commands(self, path):
+        return [("--text-file", ("run-at", "Main.lean", "1", "0", "0", "--text-file", path)),
+                ("--handle-file", ("run-with", "Main.lean", "--handle-file", path, "simp"))]
+
+    def test_named_input_missing_and_unreadable_files_are_usage_errors(self):
+        for option, args in self.named_input_commands(self.root / "missing-named-input"):
+            with self.subTest(option=option, kind="missing"):
+                error = self.failure(self.invoke(*args), "invalidParams", 2)
+                self.assertEqual(error["data"]["argument"]["field"], option)
+        if os.name != "nt" and os.geteuid() != 0:
+            target = self.root / "unreadable-named-input"
+            target.write_text("{}")
+            self.addCleanup(target.unlink)
+            self.addCleanup(target.chmod, 0o600)
+            target.chmod(0)
+            for option, args in self.named_input_commands(target):
+                with self.subTest(option=option, kind="unreadable"):
+                    error = self.failure(self.invoke(*args), "invalidParams", 2)
+                    self.assertIn("cannot read", error["message"])
+        self.assertFalse((self.root / ".beam").exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX special-file fixture")
+    def test_unwritten_fifos_and_devices_are_rejected_before_read(self):
+        fifo = self.root / "unwritten-input-fifo"
+        os.mkfifo(fifo)
+        self.addCleanup(fifo.unlink)
+        for path in (fifo, Path("/dev/null")):
+            for option, args in self.named_input_commands(path):
+                with self.subTest(option=option, path=path):
+                    error = self.failure(self.invoke(*args, timeout=3), "invalidParams", 2)
+                    self.assertIn("requires a regular file", error["message"])
+        self.assertFalse((self.root / ".beam").exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX symbolic-link fixture")
+    def test_named_input_loops_are_usage_errors_and_regular_symlinks_are_admitted(self):
+        loop = self.root / "input-loop"
+        loop.symlink_to(loop)
+        self.addCleanup(loop.unlink)
+        for option, args in self.named_input_commands(loop):
+            with self.subTest(option=option):
+                error = self.failure(self.invoke(*args), "invalidParams", 2)
+                self.assertIn("cannot resolve", error["message"])
+        target = self.root / "regular-input"
+        target.write_text("{}")
+        self.addCleanup(target.unlink)
+        link = self.root / "regular-input-link"
+        link.symlink_to(target)
+        self.addCleanup(link.unlink)
+        text = self.invoke("--root", self.root, *self.named_input_commands(link)[0][1])
+        self.assertIn("Lean", self.failure(text, "invalidParams", 2)["message"])
+        handle = self.invoke(*self.named_input_commands(link)[1][1])
+        self.assertIn("invalid handle payload", self.failure(handle, "invalidParams", 2)["message"])
+
+    def test_stdin_and_handle_dash_remain_streaming_inputs(self):
+        text = self.invoke("--root", self.root, "run-at", "Main.lean", "1", "0", "0", "--stdin", input="#check Nat")
+        self.assertIn("Lean", self.failure(text, "invalidParams", 2)["message"])
+        handle = self.invoke("run-with", "Main.lean", "-", "simp", input="{}")
+        self.assertIn("invalid handle payload", self.failure(handle, "invalidParams", 2)["message"])
+
+    def test_large_local_argument_echo_is_bounded_with_field_and_omitted_length(self):
+        for character, preview in [("x", "x" * 128), ("\x1b", r"\u001b" * 128)]:
+            with self.subTest(character=repr(character)):
+                value = character * 100000
+                result = self.invoke("hover", "Main.lean", value, "0", "0")
+                error = self.failure(result, "invalidParams", 2)
+                self.assertEqual(error["data"]["argument"],
+                                 {"field": "version", "preview": preview, "omittedChars": len(value) - 128})
+                self.assertIn("99872 characters omitted", error["message"])
+                self.assertIn("99872 characters omitted", result.stderr)
+                self.assertLess(len(result.stdout), 4096)
+                self.assertLess(len(result.stderr), 2048)
+
+    @unittest.skipIf(os.name == "nt" or signal.getsignal(signal.SIGINT) == signal.SIG_IGN,
+                     "requires an inherited default POSIX SIGINT disposition")
+    def test_pending_input_sigint_uses_inherited_disposition_before_dispatch(self):
+        for kind in ("text", "handle"):
+            with self.subTest(kind=kind):
+                process = subprocess.Popen([str(self.fixture), "--cli-error", "pre-input", kind],
+                                           cwd=self.root, env=self.env, text=True,
+                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    with selectors.DefaultSelector() as ready:
+                        ready.register(process.stderr, selectors.EVENT_READ)
+                        self.assertTrue(ready.select(timeout=5), "input fixture never became ready")
+                        self.assertEqual(process.stderr.readline(), "fixture-input-ready\n")
+                    process.send_signal(signal.SIGINT)
+                    self.assertEqual(process.wait(timeout=5), -signal.SIGINT)
+                    process.stdin.close()
+                    process.stdin = None
+                    stdout, stderr = process.communicate(timeout=5)
+                    self.assertEqual(stdout, "")
+                    self.assertEqual(stderr, "")
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None:
+                            stream.close()
+        self.assertFalse((self.root / ".beam").exists())
+
+    def test_local_argument_control_characters_are_visible_escapes(self):
+        value = "Ω-bad\n\r\t\x1b[31m\x7f\u0085"
+        result = self.invoke("hover", "Main.lean", value, "0", "0")
+        error = self.failure(result, "invalidParams", 2)
+        for control in ("\n", "\r", "\t", "\x1b", "\x7f", "\u0085"):
+            self.assertNotIn(control, error["message"])
+            if control != "\n":
+                self.assertNotIn(control, result.stderr)
+        self.assertIn(r"\u001b", result.stderr)
+        self.assertIn("Ω-bad", error["message"])
+        self.assertEqual(len(result.stderr.splitlines()), 2)
+
+    @unittest.skipIf(os.name == "nt", "POSIX unusual path and shell syntax fixture")
+    def test_control_bearing_remedy_is_exact_in_json_and_labelled_on_stderr(self):
+        project = self.root / "project Ω 'space\nwith-escape\x1b[31m"
+        project.mkdir()
+        self.addCleanup(project.rmdir)
+        result = self.invoke("--root", project, "stats")
+        error = self.failure(result, "noLiveSession", 3)
+        command = error["data"]["remedyCommand"]
+        self.assertEqual(shlex.split(command), ["lean-beam", "--root", str(project),
+                                               "--session-dir", str(project / ".beam"), "serve"])
+        self.assertIn("\n", command)
+        self.assertIn("\x1b", command)
+        self.assertNotIn("\x1b", result.stderr)
+        self.assertEqual(len(result.stderr.splitlines()), 2)
+        self.assertIn("remedy (escaped display; exact command in error.data.remedyCommand)", result.stderr)
+        self.assertIn(r"\n", result.stderr)
+        self.assertIn(r"\u001b", result.stderr)
+        self.assertEqual(subprocess.run(["bash", "-n", "-c", command], capture_output=True).returncode, 0)
+        self.assertFalse((project / ".beam").exists())
 
     def test_invalid_handle_has_one_usage_response(self):
         result = self.invoke("run-with", "Main.lean", "{invalid", "simp")

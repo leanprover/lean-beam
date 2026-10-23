@@ -270,7 +270,12 @@ CLI failures print one `{ "ok": false, "error": { "code": "...", "message": "...
 stdout and a concise diagnostic on stderr. Broker error codes, data, and file progress are preserved.
 Local CLI codes include `setupError`, `brokerUnavailable`, `noLiveSession`,
 `sessionRecoveryRequired`, and `internalError`.
-Local remedy commands appear in `error.data.remedyCommand` and on their own stderr line.
+Local argument echoes use bounded previews. `error.data.argument` identifies the field, an escaped
+preview, and `omittedChars`; individual argument previews retain at most 128 Unicode characters.
+Generic usage-message previews retain at most 512 characters. CLI error diagnostics escape terminal
+control characters. Local remedies appear in `error.data.remedyCommand`; commands with ordinary
+printable text also appear verbatim on their own stderr line. A control-bearing remedy is labelled
+as an escaped display on stderr; use the exact JSON command for execution.
 `sessionRecoveryRequired` includes the recorded `generation` when known, plus a
 `recoveryPrecondition`: independently verify that the matching owner and daemon have stopped.
 An unavailable endpoint does not prove that they have stopped. Invalid descriptors require
@@ -284,6 +289,14 @@ Unexpected IO faults use `internalError`, rather than being classified as invali
 | `2` | Local argument/input error (`invalidParams`), with short relevant usage on stderr. Empty invocation is an error. |
 | `3` | No live wrapper owner (`noLiveSession`); the error gives the exact `serve` command to keep running. |
 | `130` | Request interruption (`requestCancelled`); this does not establish that the producer has stopped. |
+
+`--text-file` and `--handle-file` must resolve to regular files; ordinary symlinks to regular files
+are allowed. Directories, devices, FIFOs, and symlink loops observed during admission are local
+input errors (exit `2`). This check inspects the named target before opening it; a concurrent path
+replacement can still affect the later read. Use `--stdin` or the handle input `-` for streaming. These inputs read to EOF before broker request
+handling starts. On POSIX, SIGINT during that input phase uses the inherited signal disposition
+and can exit with shell status `130` without JSON. Structured `requestCancelled` responses apply
+to the later broker-request phase.
 
 A returned broker success remains success even if a signal arrives afterward. Once foreground
 `serve` has printed readiness, cooperative owner shutdown exits successfully; a later owner fault
