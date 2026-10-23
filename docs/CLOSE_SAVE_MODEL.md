@@ -195,13 +195,13 @@ The runtime maps the abstract boundaries as follows:
 | Reserve | Combine acceptance and reservation without an unlocked check/write gap |
 | Owner and accepted basis | Use the private runtime-bound document reference, including workspace/backend lifetime |
 | Competing operations | Cover implicit sync in semantic requests, explicit update/sync, refresh, save, and close |
-| Commit observation | Preserve `SaveOleanCompleted` evidence after artifact and trace acknowledgement |
+| Commit observation | Preserve `SaveOleanCompleted` evidence after artifact acknowledgement and local trace finalization |
 | Cleanup | Compare the lease against current owner state; no captured-state restoration |
 | Owner replacement | Allow drop and teardown to supersede preparation; settle claimed publication before owner changes |
 
-[test-save-finalization.py](../tests/test-save-finalization.py) gates helper preparation and
-trace completion to check prompt conflict rejection, another document's admission, and release
-after helper failure or cancellation. The native
+[test-save-finalization.py](../tests/test-save-finalization.py) gates Lake-helper preparation and
+worker artifact completion to check prompt conflict rejection, another document's admission, and
+release after preparation failure or cancellation. The native
 [SaveOwnerTest](../tests/lean/BeamTest/Broker/SaveOwnerTest.lean) pauses an admitted request before
 source reading, then checks that it cannot reopen a closed document or disturb a fresh reopening.
 It also injects failures after real artifact-request writes, flushes, and close writes, checking

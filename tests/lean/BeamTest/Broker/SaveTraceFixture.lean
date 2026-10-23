@@ -35,10 +35,15 @@ def write (root : FilePath) : IO Unit := do
   IO.FS.writeFile (root / "spec.json") (toJson spec).pretty
   writePrivateSaveTrace spec
   let original ← IO.FS.readBinFile spec.tracePath
-  let unsupported := { spec with traceMetadata :=
-    spec.traceMetadata.setObjVal! "schemaVersion" (toJson ("unknown trace format" : String)) }
-  let rejected ← try writePrivateSaveTrace unsupported *> pure false catch _ => pure true
+  let unsupported := { spec with
+    tracePath := root / "unsupported-schema.trace.candidate"
+    traceMetadata :=
+      spec.traceMetadata.setObjVal! "schemaVersion" (toJson ("unknown trace format" : String)) }
+  let rejected ← try writePrivateSaveTrace unsupported *> pure false catch
+    | .userError .. => pure true
+    | error => throw error
   require "unknown target trace schema is rejected" rejected
+  require "unsupported schema does not create a candidate" (!(← unsupported.tracePath.pathExists))
   require "unsupported schema preserves the prior trace"
     ((← IO.FS.readBinFile spec.tracePath) == original)
   let occupied ← try writePrivateSaveTrace spec *> pure false catch
