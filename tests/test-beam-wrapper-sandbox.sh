@@ -313,8 +313,15 @@ if sandbox_beam stats >"$after_kill_out" 2>"$after_kill_err"; then
   sed -n '1,160p' "$after_kill_out" >&2
   exit 1
 fi
-if ! grep -Fq "Beam daemon connect failed" "$after_kill_err"; then
-  echo "expected the ordinary call itself to report the unavailable endpoint" >&2
+if [ "$(json_file_text_field "$after_kill_out" error.code)" != "sessionRecoveryRequired" ] || \
+    [ "$(json_file_text_field "$after_kill_out" error.data.generation)" != "$daemon_id_2" ]; then
+  echo "expected the dead-owner command to report typed exact-generation recovery" >&2
+  sed -n '1,160p' "$after_kill_out" >&2
+  exit 1
+fi
+recovery_command="$(json_file_text_field "$after_kill_out" error.data.remedyCommand)"
+if ! grep -Fxq -- "$recovery_command" "$after_kill_err"; then
+  echo "expected the recovery command on its own stderr line" >&2
   sed -n '1,160p' "$after_kill_err" >&2
   exit 1
 fi
