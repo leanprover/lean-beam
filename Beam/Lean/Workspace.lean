@@ -17,10 +17,11 @@ namespace Beam.Lean.Workspace
 def resolveRoot (rootText : String) : IO (Except Beam.Workspace.RootError System.FilePath) := do
   let rootPath := System.FilePath.mk rootText
   if !rootPath.isAbsolute then
-    return .error { message := "workspace root must be an absolute path" }
+    return .error { message := s!"workspace root must be an absolute path: {rootText}" }
   try
     let root ← Beam.resolveExistingPath rootPath
-    if !(← root.isDir) then
+    let metadata ← root.metadata
+    if metadata.type != .dir then
       pure <| .error { message := s!"workspace root is not a directory: {root}" }
     else if !(← Beam.Project.hasLeanProject root) then
       pure <| .error {
@@ -28,8 +29,13 @@ def resolveRoot (rootText : String) : IO (Except Beam.Workspace.RootError System
       }
     else
       pure <| .ok root
-  catch e =>
-    pure <| .error { message := s!"workspace root does not resolve: {e.toString}" }
+  catch
+  | .noFileOrDirectory .. =>
+    pure <| .error { message := s!"workspace root is missing or inaccessible: {rootPath}" }
+  | .permissionDenied .. =>
+    pure <| .error { message := s!"permission denied while resolving workspace root: {rootPath}" }
+  | error =>
+    pure <| .error { message := s!"cannot resolve workspace root {rootPath}: {error}" }
 
 /-- Resolve roots supplied through local CLI flags, where relative paths are current-directory based. -/
 def resolveCliRoot (rootText : String) : IO (Except Beam.Workspace.RootError System.FilePath) := do

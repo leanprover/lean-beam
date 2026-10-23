@@ -475,7 +475,14 @@ private def checkWorkspaceDescriptor : IO Unit := do
       ("workspace", Json.mkObj [("root", toJson (3 : Nat))])
     ] with
   | .ok _ => throw <| IO.userError "non-string workspace root decoded unexpectedly"
-  | .error err => require "invalid descriptor error names workspace" (err.contains "workspace")
+  | .error err =>
+      require "invalid descriptor error names the public root field and shape"
+        (err == "invalid 'workspace': root: string expected")
+  match Beam.Workspace.decodeDescriptorField <| Json.mkObj [("workspace", Json.mkObj [])] with
+  | .ok _ => throw <| IO.userError "workspace descriptor without root decoded unexpectedly"
+  | .error err =>
+      require "missing workspace root names its field and shape"
+        (err == "invalid 'workspace': root: required value is missing (string expected)")
   match Beam.Workspace.decodeDescriptorField <| Json.mkObj [
       ("workspace", Json.mkObj [
         ("root", toJson root),
@@ -506,7 +513,7 @@ private def checkWorkspaceRootValidation : IO Unit := do
     IO.FS.createDirAll emptyRoot
     IO.FS.writeFile fileRoot "not a workspace directory\n"
     expectWorkspaceRootError "relative workspace root" "relative/project" "absolute path"
-    expectWorkspaceRootError "missing workspace root" missingRoot.toString "does not resolve"
+    expectWorkspaceRootError "missing workspace root" missingRoot.toString s!"is missing or inaccessible: {missingRoot}"
     expectWorkspaceRootError "workspace root file" fileRoot.toString "not a directory"
     expectWorkspaceRootError "non-project workspace root" emptyRoot.toString
       "not a Lean/Lake project"

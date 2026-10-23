@@ -25,7 +25,7 @@ example (doc : DocState) : DocState := { doc with rawSourceHash := 0 }
 private def mkDoc (version : Nat := 1) (moduleName? : Option String := none)
     (rawSourceHash : UInt64 := 0) : IO DocState :=
   DocumentFixture.accepted {
-    rawSourceHash, documentHash := rawSourceHash, lakeTraceHash := default
+    rawSourceHash, documentHash := rawSourceHash, positionBounds := Thunk.pure (.ofFileMap (Lean.FileMap.ofString "")), lakeTraceHash := default
     textMTime := default, moduleName?
   } version
 
@@ -54,6 +54,7 @@ private def mkSnapshot
     (moduleName? : Option String := some "Foo") : DocumentState.FileSnapshot := {
   rawSourceHash
   documentHash := rawSourceHash
+  positionBounds := Thunk.pure (.ofFileMap (Lean.FileMap.ofString ""))
   lakeTraceHash := default
   textMTime := default
   moduleName?
@@ -321,10 +322,41 @@ private def checkWorkerFailureAdmissions : IO Unit := do
   require "closing cleanup never restores the old read" (!allows state old)
   require "closing cleanup preserves the sibling" (allows state sibling)
 
+private def checkPositionBounds : IO Unit := do
+  for (text, line, character, valid) in #[
+      ("", 0, 0, true), ("", 0, 1, false), ("", 1, 0, false),
+      ("α🙂\r\n", 0, 3, true), ("α🙂\r\n", 0, 4, false),
+      ("α🙂\n", 0, 2, true), ("α🙂\n", 1, 0, true),
+      ("α🙂\n", 1, 1, false), ("α🙂\n", 2, 0, false)] do
+    let snapshot := DocumentState.FileSnapshot.ofText text default
+    require s!"accepted UTF-16 bounds for {repr text} at {line}:{character}"
+      ((snapshot.positionBounds.get.validate { line, character }).isOk == valid)
+  let uri := "file:///workspace/Bounds.lean"
+  let initial := DocumentState.FileSnapshot.ofText "longer\n" default 1
+  let opened := DocumentState.syncFileDecision {} uri initial
+  let unchanged := DocumentState.syncFileDecision opened.docs uri {
+    initial with readSeq := 2
+                 positionBounds := ⟨fun _ => .ofFileMap (Lean.FileMap.ofString "")⟩ }
+  let current ← DocumentState.requireDocState unchanged.docs uri
+  require "unchanged source keeps its accepted bounds"
+    ((current.positionBounds.validate { line := 0, character := 5 }).isOk)
+  for (older, newer, valid) in #[("x\n", "longer\n", true), ("longer\n", "x\n", false)] do
+    let opened := DocumentState.syncFileDecision {} uri
+      (DocumentState.FileSnapshot.ofText older default 1)
+    let accepted := DocumentState.syncFileDecision opened.docs uri
+      (DocumentState.FileSnapshot.ofText newer default 3)
+    let late := DocumentState.syncFileDecision accepted.docs uri
+      (DocumentState.FileSnapshot.ofText older default 2)
+    let current ← DocumentState.requireDocState late.docs uri
+    require "a late source read preserves the accepted version" (current.version == 2)
+    require "a late source read preserves shorter and longer accepted bounds"
+      ((current.positionBounds.validate { line := 0, character := 5 }).isOk == valid)
+
 def main : IO Unit := do
   checkWorkerFailure
   checkWorkerFailureAdmissions
   checkAcceptedBasis
+  checkPositionBounds
   checkTrackedModuleName
   checkRecordFileProgress
   checkSyncFileDecisionOpen

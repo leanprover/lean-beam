@@ -74,6 +74,12 @@ the failure uses `contentModified` and includes `error.data.reason = "documentVe
 The same payload reports `expectedVersion`, the currently accepted `acceptedVersion`, and
 `currentVersion` when the broker can name the current tracked document version.
 
+The message distinguishes the requested version from the accepted version. It mentions a source
+change on disk only when the request observed one relative to the tracked source.
+Position queries use zero-based LSP lines and UTF-16 character units. Positions beyond the accepted
+document's line or character bounds return `invalidParams`; valid end-of-line and end-of-file
+positions remain valid. A valid hover query with no hover information still returns `null`.
+
 Example stale-version semantic response as printed by the wrapper on stdout:
 
 ```json
@@ -81,7 +87,7 @@ Example stale-version semantic response as printed by the wrapper on stdout:
   "ok": false,
   "error": {
     "code": "contentModified",
-    "message": "document version mismatch for file:///workspace/Foo.lean: expected document version 1, got 2",
+    "message": "document version mismatch for file:///workspace/Foo.lean: requested version 1, accepted version 2",
     "data": {
       "reason": "documentVersionMismatch",
       "expectedVersion": 1,

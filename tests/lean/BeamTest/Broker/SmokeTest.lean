@@ -120,6 +120,15 @@ private def runUpdateSmoke
   expectErrCode staleRunAtResp "contentModified"
   expectVersionMismatchData "stale run_at" staleRunAtResp first.version changed.version
 
+  IO.FS.writeFile path "def updateSmokeVal : Nat := 3\n"
+  let observedChange ← runClient endpoint {
+    payload := .hover { path := relPath, version := changed.version, line := 0, character := 0 }
+  }
+  expectErrCode observedChange "contentModified"
+  expectVersionMismatchData "observed disk change" observedChange changed.version (changed.version + 1)
+  let some error := observedChange.error? | throw <| IO.userError "disk change lost its error"
+  expectStringContains "observed disk change wording" error.message "source changed on disk"
+
 private def runSyncSmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   let syncRequestId := some "smoke-sync"
@@ -484,6 +493,32 @@ private def runRequestAndGoalsSmoke
   let hoverContents ← IO.ofExcept <| hover.getObjVal? "contents"
   let hoverValue ← IO.ofExcept <| hoverContents.getObjValAs? String "value"
   expectStringContains "hover markdown" hoverValue "answerA : Nat"
+
+  let staleHover ← runClient endpoint {
+    payload := .hover { path := commandPath, version := 99, line := 0, character := 0 }
+  }
+  expectErrCode staleHover "contentModified"
+  expectVersionMismatchData "requested hover version" staleHover 99 commandVersion
+  let some error := staleHover.error? | throw <| IO.userError "stale hover lost its error"
+  expectStringContains "requested hover wording" error.message "requested version 99"
+  expectStringContains "accepted hover wording" error.message s!"accepted version {commandVersion}"
+  if error.message.contains "source changed on disk" then
+    throw <| IO.userError "unchanged source was described as a disk change"
+  let position : Beam.Broker.RequestPosition := {
+    path := commandPath, version := commandVersion, line := 50, character := 0 }
+  for payload in #[Beam.Broker.RequestPayload.hover position,
+      .signatureHelp position, .definition position,
+      .references { path := commandPath, version := commandVersion, line := 50, character := 0 }] do
+    expectErrCode (← runClient endpoint { payload }) "invalidParams"
+  let beyondEol ← runClient endpoint {
+    payload := .hover { path := commandPath, version := commandVersion, line := 0, character := 500 }
+  }
+  expectErrCode beyondEol "invalidParams"
+  let noHover ← expectOk (← runClient endpoint {
+    payload := .hover { path := commandPath, version := commandVersion, line := 1, character := 0 }
+  })
+  if noHover != Json.null then
+    throw <| IO.userError s!"valid EOF with no hover should remain null: {noHover.compress}"
 
   let signaturePath := "tests/scenario/docs/SignatureHelp.lean"
   let signatureVersion ← updateVersion endpoint signaturePath

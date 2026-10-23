@@ -234,6 +234,13 @@ broker-wide close follows the [shared runtime teardown contract](#broker-server-
 Cancellation collects only present sessions selected by the request's workspace scope and matches
 pending work by its exact admission identity.
 
+Accepted document state retains compact UTF-16 line bounds. Each `FileSnapshot` defers deriving
+them from its normalized source until a new revision is accepted; unchanged and superseded reads
+reuse the tracked bounds. Standard Lean position queries validate those bounds
+after checking the requested version, before dispatching the original LSP method. Superseded source
+reads preserve the newer accepted bounds; validation does not retain another source/FileMap copy.
+Beam's LSP request families share the same pure bounds check.
+
 ## MCP Projection Changes
 
 MCP work should go through the shared Lean operation layer in

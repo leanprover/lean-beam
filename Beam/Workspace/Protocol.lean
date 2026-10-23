@@ -36,7 +36,11 @@ instance : FromJson Descriptor where
           found || field != "root"
         if hasUnexpectedField then
           throw "workspace descriptor accepts only the 'root' field"
-        pure { root := ← json.getObjValAs? String "root" }
+        let value ← match json.getObjVal? "root" with
+          | .ok value => pure value
+          | .error _ => throw "root: required value is missing (string expected)"
+        let root ← (fromJson? (α := String) value).mapError fun _ => "root: string expected"
+        pure { root }
     | other =>
         throw s!"workspace descriptor must be an object, got {other.compress}"
 

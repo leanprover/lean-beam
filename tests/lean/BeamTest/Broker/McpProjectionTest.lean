@@ -537,6 +537,35 @@ private def checkBrokerRequestAdapters : IO Unit := do
       require "save tool rejection identifies diagnostics_in_result"
         (err.contains "diagnostics_in_result")
 
+private def checkPublicInputDiagnostics : IO Unit := do
+  let position := Json.mkObj [
+    ("path", toJson "A.lean"), ("version", toJson (1 : Nat)),
+    ("line", toJson (0 : Nat)), ("character", toJson (0 : Nat))]
+  let run := position.setObjVal! "text" (toJson "#check Nat")
+  let missingVersion := Json.mkObj [
+    ("path", toJson "A.lean"), ("line", toJson (0 : Nat)),
+    ("character", toJson (0 : Nat)), ("text", toJson "#check Nat")]
+  let badHandle := Json.mkObj [
+    ("path", toJson "A.lean"), ("handle", Json.mkObj [("bogus", toJson true)]),
+    ("text", toJson "#check Nat")]
+  let cases : Array (Beam.Lean.Operation × Json × String) := #[
+    (.runAt, Json.mkObj [], "path: required value is missing (string expected)"),
+    (.runAt, run.setObjVal! "path" (toJson (3 : Nat)), "path: string expected"),
+    (.runAt, missingVersion, "version: required value is missing (non-negative integer expected)"),
+    (.hover, position.setObjVal! "line" (toJson "0"), "line: non-negative integer expected"),
+    (.hover, position.setObjVal! "line" (toJson (-1 : Int)), "line: non-negative integer expected"),
+    (.definition, position.setObjVal! "character" (toJson false), "character: non-negative integer expected"),
+    (.goals, position.setObjVal! "mode" (toJson "unknown"), "mode: 'before' or 'after' expected"),
+    (.runWith, badHandle, "handle: handle returned by Beam expected; broker handle accepts no undeclared fields: bogus"),
+    (.runWith, badHandle.setObjVal! "handle" (toJson "abc"),
+      "handle: handle returned by Beam expected; broker handle must be an object, got \"abc\"")]
+  for (operation, input, expected) in cases do
+    match operation.toBrokerRequest input with
+    | .ok _ => throw <| IO.userError s!"{operation.key} accepted malformed input: {input.compress}"
+    | .error message =>
+      require s!"{operation.key} diagnostic uses the public field and expected shape"
+        (message == expected)
+
 private def checkRunAtNormalization : IO Unit := do
   let semanticFailure := Json.mkObj [("success", toJson false)]
   let normalizedFailure ← expectToolOk "normalize semantic failure" <|
@@ -755,6 +784,7 @@ def main : IO Unit := do
   checkToolNames
   checkToolDescriptors
   checkBrokerRequestAdapters
+  checkPublicInputDiagnostics
   checkRunAtNormalization
   checkSyncAndSaveNormalization
   checkTransportErrorNormalization

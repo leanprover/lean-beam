@@ -39,7 +39,7 @@ def requireDocumentVersion (textDocument : Lean.Lsp.VersionedTextDocumentIdentif
         throw {
           code := Lean.JsonRpc.ErrorCode.contentModified
           message :=
-            s!"document version mismatch: expected {expectedVersion}, got {doc.meta.version}"
+            s!"document version mismatch: requested version {expectedVersion}, accepted version {doc.meta.version}"
           : RequestError
         }
 
@@ -58,26 +58,33 @@ def lineUtf16Length (text : FileMap) (line : Nat) : Nat :=
       lineText
   lineText.utf16Length
 
+private def checkPositionBounds (position : Lean.Lsp.Position)
+    (lastLine maxCharacter : Nat) : Except String Unit := do
+  if position.line > lastLine then
+    throw s!"position {position} is outside the document: line {position.line} is beyond the last line {lastLine}"
+  if position.character > maxCharacter then
+    throw s!"position {position} is outside the document: character {position.character} is beyond max character {maxCharacter} for line {position.line}"
+
+/-- Bounds derived from Lean's accepted text, without retaining a second copy of the source. -/
+structure PositionBounds where
+  private mk ::
+  private lineLengths : Array Nat
+
+def PositionBounds.ofFileMap (text : FileMap) : PositionBounds :=
+  let eof := text.utf8PosToLspPos text.source.rawEndPos
+  { lineLengths := (Array.range (eof.line + 1)).map (lineUtf16Length text) }
+
+def PositionBounds.validate (bounds : PositionBounds) (position : Lean.Lsp.Position) : Except String Unit :=
+  checkPositionBounds position (bounds.lineLengths.size - 1)
+    ((bounds.lineLengths[position.line]?).getD 0)
+
 def validatePosition (position : Lean.Lsp.Position) : RequestM Unit := do
   let doc ← RequestM.readDoc
   let text := doc.meta.text
   let eof := text.utf8PosToLspPos text.source.rawEndPos
-  let lineTooLarge := position.line > eof.line
-  let maxCharacter :=
-    if position.line > eof.line then
-      0
-    else
-      lineUtf16Length text position.line
-  let charTooLarge :=
-    if position.line > eof.line then
-      false
-    else
-      position.character > maxCharacter
-  if lineTooLarge then
-    throw <| RequestError.invalidParams
-      s!"position {position} is outside the document: line {position.line} is beyond the last line {eof.line}"
-  if charTooLarge then
-    throw <| RequestError.invalidParams
-      s!"position {position} is outside the document: character {position.character} is beyond max character {maxCharacter} for line {position.line}"
+  let maxCharacter := if position.line > eof.line then 0 else lineUtf16Length text position.line
+  match checkPositionBounds position eof.line maxCharacter with
+  | .ok () => pure ()
+  | .error message => throw <| RequestError.invalidParams message
 
 end Beam.LSP.Lib

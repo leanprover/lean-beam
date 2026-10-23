@@ -1888,10 +1888,12 @@ private structure StartedSyncedRequest where
 
 private def documentVersionMismatchFailure
     (expectedVersion acceptedVersion : Nat)
-    (uri : DocumentUri) : ResponseFailure :=
+    (uri : DocumentUri)
+    (observedDiskChange : Bool := false) : ResponseFailure :=
   responseFailureFor
     .contentModified
-    (s!"document version mismatch for {uri}: expected document version {expectedVersion}, got {acceptedVersion}")
+    (s!"document version mismatch for {uri}: requested version {expectedVersion}, accepted version {acceptedVersion}" ++
+      if observedDiskChange then "; source changed on disk since its last synchronization" else "")
     (some <| documentVersionMismatchErrorData expectedVersion acceptedVersion
       (currentVersion? := some acceptedVersion)
       (uri? := some uri))
@@ -1907,14 +1909,17 @@ private def startSyncedDocumentRequest
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
     (diagnosticScope : DiagnosticScope := .errors)
     (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none)
-    (cancelRef? : Option (IO.Ref Bool) := none) :
+    (cancelRef? : Option (IO.Ref Bool) := none)
+    (position? : Option Lsp.Position := none) :
     M (Except ResponseFailure StartedSyncedRequest) := do
   match ← workspaceForSnapshot session.workspaceId snapshot with
   | .error failure => return .error failure
   | .ok _ => pure ()
   if let some error := (session.docs.get? snapshot.uri).bind (·.workerError?) then
     return .error { error }
-  let session ← syncFileSnapshot session snapshot
+  let previous? := session.docs.get? snapshot.uri
+  let synced ← syncFileSnapshotDetailed session snapshot
+  let session := synced.session
   let uri := snapshot.uri
   let docState ← requireDocState session uri
   match expectedVersion? with
@@ -1922,8 +1927,13 @@ private def startSyncedDocumentRequest
       if docState.version != expectedVersion then
         updateSession session
         return .error <| documentVersionMismatchFailure expectedVersion docState.version uri
+          (observedDiskChange := synced.changed && previous?.any (·.rawSourceHash != docState.rawSourceHash))
   | none =>
       pure ()
+  if let some position := position? then
+    if let .error message := docState.positionBounds.validate position then
+      updateSession session
+      return .error <| responseFailureFor .invalidParams message
   let params := mkParams uri
   let (session, pending) ←
     startRequestJsonTrackedDetailed session method params
@@ -1949,11 +1959,12 @@ private def startSyncedWorkspaceRequest
     (expectedVersion? : Option Nat := none)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
     (diagnosticScope : DiagnosticScope := .errors)
-    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) :
+    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none)
+    (position? : Option Lsp.Position := none) :
     M (Except ResponseFailure StartedSyncedRequest) :=
   withSessionForSnapshot req.workspaceId snapshot (cancelRef? := req.cancelRef?) (output? := req.output?) fun session =>
     startSyncedDocumentRequest server session snapshot method mkParams expectedVersion?
-      req.clientRequestId? emitProgress? diagnosticScope emitDiagnostic? req.cancelRef?
+      req.clientRequestId? emitProgress? diagnosticScope emitDiagnostic? req.cancelRef? position?
 
 private def awaitSyncedDocumentRequest
     (started : StartedSyncedRequest) : HandlerM PendingResult := do
@@ -2560,6 +2571,7 @@ private def handlePositionLspOp
     startSyncedWorkspaceRequest server req snapshot method
       (fun uri => positionLspParams request uri extraFields)
       (expectedVersion? := some request.version)
+      (position? := some { line := request.line, character := request.character })
       (emitProgress? := emitProgress?)
   let pending ← awaitSyncedDocumentRequest started
   pure <| Response.withOptionalFileProgress (Response.success pending.result) pending.progress?

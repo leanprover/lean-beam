@@ -255,6 +255,21 @@ def Operation.inputSchema : Operation → Json
 def Operation.validateInputFields (operation : Operation) (input : Json) : Except String Unit :=
   Beam.JsonSchema.validateInputFields operation.key operation.inputSchema input
 
+private def inputValue (j : Json) (field expected : String) : Except String Json :=
+  match j.getObjVal? field with
+  | .ok value => .ok value
+  | .error _ => .error s!"{field}: required value is missing ({expected})"
+
+/-- Decode a public argument at its field boundary, without exposing Lean structure names. -/
+private def inputField [FromJson α] (j : Json) (field expected : String) : Except String α := do
+  let value ← inputValue j field expected
+  (fromJson? value).mapError fun _ => s!"{field}: {expected}"
+
+/-- Opaque handles retain their decoder's public reason as well as the expected source. -/
+private def inputHandle (j : Json) : Except String Beam.Broker.Handle := do
+  let value ← inputValue j "handle" "handle returned by Beam expected"
+  (fromJson? value).mapError fun reason => s!"handle: handle returned by Beam expected; {reason}"
+
 /-- Input for position-based Lean execution. Coordinates use LSP zero-based line/character units. -/
 structure RunAtInput where
   path : String
@@ -262,7 +277,17 @@ structure RunAtInput where
   line : Nat
   character : Nat
   text : String
-  deriving FromJson, ToJson
+  deriving ToJson
+
+instance : FromJson RunAtInput where
+  fromJson? j := do
+    pure {
+      path := ← inputField j "path" "string expected"
+      version := ← inputField j "version" "non-negative integer expected"
+      line := ← inputField j "line" "non-negative integer expected"
+      character := ← inputField j "character" "non-negative integer expected"
+      text := ← inputField j "text" "string expected"
+    }
 
 /-- Input for position-based Lean inspection operations. -/
 structure PositionInput where
@@ -270,7 +295,16 @@ structure PositionInput where
   version : Nat
   line : Nat
   character : Nat
-  deriving FromJson, ToJson
+  deriving ToJson
+
+instance : FromJson PositionInput where
+  fromJson? j := do
+    pure {
+      path := ← inputField j "path" "string expected"
+      version := ← inputField j "version" "non-negative integer expected"
+      line := ← inputField j "line" "non-negative integer expected"
+      character := ← inputField j "character" "non-negative integer expected"
+    }
 
 private def optionalField? [FromJson α] (j : Json) (field : String) : Except String (Option α) := do
   match j.getObjVal? field with
@@ -303,10 +337,10 @@ instance : ToJson ReferencesInput where
 
 instance : FromJson ReferencesInput where
   fromJson? j := do
-    let path ← j.getObjValAs? String "path"
-    let version ← j.getObjValAs? Nat "version"
-    let line ← j.getObjValAs? Nat "line"
-    let character ← j.getObjValAs? Nat "character"
+    let path ← inputField (α := String) j "path" "string expected"
+    let version ← inputField (α := Nat) j "version" "non-negative integer expected"
+    let line ← inputField (α := Nat) j "line" "non-negative integer expected"
+    let character ← inputField (α := Nat) j "character" "non-negative integer expected"
     let includeDeclaration? ← optionalField? (α := Bool) j "include_declaration"
     pure { path, version, line, character, includeDeclaration? }
 
@@ -314,12 +348,25 @@ instance : FromJson ReferencesInput where
 structure DocumentSymbolsInput where
   path : String
   version : Nat
-  deriving FromJson, ToJson
+  deriving ToJson
+
+instance : FromJson DocumentSymbolsInput where
+  fromJson? j := do
+    pure {
+      path := ← inputField j "path" "string expected"
+      version := ← inputField j "version" "non-negative integer expected"
+    }
 
 /-- Input for workspace-wide Lean symbol queries. -/
 structure WorkspaceSymbolsInput where
   query : String
-  deriving FromJson, ToJson
+  deriving ToJson
+
+instance : FromJson WorkspaceSymbolsInput where
+  fromJson? j := do
+    pure {
+      query := ← inputField j "query" "string expected"
+    }
 
 inductive GoalsMode where
   | before
@@ -350,7 +397,17 @@ structure GoalsInput where
   line : Nat
   character : Nat
   mode : GoalsMode
-  deriving FromJson, ToJson
+  deriving ToJson
+
+instance : FromJson GoalsInput where
+  fromJson? j := do
+    pure {
+      path := ← inputField j "path" "string expected"
+      version := ← inputField j "version" "non-negative integer expected"
+      line := ← inputField j "line" "non-negative integer expected"
+      character := ← inputField j "character" "non-negative integer expected"
+      mode := ← inputField j "mode" "'before' or 'after' expected"
+    }
 
 /-- Input for range-based Lean todo inspection operations. -/
 structure TodoInput where
@@ -382,12 +439,12 @@ instance : ToJson TodoInput where
 
 instance : FromJson TodoInput where
   fromJson? j := do
-    let path ← j.getObjValAs? String "path"
-    let version ← j.getObjValAs? Nat "version"
-    let startLine ← j.getObjValAs? Nat "start_line"
-    let startCharacter ← j.getObjValAs? Nat "start_character"
-    let endLine ← j.getObjValAs? Nat "end_line"
-    let endCharacter ← j.getObjValAs? Nat "end_character"
+    let path ← inputField (α := String) j "path" "string expected"
+    let version ← inputField (α := Nat) j "version" "non-negative integer expected"
+    let startLine ← inputField (α := Nat) j "start_line" "non-negative integer expected"
+    let startCharacter ← inputField (α := Nat) j "start_character" "non-negative integer expected"
+    let endLine ← inputField (α := Nat) j "end_line" "non-negative integer expected"
+    let endCharacter ← inputField (α := Nat) j "end_character" "non-negative integer expected"
     let kinds? ← optionalField? (α := Array Beam.LSP.Todo.TodoKind) j "kinds"
     let suggest? ← optionalField? (α := Beam.LSP.Todo.TodoSuggestMode) j "suggest"
     pure { path, version, startLine, startCharacter, endLine, endCharacter, kinds?, suggest? }
@@ -408,9 +465,9 @@ instance : ToJson CodeActionResolveInput where
 
 instance : FromJson CodeActionResolveInput where
   fromJson? j := do
-    let path ← j.getObjValAs? String "path"
-    let version ← j.getObjValAs? Nat "version"
-    let codeAction ← j.getObjValAs? Lean.Lsp.CodeAction "code_action"
+    let path ← inputField (α := String) j "path" "string expected"
+    let version ← inputField (α := Nat) j "version" "non-negative integer expected"
+    let codeAction ← inputField (α := Lean.Lsp.CodeAction) j "code_action" "code action returned by Beam expected"
     pure { path, version, codeAction }
 
 /-- Input for handle-based Lean execution. -/
@@ -418,18 +475,39 @@ structure RunWithInput where
   path : String
   handle : Beam.Broker.Handle
   text : String
-  deriving FromJson, ToJson
+  deriving ToJson
+
+instance : FromJson RunWithInput where
+  fromJson? j := do
+    pure {
+      path := ← inputField j "path" "string expected"
+      handle := ← inputHandle j
+      text := ← inputField j "text" "string expected"
+    }
 
 /-- Input for explicit handle release. -/
 structure ReleaseInput where
   path : String
   handle : Beam.Broker.Handle
-  deriving FromJson, ToJson
+  deriving ToJson
+
+instance : FromJson ReleaseInput where
+  fromJson? j := do
+    pure {
+      path := ← inputField j "path" "string expected"
+      handle := ← inputHandle j
+    }
 
 /-- Input for path-scoped operations without extra flags. -/
 structure PathInput where
   path : String
-  deriving FromJson, ToJson
+  deriving ToJson
+
+instance : FromJson PathInput where
+  fromJson? j := do
+    pure {
+      path := ← inputField j "path" "string expected"
+    }
 
 /-- Input for sync/refresh operations with optional diagnostic scope and final replay control. -/
 structure SyncInput where
@@ -450,7 +528,7 @@ instance : ToJson SyncInput where
 
 instance : FromJson SyncInput where
   fromJson? j := do
-    let path ← j.getObjValAs? String "path"
+    let path ← inputField (α := String) j "path" "string expected"
     let diagnosticScope? ← optionalField? (α := Beam.Broker.DiagnosticScope) j "diagnostic_scope"
     let diagnosticsInResult? ← optionalField? (α := Bool) j "diagnostics_in_result"
     pure { path, diagnosticScope?, diagnosticsInResult? }
@@ -470,7 +548,7 @@ instance : ToJson SaveInput where
 
 instance : FromJson SaveInput where
   fromJson? j := do
-    let path ← j.getObjValAs? String "path"
+    let path ← inputField (α := String) j "path" "string expected"
     let diagnosticScope? ← optionalField? (α := Beam.Broker.DiagnosticScope) j "diagnostic_scope"
     pure { path, diagnosticScope? }
 

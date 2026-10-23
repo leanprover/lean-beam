@@ -2607,7 +2607,7 @@ def run_stateless_workspace_matrix(repo_root, fixture_root, timeout):
             )
 
             invalid_roots = [
-                ("missing", missing_root, "does not resolve"),
+                ("missing", missing_root, "missing or inaccessible"),
                 ("regular file", file_root, "not a directory"),
                 ("non-project directory", empty_root, "not a Lean/Lake project"),
             ]
@@ -2624,9 +2624,33 @@ def run_stateless_workspace_matrix(repo_root, fixture_root, timeout):
                 )
                 error = expect_tool_error_code(response, "invalidInput")
                 require(
-                    expected_message in error.get("message", ""),
-                    f"{label} workspace root should fail explicitly: {error}",
+                    expected_message in error.get("message", "")
+                    and invalid_root.name in error.get("message", ""),
+                    f"{label} workspace root should name its root and cause: {error}",
                 )
+
+            if os.name != "nt" and os.geteuid() != 0:
+                blocked_parent = Path(tmp) / "unreadable-parent"
+                blocked_root = blocked_parent / "UnreadableProject"
+                blocked_root.mkdir(parents=True)
+                (blocked_root / "lakefile.toml").write_text('name = "UnreadableProject"\n')
+                blocked_parent.chmod(0)
+                try:
+                    response = client.request("tools/call", {
+                        "name": "lean_sync",
+                        "arguments": {
+                            "path": "Probe.lean", "workspace": {"root": str(blocked_root)},
+                        },
+                    })
+                    error = expect_tool_error_code(response, "invalidInput")
+                    message = error.get("message", "")
+                    require(
+                        blocked_root.name in message
+                        and ("inaccessible" in message or "permission denied" in message),
+                        f"unreadable workspace must not be reported as known missing: {error}",
+                    )
+                finally:
+                    blocked_parent.chmod(0o700)
 
             version_before_valid_root = client.call_tool("beam_version")
             require(

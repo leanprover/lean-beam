@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Lake
 import Lean
 import Beam.Broker.Protocol
+import Beam.LSP.Lib.Request
 import Beam.Path
 
 open Lean
@@ -29,6 +30,8 @@ structure DocState where
   rawSourceHash : UInt64
   /-- Hash of Lean's document text, with CRLF normalized to LF. -/
   documentHash : UInt64
+  /-- UTF-16 line bounds for this source revision. -/
+  positionBounds : Beam.LSP.Lib.PositionBounds
   /-- Lake's source trace hash; `Lake.Hash.ofText` normalizes CRLF independently. -/
   lakeTraceHash : Lake.Hash
   textMTime : Lake.MTime
@@ -92,6 +95,8 @@ structure FileSnapshot where
   rawSourceHash : UInt64
   /-- Text accepted by Lean, with CRLF normalized to LF. -/
   documentHash : UInt64
+  /-- Derived only if this source revision is accepted; unchanged reads reuse tracked bounds. -/
+  positionBounds : Thunk Beam.LSP.Lib.PositionBounds
   /-- Lake's normalized source trace hash. -/
   lakeTraceHash : Lake.Hash
   textMTime : Lake.MTime
@@ -113,14 +118,17 @@ def FileSnapshot.ofText
     (text : String)
     (textMTime : Lake.MTime)
     (readSeq : Nat := 0)
-    (moduleName? : Option String := none) : FileSnapshot := {
-  rawSourceHash := hash text
-  documentHash := hash text.crlfToLf
-  lakeTraceHash := Lake.Hash.ofText text
-  textMTime
-  readSeq
-  moduleName?
-}
+    (moduleName? : Option String := none) : FileSnapshot :=
+  let documentText := text.crlfToLf
+  {
+    rawSourceHash := hash text
+    documentHash := hash documentText
+    positionBounds := ⟨fun _ => .ofFileMap (FileMap.ofString documentText)⟩
+    lakeTraceHash := Lake.Hash.ofText text
+    textMTime
+    readSeq
+    moduleName?
+  }
 
 inductive SyncFileAction where
   | open
@@ -178,6 +186,7 @@ private def FileSnapshot.toDocState (snapshot : FileSnapshot) (version : Nat) : 
   acceptedBasis := { version, acceptedSeq := snapshot.readSeq }
   rawSourceHash := snapshot.rawSourceHash
   documentHash := snapshot.documentHash
+  positionBounds := snapshot.positionBounds.get
   lakeTraceHash := snapshot.lakeTraceHash
   textMTime := snapshot.textMTime
   syncSnapshotSeq := snapshot.readSeq
