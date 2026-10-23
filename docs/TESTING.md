@@ -656,7 +656,10 @@ Its component checks are listed here for focused debugging, not as additional re
 The fast suite also invokes the extended-CI, toolchain-compatibility ownership, and defensive-wrapper
 checks. That overlap lets either suite check its own dependencies; running both repeats those checks.
 
-The aggregate maintainer runner skips [tests/test-codex-harness.sh](../tests/test-codex-harness.sh) when the current checkout has tracked edits, because that harness regression intentionally verifies that new task worktrees start from a clean primary checkout.
+[tests/test-codex-harness.sh](../tests/test-codex-harness.sh) runs the harness against a throwaway
+repository with a local bare `origin` under `/tmp`, so it never creates worktrees or branches in the
+checkout under test and needs no network access. It needs no Lean toolchain and runs in the
+`shell-lint` CI job; the other maintainer tests also run in `beam-fast`.
 
 Run these when the change touches [scripts/codex-harness.sh](../scripts/codex-harness.sh),
 [scripts/codex-session-start.sh](../scripts/codex-session-start.sh),
@@ -740,7 +743,8 @@ The current GitHub Actions workflow maps to the testing surfaces like this:
   its stable release, on Linux and in full
   macOS mode. Combined macOS mode qualifies the repository-pinned version.
   Other RCs and superseded stable points qualify locally instead of receiving dedicated CI jobs.
-- `shell-lint`: [scripts/lint-shell.sh](../scripts/lint-shell.sh)
+- `shell-lint`: [scripts/lint-shell.sh](../scripts/lint-shell.sh) and
+  [tests/test-codex-harness.sh](../tests/test-codex-harness.sh)
 
 ## Extended Fork CI
 
