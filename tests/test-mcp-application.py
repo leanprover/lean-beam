@@ -40,6 +40,10 @@ def check_discovery(executable, directory):
                                 env=env, cwd=directory, timeout=15)
         assert result.returncode != 0 and "unexpected" in result.stderr, result
     assert not missing.exists(), "discovery created runtime state"
+    result = subprocess.run([executable, "toolchain-build-info"], capture_output=True,
+                            text=True, encoding="utf-8", env=env, cwd=directory, timeout=15)
+    assert result.returncode != 0 and "not built with -KbeamToolchain=true" in result.stderr, result
+    assert not missing.exists(), "construction inspection created runtime state"
 
 
 def main():

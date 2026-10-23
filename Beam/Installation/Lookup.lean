@@ -71,7 +71,9 @@ private def readRecord (root : System.FilePath) (bundled : Bool) : IO (Except Fa
   try
     if bundled then
       let layout : Bundled.Layout := ⟨root⟩
-      return (← layout.readProvenance).map .bundled |>.mapError (fun error => .invalid error.message)
+      return (← layout.readProvenance).map .bundled |>.mapError fun
+        | .io error => .io error
+        | error => .invalid error.message
     let path := root / "manifest.json"
     unless ← Beam.regularNonSymlinkFile path do return .error (.invalid "missing regular manifest.json")
     let manifest ← readInstallManifest path

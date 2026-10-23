@@ -88,6 +88,9 @@ def validateProvenance (path : System.FilePath) (compiled : Beam.BuildInfo.Ident
 def Layout.readProvenance (sdk : Layout) : IO (Except ResolutionError Provenance) := do
   let path := sdk.home / "provenance.json"
   try
+    -- Keep observation errors typed rather than collapsing them to a failed file-kind check.
+    if (← Beam.pathIsLink path) || (← path.symlinkMetadata).type != .file then
+      return .error <| .invalidProvenance path "expected a regular non-symlink file"
     let parsed := Json.parse (← IO.FS.readFile path) >>= fromJson? (α := Provenance)
     pure do
       let p ← parsed.mapError (ResolutionError.invalidProvenance path)

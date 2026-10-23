@@ -57,6 +57,65 @@ def native_object_traces(build_dir):
             for name in ["control_dir", "process_job"]}
 
 
+def check_construction_identities(prefix, metadata, provenance, *, cwd, env):
+    parked = provenance.with_name("provenance.identity-check")
+    provenance.rename(parked)
+    try:
+        for name, command in [("lean-beam", "toolchain-build-info"),
+                              ("beam-daemon", "build-info"),
+                              ("lean-beam-mcp", "toolchain-build-info")]:
+            arguments = [prefix / "bin" / (name + EXE), command]
+            if name == "lean-beam-mcp":
+                # Keep stdin open: inspection must return without entering the stdio server.
+                child = subprocess.Popen(arguments, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         text=True, encoding="utf-8")
+                try:
+                    child.wait(timeout=15)
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                    stdout, stderr = child.communicate(timeout=10)
+                response = subprocess.CompletedProcess(arguments, child.returncode, stdout, stderr)
+                assert response.returncode == 0 and len(response.stdout.splitlines()) == 1, response
+            else:
+                response = run(arguments, cwd=cwd, env=env)
+            info = json.loads(response.stdout)
+            assert info["compiledLeanRevision"] == info["loadedLeanRevision"] == \
+                metadata["components"]["frontends"]["compilerRevision"], info
+            assert info["buildId"] == metadata["buildId"], info
+            assert info["sourceRevision"] == metadata["sourceCommit"], info
+        rejected = run([prefix / "bin" / ("lean-beam-mcp" + EXE),
+                        "toolchain-build-info", "extra"], cwd=cwd, env=env, ok=False)
+        assert rejected.returncode != 0 and not rejected.stdout.strip(), rejected
+        assert not Path(env["BEAM_HOME"]).exists(), "construction inspection created Beam state"
+    finally:
+        parked.rename(provenance)
+
+
+def check_provenance_kinds(beam, provenance, project, env):
+    # The linked file has the original valid bytes, so only leaf admission rejects it.
+    parked = provenance.with_name("provenance.kind-check")
+    for kind in ["link", "directory", "missing"]:
+        provenance.rename(parked)
+        try:
+            if kind == "link":
+                provenance.symlink_to(parked.name)
+            elif kind == "directory":
+                provenance.mkdir()
+            rejected = run([beam, "--root", project, "doctor"], env=env, ok=False)
+            assert rejected.returncode != 0, (kind, rejected)
+            if kind != "missing":
+                assert "expected a regular non-symlink file" in rejected.stdout + rejected.stderr, (kind, rejected)
+        finally:
+            if kind == "link":
+                provenance.unlink(missing_ok=True)
+            elif kind == "directory" and provenance.is_dir():
+                provenance.rmdir()
+            parked.rename(provenance)
+    run([beam, "--root", project, "doctor"], env=env)
+
+
 def check_relative_native_includes(lake, scratch, env, includes):
     callers = [scratch / "sdk A λ", scratch / "sdk B λ"]
     for caller in callers:
@@ -251,6 +310,7 @@ def qualify(args, lean_prefix, scratch):
     assert metadata["payloadHash"] in version and metadata["components"]["targets"][0]["leanVersion"] in version, version
     mcp = relocated / "bin" / f"lean-beam-mcp{EXE}"
     mcp_version = run([mcp, "--version"], cwd=scratch, env=env).stdout
+    check_construction_identities(relocated, metadata, provenance, cwd=scratch, env=env)
     # A relative loader path must use the containing SDK, without an absolute build-prefix fallback.
     shared_dir = relocated / ("bin" if os.name == "nt" else "lib/lean")
     suffix = ".dll" if os.name == "nt" else ".dylib" if sys.platform == "darwin" else ".so"
@@ -287,6 +347,7 @@ def qualify(args, lean_prefix, scratch):
     if args.crlf:
         text = text.replace("\n", "\r\n")
     source.write_text(text, encoding="utf-8", newline="")
+    check_provenance_kinds(beam, provenance, project, env)
     # This project has no selector, and elan must not be used to locate sibling Lean/Lake.
     shim = scratch / "shim"
     shim.mkdir()

@@ -38,6 +38,7 @@ class NativeBuildRecordTest(unittest.TestCase):
         self.revision = "2" * 40
         self.compiled = self.revision
         self.destination_revision = self.revision
+        self.entrypoints = {}
         self.version = 'Lean fixture "quoted" \\stage; λ'
         self.lake = 'Lake \\cache; ' + ''.join(chr(i) for i in range(1, 32)) + ' end'
         self.sdk = self.root / "SDK"
@@ -53,10 +54,16 @@ class NativeBuildRecordTest(unittest.TestCase):
         (self.resource / "include/x86intrin.h").touch()
         self.driver = self.root / "fixture.cmake"
         self.driver.write_text('''file(READ "${FIXTURE}" fixture)
-foreach(field version lake revision compiled destination_revision)
+foreach(field version lake revision compiled destination_revision entrypoints)
   string(JSON fixture_${field} GET "${fixture}" ${field})
 endforeach()
 function(execute_process)
+  list(FIND ARGV RESULT_VARIABLE result_index)
+  if(NOT result_index EQUAL -1)
+    math(EXPR result_index "${result_index}+1")
+    list(GET ARGV ${result_index} result_variable)
+    set(${result_variable} 0 PARENT_SCOPE)
+  endif()
   if(ARGV1 STREQUAL "${CMAKE_COMMAND}" AND ARGV2 STREQUAL "-E" AND ARGV3 STREQUAL "env")
     foreach(variable LAKE_HOME LEAN_PATH LEAN_SRC_PATH LEAN_CC LEAN_AR LEAN_ABORT_ON_PANIC)
       list(FIND ARGV "--unset=${variable}" cleared)
@@ -93,8 +100,29 @@ function(execute_process)
     else()
       set(value "${fixture_version}")
     endif()
-  elseif(ARGV2 STREQUAL "toolchain-build-info")
+  elseif(ARGV2 STREQUAL "toolchain-build-info" OR ARGV2 STREQUAL "build-info")
     set(value "{\\"leanGithash\\":\\"${fixture_compiled}\\",\\"compiledLeanRevision\\":\\"${fixture_compiled}\\",\\"loadedLeanRevision\\":\\"${fixture_revision}\\",\\"buildId\\":\\"${BEAM_BUILD_ID}\\",\\"sourceRevision\\":\\"${SOURCE_COMMIT}\\"}")
+    get_filename_component(entrypoint "${ARGV1}" NAME_WE)
+    file(APPEND "${ENTRYPOINT_CAPTURE}" "${entrypoint} ${ARGV2}\\n")
+    string(JSON overrides ERROR_VARIABLE absent GET "${fixture_entrypoints}" "${entrypoint}")
+    if(NOT absent)
+      foreach(field compiledLeanRevision loadedLeanRevision buildId sourceRevision)
+        string(JSON kind ERROR_VARIABLE absent TYPE "${overrides}" "${field}")
+        if(NOT absent)
+          if(kind STREQUAL "NULL")
+            string(JSON value REMOVE "${value}" "${field}")
+          else()
+            string(JSON changed GET "${overrides}" "${field}")
+            beam_json_string("${changed}" quoted)
+            string(JSON value SET "${value}" "${field}" "${quoted}")
+          endif()
+        endif()
+      endforeach()
+      string(JSON exit_code ERROR_VARIABLE absent GET "${overrides}" exitCode)
+      if(NOT absent AND DEFINED result_variable)
+        set(${result_variable} "${exit_code}" PARENT_SCOPE)
+      endif()
+    endif()
   elseif(ARGV2 STREQUAL "--githash" AND NOT ARGV1 STREQUAL "${LEAN_PREFIX}/bin/lean${EXE}")
     set(value "${fixture_destination_revision}")
   else()
@@ -113,9 +141,11 @@ include("${SCRIPT}")
         fixture = self.root / "fixture.json"
         fixture.write_text(json.dumps(dict(version=self.version, lake=self.lake,
                                           revision=self.revision, compiled=self.compiled,
-                                          destination_revision=self.destination_revision)), encoding="utf-8")
+                                          destination_revision=self.destination_revision,
+                                          entrypoints=self.entrypoints)), encoding="utf-8")
         args = ["cmake", f"-DLEAN_PREFIX={self.sdk}", f"-DFIXTURE={fixture}",
                 f"-DNATIVE_CLANG_RESOURCE_DIR={self.resource}",
+                f"-DENTRYPOINT_CAPTURE={self.root / 'entrypoints.txt'}",
                 f"-DSCRIPT={self.source / 'scripts' / name}"]
         if destination is not None:
             args.append(f"-DPREFIX={destination}")
@@ -135,6 +165,32 @@ include("${SCRIPT}")
     def build_record(self):
         result = self.run_script("build-toolchain.cmake")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_every_entrypoint_is_inspected_before_publication(self):
+        self.build_record()
+        calls = (self.root / "entrypoints.txt").read_text().splitlines()
+        self.assertEqual(calls, ["beam-cli toolchain-build-info", "beam-daemon build-info",
+                                 "lean-beam-mcp toolchain-build-info"])
+
+    def test_each_entrypoint_identity_mismatch_prevents_publication(self):
+        record = self.source / ".lake/toolchain-build.json"
+        for name in ["beam-cli", "beam-daemon", "lean-beam-mcp"]:
+            for field in ["compiledLeanRevision", "loadedLeanRevision", "buildId", "sourceRevision"]:
+                for value in ["another generation", None]:
+                    with self.subTest(entrypoint=name, field=field, value=value):
+                        record.unlink(missing_ok=True)
+                        self.entrypoints = {name: {field: value}}
+                        result = self.run_script("build-toolchain.cmake")
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn(name, result.stderr)
+                        self.assertFalse(record.exists(), "mismatched entrypoint was published")
+
+    def test_failed_entrypoint_probe_prevents_publication(self):
+        self.entrypoints = {"lean-beam-mcp": {"exitCode": 7}}
+        result = self.run_script("build-toolchain.cmake")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("lean-beam-mcp", result.stderr)
+        self.assertFalse((self.source / ".lake/toolchain-build.json").exists())
 
     def test_explicit_windows_sdk_directories_reach_the_native_lake_build(self):
         directories = [self.root / "native headers λ", self.root / "extra;headers"]
@@ -180,11 +236,12 @@ else:
     print((root / "build-info.json").read_text(encoding="utf-8"))
 ''', encoding="utf-8")
         for executable in [self.sdk / "bin/lean.exe", self.sdk / "bin/lake.exe",
-                           self.root / "git", self.build / "bin/beam-cli.exe"]:
+                           self.root / "git", *[self.build / f"bin/{name}.exe" for name in
+                               ["beam-cli", "beam-daemon", "lean-beam-mcp"]]]:
             executable.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} '
                                   f'{shlex.quote(str(probe))} "$0" "$@"\n', encoding="utf-8")
             executable.chmod(0o755)
-        for artifact in ["bin/beam-daemon.exe", "bin/lean-beam-mcp.exe", "lib/beam_Beam_LSP.dll"]:
+        for artifact in ["lib/beam_Beam_LSP.dll"]:
             (self.build / artifact).write_bytes(b"fixture Windows artifact\n")
         driver = self.root / "real-process.cmake"
         driver.write_text('''set(CMAKE_HOST_WIN32 TRUE)

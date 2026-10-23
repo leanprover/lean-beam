@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Install.Construction
+import Beam.Installation.Lookup
 
 open Beam.Install Beam.Installation
 
@@ -71,6 +72,64 @@ private def checkCanonicalVersions : IO Unit := do
   require (expectedCanonicalLeanVersionPrefix? "leanprover/lean4:v4.33.0-rc2" ==
     some "Lean (version 4.33.0-rc2,") "canonical Lean version prefix should use the exact RC"
 
+private def checkInventoryPaths : IO Unit := do
+  for root in [System.FilePath.mk "inventory root", System.FilePath.mk "root with\\native\ntext"] do
+    require ((Construction.inventoryPath root (root / "nested" / "proof λ.olean")).toOption ==
+      some "nested/proof λ.olean") "inventory conversion changed a valid native path"
+    for path in [root, root / ".." / "escape", root / "." / "file",
+        System.FilePath.mk s!"{root}-neighbor" / "file", root / "CON.txt", root / "extra;file",
+        root / "trailing.", root / "trailing ", root / "line\nbreak"] do
+      require (!(Construction.inventoryPath root path).isOk)
+        s!"inventory conversion admitted an invalid portable path: {path}"
+    unless System.Platform.isWindows do
+      require (!(Construction.inventoryPath root (root / "literal\\backslash")).isOk)
+        "inventory conversion changed a POSIX filename into a directory separator"
+
+private def checkBundledValidation : IO Unit := do
+  let fixture ← IO.ofExcept <| Lean.Json.parse (← IO.FS.readFile "tests/fixtures/installation-digests.json")
+  let fixture ← IO.ofExcept <| fixture.getObjVal? "native"
+  let record ← IO.ofExcept <| fixture.getObjValAs? Beam.Installation.Bundled.Provenance "record"
+  let compiled : Beam.BuildInfo.Identity := {
+    compilerRevision := record.leanGithash, sourceRevision := record.sourceCommit, buildId := record.buildId
+  }
+  let validate := Beam.Installation.Bundled.validateProvenance "fixture/provenance.json" compiled
+    compiled.compilerRevision
+  require (validate record).isOk "valid bundled identity was rejected"
+  for changed in #[{ record with schemaVersion := 0 }, { record with buildId := "different" },
+      { record with sourceCommit := "different" },
+      { record with components := { record.components with
+          frontends := { record.components.frontends with compilerRevision := "different" } } },
+      { record with artifacts := #[] }] do
+    require (!(validate changed).isOk) "invalid bundled identity or inventory was admitted"
+  require (!(Beam.Installation.Bundled.validateProvenance "fixture/provenance.json" compiled
+    "another loaded compiler" record).isOk) "loaded compiler mismatch was admitted"
+
+private def provenanceIOResult (error : IO.Error) : Lean.Json := Id.run do
+  let missing := match error with | .noFileOrDirectory .. => true | _ => false
+  let userError := match error with | .userError _ => true | _ => false
+  return Lean.Json.mkObj [("kind", Lean.toJson "io"), ("missing", Lean.toJson missing),
+    ("userError", Lean.toJson userError)]
+
+private def reportProvenanceRead (root : System.FilePath) : IO Unit := do
+  let layout : Beam.Installation.Bundled.Layout := ⟨root⟩
+  let result ← layout.readProvenance
+  let report := match result with
+    | .ok _ => Lean.Json.mkObj [("kind", Lean.toJson "ok")]
+    | .error (.invalidProvenance _ detail) =>
+        Lean.Json.mkObj [("kind", Lean.toJson "invalid"), ("detail", Lean.toJson detail)]
+    | .error (.io error) => provenanceIOResult error
+  IO.println report.compress
+
+private def reportProvenanceObservation (root : System.FilePath) : IO Unit := do
+  let executable := root / "bin" / (if System.Platform.isWindows then "beam-cli.exe" else "beam-cli")
+  let installation ← Beam.Installation.openExecutable executable .cli true
+  let report := match ← installation.observe with
+    | .ok _ => Lean.Json.mkObj [("kind", Lean.toJson "ok")]
+    | .error (.io error) => provenanceIOResult error
+    | .error error => Lean.Json.mkObj [("kind", Lean.toJson "invalid"),
+        ("detail", Lean.toJson error.message)]
+  IO.println report.compress
+
 /-- Discarding a build directory removes toolchain links without deleting what they point to.
 The harness creates `discarded-build/lake-home/.lake/build/lib/lean/Init`, a POSIX link to
 `toolchain/lib/lean/Init`. -/
@@ -107,6 +166,12 @@ private def checkExistingConstructionRefused (directory : System.FilePath) : IO 
     require (!(← (root / "manifest.json").pathExists)) s!"construction published over an existing {kind}"
 
 def main (args : List String) : IO Unit := do
+  if let ["observe-provenance", root] := args then
+    reportProvenanceObservation root
+    return
+  if let ["read-provenance", root] := args then
+    reportProvenanceRead root
+    return
   if let ["stage-output", source, destination] := args then
     Construction.stageOutput source destination
     return
@@ -139,6 +204,8 @@ def main (args : List String) : IO Unit := do
   checkStageOutput directory
   checkExistingConstructionRefused directory
   checkCanonicalVersions
+  checkInventoryPaths
+  checkBundledValidation
   checkBuildDirectoryDiscard directory
   -- Library fixture data, not an alternate composition mode in a shipped executable.
   let mut targets : Array Beam.Installation.Target := #[]

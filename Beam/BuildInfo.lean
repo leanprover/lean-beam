@@ -33,4 +33,12 @@ def compiled : Identity := {
   buildId := beamCompiledBuildId
 }
 
+/-- Executable-local identity for construction before installation metadata is published. -/
+def report : Lean.Json := Lean.Json.mkObj [
+  ("compiledLeanRevision", Lean.toJson compiled.compilerRevision),
+  ("loadedLeanRevision", Lean.toJson Lean.githash),
+  ("sourceRevision", Lean.toJson compiled.sourceRevision),
+  ("buildId", Lean.toJson compiled.buildId)
+]
+
 end Beam.BuildInfo

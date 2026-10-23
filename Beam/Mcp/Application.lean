@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Beam.Mcp.Options
 import Beam.Mcp.StdioServer
 import Beam.Installation.Lookup
+import Beam.BuildInfo
 
 namespace Beam.Mcp.Application
 
@@ -39,6 +40,11 @@ def serverOptions (installation : Beam.Installation) : Server.Options := Id.run 
   }
 
 def main (args : List String) : IO Unit := do
+  if args == ["toolchain-build-info"] then
+    unless Beam.Installation.Bundled.enabled do
+      throw <| IO.userError "this executable was not built with -KbeamToolchain=true"
+    IO.println Beam.BuildInfo.report.compress
+    return
   let opts ← IO.ofExcept <| (Beam.Mcp.parseOptions {} args).mapError IO.userError
   let installation ← Beam.Installation.current .mcp
   if opts.showVersion then

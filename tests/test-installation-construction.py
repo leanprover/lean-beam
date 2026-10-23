@@ -17,6 +17,82 @@ suffix = ".exe" if os.name == "nt" else ""
 fixture = ROOT / ".lake/build/bin" / ("beam-installation-construction-test" + suffix)
 
 
+def check_provenance_observation():
+    with tempfile.TemporaryDirectory(prefix="beam-provenance-kind-") as temporary:
+        directory = Path(temporary)
+
+        def path(name):
+            target = directory / name / "lib/lean-beam/provenance.json"
+            target.parent.mkdir(parents=True)
+            executable = directory / name / "bin" / ("beam-cli" + suffix)
+            executable.parent.mkdir()
+            executable.write_text("fixture compiler must not execute\n", encoding="utf-8")
+            return target
+
+        def observe(target, *, installation=False):
+            command = "observe-provenance" if installation else "read-provenance"
+            result = subprocess.run([fixture, command, target.parent.parent.parent],
+                                    capture_output=True, text=True, encoding="utf-8", timeout=15)
+            assert result.returncode == 0, result.stderr
+            return json.loads(result.stdout)
+
+        regular = path("regular")
+        regular.write_text("{invalid json", encoding="utf-8")
+        record = observe(regular)
+        kind_error = "expected a regular non-symlink file"
+        assert record["kind"] == "invalid" and record["detail"] != kind_error, record
+        linked = path("linked")
+        linked.symlink_to(regular)
+        dangling = path("dangling")
+        dangling.symlink_to(directory / "absent target")
+        wrong_kind = path("directory")
+        wrong_kind.mkdir()
+        for target in [linked, dangling, wrong_kind]:
+            assert observe(target) == {"kind": "invalid", "detail": kind_error}, target
+        missing = path("missing")
+        for installation in [False, True]:
+            assert observe(missing, installation=installation) == {
+                "kind": "io", "missing": True, "userError": False}
+        unreadable = path("unreadable")
+        unreadable.write_text("{invalid json", encoding="utf-8")
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                          wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            kernel.CreateFileW.restype = wintypes.HANDLE
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel.CreateFileW(str(unreadable), 0x80000000, 0, None, 3, 0x80, None)
+            assert handle != wintypes.HANDLE(-1).value, ctypes.get_last_error()
+        else:
+            assert os.geteuid() != 0, "provenance permissions must be checked without root privileges"
+            unreadable.parent.chmod(0)
+        try:
+            for installation in [False, True]:
+                assert observe(unreadable, installation=installation) == {
+                    "kind": "io", "missing": False, "userError": False}
+        finally:
+            if os.name == "nt":
+                kernel.CloseHandle(handle)
+            else:
+                unreadable.parent.chmod(0o700)
+        if os.name != "nt":
+            no_read = path("read-denied")
+            no_read.write_text("{invalid json", encoding="utf-8")
+            no_read.chmod(0)
+            try:
+                for installation in [False, True]:
+                    assert observe(no_read, installation=installation) == {
+                        "kind": "io", "missing": False, "userError": False}
+            finally:
+                no_read.chmod(0o600)
+            fifo = path("fifo")
+            os.mkfifo(fifo, 0o600)
+            assert observe(fifo) == {"kind": "invalid", "detail": kind_error}
+    print("bundled provenance rejects links and wrong kinds without swallowing I/O errors", flush=True)
+
+
 def check_hardlinked_output():
     with tempfile.TemporaryDirectory(prefix="beam-staging-hardlink-") as temporary:
         directory = Path(temporary)
@@ -196,6 +272,7 @@ ensure_runtime_artifacts
     print("installer frontend uses a clean selected-SDK environment", flush=True)
 
 
+check_provenance_observation()
 check_hardlinked_output()
 sdk = selected_sdk(os.environ)
 check_selected_sdk(sdk)

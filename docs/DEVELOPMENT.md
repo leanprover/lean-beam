@@ -95,6 +95,13 @@ Published command and plugin locations follow the two
 [installation paths](SETUP.md) and their
 [runtime layouts](TOOLCHAIN_BUNDLING.md#installation-records-and-runtime-libraries).
 
+Before writing native provenance, `scripts/build-toolchain.cmake` queries each executable's compiled
+and loaded Lean revisions, Beam source revision, and build ID. The bundled CLI and MCP executable
+accept the exact construction command `toolchain-build-info`; the daemon reports the same fields
+through `build-info`. These probes read their own compiled identity before installation metadata
+exists. The MCP construction command is available only in bundled builds and accepts no extra
+arguments. Ordinary MCP startup and `--version` retain installation admission.
+
 Report executable file sizes separately from shared-library and complete installation sizes.
 Bundled Lean distributions reuse the containing SDK's libraries. Checkout installations carry
 libraries for their frontends and each selected target, which may use different Lean compilers;

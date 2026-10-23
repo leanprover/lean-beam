@@ -14,10 +14,7 @@ def main (args : List String) : IO Unit := do
     let installation ← Beam.Installation.current .daemon
     pure installation.projectRuntime
   match args with
-  | ["build-info"] => IO.println (Lean.Json.mkObj [
-      ("compiledLeanRevision", Lean.toJson Beam.BuildInfo.compiled.compilerRevision),
-      ("loadedLeanRevision", Lean.toJson Lean.githash)
-    ]).compress
+  | ["build-info"] => IO.println Beam.BuildInfo.report.compress
   | "lake-helper" :: helperArgs => Beam.Broker.LakeHelperMain.main bind helperArgs
   | _ =>
       let resolve ← bind

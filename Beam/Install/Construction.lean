@@ -35,11 +35,18 @@ private partial def files (root directory : System.FilePath) : IO (Array System.
     | _ => throw <| IO.userError s!"installation contains a symlink or special file: {entry.path}"
   pure result
 
+/-- Validate native root-relative spelling before serializing it into the inventory. -/
+def inventoryPath (root path : System.FilePath) : Except String String := do
+  let some relative := Beam.pathRelativeToRoot? root path
+    | throw s!"construction file is outside its inventory root: {path}"
+  let portable := String.intercalate "/" (System.FilePath.mk relative).components
+  unless Beam.Installation.relativePath portable do
+    throw s!"construction file has a nonportable inventory path: {path}"
+  pure portable
+
 private def inventory (hashes : Checksum.Context) (root : System.FilePath) : IO (Array Beam.Installation.Artifact) := do
   (← files root root).mapM fun path => do
-    -- The record uses '/' on every host; filesystem paths retain their native spelling.
-    let relative := String.intercalate "/"
-      (System.FilePath.mk (Beam.pathRelativeToRootOrSelf root path)).components
+    let relative ← IO.ofExcept <| inventoryPath root path
     pure { source := relative, destination := relative, hash := ← hashes.fileHash path }
 
 private def checkTargets (root : System.FilePath) (components : Beam.Installation.Components) : IO Unit := do
