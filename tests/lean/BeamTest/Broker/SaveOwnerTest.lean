@@ -291,6 +291,80 @@ private def completionReply (description : Beam.Runtime.Description) (root gate 
   finally
     server.close
 
+/-- A real accepted trace reply followed by failed directory cleanup must not commit a save. -/
+private def traceCleanupFailure (description : Beam.Runtime.Description)
+    (root gate : System.FilePath) (cancelled : Bool) : IO Unit := do
+  let server ← ServerRuntime.create (BrokerConfig.ofRuntime root description) workspaceId
+  let obstacle? ← IO.mkRef (none : Option System.FilePath)
+  try
+    discard <| result (← call server (.syncFile { path := "Main.lean" }))
+    let saved : SaveOleanResult ← IO.ofExcept <| fromJson?
+      (← result (← call server (.saveOlean { path := "Main.lean" })))
+    let prior ← snapshotCheckpoint saved
+    let original ← session server
+    let uri := sessionUri (root / "Main.lean")
+    let before ← doc server uri
+    IO.FS.writeFile (gate / "enabled") ""
+    let handleRef ← IO.mkRef (none : Option RequestHandle)
+    let pending ← IO.asTask (prio := .dedicated) <|
+      server.dispatchRequestWithHandle {
+        payload := .close { path := "Main.lean", saveArtifacts? := some true }
+        workspaceId? := some workspaceId
+      } (fun active => handleRef.set (some active) *> pure true)
+    try
+      waitForGate gate
+      let entered ← IO.ofExcept <| Json.parse (← IO.FS.readFile (gate / "entered"))
+      let job : System.FilePath ← IO.ofExcept <| entered.getObjValAs? System.FilePath "job"
+      let temporaryRoot ← IO.FS.realPath (gate / "helper-temporary")
+      require "cleanup fault must stay in the fixture's temporary root"
+        (job.fileName == some "job" &&
+         (← IO.FS.realPath (job.parent.bind (·.parent) |>.getD ".")) == temporaryRoot)
+      let obstacle := job / "cleanup-denied"
+      obstacle?.set (some obstacle)
+      IO.FS.createDir obstacle
+      IO.FS.writeFile (obstacle / "owned") "fixture-owned cleanup obstacle\n"
+      IO.setAccessRights obstacle {}
+      if cancelled then
+        let some active ← handleRef.get | throw <| IO.userError "missing cancellation handle"
+        require "public cancellation was not accepted" (← active.cancel)
+        require "cancellation completed before the trace producer settled"
+          ((← Beam.waitTaskWithTimeout pending 100).isNone)
+      let conflict ← call server (.syncFile { path := "Main.lean" })
+      let some error := conflict.error? | throw <| IO.userError "trace helper lost close reservation"
+      requireJsonString "trace helper retains close reservation" "reason" "documentClosing"
+        (error.data?.getD Json.null)
+      IO.FS.writeFile (gate / "release") ""
+      let response ← IO.ofExcept pending.get
+      IO.FS.writeFile (gate / "response.json") (toJson response).pretty
+      let some error := response.error? | throw <| IO.userError "cleanup failure committed a save"
+      require "cleanup failure survives cancellation" (error.code == "internalError")
+      let info := error.data?.getD Json.null
+      requireJsonString "cleanup classification" "reason" "helperCleanupFailed" info
+      let cleanup ← requireObjVal "helper failure" "cleanup" info
+      discard <| requireObjVal "directory failure" "temporaryDirectory" cleanup
+      let outcome ← requireObjVal "helper failure" "operationOutcome" info
+      requireJsonString "private trace completed" "status" "succeeded" outcome
+      let receipt ← requireObjVal "helper failure" "operationResponse" info
+      requireJsonBool "accepted helper acknowledgement retained" "ok" true receipt
+      requireCheckpointUnchanged prior
+      requirePrivateRetention saved true
+      require "cleanup failure preserves the backend" ((← session server).epoch == original.epoch)
+      let after ← doc server uri
+      require "cleanup failure preserves the document and checkpoint association"
+        (DocumentState.basis after == DocumentState.basis before &&
+         after.checkpointedVersion? == before.checkpointedVersion?)
+      requireNoAdmissions server
+    finally
+      IO.FS.writeFile (gate / "release") ""
+      discard <| IO.ofExcept pending.get
+  finally
+    -- Restore only the obstacle inside the Python-owned temporary root, after helper teardown.
+    try
+      if let some obstacle ← obstacle?.get then
+        IO.setAccessRights obstacle { user := { read := true, write := true, execution := true } }
+    finally
+      server.close
+
 private def cancelledPreparation (description : Beam.Runtime.Description)
     (root gate : System.FilePath) (closeAfter : Bool) : IO Unit := do
   let server ← ServerRuntime.create (BrokerConfig.ofRuntime root description) workspaceId
@@ -464,6 +538,10 @@ def run (description : Beam.Runtime.Description) (root : System.FilePath)
   let some gate ← IO.getEnv "BEAM_TEST_SAVE_GATE_DIR"
     | throw <| IO.userError "missing save gate directory"
   let gate := System.FilePath.mk gate
+  if ["trace-cleanup-failure", "cancelled-trace-cleanup-failure"].contains case then
+    traceCleanupFailure description root gate (case == "cancelled-trace-cleanup-failure")
+    IO.println s!"save owner ({case}): passed"
+    return
   if ["cancel-prepared-close", "cancel-prepared-save", "module-cancel-prepared-close",
       "module-cancel-prepared-save"].contains case then
     cancelledPreparation description root gate (case.endsWith "close")

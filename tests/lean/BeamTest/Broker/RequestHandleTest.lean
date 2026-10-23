@@ -39,7 +39,7 @@ private def checkCancelledHelperCleanup : IO Unit := do
         jobCleanup := if cleanupFails then .error (IO.userError "trace cleanup") else .ok ()
         directoryCleanup := .ok ()
       }
-      let result : Except Beam.Broker.BrokerFailure Json :=
+      let result : Except Beam.Broker.LakeHelperJob.Failure Json :=
         Beam.Broker.LakeHelperJob.Internal.projectCompletion .writeSaveTrace completion
       match result with
       | .ok _ =>
@@ -47,14 +47,23 @@ private def checkCancelledHelperCleanup : IO Unit := do
       | .error failure =>
           let presented ← Beam.Broker.Internal.presentLakeHelperFailure (some cancelled) failure
           if cleanupFails then
-            unless (toJson presented.toResponse).compress == (toJson failure.toResponse).compress do
+            unless (toJson presented.toResponse).compress == (toJson failure.toBrokerFailure.toResponse).compress do
               throw <| IO.userError "cancellation replaced typed helper cleanup failure"
           else
             checkCancelledResponse presented.toResponse
-  -- A matching reason under a different failure code is not the helper cleanup category.
-  let other : Beam.Broker.BrokerFailure := {
-    original with data? := some <| Json.mkObj [("reason", toJson "helperCleanupFailed")] }
-  checkCancelledResponse (← Beam.Broker.Internal.presentLakeHelperFailure (some cancelled) other).toResponse
+  -- Operation data cannot supply the internal cleanup category.
+  let ordinary : Beam.Broker.BrokerFailure := {
+    original with
+    code := .internalError
+    data? := some <| Json.mkObj [("reason", toJson "helperCleanupFailed")] }
+  let completion : Beam.Broker.LakeHelperJob.Completion := {
+    operation := .ok (.error ordinary), jobCleanup := .ok (), directoryCleanup := .ok () }
+  let projected : Except Beam.Broker.LakeHelperJob.Failure Json :=
+    Beam.Broker.LakeHelperJob.Internal.projectCompletion .writeSaveTrace completion
+  match projected with
+  | .ok _ => throw <| IO.userError "ordinary operation failure became success"
+  | .error failure =>
+      checkCancelledResponse (← Beam.Broker.Internal.presentLakeHelperFailure (some cancelled) failure).toResponse
 
 private def checkStaleHandleIsolation
     (server : Beam.Broker.ServerRuntime)

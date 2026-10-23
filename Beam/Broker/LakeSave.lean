@@ -268,7 +268,7 @@ private def writeLeanSaveTraceWithMetadata
 
 /-- Broker trace publication always crosses the helper boundary. -/
 def writeLeanSaveTrace (spec : LeanSaveSpec) (control : LakeHelperControl := {}) :
-    IO (Except BrokerFailure Unit) := do
+    IO (Except LakeHelperJob.Failure Unit) := do
   let request : LakeHelperWriteTraceRequest := spec.toLakeHelperSaveSpec.toLakeHelperWriteTraceRequest
   match ← runLakeHelperWriteSaveTrace spec.helper request control with
   | .ok _ => pure (.ok ())

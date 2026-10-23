@@ -26,8 +26,9 @@ WRITE_CASES = [prefix + case for prefix in ("", "ordinary-")
                for case in ("uncertain-save", "uncertain-save-flush")]
 WORKER_CANCEL_CASES = [prefix + "cancel-prepared-" + operation
                        for prefix in ("", "module-") for operation in ("save", "close")]
+CLEANUP_CASES = ["trace-cleanup-failure", "cancelled-trace-cleanup-failure"]
 OWNER_CASES = ["workspace-replace", "backend-restart", "distinct-runtime",
-               "delayed-admission", "uncertain-close", "rejected-close"] + REPLY_CASES + WRITE_CASES + WORKER_CANCEL_CASES
+               "delayed-admission", "uncertain-close", "rejected-close"] + REPLY_CASES + WRITE_CASES + WORKER_CANCEL_CASES + CLEANUP_CASES
 CLOSING_CASES = ["exclusive", "preflight-exclusive", "cancel-before-dispatch", "cancel-close",
                  "cancel-failed-close", "failed-close"]
 CASES = ["exact", "save-update", "save-reopen", "save-reopen-identical", "drop", "before-dispatch"]
@@ -250,6 +251,11 @@ def check_case(base, case, lean, plugin, daemon):
         closing_case(base, case, lean, plugin, daemon)
         return
     if case in OWNER_CASES:
+        # A real chmod-based removal failure needs an unprivileged POSIX account.
+        # Portable projection/cancellation tests cover the same typed receipt on other hosts.
+        if case in CLEANUP_CASES and (os.name != "posix" or os.geteuid() == 0):
+            print(f"{case}: skipped (requires unprivileged POSIX permissions)")
+            return
         project = base / "project"
         project.mkdir()
         worker_cancel = case in WORKER_CANCEL_CASES
@@ -259,14 +265,20 @@ def check_case(base, case, lean, plugin, daemon):
         (project / "lean-toolchain").write_text((REPO / "lean-toolchain").read_text())
         (project / "Main.lean").write_text(("module\npublic " if case.startswith("module-") else "") + SOURCE)
         selected_plugin = plugin.with_name(plugin.name.replace("Beam_LSP", "BeamPrivateSaveGate")) if worker_cancel else plugin
+        environment = dict(os.environ, BEAM_TEST_SAVE_GATE_DIR=str(base),
+                           BEAM_TEST_SAVE_GATE_OP=(
+                               "prepare-save" if case in WRITE_CASES or case in REPLY_CASES
+                               else "write-save-trace"),
+                           BEAM_PRIVATE_EFFECT_GATE=str(base) if worker_cancel else "",
+                           BEAM_PRIVATE_EFFECT_PHASE="after-serialization" if worker_cancel else "")
+        if case in CLEANUP_CASES:
+            helper_temporary = base / "helper-temporary"
+            helper_temporary.mkdir()
+            environment.update(TMPDIR=str(helper_temporary), TMP=str(helper_temporary),
+                               TEMP=str(helper_temporary))
         subprocess.run([str(daemon), "--lean-cmd", str(lean), "--lean-plugin", str(selected_plugin),
                         "save-owner-test", case, str(project)], cwd=REPO, check=True, timeout=60,
-                       env=dict(os.environ, BEAM_TEST_SAVE_GATE_DIR=str(base),
-                                BEAM_TEST_SAVE_GATE_OP=(
-                                    "prepare-save" if case in WRITE_CASES or case in REPLY_CASES
-                                    else "write-save-trace"),
-                                BEAM_PRIVATE_EFFECT_GATE=str(base) if worker_cancel else "",
-                                BEAM_PRIVATE_EFFECT_PHASE="after-serialization" if worker_cancel else ""))
+                       env=environment)
         return
     before_dispatch = case == "before-dispatch"
     with broker(base, lean, plugin, daemon, "prepare-save" if before_dispatch else "write-save-trace") as (port, source):

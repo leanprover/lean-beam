@@ -670,7 +670,8 @@ private def checkTypedLakeSaveTraceFailure : IO Unit := do
   let expected ← runLakeHelperWriteSaveTrace missingHelper request control
   let actual ← writeLeanSaveTrace spec control
   match expected, actual with
-  | .error expected, .error actual =>
+  | .error (.operation expected), .error (.operation actual)
+  | .error (.cleanup expected), .error (.cleanup actual) =>
       require "cancelled helper has the expected failure code" (expected.code == .requestCancelled)
       require "write save trace should preserve the helper failure code"
         (actual.code == expected.code)
@@ -678,6 +679,8 @@ private def checkTypedLakeSaveTraceFailure : IO Unit := do
         (actual.message == expected.message)
       require "write save trace should preserve the helper failure data"
         (actual.data? == expected.data?)
+  | .error _, .error _ =>
+      throw <| IO.userError "write save trace changed the helper failure category"
   | .ok _, _ =>
       throw <| IO.userError "cancelled target Lake helper unexpectedly succeeded"
   | _, .ok _ =>

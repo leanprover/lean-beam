@@ -165,17 +165,21 @@ private partial def awaitHelperResponse
 
 namespace LakeHelperJob
 
-/-- A typed operation receipt survives both concrete resource finalizers. -/
+/-- A typed operation receipt survives every owned cleanup phase. -/
 structure Completion where
   operation : Except IO.Error (Except BrokerFailure Response)
   jobCleanup : Except IO.Error Unit
   directoryCleanup : Except IO.Error Unit
   outputCleanup : Except IO.Error Unit := .ok ()
 
-/-- Cleanup failure must remain visible even when the caller has since cancelled its request. -/
-def isCleanupFailure (failure : BrokerFailure) : Bool :=
-  failure.code == .internalError && failure.data?.any fun data =>
-    (data.getObjValAs? String "reason").toOption == some "helperCleanupFailed"
+/-- Internal failure classification survives until caller cancellation is presented. -/
+inductive Failure where
+  | operation (cause : BrokerFailure)
+  | cleanup (cause : BrokerFailure)
+
+def Failure.toBrokerFailure : Failure → BrokerFailure
+  | .operation cause => cause
+  | .cleanup cause => cause
 
 private def decodeResponse [FromJson β]
     (operation : LakeHelperOperation) (response : Response) : Except BrokerFailure β := do
@@ -214,7 +218,7 @@ def complete (action : IO (Beam.ProcessJob.Completion (Except BrokerFailure Resp
 /-- Render only after every owned cleanup attempt. A cleanup error is an overall failure even
 when the operation succeeded; its receipt does not imply rollback or that retry is safe. -/
 def projectCompletion [FromJson β] (operation : LakeHelperOperation)
-    (completion : Completion) : Except BrokerFailure β := Id.run do
+    (completion : Completion) : Except Failure β := Id.run do
   let result : Except BrokerFailure β := match completion.operation with
     | .error error => .error {
         code := .internalError
@@ -232,7 +236,7 @@ def projectCompletion [FromJson β] (operation : LakeHelperOperation)
     (match completion.outputCleanup with
     | .ok () => []
     | .error error => [("outputCapture", toJson error.toString)])
-  if cleanupFields.isEmpty then return result
+  if cleanupFields.isEmpty then return result.mapError Failure.operation
   let operationOutcome := match result with
     | .ok _ => Json.mkObj [("status", toJson "succeeded")]
     | .error failure => Json.mkObj [
@@ -240,7 +244,7 @@ def projectCompletion [FromJson β] (operation : LakeHelperOperation)
   let responseFields := match completion.operation with
     | .ok (.ok response) => [("operationResponse", toJson response)]
     | _ => []
-  return .error {
+  return .error <| .cleanup {
     code := .internalError
     message := s!"target Lake helper '{operation.key}' cleanup failed; its operation outcome is recorded separately"
     data? := some <| Json.mkObj <|
@@ -259,7 +263,7 @@ def runRequest [ToJson α] [FromJson β]
     (operation : LakeHelperOperation)
     (request : α)
     (waitPolicy : LakeHelperWaitPolicy)
-    (control : LakeHelperControl := {}) : IO (Except BrokerFailure β) := do
+    (control : LakeHelperControl := {}) : IO (Except Failure β) := do
   let publisher ← match control.output? with
     | some publisher => pure publisher
     | none => do
@@ -279,7 +283,7 @@ def runRequest [ToJson α] [FromJson β]
               expiresAtMs := (← IO.monoMsNow) + milliseconds
             }
         let temporary ← IO.FS.createTempDir
-        let completed ← Internal.complete (do
+        Internal.complete (do
           let directory := temporary / "job"
           Beam.ensurePrivateDir "target Lake helper job directory" directory
           IO.FS.writeFile (LakeHelperJob.requestPath directory) (toJson request).compress
@@ -289,17 +293,15 @@ def runRequest [ToJson α] [FromJson β]
             args := #["lake-helper", operation.key, directory.toString]
             setsid := true
           }
-          let completed ← Beam.ProcessJob.withChild child fun scope => do
+          Beam.ProcessJob.withChild child fun scope => do
             -- Establish both drains before allowing configuration code to write either pipe.
             capture.set (some (← Beam.WorkspaceOutput.Capture.start child.stdout child.stderr publisher))
             if let some failure ← helperInterruption? control deadline? then return .error failure
             -- The helper cannot evaluate project code until its Windows job is assigned.
             child.stdin.putStr "go\n"
             child.stdin.flush
-            awaitHelperResponse scope directory control deadline?
-          pure completed)
+            awaitHelperResponse scope directory control deadline?)
           (IO.FS.removeDirAll temporary)
-        pure completed
     catch error => pure {
       operation := .error error, jobCleanup := .ok (), directoryCleanup := .ok () }
   -- Pipe capture settles only after the process job; its failure cannot replace that receipt.
@@ -316,28 +318,30 @@ private def runLakeHelperRequest [ToJson α] [FromJson β]
     (helper : System.FilePath)
     (operation : LakeHelperOperation)
     (request : α)
-    (control : LakeHelperControl := {}) : IO (Except BrokerFailure β) :=
+    (control : LakeHelperControl := {}) : IO (Except LakeHelperJob.Failure β) :=
   LakeHelperJob.runRequest helper operation request operation.waitPolicy control
 
 /-- Ask the target-built helper for the Lean server environment. -/
 def runLakeHelperServerEnv
     (helper : System.FilePath)
     (request : LakeHelperEnvRequest)
-    (control : LakeHelperControl := {}) : IO (Except BrokerFailure LeanServerLakeEnv) :=
-  runLakeHelperRequest helper .serverEnv request control
+    (control : LakeHelperControl := {}) : IO (Except BrokerFailure LeanServerLakeEnv) := do
+  return (← runLakeHelperRequest helper .serverEnv request control).mapError
+    LakeHelperJob.Failure.toBrokerFailure
 
 /-- Ask the target-built helper for an exact zero-build save specification. -/
 def runLakeHelperPrepareSave
     (helper : System.FilePath)
     (request : LakeHelperSaveRequest)
-    (control : LakeHelperControl := {}) : IO (Except BrokerFailure LakeHelperSaveSpec) :=
-  runLakeHelperRequest helper .prepareSave request control
+    (control : LakeHelperControl := {}) : IO (Except BrokerFailure LakeHelperSaveSpec) := do
+  return (← runLakeHelperRequest helper .prepareSave request control).mapError
+    LakeHelperJob.Failure.toBrokerFailure
 
 /-- Ask the target-built helper to publish one save trace. -/
 def runLakeHelperWriteSaveTrace
     (helper : System.FilePath)
     (request : LakeHelperWriteTraceRequest)
-    (control : LakeHelperControl := {}) : IO (Except BrokerFailure LakeHelperAck) :=
+    (control : LakeHelperControl := {}) : IO (Except LakeHelperJob.Failure LakeHelperAck) :=
   runLakeHelperRequest helper .writeSaveTrace request control
 
 end Beam.Broker

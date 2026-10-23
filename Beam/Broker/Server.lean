@@ -126,9 +126,10 @@ namespace Internal
 /-- Deferred trace completion still reports failed cleanup after caller cancellation. Ordinary
 operation failures with clean cleanup retain the existing cancellation presentation. -/
 def presentLakeHelperFailure (cancelRef? : Option (IO.Ref Bool))
-    (failure : BrokerFailure) : IO ResponseFailure :=
-  if LakeHelperJob.isCleanupFailure failure then pure failure.toResponseFailure
-  else RequestCancellation.backendFailure cancelRef? failure.toResponseFailure
+    (failure : LakeHelperJob.Failure) : IO ResponseFailure :=
+  match failure with
+  | .cleanup cause => pure cause.toResponseFailure
+  | .operation cause => RequestCancellation.backendFailure cancelRef? cause.toResponseFailure
 
 end Internal
 

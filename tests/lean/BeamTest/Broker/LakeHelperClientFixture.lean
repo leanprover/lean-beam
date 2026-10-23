@@ -98,7 +98,7 @@ private def runHelper (args : List String) : IO Unit := do
           cancelled.set true
           break
         IO.sleep 10
-  let result : Except BrokerFailure Json ← try
+  let result : Except LakeHelperJob.Failure Json ← try
     LakeHelperJob.runRequest helper operation request waitPolicy {
       cancelRef? := some cancelled, output? := some publisher }
   finally
@@ -116,7 +116,7 @@ private def runHelper (args : List String) : IO Unit := do
   stderr.flush
   let response := match result with
     | .ok value => Response.success value
-    | .error failure => failure.toResponse
+    | .error failure => failure.toBrokerFailure.toResponse
   IO.println (toJson response).compress
 
 /-- Exercise a real post-response temporary-directory cleanup failure without a production hook. -/

@@ -592,13 +592,19 @@ Helper completion retains the typed operation result, process-job cleanup, tempo
 cleanup, and output-capture cleanup separately until the broker response is formed. Any cleanup
 failure makes the overall result `internalError` with reason `helperCleanupFailed`. Its data records
 the failed cleanup phases and the original operation outcome, including its error code, message,
-and data. If a helper response
-arrived, `operationResponse` retains that response as well. A successfully published save trace can
-therefore coexist with failed cleanup: this error does not imply rollback or establish that retrying
-is safe. Caller cancellation does not replace this cleanup failure during deferred trace completion;
+and data. If the client accepted a typed helper response, `operationResponse` retains that response
+as well; arrival of a response file alone does not establish acceptance. Successful private trace
+writing can therefore coexist with failed cleanup. The broker promotes the canonical checkpoint
+later, under its publication checks; a helper receipt does not establish that this promotion occurred,
+imply rollback, or establish that retrying is safe. Caller cancellation does not replace this cleanup
+failure during deferred trace completion;
 ordinary operation failures with clean teardown retain their existing cancellation presentation.
+The operation-versus-cleanup category remains typed through this decision; diagnostic JSON fields
+do not determine cancellation precedence.
 Output capture starts before the owner handshake and finishes after process cleanup. A failure
 while finishing capture or retiring its publisher cannot replace the retained operation receipt.
+This refers to thrown finalization errors. Best-effort drain observations such as a failed source or
+a pipe still open at the drain deadline remain capture results, not helper cleanup failures.
 This separates the operation from cleanup; it does not aggregate every native close,
 termination, and wait error or change their existing precedence.
 
