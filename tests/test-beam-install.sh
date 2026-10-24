@@ -1381,6 +1381,8 @@ if "$installed_lean_beam" --root "$project_root" sync SaveSmoke/A.lean >"$stale_
   remove_tmp_file "$stale_sync_err"
   exit 1
 fi
+# The diagnostic includes literal Markdown backticks.
+# shellcheck disable=SC2016
 if ! assert_cli_error_json "$stale_sync_out" syncBarrierIncomplete \
     'Run `lake build` or fix the upstream module first'; then
   echo "expected installed wrapper stale-import sync failure to expose syncBarrierIncomplete" >&2

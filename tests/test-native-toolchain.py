@@ -394,7 +394,7 @@ def qualify(args, lean_prefix, scratch):
                     assert "select a workspace containing the document" in failure["message"], failure
             stats = json.loads(call("stats").stdout)["result"]
             assert stats["session"] == before["session"], (before, stats)
-            assert stats["metrics"]["sessionStarts"] == before["metrics"]["sessionStarts"], (before, stats)
+            assert stats["metrics"]["session_starts"] == before["metrics"]["session_starts"], (before, stats)
             updated = json.loads(call("update", "Demo.lean").stdout)
             version = updated["result"]["version"]
             # Observe the actual volume rather than assuming that macOS folds path case.
