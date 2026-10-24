@@ -20,19 +20,17 @@ private def readRequest [FromJson α] (directory : System.FilePath) : IO α := d
   IO.ofExcept <| fromJson? json
 
 private def runServerEnv (resolve : System.FilePath → IO Beam.Runtime.Description)
-    (directory : System.FilePath) : IO Response := do
+    (directory : System.FilePath) : IO (Except BrokerFailure LeanServerLakeEnv) := do
   let request : LakeHelperEnvRequest ← readRequest directory
   let runtime ← resolve (System.FilePath.mk request.root)
   let serverEnv ← computeServerEnvironment (System.FilePath.mk request.root) runtime.command
-  pure <| Response.success (toJson serverEnv)
+  pure <| .ok serverEnv
 
 private def runPrepareSave (resolve : System.FilePath → IO Beam.Runtime.Description)
-    (directory : System.FilePath) : IO Response := do
+    (directory : System.FilePath) : IO (Except BrokerFailure LeanSaveSpec) := do
   let request : LakeHelperSaveRequest ← readRequest directory
   let runtime ← resolve (System.FilePath.mk request.root)
-  match ← lakeHelperSaveSpec request runtime.command with
-  | .ok spec => pure <| Response.success (toJson spec)
-  | .error failure => pure failure.toResponse
+  lakeHelperSaveSpec request runtime.command
 
 /-- Arm owner-loss handling before installation binding or arbitrary Lake configuration code. -/
 def main (bind : IO (System.FilePath → IO Beam.Runtime.Description))
@@ -46,14 +44,14 @@ def main (bind : IO (System.FilePath → IO Beam.Runtime.Description))
   let owner ← IO.asTask (prio := Task.Priority.dedicated) do
     try discard <| stdin.readToEnd finally Beam.ProcessJob.parentLost
   let directory := System.FilePath.mk directory
-  let response ← try
+  let response : Except BrokerFailure Json ← try
     Beam.requirePrivateDir "target Lake helper job directory" directory
       (← Beam.observePrivateDir directory)
     let resolve ← bind
     match operation with
-    | .serverEnv => runServerEnv resolve directory
-    | .prepareSave => runPrepareSave resolve directory
-  catch error => pure <| BrokerFailure.toResponse {
+    | .serverEnv => pure <| (← runServerEnv resolve directory).map toJson
+    | .prepareSave => pure <| (← runPrepareSave resolve directory).map toJson
+  catch error => pure <| .error {
     code := .internalError, message := error.toString
   }
   LakeHelperJob.publish directory response

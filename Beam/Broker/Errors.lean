@@ -55,6 +55,18 @@ structure BrokerFailure where
   data? : Option Json := none
   deriving Inhabited
 
+instance : FromJson BrokerFailure where
+  fromJson? json := do
+    Beam.requireOnlyJsonFields "Beam broker failure" #["code", "message", "data"] json
+    let name ← json.getObjValAs? String "code"
+    let some code := BrokerFailureCode.ofName? name
+      | throw s!"unknown broker failure code '{name}'"
+    let message ← match json.getObjVal? "message" with
+      | .ok value => fromJson? value
+      | .error _ => pure ""
+    -- Explicit JSON null is still supplied error data, distinct from an absent field.
+    pure { code, message, data? := (json.getObjVal? "data").toOption }
+
 def BrokerFailure.toResponseFailure (failure : BrokerFailure) : ResponseFailure :=
   {
     error := {
@@ -63,6 +75,9 @@ def BrokerFailure.toResponseFailure (failure : BrokerFailure) : ResponseFailure 
       data? := failure.data?
     }
   }
+
+instance : ToJson BrokerFailure where
+  toJson failure := toJson failure.toResponseFailure.error
 
 def BrokerFailure.toResponse (failure : BrokerFailure) : Response :=
   failure.toResponseFailure.toResponse

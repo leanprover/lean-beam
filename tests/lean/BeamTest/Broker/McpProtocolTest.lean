@@ -657,7 +657,7 @@ private def checkProgressProtocol : IO Unit := do
         .diagnostic
 
   let statusNotification := Beam.Mcp.toolStatusNotification {
-    requestId := toJson (42 : Nat)
+    requestId := ← IO.ofExcept <| Beam.Mcp.RequestId.fromJson? (toJson (42 : Nat))
     tool := "lean_sync"
     state := .preparingDependencies
     message := setupMessage
@@ -670,6 +670,13 @@ private def checkProgressProtocol : IO Unit := do
   requireJsonString "status notification params" "logger" "beam.status" statusParams
   let statusData ← requireObjVal "status notification params" "data" statusParams
   requireJsonInt "status notification data" "requestId" 42 statusData
+  for source in ["\"request-α\"", "42", "42.0", "4.2e1", "-7"] do
+    let wire ← IO.ofExcept <| Json.parse source
+    let id ← IO.ofExcept <| Beam.Mcp.RequestId.fromJson? wire
+    let status : Beam.Mcp.ToolStatus := {
+      requestId := id, tool := "lean_sync", state := .running, message := "running" }
+    let actual ← requireObjVal "typed status id" "requestId" (toJson status)
+    require s!"status preserves original request id {source}" (actual.compress == wire.compress)
   requireJsonString "status notification data" "tool" "lean_sync" statusData
   requireJsonString "status notification data" "state" "preparing_dependencies" statusData
   requireJsonString "status notification data" "message"

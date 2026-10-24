@@ -590,8 +590,10 @@ Helper completion retains the typed operation result, process-job cleanup, tempo
 cleanup, and output-capture cleanup separately until the broker response is formed. Any cleanup
 failure makes the overall result `internalError` with reason `helperCleanupFailed`. Its data records
 the failed cleanup phases and the original operation outcome, including its error code, message,
-and data. If the client accepted a typed helper response, `operationResponse` retains that response
-as well; arrival of a response file alone does not establish acceptance. A completed preparation
+and data. The file boundary decodes directly to a typed result; unknown fields, mixed envelopes,
+and unknown failure codes are rejected there. If the client read a JSON reply, `operationResponse`
+retains that raw diagnostic evidence, including a rejected reply. It does not establish acceptance
+or override the separately recorded typed outcome. A completed preparation
 reply can therefore coexist with failed cleanup. The reply does not establish canonical checkpoint
 publication, rollback, or safe retry.
 Output capture starts before the owner handshake and finishes after process cleanup. A failure

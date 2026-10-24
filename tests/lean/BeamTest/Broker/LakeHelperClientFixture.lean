@@ -119,7 +119,7 @@ private def cleanupFaultHelper (directory : System.FilePath) : IO Unit := do
   let owner ← IO.asTask (prio := Task.Priority.dedicated) do
     try discard <| stdin.readToEnd finally Beam.ProcessJob.parentLost
   let request ← LakeHelperJob.readJson (LakeHelperJob.requestPath directory)
-  let response ← IO.ofExcept <| request.getObjValAs? Response "response"
+  let response ← IO.ofExcept <| LakeHelperResponse.decode (α := Json) (← IO.ofExcept <| request.getObjVal? "response")
   let marker ← IO.ofExcept <| request.getObjValAs? System.FilePath "marker"
   let receipt ← IO.ofExcept <| request.getObjValAs? System.FilePath "receipt"
   let obstacle := directory / "cleanup-denied"

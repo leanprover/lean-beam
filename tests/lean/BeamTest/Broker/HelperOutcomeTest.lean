@@ -122,22 +122,67 @@ private def checkClosingScope : IO Unit := do
     discard <| IO.wait owner
     if let some observer ← observer?.get then discard <| IO.wait observer
 
+private def checkResponseCodec : IO Unit := do
+  let result : LeanServerLakeEnv := { env := #[("X", some "value")], moreServerArgs := #["--flag"] }
+  let success := LakeHelperResponse.encode (.ok result : Except BrokerFailure LeanServerLakeEnv)
+  require "helper success keeps its wire shape"
+    (success.compress == (toJson <| Response.success (toJson result)).compress)
+  match ← IO.ofExcept <| LakeHelperResponse.decode (α := LeanServerLakeEnv) success with
+  | .ok actual => require "typed environment round trip" ((toJson actual).compress == (toJson result).compress)
+  | .error _ => throw <| IO.userError "valid helper result rejected"
+  for code in BrokerFailureCode.all do
+    for message in ["", "helper failure"] do
+      for data? in [none, some Json.null, some <| Json.mkObj [("detail", toJson "preserved")]] do
+        let failure : BrokerFailure := { code, message, data? }
+        let wire := LakeHelperResponse.encode (.error failure : Except BrokerFailure LeanServerLakeEnv)
+        require s!"{code.name} keeps its wire shape"
+          (wire.compress == (toJson failure.toResponse).compress)
+        let actual ← failureOf (← IO.ofExcept <| LakeHelperResponse.decode (α := LeanServerLakeEnv) wire)
+        require "typed failure preserves code" (actual.code == code)
+        require "typed failure preserves message" (actual.message == message)
+        require "typed failure preserves optional data"
+          ((actual.data?.map Json.compress) == (data?.map Json.compress))
+  let minimal := Json.mkObj [("ok", toJson false), ("error", Json.mkObj [("code", toJson "invalidParams")])]
+  let defaultFailure ← failureOf (← IO.ofExcept <| LakeHelperResponse.decode (α := Json) minimal)
+  require "missing message keeps empty default" (defaultFailure.message.isEmpty && defaultFailure.data?.isNone)
+  let failure := LakeHelperResponse.encode
+    (.error { code := .invalidParams } : Except BrokerFailure Json)
+  let result := LakeHelperResponse.encode (.ok Json.null : Except BrokerFailure Json)
+  match ← IO.ofExcept <| LakeHelperResponse.decode (α := Json) result with
+  | .ok .null => pure ()
+  | _ => throw <| IO.userError "explicit null result must be accepted as a present Json payload"
+  for wire in #[Json.null, Json.mkObj [], Json.mkObj [("ok", toJson true)],
+      Json.mkObj [("ok", toJson false)], result.setObjVal! "error" Json.null,
+      failure.setObjVal! "result" Json.null, result.setObjVal! "extra" Json.null,
+      result.setObjVal! "ok" (toJson "true"),
+      Json.mkObj [("ok", toJson false), ("error", Json.mkObj [("code", toJson "unknown")])],
+      Json.mkObj [("ok", toJson false), ("error", Json.mkObj [
+        ("code", toJson "invalidParams"), ("extra", Json.null)])]] do
+    require s!"invalid helper envelope rejected: {wire.compress}"
+      (!(LakeHelperResponse.decode (α := Json) wire).isOk)
+
 private def checkHelperOutcomes : IO Unit := do
   let data := Json.mkObj [("marker", toJson "original data")]
-  let outcomes : Array (Except BrokerFailure Response) := #[
-    .ok (Response.success (Json.mkObj [("value", toJson 7)])),
-    .error { code := .requestCancelled, message := "original cancellation", data? := some data },
-    .error { code := .workerExited, message := "original worker exit", data? := some data },
-    .error { code := .internalError, message := "original timeout", data? := some data },
-    .ok (({ code := .invalidParams, message := "original helper error", data? := some data } :
-      BrokerFailure).toResponse)
+  let success := Json.mkObj [("value", toJson 7)]
+  let remote : BrokerFailure := {
+    code := .invalidParams, message := "original helper error", data? := some data }
+  let cancelled : BrokerFailure := {
+    code := .requestCancelled, message := "original cancellation", data? := some data }
+  let outcomes : Array (Except BrokerFailure Json × Option Json) := #[
+    (.ok success, some <| LakeHelperResponse.encode (.ok success : Except BrokerFailure Json)),
+    (.error cancelled, none),
+    -- A reply observed before cancellation is evidence, not a successful typed outcome.
+    (.error cancelled, some <| LakeHelperResponse.encode (.ok success : Except BrokerFailure Json)),
+    (.error { code := .workerExited, message := "original worker exit", data? := some data }, none),
+    (.error { code := .internalError, message := "original timeout", data? := some data }, none),
+    (.error remote, some <| LakeHelperResponse.encode (.error remote : Except BrokerFailure Json))
   ]
-  for outcome in outcomes do
+  for (outcome, observedResponse?) in outcomes do
     for jobFails in [false, true] do
       for directoryFails in [false, true] do
         for outputFails in [false, true] do
           let removals ← IO.mkRef (0 : Nat)
-          let job : Beam.ProcessJob.Completion (Except BrokerFailure Response) := {
+          let job : Beam.ProcessJob.Completion (Except BrokerFailure Json) := {
             operation := .ok outcome
             cleanup := if jobFails then .error (IO.userError "job cleanup") else .ok ()
           }
@@ -146,23 +191,20 @@ private def checkHelperOutcomes : IO Unit := do
             if directoryFails then throw <| IO.userError "directory cleanup"
           let outputCleanup : Except IO.Error Unit :=
             if outputFails then .error (IO.userError "output cleanup") else .ok ()
-          let completed := { completed with outputCleanup }
+          let completed := { completed with outputCleanup, observedResponse? }
           require "directory removal runs once" ((← removals.get) == 1)
           let projected : Except BrokerFailure Json :=
             LakeHelperJob.Internal.projectCompletion .prepareSave completed
-          let clean : LakeHelperJob.Completion := {
+          let clean : LakeHelperJob.Completion Json := {
             completed with jobCleanup := .ok (), directoryCleanup := .ok (), outputCleanup := .ok () }
           let original : Except BrokerFailure Json :=
             LakeHelperJob.Internal.projectCompletion .prepareSave clean
           match outcome, original with
-          | .ok (.successResult expected _), .ok actual =>
-              require "helper success decodes unchanged" (actual.compress == expected.compress)
+          | .ok expected, .ok actual =>
+              require "helper success retained unchanged" (actual.compress == expected.compress)
           | .error expected, .error actual =>
-              require "local typed failure unchanged"
+              require "typed failure unchanged"
                 ((toJson actual.toResponse).compress == (toJson expected.toResponse).compress)
-          | .ok (.errorResult expected), .error actual =>
-              require "remote typed failure unchanged"
-                ((toJson actual.toResponseFailure.error).compress == (toJson expected.error).compress)
           | _, _ => throw <| IO.userError "clean helper projection changed the operation category"
           if jobFails || directoryFails || outputFails then
             let failure ← failureOf projected
@@ -188,9 +230,10 @@ private def checkHelperOutcomes : IO Unit := do
               requireJsonString "original message" "message" expected.message error
               let retainedData ← requireObjVal "original data" "data" error
               requireJsonString "retained data" "marker" "original data" retainedData
-            if let .ok response := outcome then
+            if let some response := observedResponse? then
               let retained ← requireObjVal "operation receipt" "operationResponse" info
-              require "raw response retained" (retained.compress == (toJson response).compress)
+              require "raw response retained" (retained.compress == response.compress)
+            else requireFieldAbsent "unobserved reply is not fabricated" "operationResponse" info
           else
             match original, projected with
             | .ok expected, .ok actual => require "clean success unchanged" (actual.compress == expected.compress)
@@ -199,7 +242,7 @@ private def checkHelperOutcomes : IO Unit := do
                 ((toJson actual.toResponse).compress == (toJson expected.toResponse).compress)
             | _, _ => throw <| IO.userError "clean operation changed category"
   let completed ← LakeHelperJob.Internal.complete
-    (throw <| IO.userError "setup IO failure") (throw <| IO.userError "directory cleanup")
+    (α := Json) (throw <| IO.userError "setup IO failure") (throw <| IO.userError "directory cleanup")
   requireIOError "setup IO failure retained" completed.operation "setup IO failure"
   requireIOError "outer cleanup does not erase setup failure" completed.directoryCleanup "directory cleanup"
   let projected : Except BrokerFailure Json := LakeHelperJob.Internal.projectCompletion .serverEnv completed
@@ -208,10 +251,14 @@ private def checkHelperOutcomes : IO Unit := do
 
 private def checkInvalidResponse : IO Unit := do
   let data := Json.mkObj [("marker", toJson "unknown error data")]
-  for response in #[Response.success (Json.str "invalid environment"),
-      Response.errorResult { error := { code := "unknownFixtureError", message := "remote", data? := some data } }] do
-    let completion : LakeHelperJob.Completion := {
-      operation := .ok (.ok response)
+  for response in #[toJson <| Response.success (Json.str "invalid environment"),
+      toJson <| Response.errorResult { error := { code := "unknownFixtureError", message := "remote", data? := some data } },
+      Json.mkObj [("ok", toJson true), ("result", Json.null), ("error", Json.null)]] do
+    let decoded := LakeHelperResponse.decode (α := LeanServerLakeEnv) response
+    require "invalid wire rejected before cleanup" (!decoded.isOk)
+    let completion : LakeHelperJob.Completion LeanServerLakeEnv := {
+      operation := decoded.mapError IO.userError
+      observedResponse? := some response
       jobCleanup := .error (IO.userError "cleanup")
       directoryCleanup := .ok ()
     }
@@ -220,7 +267,7 @@ private def checkInvalidResponse : IO Unit := do
     let failure ← failureOf result
     let info := failure.data?.getD Json.null
     let receipt ← requireObjVal "invalid operation receipt" "operationResponse" info
-    require "invalid/unknown response survives failed cleanup" (receipt.compress == (toJson response).compress)
+    require "invalid/unknown response survives failed cleanup" (receipt.compress == response.compress)
     let operation ← requireObjVal "invalid operation outcome" "operationOutcome" info
     requireJsonString "invalid operation still fails" "status" "failed" operation
     let error ← requireObjVal "decoding error" "error" operation
@@ -250,6 +297,7 @@ def run : IO Unit := do
   checkScopeOutcomes
   checkLostOwnership
   checkClosingScope
+  checkResponseCodec
   checkHelperOutcomes
   checkInvalidResponse
   checkEarlyOutputRetirement
