@@ -349,6 +349,7 @@ class CliErrorsTest(unittest.TestCase):
             self.assertIn("original Beam installation", data["recoveryPrecondition"])
             self.assertIn("all other producers", data["recoveryPrecondition"])
             self.assertIn("before starting", error["message"])
+            self.assertIn("If that executable no longer exists", error["message"])
             self.assertNotIn("toolchain changed", error["message"])
             self.assertEqual(self.session_snapshot(control), before)
 
@@ -421,9 +422,34 @@ class CliErrorsTest(unittest.TestCase):
                                          "sessionShutdownUnconfirmed", 1)
                     remedy = shlex.split(error["data"]["remedyCommand"])
                     self.assertEqual(remedy[-1], "status")
+                    recovery = shlex.split(error["data"]["recoveryCommand"])
+                    self.assertEqual(recovery[-3:], ["recover", "--generation", entry["daemonId"]])
+                    self.assertEqual(recovery[:-3], remedy[:-1])
                     self.assertEqual(error["data"]["generation"], entry["daemonId"])
                     self.assertNotIn("recover --generation", error["message"])
                     self.assertEqual(self.session_snapshot(control), before)
+
+    def test_foreign_recover_preserves_the_attempted_generation(self):
+        with tempfile.TemporaryDirectory(prefix="beam-remedy-") as directory:
+            parent = Path(directory).resolve()
+            project = self.remedy_project(parent)
+            control = parent / "session"
+            control.mkdir(mode=0o700)
+            entry = self.descriptor_fixture(project)
+            owner = parent / "old ' installation"
+            entry["installationRoot"] = str(owner)
+            descriptor = control / "beam-daemon.json"
+            descriptor.write_text(json.dumps(entry))
+            before = descriptor.read_bytes()
+            requested = "requested ' generation"
+            error = self.failure(self.invoke("--root", project, "--session-dir", control,
+                                             "recover", "--generation", requested),
+                                 "sessionInstallationMismatch", 1)
+            executable = owner / "bin" / ("lean-beam.exe" if os.name == "nt" else "lean-beam")
+            self.assertEqual(shlex.split(error["data"]["remedyCommand"]),
+                             [str(executable), "--root", str(project), "--session-dir", str(control),
+                              "recover", "--generation", requested])
+            self.assertEqual(descriptor.read_bytes(), before)
 
     def test_nonregular_descriptor_recovery_keeps_exact_path_and_preserves_leaf(self):
         for kind in ["directory"] + (["symlink"] if os.name != "nt" else []):

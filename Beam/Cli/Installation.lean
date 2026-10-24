@@ -15,17 +15,19 @@ namespace Beam.Cli
 
 /-- Control uses recorded ownership, never current runtime admission or component availability. -/
 private def _root_.Beam.Installation.admitControl (installation : Installation)
-    (root sessionDir : System.FilePath) (entry : Beam.Daemon.SessionDescriptor) : CliM Unit := do
+    (command : WrapperSessionCommand) (root sessionDir : System.FilePath)
+    (entry : Beam.Daemon.SessionDescriptor) : CliM Unit := do
   unless Beam.sameCanonicalPath (System.FilePath.mk entry.installationRoot) installation.home do
     throw <| (CliFailure.make "sessionInstallationMismatch" <|
       s!"Beam session {entry.daemonId} belongs to installation {entry.installationRoot}, " ++
-        s!"not {installation.home}; its owner and descriptor were preserved. Stop it using its owning installation.").withRemedy
-      (installationSessionCommand (System.FilePath.mk entry.installationRoot) root sessionDir .stop)
+        s!"not {installation.home}; its owner and descriptor were preserved. Use its owning installation for this command. " ++
+        installationCommandFallback).withRemedy
+      (installationSessionCommand (System.FilePath.mk entry.installationRoot) root sessionDir command)
       [("root", toJson root.toString), ("sessionDir", toJson sessionDir.toString),
         ("generation", toJson entry.daemonId), ("installationRoot", toJson entry.installationRoot),
         ("currentInstallationRoot", toJson installation.home.toString),
-        ("recoveryPrecondition", toJson ("Use the owning installation to stop this session; " ++
-          "wait until the original owner, daemon, and all other producers have stopped before restarting."))]
+        ("recoveryPrecondition", toJson ("Before manual recovery or restarting, independently verify that the original " ++
+          "owner, daemon, and all other producers have stopped."))]
 
 private def installationFailure (failure : Beam.Installation.Failure) : CliFailure :=
   match failure with

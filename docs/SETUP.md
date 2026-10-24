@@ -279,6 +279,9 @@ Generic usage-message previews retain at most 512 characters. CLI error diagnost
 control characters. Local remedies appear in `error.data.remedyCommand`; commands with ordinary
 printable text also appear verbatim on their own stderr line. A control-bearing remedy is labelled
 as an escaped display on stderr; use the exact JSON command for execution.
+These command strings use POSIX shell syntax. On Windows they require Bash/MSYS2; they are not
+cmd.exe or PowerShell command strings. Shell-independent Windows remedy execution is tracked in
+[#371](https://github.com/leanprover/lean-beam/issues/371).
 `sessionRecoveryRequired` includes the recorded `generation` when known, plus a
 `recoveryPrecondition`: independently verify that the matching owner, daemon, and all other
 producers have stopped.
@@ -292,7 +295,9 @@ When an attached command finds that the recorded session configuration differs f
 `remedyCommand` rather than selecting another executable from `PATH`. `recoveryPrecondition`
 requires waiting for every producer to stop before starting `serve` again. A configuration-hash
 mismatch does not identify which setting changed. An attempted `stop` or `recover` from another
-installation returns the typed `sessionInstallationMismatch` with the owning stop command.
+installation returns the typed `sessionInstallationMismatch` with the same attempted command and
+generation through the owning installation. If that executable was pruned, interrupt the original
+foreground owner or use its supervisor to finish cleanup.
 Invalid descriptors give `sessionRecoveryRequired` when they block serving, attachment, or stop.
 Explicit `recover` instead gives `setupError`: recovery cannot admit an undecodable record as an
 owned generation. Both exit `1` and carry the same descriptor path and `recoveryPrecondition`;
@@ -693,11 +698,14 @@ A retained shutdown descriptor means completion is unconfirmed. `status` reports
 repeated `stop`, `serve`, and attached commands fail with `sessionShutdownUnconfirmed` (exit `1`),
 the exact generation and an owning-installation `status` command. Wait for cleanup, then check status;
 start `serve` once it is `absent`. The record can also survive owner loss and does not establish
-active cleanup or owner death. If cleanup cannot finish, have
+active cleanup or owner death. `error.data.recoveryCommand` supplies the exact owning-installation
+recovery command as a separate, conditional next step; use it only after `recoveryPrecondition` is
+independently established. If cleanup cannot finish, have
 the client supervisor perform full cleanup of the original generation. Independently establish that
 the owner, daemon and every other producer stopped before recovering any remaining descriptor.
-Recovery still refuses a responding or uncertain endpoint. Clients should not wait indefinitely
-for a retained shutdown record to prove active progress; no automatic takeover is performed.
+Recovery still refuses a responding or uncertain endpoint. Use a caller-chosen waiting budget and
+escalate to the original supervisor if cleanup does not finish. Expiry is not evidence that producers
+stopped and does not authorize recovery. No automatic takeover is performed.
 
 The default session descriptor and lock live in `<root>/.beam`. This is intentional for
 project-scoped agent sandboxes: clients that can access the same workspace can discover the same

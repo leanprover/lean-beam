@@ -251,7 +251,9 @@ client protocol.
   means completion is unconfirmed: `status` reports `shutdownUnconfirmed`, and repeated stop, serve,
   or attachment returns `sessionShutdownUnconfirmed` with an owning-installation `status` remedy.
   Let cleanup finish and check for `absent` before restarting. This makes no active-cleanup or
-  owner-death inference; full supervised recovery is conditional on every original producer stopping.
+  owner-death inference; a separate owning-installation `recoveryCommand` is conditional on every
+  original producer stopping. If cleanup does not finish within the caller's waiting budget, inspect
+  the original supervisor rather than inferring settlement from elapsed time.
 - Abnormal or ambiguous state is never reclaimed automatically. The descriptor remains as a fence
   after an unexpected broker/owner exit; an unexpected broker exit preserves the live descriptor,
   whose failed connection-establishment probe projects to `recoveryRequired`. After independently

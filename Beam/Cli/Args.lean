@@ -237,6 +237,9 @@ def installationSessionCommand (installationRoot root sessionDir : System.FilePa
     (if System.Platform.isWindows then "lean-beam.exe" else "lean-beam")
   sessionCommand (shellQuote executable.toString) root sessionDir command
 
+def installationCommandFallback : String :=
+  "If that executable no longer exists, interrupt the original foreground owner or use its supervisor."
+
 def parseEnvFlag (raw : String) : Bool :=
   let normalized := raw.trimAscii.toString.toLower
   !(normalized.isEmpty || normalized == "0" || normalized == "false" || normalized == "no")

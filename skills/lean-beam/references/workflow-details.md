@@ -184,8 +184,13 @@ What is not a valid checkpoint target:
   repeated stop, serve, or attachment gives `sessionShutdownUnconfirmed` with the generation and an
   owning-installation `status` remedy. Wait for cleanup and check for `absent` before restarting.
   Execute the absolute executable in `remedyCommand`; a different installation on `PATH` cannot
-  control this session (`sessionInstallationMismatch`). If cleanup cannot finish, perform full supervised cleanup of every original producer
+  control this session (`sessionInstallationMismatch`). A foreign control refusal preserves the
+  attempted command and generation in the owning-installation remedy. If the executable is missing,
+  interrupt the original owner or use its supervisor. `recoveryCommand` is a separate conditional
+  command: if cleanup cannot finish within the caller's waiting budget, perform full supervised cleanup of every original producer
   before recovering any remaining descriptor. Neither the record nor its age establishes owner death
+- remedy strings use POSIX shell syntax, including on Windows. Use Bash/MSYS2 for these strings;
+  cmd.exe/PowerShell and shell-independent remedies are tracked in [#371](https://github.com/leanprover/lean-beam/issues/371)
 - `--text-file` and `--handle-file` require regular-file targets and allow ordinary symlinks;
   directories, devices, FIFOs, and symlink loops observed at admission fail with
   `invalidParams`/exit `2` before dispatch. The target check and later open are separate operations,

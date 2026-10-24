@@ -39,7 +39,7 @@ private def admitsControl (installation : Installation) (owner daemon : System.F
     configHash := "fixture", daemonBin := daemon.toString
     installationRoot := owner.toString, startedAt := "fixture"
   }
-  match ← (installation.runtime.control owner (owner / ".beam") entry).run with
+  match ← (installation.runtime.control .stop owner (owner / ".beam") entry).run with
   | .ok () => pure true
   | .error failure =>
       require (failure.failure.error.code == "sessionInstallationMismatch")

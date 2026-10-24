@@ -913,8 +913,10 @@ for command in stop recover; do
     error.code sessionInstallationMismatch "$tmp1/upgrade-$command.err"
   assert_json_file_field_equals "upgrade $command owning installation" "$tmp1/upgrade-$command.out" \
     error.data.installationRoot "$BEAM_TEST_INSTALLATION" "$tmp1/upgrade-$command.err"
+  upgrade_remedy="'$beam_script' --root '$resolved_tmp1' --session-dir '$resolved_tmp1/.beam' $command"
+  if [ "$command" = recover ]; then upgrade_remedy="$upgrade_remedy --generation '$daemon1_id'"; fi
   assert_json_file_field_equals "upgrade $command owning remedy" "$tmp1/upgrade-$command.out" \
-    error.data.remedyCommand "'$beam_script' --root '$resolved_tmp1' --session-dir '$resolved_tmp1/.beam' stop" \
+    error.data.remedyCommand "$upgrade_remedy" \
     "$tmp1/upgrade-$command.err"
 done
 if ! cmp -s "$tmp1/before-upgrade-descriptor.json" "$registry"; then

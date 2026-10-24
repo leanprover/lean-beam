@@ -857,10 +857,13 @@ def RegistryBlocker.cliFailure (root sessionDir : System.FilePath)
       (CliFailure.make "sessionShutdownUnconfirmed" <|
         s!"Beam session {entry.daemonId}: shutdown was requested, but its completion is unconfirmed. " ++
           "Wait for the original owner to finish cleanup, then check status; start serve after status is absent. " ++
-          "If cleanup cannot finish, independently stop every original producer before explicit recovery.").withRemedy
+          "If cleanup cannot finish, independently stop every original producer before explicit recovery. " ++
+          installationCommandFallback).withRemedy
         (installationSessionCommand (System.FilePath.mk entry.installationRoot) root sessionDir .status)
         ([("root", toJson root.toString), ("sessionDir", toJson sessionDir.toString),
           ("generation", toJson entry.daemonId), ("installationRoot", toJson entry.installationRoot),
+          ("recoveryCommand", toJson (installationSessionCommand (System.FilePath.mk entry.installationRoot)
+            root sessionDir (.recoverGeneration entry.daemonId))),
           ("recoveryPrecondition", toJson ("For manual recovery, independently verify that the original owner, " ++
             "daemon, and all other producers have stopped; an unconfirmed shutdown does not establish this."))] ++
           diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics)))
@@ -875,7 +878,7 @@ def RegistryBlocker.cliFailure (root sessionDir : System.FilePath)
         | .endpointProbeFailed _ => "the recorded endpoint could not confirm this generation"
         | _ => detail
       let failure := CliFailure.make "sessionRecoveryRequired"
-        s!"Beam session for {root} requires recovery: {summary}. {precondition}"
+        s!"Beam session for {root} requires recovery: {summary}. {precondition} {installationCommandFallback}"
       let data := [("detail", toJson detail), ("recoveryPrecondition", toJson precondition)] ++
         diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics))
       return failure.withRemedy
@@ -895,7 +898,7 @@ private def configMismatchFailure (root sessionDir : System.FilePath)
       "serve with the desired configuration."
   let message :=
     s!"The recorded Beam session for {root} uses configuration {entry.configHash}, " ++
-      s!"but this command requires {expected}; its descriptor was preserved. {precondition}"
+      s!"but this command requires {expected}; its descriptor was preserved. {precondition} {installationCommandFallback}"
   (CliFailure.setup message).withRemedy
     (installationSessionCommand (System.FilePath.mk entry.installationRoot) root sessionDir .stop)
     [("root", toJson root.toString), ("sessionDir", toJson sessionDir.toString),
@@ -939,7 +942,7 @@ inductive ProjectDaemonStopResult where
 
 /-- Fence and request shutdown of the exact wrapper-owned generation without PID signalling. -/
 def shutdownRegisteredProjectDaemon
-    (admitControl : System.FilePath → System.FilePath → SessionDescriptor → CliM Unit)
+    (admitControl : WrapperSessionCommand → System.FilePath → System.FilePath → SessionDescriptor → CliM Unit)
     (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none) :
     CliM ProjectDaemonStopResult := do
@@ -950,7 +953,7 @@ def shutdownRegisteredProjectDaemon
       (explicitControlDir? := explicitControlDir?) fun control => (do
     let selection ← selectProjectRegistryAt root control.registry
     match selection with
-    | .selected entry | .draining entry => admitControl root control.dir entry
+    | .selected entry | .draining entry => admitControl .stop root control.dir entry
     | _ => pure ()
     match ← observeRegistrySelection root selection with
     | .absent => pure ShutdownPlan.none
@@ -1006,7 +1009,7 @@ Explicitly quarantine one unusable session descriptor without treating persisted
 capabilities. Only typed descriptors with admitted installation ownership can be recovered.
 -/
 def recoverProjectDaemon
-    (admitControl : System.FilePath → System.FilePath → SessionDescriptor → CliM Unit)
+    (admitControl : WrapperSessionCommand → System.FilePath → System.FilePath → SessionDescriptor → CliM Unit)
     (root : System.FilePath)
     (generation : String)
     (explicitControlDir? : Option System.FilePath := none) : CliM RecoveryResult := do
@@ -1018,7 +1021,7 @@ def recoverProjectDaemon
     | .absent =>
         pure .absent
     | .current entry =>
-        admitControl root control.dir entry
+        admitControl (.recoverGeneration generation) root control.dir entry
         unless generation == entry.daemonId do
           throw <| CliFailure.argument "generation" generation
             (fun preview => s!"recovery generation '{preview}' does not match recorded generation '{entry.daemonId}'")
