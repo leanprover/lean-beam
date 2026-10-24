@@ -72,3 +72,17 @@ beam_test_remove_tmp_tree_within_owned_tmp_dir() {
   beam_test_expect_path_within_owned_tmp_dir "$path" "$root" "$@"
   rm -rf -- "$path"
 }
+
+# Successful fixtures release their scratch tree; failed fixtures keep evidence after owner cleanup.
+# Return the original failure, or a cleanup error when the fixture itself succeeded.
+beam_test_finish_workspace() {
+  local result="$1"
+  local path="$2"
+  shift 2
+  beam_test_expect_owned_tmp_dir "$path" "$@"
+  if [ "$result" -ne 0 ]; then
+    printf 'retained failed test workspace (exit %s): %s\n' "$result" "$path" >&2 || true
+    return "$result"
+  fi
+  beam_test_remove_owned_tmp_tree "$path" "$@"
+}

@@ -146,12 +146,13 @@ def spawnLeanBrokerWithPlugin
     (endpoint : Beam.Broker.Endpoint)
     (root leanPlugin : System.FilePath)
     (leanCmd : String := "lean")
-    (identity? : Option Beam.Broker.DaemonIdentity := none) : IO (IO.Process.Child nullBrokerStdio) := do
+    (identity? : Option Beam.Broker.DaemonIdentity := none)
+    (stdio : IO.Process.StdioConfig := nullBrokerStdio) : IO (IO.Process.Child stdio) := do
   let port :=
     match endpoint with
     | .tcp port => port
   IO.Process.spawn {
-    toStdioConfig := nullBrokerStdio
+    toStdioConfig := stdio
     cmd := (← daemonExe).toString
     args := #[
       "--port", toString port.toNat,
@@ -172,8 +173,9 @@ def spawnLeanBroker
     (endpoint : Beam.Broker.Endpoint)
     (root : System.FilePath)
     (leanCmd : String := "lean")
-    (identity? : Option Beam.Broker.DaemonIdentity := none) : IO (IO.Process.Child nullBrokerStdio) := do
-  spawnLeanBrokerWithPlugin endpoint root (← BeamTest.TestHarness.pluginPath) leanCmd identity?
+    (identity? : Option Beam.Broker.DaemonIdentity := none)
+    (stdio : IO.Process.StdioConfig := nullBrokerStdio) : IO (IO.Process.Child stdio) := do
+  spawnLeanBrokerWithPlugin endpoint root (← BeamTest.TestHarness.pluginPath) leanCmd identity? stdio
 
 partial def waitForBrokerReady
     (endpoint : Beam.Broker.Endpoint)

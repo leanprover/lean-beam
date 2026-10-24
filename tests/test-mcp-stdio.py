@@ -6,7 +6,6 @@ import concurrent.futures
 import json
 import os
 import platform
-import select
 import shutil
 import subprocess
 import sys
@@ -16,6 +15,7 @@ import time
 from pathlib import Path
 
 from lib.process_watchdog import process_is_running
+from lib.pipe_lines import PipeLineReader
 
 from mcp_test_util import (
     MCP_LEGACY_PROTOCOL_VERSION,
@@ -248,6 +248,7 @@ class McpClient:
             encoding="utf-8",
             bufsize=1,
         )
+        self.stdout_lines = PipeLineReader(self.proc.stdout)
         self.stdout_read_delay = stdout_read_delay
         self.stdout_thread = None
         if drain_stdout:
@@ -263,11 +264,11 @@ class McpClient:
 
     def _drain_stdout(self):
         try:
-            for line in self.proc.stdout:
+            while line := self.stdout_lines.read_line():
                 if self.stdout_read_delay:
                     time.sleep(self.stdout_read_delay)
                 try:
-                    message = json.loads(line)
+                    message = json.loads(line.decode("utf-8"))
                 except json.JSONDecodeError as err:
                     raise RuntimeError(f"stdout line is not valid JSON: {err}: {line!r}") from err
                 require(message.get("jsonrpc") == "2.0", f"bad JSON-RPC message: {message}")
@@ -301,6 +302,20 @@ class McpClient:
             with self.state_changed:
                 self.stdout_error = str(err)
                 self.state_changed.notify_all()
+
+    def read_stdout_message(self, label, *, timeout=None):
+        """Read while automatic draining is paused; later draining inherits the same buffer."""
+        require(self.stdout_thread is None, "MCP stdout already has a background reader")
+        seconds = self.timeout if timeout is None else timeout
+        try:
+            line = self.stdout_lines.read_line(deadline=time.monotonic() + seconds)
+        except TimeoutError:
+            fail(label + "\n" + self._diagnostic_context())
+        require(line, "MCP closed stdout: " + label + "\n" + self._diagnostic_context())
+        try:
+            return json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            fail(f"invalid MCP stdout while {label}: {error}: {line!r}")
 
     def _drain_stderr(self):
         try:
@@ -3264,9 +3279,8 @@ def run_blank_line_regression(repo_root, fixture_root, timeout):
             with client.stdin_lock:
                 client.proc.stdin.write("\n")
                 client.proc.stdin.flush()
-            ready, _, _ = select.select([client.proc.stdout], [], [], timeout)
-            require(ready, "blank input did not produce a JSON-RPC parse error")
-            parse_error = json.loads(client.proc.stdout.readline())
+            parse_error = client.read_stdout_message(
+                "blank input did not produce a JSON-RPC parse error", timeout=timeout)
             expect_error_code(parse_error, -32700)
             require(parse_error.get("id") is None, f"blank-line error should have null id: {parse_error}")
 
@@ -3282,17 +3296,15 @@ def run_blank_line_regression(repo_root, fixture_root, timeout):
                 },
             }
             client.send_message(discover_request)
-            ready, _, _ = select.select([client.proc.stdout], [], [], timeout)
-            require(ready, "fractional request id did not produce a JSON-RPC error")
-            invalid_id = json.loads(client.proc.stdout.readline())
+            invalid_id = client.read_stdout_message(
+                "fractional request id did not produce a JSON-RPC error", timeout=timeout)
             expect_error_code(invalid_id, -32600)
             require(invalid_id.get("id") is None, f"fractional-id error should have null id: {invalid_id}")
 
             discover_request["id"] = "after-blank-line"
             client.send_message(discover_request)
-            ready, _, _ = select.select([client.proc.stdout], [], [], timeout)
-            require(ready, "server stopped reading requests after a blank input line")
-            discover = json.loads(client.proc.stdout.readline())
+            discover = client.read_stdout_message(
+                "server stopped reading requests after a blank input line", timeout=timeout)
             require(discover.get("id") == "after-blank-line", f"wrong discover response: {discover}")
             require_modern_result_envelope(expect_result(discover), "discover after blank line")
         finally:
@@ -3404,9 +3416,8 @@ def run_diagnostic_overflow(repo_root, fixture_root, timeout):
             update_id = client.send_request("tools/call", with_modern_metadata({
                 "name": "lean_update", "arguments": {"path": "McpConcurrency.lean"},
             }))
-            ready, _, _ = select.select([client.proc.stdout], [], [], timeout)
-            require(ready, "diagnostic fixture did not receive its update response")
-            updated = json.loads(client.proc.stdout.readline())
+            updated = client.read_stdout_message(
+                "diagnostic fixture did not receive its update response", timeout=timeout)
             require(updated.get("id") == update_id, updated)
             version = expect_result(updated)["structuredContent"]["version"]
             client.forget_request(update_id)
@@ -3475,9 +3486,8 @@ def run_blocked_stdout_eof_cleanup(repo_root, fixture_root, timeout):
                         "arguments": {"path": "McpConcurrency.lean"},
                     }),
                 )
-                ready, _, _ = select.select([client.proc.stdout], [], [], timeout)
-                require(ready, "blocked-output fixture did not receive its update response")
-                update_response = json.loads(client.proc.stdout.readline())
+                update_response = client.read_stdout_message(
+                    "blocked-output fixture did not receive its update response", timeout=timeout)
                 require(update_response.get("id") == update_id, update_response)
                 client.forget_request(update_id)
                 update_result = expect_result(update_response)
@@ -3732,9 +3742,8 @@ def run_closed_stdout_regression(repo_root, fixture_root, timeout):
                     "params": initialize_params(),
                 }
             )
-            ready, _, _ = select.select([control_client.proc.stdout], [], [], timeout)
-            require(ready, "closed-stdout control regression did not receive initialize response")
-            initialized = json.loads(control_client.proc.stdout.readline())
+            initialized = control_client.read_stdout_message(
+                "closed-stdout control regression did not receive initialize response", timeout=timeout)
             require(
                 initialized.get("id") == "closed-stdout-control-initialize",
                 f"closed-stdout control regression received wrong initialize response: {initialized}",

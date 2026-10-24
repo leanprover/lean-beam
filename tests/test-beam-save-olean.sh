@@ -9,19 +9,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=tests/lib/wait.sh
 . tests/lib/wait.sh
+# shellcheck source=tests/lib/project-sdk.sh
+. tests/lib/project-sdk.sh
+# shellcheck source=tests/lib/tmp-guards.sh
+. tests/lib/tmp-guards.sh
 
 : "${BEAM_TEST_INSTALLATION:?run tests/test-beam-slow.sh to construct the test installation}"
 beam_script="$BEAM_TEST_INSTALLATION/bin/lean-beam"
-lake_cmd="$(command -v lake)"
+lake_cmd="$(beam_test_project_command tests/save_olean_project lake)"
 ci_timeout_tracker="https://github.com/leanprover/lean-beam/issues/110"
 
 if [ ! -x "$beam_script" ]; then
   echo "missing lean-beam wrapper at $beam_script" >&2
-  exit 1
-fi
-
-if [ -z "$lake_cmd" ]; then
-  echo "missing lake on PATH" >&2
   exit 1
 fi
 
@@ -347,28 +346,31 @@ dump_save_sentinel_context() {
   dump_file_tail "save stderr" "$save_err"
 }
 
-tmp1="$(mktemp -d /tmp/beam-save-olean-build-XXXXXX)"
-tmp2="$(mktemp -d /tmp/beam-save-olean-broker-XXXXXX)"
-tmp3="$(mktemp -d /tmp/beam-save-olean-race-XXXXXX)"
-tmp4="$(mktemp -d /tmp/beam-save-olean-cancel-XXXXXX)"
-tmp5="$(mktemp -d /tmp/beam-save-olean-stale-XXXXXX)"
-tmp6="$(mktemp -d /tmp/beam-save-olean-stale-trace-XXXXXX)"
-tmp7="$(mktemp -d /tmp/beam-save-olean-unsupported-setup-XXXXXX)"
-tmp8="$(mktemp -d /tmp/beam-save-olean-module-XXXXXX)"
-race_sentinel="$(mktemp /tmp/beam-save-olean-race-sentinel-XXXXXX)"
-cancel_sentinel="$(mktemp /tmp/beam-save-olean-cancel-sentinel-XXXXXX)"
-log1="$(mktemp /tmp/beam-save-olean-build-log-XXXXXX)"
-log2="$(mktemp /tmp/beam-save-olean-broker-log-XXXXXX)"
-log3="$(mktemp /tmp/beam-save-olean-race-log-XXXXXX)"
-log4="$(mktemp /tmp/beam-save-olean-exact-log-XXXXXX)"
-log5="$(mktemp /tmp/beam-save-olean-downstream-log-XXXXXX)"
-log6="$(mktemp /tmp/beam-save-olean-module-log-XXXXXX)"
-race_save_out="$(mktemp /tmp/beam-save-olean-race-save-out-XXXXXX)"
-race_save_err="$(mktemp /tmp/beam-save-olean-race-save-err-XXXXXX)"
+workspace="$(mktemp -d /tmp/beam-save-olean-XXXXXX)"
+evidence="$workspace/evidence"
+tmp1="$workspace/build"
+tmp2="$workspace/broker"
+tmp3="$workspace/race"
+tmp4="$workspace/cancel"
+tmp5="$workspace/stale"
+tmp6="$workspace/stale-trace"
+tmp7="$workspace/unsupported-setup"
+tmp8="$workspace/module"
+race_sentinel="$workspace/race-sentinel"
+cancel_sentinel="$workspace/cancel-sentinel"
+log1="$evidence/build.log"
+log2="$evidence/broker.log"
+log3="$evidence/race.log"
+log4="$evidence/exact-target.log"
+log5="$evidence/downstream.log"
+log6="$evidence/module.log"
+race_save_out="$evidence/race-save.out"
+race_save_err="$evidence/race-save.err"
 save_race_broker_trace="${BEAM_SAVE_RACE_BROKER_TRACE:-1}"
 save_race_watchdog_ms="${BEAM_SAVE_RACE_WAIT_DIAGNOSTICS_WATCHDOG_MS:-10000}"
 
 cleanup() {
+  local result="$1"
   local root owner_pid
   for root in "$tmp2" "$tmp3" "$tmp4" "$tmp5" "$tmp6" "$tmp7" "$tmp8"; do
     if [ -d "$root" ]; then
@@ -379,26 +381,54 @@ cleanup() {
     kill -INT "$owner_pid" > /dev/null 2>&1 || true
     wait "$owner_pid" 2>/dev/null || true
   done
-  remove_owned_tmp_tree "$tmp1"
-  remove_owned_tmp_tree "$tmp2"
-  remove_owned_tmp_tree "$tmp3"
-  remove_owned_tmp_tree "$tmp4"
-  remove_owned_tmp_tree "$tmp5"
-  remove_owned_tmp_tree "$tmp6"
-  remove_owned_tmp_tree "$tmp7"
-  remove_owned_tmp_tree "$tmp8"
-  remove_owned_tmp_file "$race_sentinel"
-  remove_owned_tmp_file "$cancel_sentinel"
-  remove_owned_tmp_file "$log1"
-  remove_owned_tmp_file "$log2"
-  remove_owned_tmp_file "$log3"
-  remove_owned_tmp_file "$log4"
-  remove_owned_tmp_file "$log5"
-  remove_owned_tmp_file "$log6"
-  remove_owned_tmp_file "$race_save_out"
-  remove_owned_tmp_file "$race_save_err"
+  if [ "$result" -ne 0 ]; then
+    printf '{"exitCode":%s}\n' "$result" > "$evidence/result.json" || true
+    local retained="$PWD/.beam/test-failures/${workspace##*/}"
+    mkdir -p "$evidence/owners" || true
+    for root in "$tmp2" "$tmp3" "$tmp4" "$tmp5" "$tmp6" "$tmp7" "$tmp8"; do
+      for stream in out err; do
+        if [ -f "$root/.beam-test-owner.$stream" ]; then
+          cp "$root/.beam-test-owner.$stream" "$evidence/owners/${root##*/}.$stream" || true
+        fi
+      done
+    done
+    if ! mkdir -p "$retained" || ! cp -R "$evidence/." "$retained/"; then
+      echo "could not copy failure evidence; original workspace remains at $workspace" >&2
+    else
+      echo "save replay evidence: $retained" >&2
+    fi
+  fi
+  beam_test_finish_workspace "$result" "$workspace" beam-save-olean
 }
-trap cleanup EXIT
+trap 'cleanup "$?"; exit "$?"' EXIT
+
+mkdir -p "$evidence"
+for output in "$race_sentinel" "$cancel_sentinel" "$log1" "$log2" "$log3" "$log4" "$log5" "$log6" "$race_save_out" "$race_save_err"; do
+  : > "$output"
+done
+
+
+
+lean_cmd="$(beam_test_project_command tests/save_olean_project lean)"
+python3 - "$evidence" "$lake_cmd" "$lean_cmd" "$BEAM_TEST_INSTALLATION" <<'PY'
+import json, os, shutil, subprocess, sys
+from pathlib import Path
+evidence, lake, lean, installation = map(Path, sys.argv[1:])
+def observe(command):
+    return subprocess.check_output(command, text=True, timeout=10).strip()
+record = {
+    "sourceRevision": observe(["git", "rev-parse", "HEAD"]),
+    "fixtureSelector": Path("tests/save_olean_project/lean-toolchain").read_text().strip(),
+    "lake": {"path": str(lake), "canonicalPath": str(lake.resolve()), "version": observe([lake, "--version"])},
+    "lean": {"path": str(lean), "canonicalPath": str(lean.resolve()),
+             "version": observe([lean, "--version"]), "revision": observe([lean, "--githash"])},
+    "installation": str(installation),
+    "inheritedElanToolchain": os.environ.get("ELAN_TOOLCHAIN"),
+    "oraclePolicy": "fixture project selection; inherited ELAN_TOOLCHAIN does not select the oracle",
+}
+(evidence / "context.json").write_text(json.dumps(record, indent=2)+"\n")
+shutil.copyfile(installation / "manifest.json", evidence / "installation-manifest.json")
+PY
 
 mkproj "$tmp1"
 mkproj "$tmp2"
@@ -500,6 +530,26 @@ PY
     exit 1
   fi
   beam --root "$tmp2" stop > /dev/null 2>&1 || true
+  # Replay changes the evidence needed to diagnose an unexpected rebuild.
+  python3 - "$evidence/before-exact-replay" <<'PY'
+import hashlib, json, shutil, sys
+from pathlib import Path
+destination = Path(sys.argv[1])
+destination.mkdir()
+files = []
+for directory in [Path(".lake/build/lib/lean/SaveSmoke"), Path(".lake/build/ir/SaveSmoke")]:
+    for path in sorted(directory.glob("B.*")):
+        if not path.is_file():
+            continue
+        metadata = path.stat()
+        files.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                      "size": metadata.st_size, "mtimeNanos": metadata.st_mtime_ns})
+        if path.name.endswith((".trace", ".hash", ".setup.json")):
+            target = destination / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+(destination / "files.json").write_text(json.dumps(files, indent=2)+"\n")
+PY
   lake_build -v SaveSmoke/B.lean >"$log4" 2>&1
   rm -f .lake/build/lib/lean/SaveSmoke/A.olean .lake/build/lib/lean/SaveSmoke/A.ilean .lake/build/lib/lean/SaveSmoke/A.trace .lake/build/ir/SaveSmoke/A.c
   lake_build -v SaveSmoke/A.lean >"$log5" 2>&1

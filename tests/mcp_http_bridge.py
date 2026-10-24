@@ -4,8 +4,6 @@ import argparse
 import base64
 import binascii
 import json
-import os
-import select
 import socketserver
 import subprocess
 import sys
@@ -16,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from lib.pipe_lines import PipeLineReader
 from mcp_test_util import MCP_LEGACY_PROTOCOL_VERSION, MCP_MODERN_PROTOCOL_VERSION
 
 
@@ -38,7 +37,6 @@ class StdioMcpServer:
         self.stderr_file = stderr_file
         self.lock = threading.Lock()
         self.stderr = []
-        self.stdout_pending = b""
         self.proc = subprocess.Popen(
             command,
             cwd=str(cwd),
@@ -49,6 +47,7 @@ class StdioMcpServer:
             encoding="utf-8",
             bufsize=1,
         )
+        self.stdout_lines = PipeLineReader(self.proc.stdout)
         self.stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
         self.stderr_thread.start()
 
@@ -104,32 +103,18 @@ class StdioMcpServer:
     def _read_response(self):
         deadline = time.monotonic() + self.timeout
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise BridgeError(
-                    "timed out waiting for lean-beam-mcp response\n"
-                    f"lean-beam-mcp stderr tail:\n{self.stderr_tail() or '<empty>'}"
-                )
             if self.proc.poll() is not None:
                 stderr = self.stderr_tail()
                 raise BridgeError(f"lean-beam-mcp exited with code {self.proc.returncode}\n{stderr}")
-            line, newline, tail = self.stdout_pending.partition(b"\n")
-            if newline:
-                self.stdout_pending = tail
-            else:
-                ready, _, _ = select.select([self.proc.stdout], [], [], remaining)
-                if not ready:
-                    continue
-                # Own stdout framing in one binary buffer. Text readline can read ahead
-                # into a private buffer whose remaining lines are invisible to select.
-                chunk = os.read(self.proc.stdout.fileno(), 64 * 1024)
-                if chunk:
-                    self.stdout_pending += chunk
-                    continue
-                if not self.stdout_pending:
-                    raise BridgeError("lean-beam-mcp closed stdout")
-                # As with readline, EOF returns a final unterminated line for decoding.
-                line, self.stdout_pending = self.stdout_pending, b""
+            try:
+                line = self.stdout_lines.read_line(deadline=deadline)
+            except TimeoutError:
+                raise BridgeError(
+                    "timed out waiting for lean-beam-mcp response\n"
+                    f"lean-beam-mcp stderr tail:\n{self.stderr_tail() or '<empty>'}"
+                ) from None
+            if not line:
+                raise BridgeError("lean-beam-mcp closed stdout")
             try:
                 message = json.loads(line.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as err:

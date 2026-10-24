@@ -16,6 +16,7 @@ import unittest
 from unittest import mock
 
 import mcp_http_bridge as bridge
+from lib import pipe_lines
 
 
 @unittest.skipUnless(os.name == "posix", "the HTTP bridge uses POSIX pipe readiness")
@@ -68,7 +69,7 @@ class HttpBridgeReaderTest(unittest.TestCase):
                   f"os.write(1, {packet[split:]!r})")
         with self.child(action) as client:
             waiting_for_tail = threading.Event()
-            select_pipe = bridge.select.select
+            select_pipe = pipe_lines.select.select
             calls = 0
 
             def observe_wait(*args):
@@ -79,7 +80,7 @@ class HttpBridgeReaderTest(unittest.TestCase):
                 return select_pipe(*args)
 
             # The child withholds the tail until the reader has returned to bounded waiting.
-            with mock.patch.object(bridge.select, "select", side_effect=observe_wait):
+            with mock.patch.object(pipe_lines.select, "select", side_effect=observe_wait):
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     response = executor.submit(client.send_request, self.request)
                     try:

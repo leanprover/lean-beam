@@ -4,6 +4,8 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: Emilio J. Gallego Arias
 -/
 
+import Beam.Broker.BackendProcess
+import Beam.StderrCapture
 import Beam.Broker.Protocol
 import Beam.Daemon.Protocol
 import BeamTest.Broker.ClientUtil
@@ -16,6 +18,83 @@ open Lean
 namespace BeamTest.Broker.StreamContractTest
 
 open BeamTest.Broker.TestUtil
+
+private abbrev capturedBrokerStdio : IO.Process.StdioConfig where
+  stdin := .null
+  stdout := .piped
+  stderr := .piped
+
+/-- A local resource bracket for this fixture only. Observe failure before cleanup;
+keep operation, stream-capture, and evidence-write errors independent. -/
+private def withBrokerFailureEvidence
+    (spawn : IO (IO.Process.Child capturedBrokerStdio))
+    (act : Beam.Broker.BackendProcess → IO α)
+    (logs? : Option System.FilePath := none)
+    (cleanupTimeoutMs : Nat := 5000)
+    (adopt : IO.Process.Child capturedBrokerStdio → BaseIO Beam.Broker.BackendProcess :=
+      fun child => Beam.Broker.BackendProcess.create child.pid child.tryWait child.kill) : IO α := do
+  let child ← spawn
+  let owner ← adopt child
+  let stdoutBytes ← Std.Mutex.new ByteArray.empty
+  let stderrBytes ← Std.Mutex.new ByteArray.empty
+  let stdout ← Beam.StderrCapture.start child.stdout 8192 (some fun bytes => do
+    stdoutBytes.atomically <| modify fun tail =>
+      let tail := tail ++ bytes
+      tail.extract (tail.size - min tail.size 8192) tail.size
+    pure true)
+  let stderr ← Beam.StderrCapture.start child.stderr 8192 (some fun bytes => do
+    stderrBytes.atomically <| modify fun tail =>
+      let tail := tail ++ bytes
+      tail.extract (tail.size - min tail.size 8192) tail.size
+    pure true)
+  let result : Except IO.Error α ← try pure (.ok (← act owner)) catch error => pure (.error error)
+  let observation ← owner.observe
+  -- Retain exit/wait failures in the existing owner; never signal a reaped child again.
+  let termination ← owner.terminate cleanupTimeoutMs
+  let stdoutOutcome ← stdout.awaitCompletion
+  let stderrOutcome ← stderr.awaitCompletion
+  let operationError? := match result with
+    | .ok _ => none
+    | .error error => some error
+  let cleanupError? := match termination with
+    | .exited _ => none
+    | .unconfirmed .. => some <| IO.userError "stream fixture cleanup did not confirm child exit"
+  let captureErrors := [stdoutOutcome, stderrOutcome].filterMap fun outcome => match outcome with
+    | .drained => none
+    | .sourceFailed error => some error
+    | .pipeStillOpen => some <| IO.userError "stream fixture child output pipe remained open"
+  match operationError? <|> cleanupError? <|> captureErrors.head? with
+  | none => IO.ofExcept result
+  | some error =>
+      let logs ← match logs? with
+        | some path => pure path
+        | none => pure <| System.FilePath.mk ".beam/test-failures" / s!"stream-contract-{← IO.monoNanosNow}"
+      let observation := match observation with
+        | none => "still running"
+        | some (.exited code) => s!"exited with code {code}"
+        | some (.waitFailed failure) => s!"exit observation failed: {failure}"
+      let mut details := s!"\nchild {owner.pid} before cleanup: {observation}"
+      match termination with
+      | .exited code => details := details ++ s!"\ncleanup confirmed exit code {code}"
+      | .unconfirmed waitError? signalError? =>
+          details := details ++ "\ncleanup exit unconfirmed"
+          if let some failure := waitError? then details := details ++ s!"\ncleanup wait: {failure}"
+          if let some failure := signalError? then details := details ++ s!"\ncleanup signal: {failure}"
+      try IO.FS.createDirAll logs catch failure =>
+        details := details ++ s!"\nevidence directory {logs}: {failure}"
+      for (name, outcome, bytes) in [
+          ("stdout", stdoutOutcome, ← stdoutBytes.atomically get),
+          ("stderr", stderrOutcome, ← stderrBytes.atomically get)] do
+        match outcome with
+        | .drained => pure ()
+        | .sourceFailed failure => details := details ++ s!"\n{name} capture failed: {failure}"
+        | .pipeStillOpen => details := details ++ s!"\n{name} capture incomplete: pipe still open"
+        let path := logs / s!"daemon.{name}.log"
+        try IO.FS.writeBinFile path bytes catch failure =>
+          details := details ++ s!"\nevidence write {path}: {failure}"
+        let text := (String.fromUTF8? bytes).getD "<non-UTF-8 tail; see retained log>"
+        details := details ++ s!"\n{name} tail, at most 8192 bytes ({path}):\n{text}"
+      throw <| IO.userError s!"{error}{details}"
 
 private def buildLakeTarget (root : System.FilePath) (target : String) : IO Unit := do
   let out ← IO.Process.output {
@@ -54,15 +133,17 @@ private def syncVersion
   pure result.version
 
 private partial def waitForBrokerExit
-    (broker : IO.Process.Child nullBrokerStdio)
+    (broker : Beam.Broker.BackendProcess)
     (tries : Nat := 200) : IO Unit := do
-  if (← broker.tryWait).isSome then
-    pure ()
-  else if tries == 0 then
-    throw <| IO.userError "daemon remained alive after shutdown"
-  else
-    IO.sleep 25
-    waitForBrokerExit broker (tries - 1)
+  match ← broker.observe with
+  | some (.exited _) => pure ()
+  | some (.waitFailed error) => throw error
+  | none =>
+    if tries == 0 then
+      throw <| IO.userError "daemon remained alive after shutdown"
+    else
+      IO.sleep 25
+      waitForBrokerExit broker (tries - 1)
 
 private def sendShutdownAndResetConnection (port : UInt16) : IO Unit := do
   let payload := (toJson Beam.Broker.Request.shutdown).compress
@@ -84,20 +165,11 @@ private def sendShutdownAndResetConnection (port : UInt16) : IO Unit := do
 private def checkShutdownResponseBeforeExit (root : System.FilePath) : IO Unit := do
   let port ← freshTcpPort
   let endpoint : Beam.Broker.Endpoint := .tcp port
-  let broker ← spawnLeanBroker endpoint root
-  try
+  withBrokerFailureEvidence
+      (spawnLeanBroker endpoint root (stdio := capturedBrokerStdio)) fun broker => do
     waitForBrokerReadyForRoot endpoint root
     discard <| expectOk (← runClient endpoint Beam.Broker.Request.shutdown)
     waitForBrokerExit broker
-  finally
-    try
-      broker.kill
-    catch _ =>
-      pure ()
-    try
-      discard <| broker.tryWait
-    catch _ =>
-      pure ()
 
 private def checkInitialRequestErrors (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   for (header?, expected) in #[(some "16777217\n", "exceeds 16777216 bytes"),
@@ -124,7 +196,120 @@ private def checkInitialRequestErrors (endpoint : Beam.Broker.Endpoint) : IO Uni
     finally
       Beam.Broker.Transport.closeConnection connection
 
+private def checkStartupFailureEvidence : IO Unit := do
+  let root ← mkTempProjectRoot "beam-stream-startup-evidence"
+  IO.FS.createDirAll root
+  try
+    for writeFailure in [false, true] do
+      let marker := root / s!"ready-{writeFailure}"
+      let logs := root / s!"logs-{writeFailure}"
+      if writeFailure then IO.FS.writeFile logs "preserve this non-directory"
+      let script := String.intercalate "\n" [
+        "import os,pathlib,sys,time",
+        "os.write(1,b'child stdout without newline')",
+        "os.write(2,b'child stderr without newline')",
+        "pathlib.Path(sys.argv[1]).write_text('ready')",
+        "time.sleep(60)"
+      ]
+      let ownerRef ← IO.mkRef (none : Option Beam.Broker.BackendProcess)
+      let spawn := do
+        let child ← IO.Process.spawn {
+          toStdioConfig := capturedBrokerStdio
+          cmd := "python3"
+          args := #["-c", script, marker.toString]
+          setsid := true
+        }
+        pure child
+      let error? ← try
+        withBrokerFailureEvidence spawn (logs? := some logs) fun owner => do
+          ownerRef.set (some owner)
+          let mut attempts := 500
+          while !(← marker.pathExists) && attempts > 0 do
+            IO.sleep 10
+            attempts := attempts - 1
+          unless ← marker.pathExists do
+            throw <| IO.userError "startup evidence fake child was not ready"
+          waitForBrokerReadyForRoot (← freshTcpEndpoint) root (tries := 0)
+        pure none
+      catch error => pure (some error)
+      let some error := error?
+        | throw <| IO.userError "expected fake child readiness to fail"
+      for expected in ["timed out waiting for Beam daemon", "still running",
+          "child stdout without newline", "child stderr without newline", logs.toString] do
+        unless error.toString.contains expected do
+          throw <| IO.userError s!"startup failure omitted '{expected}': {error}"
+      if writeFailure then
+        unless error.toString.contains "evidence write" &&
+            (← IO.FS.readFile logs) == "preserve this non-directory" do
+          throw <| IO.userError "evidence failure replaced the primary error or changed its blocker"
+      else
+        unless (← IO.FS.readFile (logs / "daemon.stdout.log")) == "child stdout without newline" &&
+            (← IO.FS.readFile (logs / "daemon.stderr.log")) == "child stderr without newline" do
+          throw <| IO.userError "startup failure did not retain the original child output"
+      let some owner ← ownerRef.get
+        | throw <| IO.userError "startup evidence fake child was not spawned"
+      match ← owner.observe with
+      | some (.exited _) => pure ()
+      | _ => throw <| IO.userError "startup failure did not collect its child"
+  finally
+    IO.FS.removeDirAll root
+
+private def checkUnconfirmedCleanupEvidence : IO Unit := do
+  let root ← mkTempProjectRoot "beam-stream-unconfirmed-evidence"
+  IO.FS.createDirAll root
+  let marker := root / "ready"
+  let release := root / "release"
+  let logs := root / "logs"
+  let ownerRef ← IO.mkRef (none : Option Beam.Broker.BackendProcess)
+  let script := String.intercalate "\n" [
+    "import os,pathlib,sys,time",
+    "os.write(1,b'quiet live child stdout')",
+    "os.write(2,b'quiet live child stderr')",
+    "os.close(1); os.close(2)",
+    "pathlib.Path(sys.argv[1]).write_text('ready')",
+    "while not pathlib.Path(sys.argv[2]).exists(): time.sleep(0.005)"
+  ]
+  try
+    let spawn := IO.Process.spawn {
+      toStdioConfig := capturedBrokerStdio
+      cmd := "python3"
+      args := #["-c", script, marker.toString, release.toString]
+      setsid := true
+    }
+    let error? ← try
+      -- A no-op termination operation keeps this real child alive until release.
+      -- The assertion cannot race an OS signal; EOF still does not prove child exit.
+      withBrokerFailureEvidence spawn (logs? := some logs) (cleanupTimeoutMs := 0)
+          (adopt := fun child => Beam.Broker.BackendProcess.create
+            child.pid child.tryWait (pure ())) fun owner => do
+        ownerRef.set (some owner)
+        let mut attempts := 500
+        while !(← marker.pathExists) && attempts > 0 do
+          IO.sleep 10
+          attempts := attempts - 1
+        unless ← marker.pathExists do
+          throw <| IO.userError "unconfirmed-cleanup fake child was not ready"
+      pure none
+    catch error => pure (some error)
+    let some error := error?
+      | throw <| IO.userError "fixture accepted drained output as proof of child exit"
+    for expected in ["cleanup did not confirm child exit", "cleanup exit unconfirmed",
+        "still running", "quiet live child stdout", "quiet live child stderr", logs.toString] do
+      unless error.toString.contains expected do
+        throw <| IO.userError s!"unconfirmed cleanup omitted '{expected}': {error}"
+    unless ← (logs / "daemon.stdout.log").pathExists do
+      throw <| IO.userError "cleanup-only failure did not retain its evidence"
+  finally
+    IO.FS.writeFile release "release"
+    if let some owner ← ownerRef.get then
+      match ← owner.terminate 5000 with
+      | .exited _ => pure ()
+      | .unconfirmed .. => throw <| IO.userError "unconfirmed-cleanup fake child was not collected"
+    IO.FS.removeDirAll root
+
 def main : IO Unit := do
+  checkStartupFailureEvidence
+  checkUnconfirmedCleanupEvidence
   let port ← freshTcpPort
   let endpoint : Beam.Broker.Endpoint := .tcp port
   let root ← mkTempProjectRoot "beam-daemon-stream-contract"
@@ -133,8 +318,7 @@ def main : IO Unit := do
     daemonId := "stream-contract-generation"
     configHash := "stream-contract-config"
   }
-  let broker ← spawnLeanBroker endpoint root (identity? := some identity)
-  try
+  let action := fun (broker : Beam.Broker.BackendProcess) => do
     waitForBrokerReadyForRoot endpoint root
     checkInitialRequestErrors endpoint
     match ← Beam.Daemon.standaloneDaemonGenerationStatus endpoint testWorkspaceId root identity with
@@ -327,18 +511,11 @@ def main : IO Unit := do
     | status =>
         throw <| IO.userError s!"stopped daemon was classified as {repr status}"
     checkShutdownResponseBeforeExit root
+  try
+    withBrokerFailureEvidence
+      (spawnLeanBroker endpoint root (identity? := some identity)
+        (stdio := capturedBrokerStdio)) action
   finally
-    try
-      broker.kill
-    catch _ =>
-      pure ()
-    try
-      discard <| broker.tryWait
-    catch _ =>
-      pure ()
-    try
-      IO.FS.removeDirAll root
-    catch _ =>
-      pure ()
+    try IO.FS.removeDirAll root catch _ => pure ()
 
 end BeamTest.Broker.StreamContractTest

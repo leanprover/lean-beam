@@ -1,0 +1,15 @@
+# Copyright (c) 2026 Lean FRO LLC. All rights reserved.
+# Released under Apache 2.0 license as described in the file LICENSE.
+
+name: Retain test failure evidence
+description: Upload retained fixture receipts and logs without SDK or build-output copies.
+runs:
+  using: composite
+  steps:
+    - uses: actions/upload-artifact@v7
+      with:
+        name: test-failures-${{ github.job }}-${{ runner.os }}
+        include-hidden-files: true
+        if-no-files-found: ignore
+        retention-days: 14
+        path: .beam/test-failures/**

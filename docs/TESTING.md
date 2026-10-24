@@ -411,6 +411,34 @@ log tails so the bundle or stale-diagnostic state can be diagnosed from the test
 `BEAM_TOOLCHAIN_COMPAT_KEEP_TMP_ON_FAILURE=1` to preserve the fake roots for local inspection after
 a failed run.
 
+## Test fixture infrastructure
+
+[PipeLineReader](../tests/lib/pipe_lines.py) keeps one byte buffer for a subprocess stdout stream.
+The HTTP bridge and MCP test client use it; the client's paused manual reads and continuous reader share that buffer. Only one
+consumer may read at a time; starting the background reader transfers consumption without losing
+read-ahead. A dedicated reader can block on all supported platforms. Deadline reads use POSIX pipe
+readiness. Framing tests cover combined messages, partial UTF-8, deadlines, and unterminated EOF.
+
+The save-replay shell fixture binds its commands to the project with
+[beam_test_project_command](../tests/lib/project-sdk.sh). It resolves `lean` or `lake` through Elan
+in the fixture directory, with inherited `ELAN_TOOLCHAIN` cleared for that observation only. The
+SDK used to build Beam can differ from the fixture's SDK; putting it first on `PATH` must not choose
+the replay oracle. Selection failure is an error, with no fallback to an ambient command.
+
+The save-replay fixture uses one owned scratch workspace. It stops and collects its owners before
+removing successful scratch state. Failure preserves the workspace and copies a small evidence
+packet to `.beam/test-failures/`: compiler commands and revisions, the installation manifest,
+scenario/owner logs, and the trace/setup/hash records captured before exact-target replay. The
+pre-replay inventory records artifact hashes and modification times, since a failed replay check
+may already have rebuilt those files. Evidence-copy failure reports the retained workspace and
+preserves the original test exit status.
+
+Fast, Slow, and the combined macOS job upload `.beam/test-failures/` through the shared
+[test-evidence action](../.github/actions/test-evidence/action.yml). Packets contain diagnostic data,
+not SDK or compiled-artifact copies, and are retained for 14 days. For local defensive validation,
+use `--keep-root` to keep the enclosing clone as well as the inner failed workspace. Remove only
+the printed owned scratch directory after the evidence is no longer needed.
+
 ## Native Toolchain Qualification
 
 [tests/test-native-toolchain.py](../tests/test-native-toolchain.py) takes an SDK prefix and checks

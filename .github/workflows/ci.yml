@@ -137,6 +137,10 @@ jobs:
         if: ${{ !cancelled() && steps.lean_setup.outcome == 'success' && (needs.toolchains.result != 'success' || needs.toolchains.outputs.macos-profile != 'platform') }}
         run: bash tests/test-beam-install.sh
 
+      - name: Retain test failure evidence
+        if: always()
+        uses: ./.github/actions/test-evidence
+
   native-toolchain:
     name: native-toolchain (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -276,6 +280,10 @@ jobs:
       - name: Beam Fast Test
         run: bash tests/test-beam-fast.sh
 
+      - name: Retain test failure evidence
+        if: always()
+        uses: ./.github/actions/test-evidence
+
   mcp-conformance:
     name: mcp-conformance (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -337,6 +345,10 @@ jobs:
 
       - name: Beam Slow Test
         run: bash tests/test-beam-slow.sh
+
+      - name: Retain test failure evidence
+        if: always()
+        uses: ./.github/actions/test-evidence
 
   beam-install:
     name: beam-install (${{ matrix.os }})
