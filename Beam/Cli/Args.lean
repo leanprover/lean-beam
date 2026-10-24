@@ -219,12 +219,26 @@ private def WrapperSessionCommand.text : WrapperSessionCommand → String
   | .recoverGeneration generation =>
       s!"recover --generation {shellQuote generation}"
 
-/-- Render one exact public wrapper-session command selector. -/
-def wrapperSessionCommand
+private def sessionCommand (executable : String)
     (root sessionDir : System.FilePath)
     (command : WrapperSessionCommand) : String :=
-  s!"lean-beam --root {shellQuote root.toString} " ++
+  s!"{executable} --root {shellQuote root.toString} " ++
     s!"--session-dir {shellQuote sessionDir.toString} {command.text}"
+
+/-- Render one exact public wrapper-session command selector. -/
+def wrapperSessionCommand (root sessionDir : System.FilePath)
+    (command : WrapperSessionCommand) : String :=
+  sessionCommand "lean-beam" root sessionDir command
+
+/-- Both supported installation layouts expose the public frontend under bin; Windows is native. -/
+def installationSessionCommand (installationRoot root sessionDir : System.FilePath)
+    (command : WrapperSessionCommand) : String :=
+  let executable := installationRoot / "bin" /
+    (if System.Platform.isWindows then "lean-beam.exe" else "lean-beam")
+  sessionCommand (shellQuote executable.toString) root sessionDir command
+
+def installationCommandFallback : String :=
+  "If that executable no longer exists, interrupt the original foreground owner or use its supervisor."
 
 def parseEnvFlag (raw : String) : Bool :=
   let normalized := raw.trimAscii.toString.toLower

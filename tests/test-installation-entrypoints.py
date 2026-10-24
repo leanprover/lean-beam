@@ -165,8 +165,12 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
                 for arguments in [("stop",), ("recover", "--generation", descriptor["daemonId"])]:
                     foreign_control = run(cli_g, "--root", str(project), *arguments,
                                           env=env, cwd=project, ok=False)
-                    assert "sessionInstallationMismatch" in foreign_control.stderr, foreign_control.stderr
-                    assert str(h) in foreign_control.stderr, foreign_control.stderr
+                    error = json.loads(foreign_control.stdout)["error"]
+                    assert error["code"] == "sessionInstallationMismatch", error
+                    assert error["data"]["installationRoot"] == str(h.resolve()), error
+                    assert error["data"]["currentInstallationRoot"] == str(g.resolve()), error
+                    assert error["data"]["generation"] == descriptor["daemonId"], error
+                    assert foreign_control.stderr.splitlines()[-1] == error["data"]["remedyCommand"]
                     assert owner.poll() is None, owner_log.read_text()
                     assert registry.read_bytes() == descriptor_bytes
                 run(cli_h, "--root", str(project), "recover", "--force", env=env, cwd=project, ok=False)

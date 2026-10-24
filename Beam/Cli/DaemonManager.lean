@@ -54,7 +54,7 @@ private def projectControl
     (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none) : IO ProjectControl := do
   let dir ← controlDirFor root explicitControlDir?
-  pure { dir, registry := dir / "beam-daemon.json" }
+  pure { dir, registry := registryPathIn dir }
 
 private def rejectControlDirObservation
     (dir : System.FilePath)
@@ -297,18 +297,15 @@ private def selectProjectRegistryAt
         return .draining entry
       pure <| .selected entry
 
-private def observeProjectRegistryAt
-    (root registry : System.FilePath)
-    (admitControl : SessionDescriptor → IO Unit := fun _ => pure ()) : IO RegistryObservation := do
-  match ← selectProjectRegistryAt root registry with
+private def observeRegistrySelection
+    (root : System.FilePath) (selection : RegistrySelection) : IO RegistryObservation := do
+  match selection with
   | .absent => pure .absent
   | .invalid problem => pure <| .recoveryRequired (.invalid problem)
   | .draining entry =>
-      admitControl entry
       pure <| .recoveryRequired (.unusable entry .shutdownUnconfirmed)
   | .selectorMismatch entry => pure <| .selectorMismatch entry
   | .selected entry =>
-      admitControl entry
       let endpoint := registryEndpoint entry
       match ← daemonGenerationStatus endpoint entry.workspace.workspaceId root
           entry.identity entry.capability with
@@ -321,6 +318,10 @@ private def observeProjectRegistryAt
           pure <| .recoveryRequired (.unusable entry (.wrongEndpointRoot daemonRoot))
       | .wrongGeneration daemonRoot =>
           pure <| .recoveryRequired (.unusable entry (.wrongGeneration daemonRoot))
+
+private def observeProjectRegistryAt
+    (root registry : System.FilePath) : IO RegistryObservation := do
+  observeRegistrySelection root (← selectProjectRegistryAt root registry)
 
 private def observeProjectControl
     (root : System.FilePath)
@@ -771,16 +772,6 @@ private def existingSessionFailure (root sessionDir : System.FilePath)
       [("generation", toJson entry.daemonId), ("recordedConfigHash", toJson entry.configHash),
         ("requestedConfigHash", toJson requestedConfigHash)]
 
-private def configMismatchMessage
-    (root : System.FilePath)
-    (sessionDir : System.FilePath)
-    (entry : SessionDescriptor)
-    (expectedHash : String) : String :=
-  s!"the live Beam session for {root} uses configuration {entry.configHash}, " ++
-    s!"but this command requires {expectedHash}; the current owner was preserved. " ++
-    "Interrupt its foreground owner, then start a new one with the desired configuration:\n" ++
-    wrapperSessionCommand root sessionDir .serve
-
 def sessionSelectorMismatchMessage
     (root sessionDir : System.FilePath)
     (entry : SessionDescriptor) : String :=
@@ -803,21 +794,36 @@ private def generationRecoveryMessage
     (entry : SessionDescriptor)
     (reason : RegistryUnsafeReason) : String :=
   let message := registryRecoveryMessage root reason.message
-  let recovery := wrapperSessionCommand root sessionDir
+  let recovery := installationSessionCommand (System.FilePath.mk entry.installationRoot) root sessionDir
     (.recoverGeneration entry.daemonId)
   message ++ s!"; when recovery is safe, run:\n{recovery}"
 
+private def registryReadRecoveryPrecondition : String :=
+  "Independently establish that the original owner, daemon, and all other producers have stopped."
+
 private def registryReadRecoveryMessage
-    (root : System.FilePath)
-    (_sessionDir : System.FilePath)
+    (root registry : System.FilePath)
     (problem : RegistryProblem) : String :=
-  registryRecoveryMessage root problem.detail ++
-    "; installation ownership cannot be established for this descriptor. Preserve it for diagnosis; " ++
-    "after independently stopping its original owner, archive it explicitly as an operator"
+  s!"Beam cannot use session descriptor {registry} " ++
+    s!"for {root}: {problem.detail}. " ++
+    "Preserve it; its installation ownership is unknown. " ++
+    registryReadRecoveryPrecondition ++
+    " Only then archive this exact descriptor to a distinct, unused path; otherwise leave it in place."
+
+private def registryReadRecoveryFailure
+    (root sessionDir registry : System.FilePath)
+    (problem : RegistryProblem)
+    (diagnostics? : Option String := none) : CliFailure :=
+  { CliFailure.setup (registryReadRecoveryMessage root registry problem) with
+    failure.error.data? := some <| Json.mkObj <|
+      [("root", toJson root.toString), ("sessionDir", toJson sessionDir.toString),
+        ("descriptorPath", toJson registry.toString),
+        ("detail", toJson problem.detail), ("recoveryPrecondition", toJson registryReadRecoveryPrecondition)] ++
+      diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics)) }
 
 def RegistryBlocker.message
     (root sessionDir : System.FilePath) : RegistryBlocker → String
-  | .invalid problem => registryReadRecoveryMessage root sessionDir problem
+  | .invalid problem => registryReadRecoveryMessage root (registryPathIn sessionDir) problem
   | .unusable entry reason => generationRecoveryMessage root sessionDir entry reason
 
 def RegistryBlocker.statusDetail : RegistryBlocker → String
@@ -842,27 +848,42 @@ def unresponsiveSessionFailure (root sessionDir : System.FilePath)
 
 /-- Recovery guidance is conditional: a failed probe does not establish owner death. -/
 def RegistryBlocker.cliFailure (root sessionDir : System.FilePath)
-    (blocker : RegistryBlocker) (diagnostics? : Option String := none) : CliFailure := Id.run do
-  if let .unusable entry (.endpointProbeFailed failure) := blocker then
-    if probeFailureDisposition failure == .unresponsive then
-      return unresponsiveSessionFailure root sessionDir entry failure diagnostics?
-  let precondition := "Independently verify that the matching owner, daemon, and all other producers have stopped " ++
-    "before recovery; an unavailable endpoint does not establish this."
-  let summary := match blocker with
-    | .unusable _ (.endpointProbeFailed _) => "the recorded endpoint could not confirm this generation"
-    | _ => blocker.statusDetail
-  let failure := CliFailure.make "sessionRecoveryRequired"
-    s!"Beam session for {root} requires recovery: {summary}. {precondition}"
-  let data := [("detail", toJson blocker.statusDetail), ("recoveryPrecondition", toJson precondition)] ++
-    diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics))
-  return match blocker with
-  | .unusable entry _ =>
-      failure.withRemedy (wrapperSessionCommand root sessionDir (.recoverGeneration entry.daemonId))
+    (blocker : RegistryBlocker) (diagnostics? : Option String := none) : CliFailure :=
+  match blocker with
+  | .invalid problem =>
+      let invalid := registryReadRecoveryFailure root sessionDir (registryPathIn sessionDir) problem diagnostics?
+      { invalid with failure.error.code := "sessionRecoveryRequired" }
+  | .unusable entry .shutdownUnconfirmed =>
+      (CliFailure.make "sessionShutdownUnconfirmed" <|
+        s!"Beam session {entry.daemonId}: shutdown was requested, but its completion is unconfirmed. " ++
+          "Wait for the original owner to finish cleanup, then check status; start serve after status is absent. " ++
+          "If cleanup cannot finish, independently stop every original producer before explicit recovery. " ++
+          installationCommandFallback).withRemedy
+        (installationSessionCommand (System.FilePath.mk entry.installationRoot) root sessionDir .status)
+        ([("root", toJson root.toString), ("sessionDir", toJson sessionDir.toString),
+          ("generation", toJson entry.daemonId), ("installationRoot", toJson entry.installationRoot),
+          ("recoveryCommand", toJson (installationSessionCommand (System.FilePath.mk entry.installationRoot)
+            root sessionDir (.recoverGeneration entry.daemonId))),
+          ("recoveryPrecondition", toJson ("For manual recovery, independently verify that the original owner, " ++
+            "daemon, and all other producers have stopped; an unconfirmed shutdown does not establish this."))] ++
+          diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics)))
+  | .unusable entry reason => Id.run do
+      if let .endpointProbeFailed failure := reason then
+        if probeFailureDisposition failure == .unresponsive then
+          return unresponsiveSessionFailure root sessionDir entry failure diagnostics?
+      let precondition := "Independently verify that the matching owner, daemon, and all other producers have stopped " ++
+        "before recovery; an unavailable endpoint does not establish this."
+      let detail := reason.message
+      let summary := match reason with
+        | .endpointProbeFailed _ => "the recorded endpoint could not confirm this generation"
+        | _ => detail
+      let failure := CliFailure.make "sessionRecoveryRequired"
+        s!"Beam session for {root} requires recovery: {summary}. {precondition} {installationCommandFallback}"
+      let data := [("detail", toJson detail), ("recoveryPrecondition", toJson precondition)] ++
+        diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics))
+      return failure.withRemedy
+        (installationSessionCommand (System.FilePath.mk entry.installationRoot) root sessionDir (.recoverGeneration entry.daemonId))
         (("generation", toJson entry.daemonId) :: data)
-  | .invalid _ =>
-      { failure with
-        failure.error.message := blocker.message root sessionDir
-        failure.error.data? := some <| Json.mkObj data }
 
 def selectorMismatchFailure (root sessionDir : System.FilePath)
     (entry : SessionDescriptor) : CliFailure :=
@@ -871,8 +892,19 @@ def selectorMismatchFailure (root sessionDir : System.FilePath)
 
 private def configMismatchFailure (root sessionDir : System.FilePath)
     (entry : SessionDescriptor) (expected : String) : CliFailure :=
-  (CliFailure.setup (configMismatchMessage root sessionDir entry expected)).withRemedy
-    (wrapperSessionCommand root sessionDir .serve)
+  let precondition :=
+    s!"Use the original Beam installation at {entry.installationRoot} to stop its foreground owner. " ++
+      "Wait until that owner, its daemon, and all other producers have stopped before starting " ++
+      "serve with the desired configuration."
+  let message :=
+    s!"The recorded Beam session for {root} uses configuration {entry.configHash}, " ++
+      s!"but this command requires {expected}; its descriptor was preserved. {precondition} {installationCommandFallback}"
+  (CliFailure.setup message).withRemedy
+    (installationSessionCommand (System.FilePath.mk entry.installationRoot) root sessionDir .stop)
+    [("root", toJson root.toString), ("sessionDir", toJson sessionDir.toString),
+      ("generation", toJson entry.daemonId), ("installationRoot", toJson entry.installationRoot),
+      ("recordedConfigHash", toJson entry.configHash), ("requestedConfigHash", toJson expected),
+      ("recoveryPrecondition", toJson precondition)]
 
 private inductive RegistryDrainTransition where
   | committed
@@ -910,7 +942,7 @@ inductive ProjectDaemonStopResult where
 
 /-- Fence and request shutdown of the exact wrapper-owned generation without PID signalling. -/
 def shutdownRegisteredProjectDaemon
-    (admitControl : SessionDescriptor → IO Unit)
+    (admitControl : WrapperSessionCommand → System.FilePath → System.FilePath → SessionDescriptor → CliM Unit)
     (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none) :
     CliM ProjectDaemonStopResult := do
@@ -919,7 +951,11 @@ def shutdownRegisteredProjectDaemon
     return .absent
   let plan : ShutdownPlan ← ExceptT.mk <| withProjectControl root
       (explicitControlDir? := explicitControlDir?) fun control => (do
-    match ← observeProjectRegistryAt root control.registry admitControl with
+    let selection ← selectProjectRegistryAt root control.registry
+    match selection with
+    | .selected entry | .draining entry => admitControl .stop root control.dir entry
+    | _ => pure ()
+    match ← observeRegistrySelection root selection with
     | .absent => pure ShutdownPlan.none
     | .live entry =>
         match ← markRegistryDraining control entry with
@@ -973,7 +1009,7 @@ Explicitly quarantine one unusable session descriptor without treating persisted
 capabilities. Only typed descriptors with admitted installation ownership can be recovered.
 -/
 def recoverProjectDaemon
-    (admitControl : SessionDescriptor → IO Unit)
+    (admitControl : WrapperSessionCommand → System.FilePath → System.FilePath → SessionDescriptor → CliM Unit)
     (root : System.FilePath)
     (generation : String)
     (explicitControlDir? : Option System.FilePath := none) : CliM RecoveryResult := do
@@ -985,7 +1021,7 @@ def recoverProjectDaemon
     | .absent =>
         pure .absent
     | .current entry =>
-        admitControl entry
+        admitControl (.recoverGeneration generation) root control.dir entry
         unless generation == entry.daemonId do
           throw <| CliFailure.argument "generation" generation
             (fun preview => s!"recovery generation '{preview}' does not match recorded generation '{entry.daemonId}'")
@@ -1014,10 +1050,8 @@ def recoverProjectDaemon
             -- This is still explicit operator recovery, not a proof that producers have stopped.
             let quarantine ← quarantineRegistry control entry
             pure <| .recoveredGeneration entry.daemonId quarantine
-    | .invalid (.unsafeLeaf detail) =>
-        throw <| CliFailure.setup detail
     | .invalid problem =>
-        throw <| CliFailure.setup <| registryReadRecoveryMessage root control.dir problem
+        throw <| registryReadRecoveryFailure root control.dir control.registry problem
     : CliM RecoveryResult).run
 
 private structure OwnedProjectDaemon where

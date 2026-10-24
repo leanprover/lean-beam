@@ -1234,7 +1234,8 @@ private def checkRecoveryGenerationRecheck : IO Unit := do
     for (label, replacement) in replacements do
       IO.FS.writeFile registry ((toJson entry).pretty ++ "\n")
       let replacementText := (toJson replacement).pretty ++ "\n"
-      let admit := fun (_ : Beam.Daemon.SessionDescriptor) => IO.FS.writeFile registry replacementText
+      let admit := fun (_ : Beam.Cli.WrapperSessionCommand) (_ _ : System.FilePath) (_ : Beam.Daemon.SessionDescriptor) =>
+        (show Beam.Cli.CliM Unit from do IO.FS.writeFile registry replacementText)
       let failure ← expectCliErrorMessage s!"recovery must recheck the {label}" <|
         Beam.Cli.recoverProjectDaemon admit root entry.daemonId
       requireSubstring "recovery descriptor recheck" "descriptor changed" failure
@@ -1321,31 +1322,34 @@ private def checkUnconfirmedShutdown : IO Unit := do
     let some doctorData := doctorFailure.failure.error.data?
       | throw <| IO.userError "doctor dropped session diagnostics"
     let diagnostics ← IO.ofExcept <| doctorData.getObjValAs? (List String) "diagnostics"
-    require "doctor classifies unconfirmed shutdown as requiring recovery"
-      (diagnostics.contains "daemon status: recovery required")
+    require "doctor reports unconfirmed shutdown without prescribing recovery"
+      (diagnostics.contains "daemon status: shutdown completion unconfirmed")
     require "doctor retains the exact shutdown generation"
       (diagnostics.contains s!"daemon generation: {entry.daemonId}")
     require "doctor preserves the unconfirmed shutdown descriptor" ((← IO.FS.readFile registry) == bytes)
     let actions : List (String × Beam.Cli.CliM Unit) := [
       ("repeated stop", do
-        discard <| Beam.Cli.shutdownRegisteredProjectDaemon (fun _ => pure ()) root),
+        discard <| Beam.Cli.shutdownRegisteredProjectDaemon (fun _ _ _ _ => pure ()) root),
       ("attachment", Beam.Cli.withProjectDaemon (fun _ => pure entry.configHash) root
         (fun _ => throw <| Beam.Cli.CliFailure.internal (IO.userError "unexpected attachment")))]
     for (label, action) in actions do
       let .error failure ← action.run | throw <| IO.userError s!"{label} ignored the shutdown fence"
-      require label (failure.exitCode == 1 && failure.failure.error.code == "sessionRecoveryRequired")
+      require label (failure.exitCode == 1 && failure.failure.error.code == "sessionShutdownUnconfirmed")
       requireSubstring "shutdown does not infer owner death" "completion is unconfirmed" failure.failure.error.message
-      require "shutdown remedy selects the exact generation"
-        (failure.remedyCommand? == some (Beam.Cli.wrapperSessionCommand root control
-          (.recoverGeneration entry.daemonId)))
+      require "shutdown remedy observes the exact session instead of recovering it"
+        (failure.remedyCommand? == some (Beam.Cli.installationSessionCommand
+          (System.FilePath.mk entry.installationRoot) root control .status))
       let some data := failure.failure.error.data? | throw <| IO.userError "missing shutdown recovery data"
       requireJsonString "shutdown recovery generation" "generation" entry.daemonId data
+      requireJsonString "conditional shutdown recovery selects the owning installation" "recoveryCommand"
+        (Beam.Cli.installationSessionCommand (System.FilePath.mk entry.installationRoot)
+          root control (.recoverGeneration entry.daemonId)) data
       let precondition ← IO.ofExcept <| data.getObjValAs? String "recoveryPrecondition"
       requireSubstring "all producers must stop before recovery" "all other producers" precondition
       require "observation preserves the shutdown fence" ((← IO.FS.readFile registry) == bytes)
     -- This fixture owns no processes. Its closed endpoint and complete lack of producers are
     -- independently established here; the observation above does not establish those facts.
-    match ← cliValue <| Beam.Cli.recoverProjectDaemon (fun _ => pure ()) root entry.daemonId with
+    match ← cliValue <| Beam.Cli.recoverProjectDaemon (fun _ _ _ _ => pure ()) root entry.daemonId with
     | .recoveredGeneration generation archived =>
         require "manual recovery retains the exact shutdown generation" (generation == entry.daemonId)
         require "manual recovery preserves shutdown evidence" ((← IO.FS.readFile archived) == bytes)
@@ -1410,7 +1414,7 @@ private def checkTypedRegistryReads : IO Unit := do
     | state => throw <| IO.userError s!"current registry was classified as {state.status}"
 
     let longGeneration := String.ofList <| List.replicate 100000 'x'
-    match ← (Beam.Cli.recoverProjectDaemon (fun _ => pure ()) root longGeneration).run with
+    match ← (Beam.Cli.recoverProjectDaemon (fun _ _ _ _ => pure ()) root longGeneration).run with
     | .ok _ => throw <| IO.userError "long mismatched generation unexpectedly recovered"
     | .error failure =>
         require "long recovery generation is a bounded usage failure"
@@ -1529,10 +1533,10 @@ private def checkTypedRegistryReads : IO Unit := do
     | state => throw <| IO.userError s!"symlinked registry was classified as {state.status}"
     requireSubstring "stop should reject a symlinked registry"
       "symbolic links are not accepted"
-      (← expectCliErrorMessage "symlinked stop" <| Beam.Cli.shutdownRegisteredProjectDaemon (fun _ => pure ()) root)
+      (← expectCliErrorMessage "symlinked stop" <| Beam.Cli.shutdownRegisteredProjectDaemon (fun _ _ _ _ => pure ()) root)
     requireSubstring "recovery should reject a symlinked registry"
       "symbolic links are not accepted"
-      (← expectCliErrorMessage "symlinked recover" <| Beam.Cli.recoverProjectDaemon (fun _ => pure ()) root "fixture-generation")
+      (← expectCliErrorMessage "symlinked recover" <| Beam.Cli.recoverProjectDaemon (fun _ _ _ _ => pure ()) root "fixture-generation")
     require "registry operations must not mutate a symlink target"
       ((← IO.FS.readFile symlinkTarget) == targetText)
   finally
@@ -1930,6 +1934,13 @@ def main (args : List String) : IO UInt32 :=
   | ["--cli-error", "internal"] => Beam.Cli.run do
       let action : IO Unit := throw <| IO.userError "fixture unexpected fault"
       action
+  | ["--cli-error", "doctor-lookup", root, control] =>
+      let root := System.FilePath.mk root
+      let control := System.FilePath.mk control
+      Beam.Cli.run <| Beam.Cli.doctor "."
+        (fun root => Beam.Cli.withProjectDaemon
+          (fun _ => pure "fixture-requested-config") root (fun _ => pure []) (some control))
+        { explicitRoot? := some root, explicitControlDir? := some control }
   | ["--cli-error", "pre-input", kind] => do
       IO.eprintln "fixture-input-ready"
       (← IO.getStderr).flush

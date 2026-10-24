@@ -8,6 +8,7 @@ import Lean
 import Beam.Daemon.Protocol
 import Beam.Runtime
 import Beam.Cli.Error
+import Beam.Cli.Args
 
 open Lean
 
@@ -43,6 +44,6 @@ def DesiredConfig.configHash (config : DesiredConfig) : String :=
 structure RuntimeAccess where
   resolve : System.FilePath → CliM DesiredConfig
   attachment : System.FilePath → CliM String
-  control : Beam.Daemon.SessionDescriptor → IO Unit
+  control : WrapperSessionCommand → System.FilePath → System.FilePath → Beam.Daemon.SessionDescriptor → CliM Unit
 
 end Beam.Cli

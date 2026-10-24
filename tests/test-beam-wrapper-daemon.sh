@@ -709,10 +709,10 @@ if "$beam_script" --root "$tmp2" recover --generation opaque-generation \
   echo "expected opaque recovery to fail without established installation ownership" >&2
   exit 1
 fi
-if ! grep -Fq "installation ownership cannot be established" "$tmp2/opaque-recover.err"; then
-  cat "$tmp2/opaque-recover.err" >&2
-  exit 1
-fi
+assert_json_file_field_equals "opaque recovery error code" "$tmp2/opaque-recover.out" \
+  error.code setupError "$tmp2/opaque-recover.err"
+assert_json_file_field_equals "opaque recovery descriptor" "$tmp2/opaque-recover.out" \
+  error.data.descriptorPath "$resolved_tmp2/.beam/beam-daemon.json" "$tmp2/opaque-recover.err"
 if "$beam_script" --root "$tmp2" recover --force > /dev/null 2>&1; then
   echo "the removed force form must not bypass installation ownership" >&2
   exit 1
@@ -885,6 +885,45 @@ if ! grep -Fq "existing Beam session descriptor" "$drift_owner_err"; then
 fi
 
 # A real target change must reject attachment while preserving the existing session and request.
+other_installation="$tmp2/new installation ' with spaces"
+python3 - "$BEAM_TEST_INSTALLATION" "$other_installation" <<'PYINSTALL'
+import os
+import shutil
+import sys
+
+# Immutable installation artifacts can be shared; every path and ownership root is distinct.
+shutil.copytree(sys.argv[1], sys.argv[2], symlinks=True, copy_function=os.link)
+PYINSTALL
+upgrade_out="$tmp1/upgrade.out"
+upgrade_err="$tmp1/upgrade.err"
+cp "$registry" "$tmp1/before-upgrade-descriptor.json"
+if "$other_installation/bin/lean-beam" --root "$tmp1" stats > "$upgrade_out" 2> "$upgrade_err"; then
+  echo "expected attachment from a different installation to reject the existing configuration" >&2
+  exit 1
+fi
+assert_json_file_field_equals "upgrade configuration mismatch" "$upgrade_out" error.code setupError "$upgrade_err"
+for command in stop recover; do
+  upgrade_args=(--root "$tmp1" "$command")
+  if [ "$command" = recover ]; then upgrade_args+=(--generation "$daemon1_id"); fi
+  if "$other_installation/bin/lean-beam" ${upgrade_args[@]+"${upgrade_args[@]}"} > "$tmp1/upgrade-$command.out" 2> "$tmp1/upgrade-$command.err"; then
+    echo "expected installation ownership to reject $command from the new installation" >&2
+    exit 1
+  fi
+  assert_json_file_field_equals "upgrade $command mismatch" "$tmp1/upgrade-$command.out" \
+    error.code sessionInstallationMismatch "$tmp1/upgrade-$command.err"
+  assert_json_file_field_equals "upgrade $command owning installation" "$tmp1/upgrade-$command.out" \
+    error.data.installationRoot "$BEAM_TEST_INSTALLATION" "$tmp1/upgrade-$command.err"
+  upgrade_remedy="'$beam_script' --root '$resolved_tmp1' --session-dir '$resolved_tmp1/.beam' $command"
+  if [ "$command" = recover ]; then upgrade_remedy="$upgrade_remedy --generation '$daemon1_id'"; fi
+  assert_json_file_field_equals "upgrade $command owning remedy" "$tmp1/upgrade-$command.out" \
+    error.data.remedyCommand "$upgrade_remedy" \
+    "$tmp1/upgrade-$command.err"
+done
+if ! cmp -s "$tmp1/before-upgrade-descriptor.json" "$registry"; then
+  echo "rejected commands from the new installation must preserve the original descriptor" >&2
+  exit 1
+fi
+
 original_selector="$(cat "$tmp1/lean-toolchain")"
 alternate_selector="$(python3 - "$BEAM_TEST_INSTALLATION/manifest.json" "$original_selector" <<'PYTARGET'
 import json,sys
@@ -894,12 +933,17 @@ print(next(target['toolchain'] for target in targets if target['toolchain'] != o
 PYTARGET
 )"
 printf '%s\n' "$alternate_selector" > "$tmp1/lean-toolchain"
-if "$beam_script" --root "$tmp1" stats > /dev/null 2> "$drift_owner_err"; then
+if "$beam_script" --root "$tmp1" stats > "$drift_owner_out" 2> "$drift_owner_err"; then
   echo "expected attachment to reject a changed project target" >&2
   exit 1
 fi
-assert_contains_literal "$drift_owner_err" 'current owner was preserved'
-printf '%s\n' "$original_selector" > "$tmp1/lean-toolchain"
+assert_json_file_field_equals "configuration mismatch error" "$drift_owner_out" \
+  error.code setupError "$drift_owner_err"
+assert_json_file_field_equals "configuration mismatch generation" "$drift_owner_out" \
+  error.data.generation "$daemon1_id" "$drift_owner_err"
+assert_json_file_field_equals "configuration mismatch stop command" "$drift_owner_out" \
+  error.data.remedyCommand "'$beam_script' --root '$resolved_tmp1' --session-dir '$resolved_tmp1/.beam' stop" \
+  "$drift_owner_err"
 if [ -s "$drift_err" ]; then
   echo "ordinary frozen-configuration attachment produced unexpected diagnostics" >&2
   cat "$drift_out" >&2
@@ -935,7 +979,29 @@ if ! kill -0 "$owner1_pid" 2>/dev/null || ! kill -0 "$daemon1_pid" 2>/dev/null; 
   exit 1
 fi
 
-stop_json="$("$beam_script" --root "$tmp1" stop)"
+# Execute the upgrade remedy literally while the new installation is first on PATH and the
+# project target has also changed. No replacement of argv[0] may mask an incorrect remedy.
+if [ "$(cat "$tmp1/lean-toolchain")" != "$alternate_selector" ]; then
+  echo "expected project target drift to remain present when executing the stop remedy" >&2
+  exit 1
+fi
+stop_json="$(python3 - "$beam_script" "$upgrade_out" "$BEAM_TEST_INSTALLATION" "$other_installation" <<'PYREMEDY'
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+wrapper, report, installation, other = sys.argv[1:]
+data = json.loads(Path(report).read_text())["error"]["data"]
+assert data["installationRoot"] == str(Path(installation).resolve()), data
+command = shlex.split(data["remedyCommand"])
+assert command[0] == wrapper, command
+env = dict(os.environ, PATH=str(Path(other) / "bin") + os.pathsep + os.environ["PATH"])
+subprocess.run(command, env=env, check=True, timeout=20)
+PYREMEDY
+)"
 assert_json_field_equals "explicit session stop" "$stop_json" ok true
 assert_json_field_equals "explicit session stop state" "$stop_json" result.state stopping
 assert_json_field_equals "explicit session stop changed" "$stop_json" result.changed true
@@ -965,6 +1031,7 @@ fi
 stopped_status="$("$beam_script" --root "$tmp1" status)"
 assert_json_field_equals "stopped session status state" "$stopped_status" result.state absent
 
+printf '%s\n' "$original_selector" > "$tmp1/lean-toolchain"
 start_owner "$tmp1" "owner-2"
 daemon2_pid="$(read_json_field "$registry" pid)"
 daemon2_id="$(read_json_field "$registry" daemonId)"
@@ -1110,7 +1177,7 @@ if ! cmp -s "$tmp1/failed-drain-descriptor.json" "$registry"; then
 fi
 failed_drain_status="$("$beam_script" --root "$tmp1" status)"
 assert_json_field_equals \
-  "failed-drain session status" "$failed_drain_status" result.state recoveryRequired
+  "failed-drain session status" "$failed_drain_status" result.state shutdownUnconfirmed
 assert_json_field_equals \
   "failed-drain session generation" "$failed_drain_status" \
   result.generation "$failed_drain_daemon_id"
@@ -1165,7 +1232,7 @@ if ! kill -0 "$hold_pid" 2>/dev/null || ! kill -0 "$draining_daemon_pid" 2>/dev/
   exit 1
 fi
 draining_status="$("$beam_script" --root "$tmp1" status)"
-assert_json_field_equals "draining session status" "$draining_status" result.state recoveryRequired
+assert_json_field_equals "draining session status" "$draining_status" result.state shutdownUnconfirmed
 assert_json_field_equals \
   "draining session status generation" "$draining_status" result.generation "$draining_daemon_id"
 cp "$registry" "$tmp1/unfinished-shutdown-descriptor.json"
@@ -1174,7 +1241,7 @@ if "$beam_script" --root "$tmp1" stop > "$tmp1/repeated-stop.out" 2> "$tmp1/repe
   exit 1
 fi
 assert_json_file_field_equals "repeated session stop" "$tmp1/repeated-stop.out" \
-  error.code sessionRecoveryRequired "$tmp1/repeated-stop.err"
+  error.code sessionShutdownUnconfirmed "$tmp1/repeated-stop.err"
 assert_json_file_field_equals "repeated session stop generation" "$tmp1/repeated-stop.out" \
   error.data.generation "$draining_daemon_id" "$tmp1/repeated-stop.err"
 draining_lookup_out="$tmp1/draining-lookup.out"
@@ -1208,6 +1275,21 @@ if [ "$(read_json_field "$registry" daemonId)" != "$draining_daemon_id" ] || \
   cat "$registry" >&2
   exit 1
 fi
+python3 - "$tmp1/repeated-stop.out" "$replacement_owner_out" <<'PYSTATUS'
+import json
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+for report in sys.argv[1:]:
+    error = json.loads(Path(report).read_text())["error"]
+    assert error["code"] == "sessionShutdownUnconfirmed", error
+    command = shlex.split(error["data"]["remedyCommand"])
+    assert command[-1] == "status", command
+    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=15)
+    assert json.loads(result.stdout)["result"]["state"] == "shutdownUnconfirmed", result.stdout
+PYSTATUS
 if ! cmp -s "$tmp1/unfinished-shutdown-descriptor.json" "$registry"; then
   echo "rejected stop, attachment, or serve changed the unfinished descriptor" >&2
   exit 1
@@ -1247,7 +1329,7 @@ fi
 # request have all settled. Clients can then explicitly recover this abandoned fence.
 cp "$tmp1/unfinished-shutdown-descriptor.json" "$registry"
 abandoned_status="$("$beam_script" --root "$tmp1" status)"
-assert_json_field_equals "abandoned shutdown status" "$abandoned_status" result.state recoveryRequired
+assert_json_field_equals "abandoned shutdown status" "$abandoned_status" result.state shutdownUnconfirmed
 assert_json_field_equals "abandoned shutdown generation" "$abandoned_status" result.generation "$draining_daemon_id"
 abandoned_recovery="$("$beam_script" --root "$tmp1" recover --generation "$draining_daemon_id")"
 assert_json_field_equals "abandoned shutdown recovery" "$abandoned_recovery" result.changed true

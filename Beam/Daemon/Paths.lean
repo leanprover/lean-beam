@@ -40,10 +40,14 @@ def controlDirFor
 def controlDir (root : System.FilePath) : IO System.FilePath :=
   controlDirFor root
 
+/-- The descriptor leaf for an already selected session directory. -/
+def registryPathIn (sessionDir : System.FilePath) : System.FilePath :=
+  sessionDir / "beam-daemon.json"
+
 def registryPathFor
     (root : System.FilePath)
     (explicitControlDir? : Option System.FilePath := none) : IO System.FilePath := do
-  pure ((← controlDirFor root explicitControlDir?) / "beam-daemon.json")
+  pure (registryPathIn (← controlDirFor root explicitControlDir?))
 
 def registryPath (root : System.FilePath) : IO System.FilePath := do
   registryPathFor root

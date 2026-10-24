@@ -271,18 +271,38 @@ Machine clients should pass an explicit `--root` and invoke the typed wrapper op
 CLI failures print one `{ "ok": false, "error": { "code": "...", "message": "..." } }` response on
 stdout and a concise diagnostic on stderr. Broker error codes, data, and file progress are preserved.
 Local CLI codes include `setupError`, `brokerUnavailable`, `noLiveSession`,
-`sessionRecoveryRequired`, `sessionUnresponsive`, and `internalError`.
+`sessionRecoveryRequired`, `sessionShutdownUnconfirmed`, `sessionInstallationMismatch`,
+`sessionUnresponsive`, and `internalError`.
 Local argument echoes use bounded previews. `error.data.argument` identifies the field, an escaped
 preview, and `omittedChars`; individual argument previews retain at most 128 Unicode characters.
 Generic usage-message previews retain at most 512 characters. CLI error diagnostics escape terminal
 control characters. Local remedies appear in `error.data.remedyCommand`; commands with ordinary
 printable text also appear verbatim on their own stderr line. A control-bearing remedy is labelled
 as an escaped display on stderr; use the exact JSON command for execution.
+These command strings use POSIX shell syntax. On Windows they require Bash/MSYS2; they are not
+cmd.exe or PowerShell command strings. Shell-independent Windows remedy execution is tracked in
+[#371](https://github.com/leanprover/lean-beam/issues/371).
 `sessionRecoveryRequired` includes the recorded `generation` when known, plus a
 `recoveryPrecondition`: independently verify that the matching owner, daemon, and all other
 producers have stopped.
 An unavailable endpoint does not prove that they have stopped. Invalid descriptors require
 operator diagnosis; no generation or recovery command is invented for them.
+Their errors include `root`, `sessionDir`, and `descriptorPath` in `error.data`, identifying the exact
+record to preserve and, only after the cleanup prerequisite is established, archive as an operator.
+When an attached command finds that the recorded session configuration differs from its required configuration,
+`setupError` gives `stop` through the owning installation's absolute `bin/lean-beam` executable
+(`lean-beam.exe` on Windows). `installationRoot` identifies that installation; execute the exact
+`remedyCommand` rather than selecting another executable from `PATH`. `recoveryPrecondition`
+requires waiting for every producer to stop before starting `serve` again. A configuration-hash
+mismatch does not identify which setting changed. An attempted `stop` or `recover` from another
+installation returns the typed `sessionInstallationMismatch` with the same attempted command and
+generation through the owning installation. If that executable was pruned, interrupt the original
+foreground owner or use its supervisor to finish cleanup.
+Invalid descriptors give `sessionRecoveryRequired` when they block serving, attachment, or stop.
+Explicit `recover` instead gives `setupError`: recovery cannot admit an undecodable record as an
+owned generation. Both exit `1` and carry the same descriptor path and `recoveryPrecondition`;
+neither code authorizes archiving it before producer settlement.
+`doctor` retains structured failure data when it adds diagnostic lines.
 Unexpected IO faults use `internalError`, rather than being classified as invalid arguments.
 
 If a request send has begun and the CLI loses the reply, its existing error code is retained and
@@ -642,8 +662,8 @@ Lean server; see [configuration changes](SYNC_AND_DIAGNOSTICS.md#project-configu
 
 ## Sessions And Recovery
 
-`lean-beam status` reports the public session state as `absent`, `running`, `recoveryRequired`, or
-`unresponsive`, together with the resolved workspace and session directory.
+`lean-beam status` reports the public session state as `absent`, `running`, `shutdownUnconfirmed`,
+`recoveryRequired`, or `unresponsive`, together with the resolved workspace and session directory.
 `running` means the selected generation answered an authenticated workspace probe. It is a
 point-in-time session check; it does not establish Lean worker readiness or successful elaboration.
 `unresponsive` means the endpoint did not validate as the expected generation; this includes
@@ -660,8 +680,8 @@ the recorded generation, recorded and requested configuration hashes, and an exa
 to inspect it. This refusal makes no claim that its owner is alive; `status` supplies endpoint
 diagnostics before any decision to stop or recover the session.
 
-Attaching commands use the owner's frozen configuration and do not rebuild a competing desired
-configuration. A second owner resolves its proposed configuration and reports any mismatch while
+Attaching commands check their required runtime against the owner's frozen configuration and reject
+mismatches, including a different installation or Lean toolchain. A second owner resolves its proposed configuration and reports any mismatch while
 preserving the old owner. During stopping the descriptor reports `draining` and a replacement owner
 is refused until owned cleanup completes after graceful or process-group teardown and daemon-leader
 reaping. Abnormal session state reports explicit recovery guidance.
@@ -674,14 +694,18 @@ If the transition commits but its immediate authenticated shutdown delivery fail
 stopping result includes a typed warning. Recovery reports `state: "absent"` and whether it changed
 the selected session fence.
 
-A retained shutdown descriptor means completion is unconfirmed. `status` reports `recoveryRequired`;
-repeated `stop`, `serve`, and attached commands fail with `sessionRecoveryRequired` (exit `1`),
-the exact generation and a recovery command. This applies while an owner is finishing cleanup as
-well as after owner loss; it does not claim the owner died. Let the original owner finish, or have
+A retained shutdown descriptor means completion is unconfirmed. `status` reports `shutdownUnconfirmed`;
+repeated `stop`, `serve`, and attached commands fail with `sessionShutdownUnconfirmed` (exit `1`),
+the exact generation and an owning-installation `status` command. Wait for cleanup, then check status;
+start `serve` once it is `absent`. The record can also survive owner loss and does not establish
+active cleanup or owner death. `error.data.recoveryCommand` supplies the exact owning-installation
+recovery command as a separate, conditional next step; use it only after `recoveryPrecondition` is
+independently established. If cleanup cannot finish, have
 the client supervisor perform full cleanup of the original generation. Independently establish that
 the owner, daemon and every other producer stopped before recovering any remaining descriptor.
-Recovery still refuses a responding or uncertain endpoint. Clients should not wait indefinitely
-for a retained shutdown record to prove active progress; no automatic takeover is performed.
+Recovery still refuses a responding or uncertain endpoint. Use a caller-chosen waiting budget and
+escalate to the original supervisor if cleanup does not finish. Expiry is not evidence that producers
+stopped and does not authorize recovery. No automatic takeover is performed.
 
 The default session descriptor and lock live in `<root>/.beam`. This is intentional for
 project-scoped agent sandboxes: clients that can access the same workspace can discover the same

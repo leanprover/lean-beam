@@ -39,10 +39,12 @@ private def admitsControl (installation : Installation) (owner daemon : System.F
     configHash := "fixture", daemonBin := daemon.toString
     installationRoot := owner.toString, startedAt := "fixture"
   }
-  try
-    installation.runtime.control entry
-    pure true
-  catch _ => pure false
+  match ← (installation.runtime.control .stop owner (owner / ".beam") entry).run with
+  | .ok () => pure true
+  | .error failure =>
+      require (failure.failure.error.code == "sessionInstallationMismatch")
+        "ownership admission must preserve the typed installation mismatch"
+      pure false
 
 private def stage (directory root : System.FilePath) : IO InstallManifest := do
   let suffix := if System.Platform.isWindows then ".exe" else ""
