@@ -1116,7 +1116,7 @@ private def checkServerBasics : IO Unit := do
   requireJsonBool "beam stats without runtime result" "isError" false statsResult
   let statsStructured ← requireObjVal
     "beam stats without runtime result" "structuredContent" statsResult
-  let uptimeMs ← IO.ofExcept <| statsStructured.getObjValAs? Nat "uptimeMs"
+  let uptimeMs ← IO.ofExcept <| statsStructured.getObjValAs? Nat "uptime_ms"
   require "beam stats without runtime should report zero uptime" (uptimeMs == 0)
   let emptyWorkspaces ← requireObjVal
     "beam stats without runtime structured result" "workspaces" statsStructured
@@ -1600,7 +1600,7 @@ private def checkDocumentAdmission : IO Unit := do
     requireJsonBool "external document session" "active" false session
     let metrics ← requireObjVal "external document stats" "metrics" stats
     require "MCP rejection starts no backend session"
-      ((← IO.ofExcept <| metrics.getObjValAs? Nat "sessionStarts") == 0)
+      ((← IO.ofExcept <| metrics.getObjValAs? Nat "session_starts") == 0)
   finally
     try state.closeRuntime
     finally IO.FS.removeDirAll base

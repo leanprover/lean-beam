@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Lean.Operation
+import Beam.Output
 import Beam.Feedback
 import Beam.JsonSchema
 import Beam.Mcp.Json
@@ -16,6 +17,8 @@ import Beam.LSP.RunAt
 open Lean
 
 namespace Beam.Mcp
+
+open Beam.Output
 
 /--
 Agent-facing MCP tool names supported by the Lean projection.
@@ -291,302 +294,36 @@ abbrev PathInput := Beam.Lean.PathInput
 abbrev SyncInput := Beam.Lean.SyncInput
 abbrev SaveInput := Beam.Lean.SaveInput
 
-private def optionJson (value? : Option α) [ToJson α] : Json :=
-  match value? with
-  | some value => toJson value
-  | none => Json.null
-
-/-- Broker-level `runAt` result shape after the broker has wrapped any retained handle. -/
-structure RunAtBrokerResult where
-  success : Bool := true
-  messages : Array Beam.LSP.RunAt.Message := #[]
-  traces : Array String := #[]
-  handle? : Option Beam.Broker.Handle := none
-  proofState? : Option Beam.LSP.Lib.ProofState := none
-
-instance : FromJson RunAtBrokerResult where
-  fromJson? j := do
-    let success? ← optionalField? (α := Bool) j "success"
-    let messages? ← optionalField? (α := Array Beam.LSP.RunAt.Message) j "messages"
-    let traces? ← optionalField? (α := Array String) j "traces"
-    let handle? ← optionalField? (α := Beam.Broker.Handle) j "handle"
-    let proofState? ← optionalField? (α := Beam.LSP.Lib.ProofState) j "proofState"
-    pure {
-      success := success?.getD true
-      messages := messages?.getD #[]
-      traces := traces?.getD #[]
-      handle?
-      proofState?
-    }
-
-structure ToolError where
-  code : String
-  message : String := ""
-  data? : Option Json := none
-  deriving ToJson
-
-def ToolError.fromBrokerError (err : Beam.Broker.Error) : ToolError :=
-  { code := err.code, message := err.message, data? := err.data? }
-
-def ToolError.invalidResult (message : String) : ToolError :=
-  { code := "invalidResult", message }
-
-def ToolError.invalidInput (message : String) : ToolError :=
-  { code := "invalidInput", message }
-
-/--
-Normalize a broker-level `runAt` result into the agent-facing field names.
-
-The MCP surface uses `next_handle` and `proof_state` rather than the Lean/LSP payload's
-`handle`/`proofState` names. `next_handle` is the broker-wrapped handle that follow-up tools pass
-back unchanged.
--/
-def runAtResultJson (result : RunAtBrokerResult) : Json :=
-  Json.mkObj [
-    ("success", toJson result.success),
-    ("messages", toJson result.messages),
-    ("traces", toJson result.traces),
-    ("proof_state", optionJson result.proofState?),
-    ("next_handle", optionJson result.handle?)
-  ]
-
-def normalizeRunAtResult (result : Json) : Except ToolError Json := do
-  match fromJson? (α := RunAtBrokerResult) result with
-  | .ok parsed => pure <| runAtResultJson parsed
-  | .error err => throw <| ToolError.invalidResult err
-
-private def todoItemKey (key : String) : String :=
-  match key with
-  | "runAtPosition" => "run_at_position"
-  | "runAtText" => "run_at_text"
-  | "codeAction" => "code_action"
-  | "proofState" => "proof_state"
-  | other => other
-
-private def normalizeTodoItemJson : Json → Json
-  | Json.obj fields =>
-      let fields :=
-        fields.foldl (init := []) fun acc key value =>
-          (todoItemKey key, value) :: acc
-      Json.mkObj fields.reverse
-  | other => other
-
-private def normalizeTodoResult (result : Json) : Except ToolError Json := do
-  match result.getObjVal? "items" with
-  | .ok (Json.arr items) =>
-      pure <| result.setObjVal! "items" (Json.arr (items.map normalizeTodoItemJson))
-  | .ok _ =>
-      throw <| ToolError.invalidResult "todo result 'items' must be an array"
-  | .error err =>
-      throw <| ToolError.invalidResult s!"todo result missing 'items': {err}"
-
-private def normalizeCodeActionResolveResult : Json → Except ToolError Json
-  | Json.obj fields =>
-      let fields :=
-        fields.foldl (init := []) fun acc key value =>
-          let key :=
-            if key == "codeAction" then
-              "code_action"
-            else
-              key
-          (key, value) :: acc
-      pure <| Json.mkObj fields.reverse
-  | other =>
-      throw <| ToolError.invalidResult
-        s!"code_action_resolve result must be an object, got {other.compress}"
-
-private def diagnosticSeverityName : Option Lean.Lsp.DiagnosticSeverity → String
-  | some .error => "error"
-  | some .warning => "warning"
-  | some .information => "information"
-  | some .hint => "hint"
-  | none => "unknown"
-
-/-- Project a broker diagnostic onto the shared MCP log and result representation. -/
-def diagnosticJson (diagnostic : Beam.Broker.StreamDiagnostic) : Json :=
-  Json.mkObj <|
-    [
-      ("path", toJson diagnostic.path),
-      ("uri", toJson diagnostic.uri),
-      ("severity", toJson <| diagnosticSeverityName diagnostic.severity?),
-      ("range", toJson diagnostic.range),
-      ("message", toJson diagnostic.message),
-      ("completion_blocking", toJson diagnostic.completionBlocking)
-    ] ++
-    (match diagnostic.saveBlocking? with
-    | some saveBlocking => [("save_blocking", toJson saveBlocking)]
-    | none => []) ++
-    match diagnostic.version? with
-    | some version => [("version", toJson version)]
-    | none => []
-
-private def blockingDiagnosticJson (diagnostic : Beam.Broker.SyncBlockingDiagnostic) : Json :=
-  Json.mkObj [
-    ("range", toJson diagnostic.range),
-    ("severity", toJson <| diagnosticSeverityName diagnostic.severity?),
-    ("message", toJson diagnostic.message),
-    ("save_blocking", toJson diagnostic.saveBlocking),
-    ("completion_blocking", toJson diagnostic.completionBlocking)
-  ]
-
-private def blockingMessageJson (message : Beam.Broker.SyncBlockingCommandMessage) : Json :=
-  Json.mkObj [
-    ("message", toJson message.message),
-    ("save_blocking", toJson message.saveBlocking),
-    ("completion_blocking", toJson message.completionBlocking)
-  ]
-
-private def syncResultJson (result : Beam.Broker.SyncFileResult) : Json :=
-  let diagnosticFields :=
-    match result.diagnostics.items? with
-    | some items => [("items", Json.arr <| items.map diagnosticJson)]
-    | none => []
-  Json.mkObj [
-    ("path", toJson result.path),
-    ("version", toJson result.version),
-    ("diagnostics", Json.mkObj <|
-      [("counts", toJson result.diagnostics.counts)] ++ diagnosticFields),
-    ("readiness", Json.mkObj [
-      ("save_ready", toJson result.readiness.saveReady),
-      ("reason", toJson result.readiness.reason),
-      ("blocking_error_count", toJson result.readiness.blockingErrorCount),
-      ("blocking_diagnostics", Json.arr <|
-        result.readiness.blockingDiagnostics.map blockingDiagnosticJson),
-      ("blocking_messages", Json.arr <|
-        result.readiness.blockingMessages.map blockingMessageJson)
-    ])
-  ]
-
-private def normalizeSyncResult (result : Json) : Except ToolError Json :=
-  match fromJson? (α := Beam.Broker.SyncFileResult) result with
-  | .ok result => pure <| syncResultJson result
-  | .error err => throw <| ToolError.invalidResult s!"sync result is invalid: {err}"
-
-private def saveResultJson (result : Beam.Broker.SaveOleanResult) : Json :=
-  Json.mkObj <|
-    [
-      ("path", toJson result.path),
-      ("module", toJson result.module),
-      ("version", toJson result.version),
-      ("source_hash", toJson result.sourceHash),
-      ("olean", toJson result.olean),
-      ("ilean", toJson result.ilean),
-      ("c", toJson result.c),
-      ("trace", toJson result.trace)
-    ] ++
-    (match result.oleanServer? with
-    | some path => [("olean_server", toJson path)]
-    | none => []) ++
-    (match result.oleanPrivate? with
-    | some path => [("olean_private", toJson path)]
-    | none => []) ++
-    (match result.ir? with
-    | some path => [("ir", toJson path)]
-    | none => []) ++
-    (match result.irSig? with
-    | some path => [("ir_sig", toJson path)]
-    | none => []) ++
-    (match result.bc? with
-    | some path => [("bc", toJson path)]
-    | none => []) ++
-    [("sync", syncResultJson result.sync)]
-
-private def normalizeSaveResult (result : Json) : Except ToolError Json :=
-  match fromJson? (α := Beam.Broker.SaveOleanResult) result with
-  | .ok result => pure <| saveResultJson result
-  | .error err => throw <| ToolError.invalidResult s!"save result is invalid: {err}"
-
-private def normalizeCloseSaveResult (result : Json) : Except ToolError Json := do
-  let closeSaveResult ←
-    fromJson? (α := Beam.Broker.CloseSaveResult) result
-      |>.mapError fun err => ToolError.invalidResult s!"close-save result is invalid: {err}"
-  pure <| Json.mkObj [
-    ("closed", toJson closeSaveResult.closed),
-    ("saved", saveResultJson closeSaveResult.saved)
-  ]
-
-private inductive ResultProjection where
-  | identity
-  | runAt
-  | todo
-  | codeActionResolve
-  | sync
-  | save
-  | closeSave
-
-private def ToolName.resultProjection : ToolName → ResultProjection
+/-- Map the MCP tool selector to the shared transport-neutral output operation. -/
+def ToolName.outputOperation : ToolName → Beam.Output.Operation
+  | .beamStats => .globalStats
   | .leanOperation .runAt
-  | .leanOperation .runAtHandle
+  | .leanOperation .runAtHandle => .broker .runAt
   | .leanOperation .runWith
-  | .leanOperation .runWithLinear => .runAt
-  | .leanOperation .todo => .todo
-  | .leanOperation .codeActionResolve => .codeActionResolve
-  | .leanOperation .sync
-  | .leanOperation .refresh => .sync
-  | .leanOperation .save => .save
+  | .leanOperation .runWithLinear => .broker .runWith
+  | .leanOperation .todo => .broker .todo
+  | .leanOperation .codeActionResolve => .broker .codeActionResolve
+  | .leanOperation .sync => .broker .syncFile
+  | .leanOperation .refresh => .broker .refreshFile
+  | .leanOperation .save => .broker .saveOlean
   | .leanOperation .closeSave => .closeSave
-  | _ => .identity
+  | .leanOperation .update => .broker .updateFile
+  | .leanOperation .close => .broker .close
+  | .leanOperation .hover => .broker .hover
+  | .leanOperation .signatureHelp => .broker .signatureHelp
+  | .leanOperation .definition => .broker .definition
+  | .leanOperation .references => .broker .references
+  | .leanOperation .documentSymbols => .broker .documentSymbols
+  | .leanOperation .workspaceSymbols => .broker .workspaceSymbols
+  | .leanOperation .goals => .broker .goals
+  | .leanOperation .release => .broker .release
+  | .beamVersion
+  | .beamFeedbackReport
+  | .leanDropWorkspace => .opaque
 
-private def normalizeResult (tool : ToolName) (result : Json) : Except ToolError Json :=
-  match tool.resultProjection with
-  | .identity => pure result
-  | .runAt => normalizeRunAtResult result
-  | .todo => normalizeTodoResult result
-  | .codeActionResolve => normalizeCodeActionResolveResult result
-  | .sync => normalizeSyncResult result
-  | .save => normalizeSaveResult result
-  | .closeSave => normalizeCloseSaveResult result
-
-private def ensureObject (json : Json) : Json :=
-  match json with
-  | .obj _ => json
-  | other => Json.mkObj [("result", other)]
-
-private def documentProgressJson (progress : Beam.Broker.SyncFileProgress) : Json :=
-  Json.mkObj <|
-    [
-      ("updates", toJson progress.updates),
-      ("done", toJson progress.done)
-    ] ++
-    (match progress.rangeStartLine? with
-    | some line => [("range_start_line", toJson line)]
-    | none => []) ++
-    match progress.rangeEndLine? with
-    | some line => [("range_end_line", toJson line)]
-    | none => []
-
-private def ToolName.reportsDocumentProgress : ToolName → Bool
-  | .leanOperation .sync
-  | .leanOperation .refresh
-  | .leanOperation .save
-  | .leanOperation .closeSave => true
-  | _ => false
-
-private def withDocumentProgress
-    (tool : ToolName)
-    (json : Json)
-    (fileProgress? : Option Beam.Broker.SyncFileProgress) : Json :=
-  let json := ensureObject json
-  if !tool.reportsDocumentProgress then
-    json
-  else
-    match fileProgress? with
-    | some progress =>
-        json.setObjVal! "document_progress" <| documentProgressJson progress
-    | none => json
-
-/--
-Normalize a broker response into MCP tool result content.
-
-Broker-level failures become `ToolError`s so an MCP server can map them to tool/JSON-RPC errors.
-Semantic Lean failures remain normal tool results with `success = false`.
--/
-def normalizeBrokerResponse (tool : ToolName) (resp : Beam.Broker.Response) : Except ToolError Json := do
-  match resp with
-  | .errorResult failure =>
-      throw <| ToolError.fromBrokerError failure.error
-  | .successResult result fileProgress? =>
-      let result ← normalizeResult tool result
-      pure <| withDocumentProgress tool result fileProgress?
+/-- Project a broker response into the common CLI and MCP result contract. -/
+def normalizeBrokerResponse (tool : ToolName) (resp : Beam.Broker.Response) :
+    Except Beam.Output.OutputError Json :=
+  Beam.Output.projectResponse tool.outputOperation resp
 
 end Beam.Mcp

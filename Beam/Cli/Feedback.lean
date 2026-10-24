@@ -30,7 +30,7 @@ private structure Options where
   redact? : Option Bool := none
 
 private def usage : String :=
-  "usage: lean-beam [--root PATH] feedback-report --stdin|--input <path> [--bundle none|dir|zip] [--output-dir <path>] [--no-redact]"
+  "usage: lean-beam [--pretty] [--root PATH] feedback-report --stdin|--input <path> [--bundle none|dir|zip] [--output-dir <path>] [--no-redact]"
 
 private def inputShapeHelp : String :=
   s!"input must be a JSON object with required string fields: {Beam.Feedback.requiredInputFieldsText}"
@@ -215,6 +215,6 @@ def run (identity : IO Beam.Version.Identity) (cliOpts : CliOptions) (args : Lis
     outputDir? := opts.outputDir?
     allowedRoots
   }
-  printJsonLine <| Beam.Feedback.Result.toJson result
+  printJsonLine (Beam.Feedback.Result.toJson result) cliOpts.jsonOutputFormat
 
 end Beam.Cli.Feedback

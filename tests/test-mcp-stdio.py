@@ -1913,7 +1913,7 @@ def run_concurrent_dispatch(repo_root, fixture_root, timeout, server_trace=False
                     .get(workspace_cache_key(project_root), {})
                     .get("metrics", {})
                 )
-                cancelled_count = lean_stats.get("cancelledCount", 0)
+                cancelled_count = lean_stats.get("cancelled_count", 0)
                 if isinstance(cancelled_count, int) and cancelled_count >= 1:
                     break
                 time.sleep(0.02)
@@ -2220,7 +2220,7 @@ def run_concurrent_dispatch(repo_root, fixture_root, timeout, server_trace=False
                     .get(workspace_cache_key(project_root), {})
                     .get("metrics", {})
                 )
-                cancelled_count = lean_stats.get("cancelledCount", 0)
+                cancelled_count = lean_stats.get("cancelled_count", 0)
                 if isinstance(cancelled_count, int) and cancelled_count >= 1:
                     break
                 time.sleep(0.02)
@@ -2296,7 +2296,7 @@ def run_concurrent_first_use(repo_root, fixture_root, timeout, server_trace=Fals
                 .get("metrics", {})
             )
             require(
-                lean_stats.get("sessionStarts") == 1,
+                lean_stats.get("session_starts") == 1,
                 f"concurrent first use should start one Lean session: {stats}",
             )
         finally:
@@ -2347,7 +2347,7 @@ def require_active_lean_workspaces(client, roots, label):
             f"{label} did not retain an active Lean session for {root}: {stats}",
         )
         require(
-            workspace_stats.get("metrics", {}).get("sessionStarts") == 1,
+            workspace_stats.get("metrics", {}).get("session_starts") == 1,
             f"{label} should start one Lean session for {root}: {stats}",
         )
 
@@ -2745,7 +2745,7 @@ def run_stateless_workspace_matrix(repo_root, fixture_root, timeout):
             rejected_stats = client.call_tool("beam_stats")["workspaces"][workspace_cache_key(root_a)]
             require(rejected_stats["session"]["active"] is False,
                     f"external documents started a backend session: {rejected_stats}")
-            require(rejected_stats["metrics"]["sessionStarts"] == 0,
+            require(rejected_stats["metrics"]["session_starts"] == 0,
                     f"external documents started a worker: {rejected_stats}")
 
             first_a = client.call_tool("lean_sync", {"path": "PositionEmptyLine.lean"})

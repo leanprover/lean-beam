@@ -36,6 +36,35 @@ beam() {
   LAKE_ARTIFACT_CACHE=false "$beam_script" "$@"
 }
 
+json_field() {
+  local payload="$1"
+  local field="$2"
+  BEAM_JSON_PAYLOAD="$payload" BEAM_JSON_FIELD="$field" python3 - <<'PY'
+import json, os
+
+value = json.loads(os.environ["BEAM_JSON_PAYLOAD"])
+for part in os.environ["BEAM_JSON_FIELD"].split("."):
+    value = value[part]
+print(value)
+PY
+}
+
+assert_cli_error_json() {
+  local payload_file="$1"
+  local expected_code="$2"
+  local expected_message_fragment="${3:-}"
+  python3 - "$payload_file" "$expected_code" "$expected_message_fragment" <<'PY'
+import json, pathlib, sys
+
+response = json.loads(pathlib.Path(sys.argv[1]).read_text())
+error = response.get("error", {})
+if response.get("ok") is not False or error.get("code") != sys.argv[2]:
+    raise SystemExit(f"expected {sys.argv[2]} error response, got {response!r}")
+if sys.argv[3] and sys.argv[3] not in error.get("message", ""):
+    raise SystemExit(f"expected error message to contain {sys.argv[3]!r}, got {response!r}")
+PY
+}
+
 declare -a beam_owner_pids=()
 beam_owner_last_pid=""
 
@@ -437,10 +466,10 @@ PY
   fi
   if [ -z "$(BEAM_JSON_PAYLOAD="$save_json" python3 - <<'PY'
 import json, os
-print(json.loads(os.environ["BEAM_JSON_PAYLOAD"])["result"]["saved"]["sourceHash"])
+print(json.loads(os.environ["BEAM_JSON_PAYLOAD"])["result"]["saved"]["source_hash"])
 PY
 )" ]; then
-    echo "expected close-save to report a non-empty sourceHash" >&2
+    echo "expected close-save to report a non-empty source_hash" >&2
     printf '%s\n' "$save_json" >&2
     exit 1
   fi
@@ -538,7 +567,7 @@ beam_start_owner "$tmp8"
 (
   cd "$tmp8"
   module_save_json="$(beam --root "$tmp8" close-save SaveSmoke/ModuleB.lean)"
-  for artifact_key in olean oleanServer oleanPrivate ir irSig; do
+  for artifact_key in olean olean_server olean_private ir ir_sig; do
     artifact="$(BEAM_JSON_PAYLOAD="$module_save_json" BEAM_ARTIFACT_KEY="$artifact_key" python3 - <<'PY'
 import json, os
 saved = json.loads(os.environ["BEAM_JSON_PAYLOAD"])["result"]["saved"]
@@ -597,7 +626,8 @@ PY
     remove_owned_tmp_file "$unsupported_save_err"
     exit 1
   fi
-  if ! grep -q '"code": "saveUnsupportedSetup"' "$unsupported_save_out"; then
+  if ! assert_cli_error_json "$unsupported_save_out" saveUnsupportedSetup \
+      "Move shared -D settings from moreLeanArgs to leanOptions"; then
     echo "expected unsupported setup failure to expose saveUnsupportedSetup" >&2
     cat "$unsupported_save_out" >&2
     cat "$unsupported_save_err" >&2
@@ -605,15 +635,8 @@ PY
     remove_owned_tmp_file "$unsupported_save_err"
     exit 1
   fi
-  if ! grep -q 'Move shared -D settings from moreLeanArgs to leanOptions' "$unsupported_save_out"; then
-    echo "expected unsupported setup failure to explain the leanOptions migration" >&2
-    cat "$unsupported_save_out" >&2
-    cat "$unsupported_save_err" >&2
-    remove_owned_tmp_file "$unsupported_save_out"
-    remove_owned_tmp_file "$unsupported_save_err"
-    exit 1
-  fi
-  if ! grep -q 'intentionally batch-only' "$unsupported_save_out"; then
+  if ! assert_cli_error_json "$unsupported_save_out" saveUnsupportedSetup \
+      "intentionally batch-only"; then
     echo "expected unsupported setup failure to recommend lake build for batch-only arguments" >&2
     cat "$unsupported_save_out" >&2
     cat "$unsupported_save_err" >&2
@@ -719,7 +742,7 @@ LEAN_BEAM_BROKER_TRACE="$save_race_broker_trace" \
     exit 1
   fi
   cancel_json="$(beam --root "$tmp4" cancel cancel-close-save)"
-  if ! printf '%s\n' "$cancel_json" | grep -q '"cancelled": true'; then
+  if [ "$(json_field "$cancel_json" result.cancelled)" != "True" ]; then
     echo "expected explicit cancel to report cancelled=true for close-save" >&2
     printf '%s\n' "$cancel_json" >&2
     cat "$close_out" >&2
@@ -734,7 +757,7 @@ LEAN_BEAM_BROKER_TRACE="$save_race_broker_trace" \
     rm -f "$close_out" "$close_err"
     exit 1
   fi
-  if ! grep -q '"code": "requestCancelled"' "$close_out"; then
+  if ! assert_cli_error_json "$close_out" requestCancelled; then
     echo "expected cancelled close-save to report requestCancelled" >&2
     cat "$close_out" >&2
     cat "$close_err" >&2
@@ -761,7 +784,7 @@ beam_start_owner "$tmp6"
     rm -f "$save_out" "$save_err"
     exit 1
   fi
-  if ! grep -q '"code": "saveTraceStale"' "$save_out"; then
+  if ! assert_cli_error_json "$save_out" saveTraceStale; then
     echo "expected stale trace save to report saveTraceStale" >&2
     cat "$save_out" >&2
     cat "$save_err" >&2
@@ -810,14 +833,14 @@ beam_start_owner "$tmp5"
     rm -f "$sync_out" "$sync_err" "$save_out" "$save_err"
     exit 1
   fi
-  if ! grep -q '"code": "syncBarrierIncomplete"' "$sync_out"; then
+  if ! assert_cli_error_json "$sync_out" syncBarrierIncomplete; then
     echo "expected concurrent stale sync to report syncBarrierIncomplete" >&2
     cat "$sync_out" >&2
     cat "$sync_err" >&2
     rm -f "$sync_out" "$sync_err" "$save_out" "$save_err"
     exit 1
   fi
-  if ! grep -q '"code": "syncBarrierIncomplete"' "$save_out"; then
+  if ! assert_cli_error_json "$save_out" syncBarrierIncomplete; then
     echo "expected concurrent stale save to report syncBarrierIncomplete" >&2
     cat "$save_out" >&2
     cat "$save_err" >&2

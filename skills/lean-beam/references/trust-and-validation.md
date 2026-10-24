@@ -11,7 +11,7 @@ OS security sandbox. Do not run untrusted Lean metaprograms through Beam as a se
 | Successful CLI/MCP request | The operation completed; inspect its semantic result and diagnostics. |
 | Successful probe | The speculative execution succeeded in its selected elaboration context; inspect messages and the resulting state. |
 | Empty goals alone | Neither semantic success nor declaration acceptance: failed or aborted probes can also leave no goals. |
-| `saveReady` (CLI) / `save_ready` (MCP) | The snapshot is eligible for checkpointing. Warnings, including `sorry`, can remain. |
+| `save_ready` (CLI and MCP) | The snapshot is eligible for checkpointing. Warnings, including `sorry`, can remain. |
 | Successful save | Beam wrote the accepted server snapshot; its build record uses dependency metadata at save time, not a witness of the imports loaded by that worker. Batch elaboration was not rerun. |
 | Successful clean `lake build` | Batch-build evidence for the selected targets and build inputs, subject to the project's cache policy. |
 

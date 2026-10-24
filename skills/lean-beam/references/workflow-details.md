@@ -158,7 +158,7 @@ What is not a valid checkpoint target:
   saving an upstream dependency; see the [refresh contract](https://github.com/leanprover/lean-beam/blob/main/docs/SYNC_AND_DIAGNOSTICS.md#command-model)
 - treat `lean-beam sync` as the explicit supported boundary between real file edits and Beam daemon
   session state
-- after a completed broker operation, `lean-beam sync` returns ordered machine-readable JSON on
+- after a completed broker operation, `lean-beam sync` returns compact machine-readable JSON (`--pretty` adds indentation only) on
   stdout with the current diagnostic counts and readiness result and streams human diagnostics on
   stderr; automated callers must check the process exit status before parsing stdout
 - if imported targets are stale or the Lean worker cannot finish that diagnostics barrier,
@@ -228,9 +228,9 @@ What is not a valid checkpoint target:
 - streamed diagnostics are request events, not a since-last-sync diff
 - successful `lean-beam save` includes the sync verdict it established in `result.sync`
 - successful `lean-beam close-save` includes the sync verdict in `result.saved.sync`
-- use `result.readiness.saveReady` for sync/refresh decisions,
-  `result.sync.readiness.saveReady` for save, and `result.saved.sync.readiness.saveReady` for
-  close-save; use the corresponding `blockingErrorCount` and blocking evidence to explain blocked
+- use `result.readiness.save_ready` for sync/refresh decisions,
+  `result.sync.readiness.save_ready` for save, and `result.saved.sync.readiness.save_ready` for
+  close-save; use the corresponding `blocking_error_count` and blocking evidence to explain blocked
   verdicts
 - when `lean-beam save` or `lean-beam close-save` returns `invalidParams` for document errors, the transport
   `error.message` includes a compact preview of underlying diagnostics and/or command messages, and
@@ -248,17 +248,17 @@ What is not a valid checkpoint target:
 - `serve` reports elapsed preparation time when progress is enabled; its stdout readiness result
   appears only after workspace preparation completes
 - `BEAM_REQUEST_ID=<id>` attaches optional request metadata to the broker request
-- the final stdout JSON echoes it as `clientRequestId`
+- the final stdout JSON echoes it as `client_request_id`
 - streamed stderr progress/diagnostic lines are annotated as `beam[<id>]: ...`
 - a second live request using the same id is rejected with `invalidParams`
-- `lean-beam cancel <id>` cancels an in-flight broker request by that `clientRequestId`
+- `lean-beam cancel <id>` cancels an in-flight broker request by that request ID
 - `Ctrl-C` interrupts the owning one-request connection, and the daemon cancels that exact admitted
   request when it observes the disconnect; this does not require `BEAM_REQUEST_ID`, exits nonzero,
   and does not fabricate a terminal stdout response after the connection is gone
 
 ## File Progress And Readiness
 
-Treat `fileProgress` as observability, not as proof that every call is a full barrier.
+Treat `document_progress` as observability, not as proof that every call is a full barrier.
 
 ```bash
 # with `lean-beam serve` running in another process
@@ -272,9 +272,9 @@ printf '%s\n' "$probe_out"
 
 Interpretation:
 
-- after `lean-beam sync`, expect top-level `fileProgress.done = true`
+- after `lean-beam sync`, expect `result.document_progress.done = true`
 - successful `lean-beam sync` transport does not mean the file is error-free; inspect
-  `result.readiness.saveReady` for current save-readiness; use `blockingErrorCount` and blocking
+  `result.readiness.save_ready` for current save-readiness; use `blocking_error_count` and blocking
   evidence to explain blocked verdicts
 - if you need to know whether Lean published error-severity diagnostics, inspect
   `result.diagnostics.counts.error`; do not use that field as the save/checkpoint
@@ -286,7 +286,7 @@ Interpretation:
   `completionBlockingDiagnostics` carry `completionBlocking=true`
 - follow `error.data.saveDeps` only for the listed direct deps that still need checkpointing, then
   `lean-beam refresh` the stale target before relying on downstream probes
-- after `lean-beam run-at`, top-level `fileProgress` may exist with `done = false`; that is normal
+- after `lean-beam run-at`, `result.document_progress` may exist with `done = false`; that is normal
   because the request only waited for its own target snapshot
 - use `lean-beam hover` or `lean-beam signature-help` for semantic inspection and
   `lean-beam goals before` / `lean-beam goals after` for existing proof state; use
@@ -409,9 +409,9 @@ lean-beam stats
 ```
 
 `lean-beam open-files` shows the files currently tracked by the Beam daemon for the current project,
-along with on-disk `diskStatus`, the daemon-recorded `checkpointed` marker, and the last compact
-`fileProgress` observed for that tracked version. `diskStatus` is `matchesTracked`,
-`differsFromTracked`, `missing`, or `unknown`. `checkpointed` means this daemon successfully saved
+along with on-disk `disk_status`, the daemon-recorded `checkpointed` marker, and the last compact
+`document_progress` observed for that tracked version. `disk_status` is `matches_tracked`,
+`differs_from_tracked`, `missing`, or `unknown`. `checkpointed` means this daemon successfully saved
 the unchanged tracked version; it does not revalidate Lake artifacts. Run `lean-beam save` to
 perform the authoritative Lake module, readiness, trace, and setup checks.
 

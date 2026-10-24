@@ -228,7 +228,7 @@ assert_output_omits "installed lean-beam --version" "$lean_beam_version" "source
 
 lean_beam_help="$("$beam_test_cli" --help)"
 assert_output_contains "lean-beam --help" "$lean_beam_help" \
-  "lean-beam [--root PATH] run-at"
+  "lean-beam [--pretty] [--root PATH] run-at"
 assert_output_omits "lean-beam --help" "$lean_beam_help" "lean-run-at"
 assert_output_omits "lean-beam --help" "$lean_beam_help" "reset-stats"
 
@@ -264,8 +264,8 @@ feedback_smoke_input='{"title":"CLI feedback fixture","kind":"bug","severity":"m
 feedback_smoke_output="$(printf '%s\n' "$feedback_smoke_input" | "$beam_test_cli" --root "$BEAM_TEST_PROJECT" feedback-report --stdin)"
 assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" '"markdown"'
 assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" 'CLI feedback fixture'
-assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" '"kind": "bug"'
-assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" '"severity": "medium"'
+printf '%s\n' "$feedback_smoke_output" | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["metadata"]["kind"] == "bug"'
+printf '%s\n' "$feedback_smoke_output" | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["metadata"]["severity"] == "medium"'
 assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" '"daemon"'
 assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" 'Review before posting publicly'
 assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" 'Beam does not submit feedback automatically'
@@ -273,9 +273,9 @@ assert_output_contains "lean-beam feedback-report" "$feedback_smoke_output" 'Bea
 feedback_confidential_secret='PRIVATE_CLI_CODE_57de'
 feedback_confidential_input="{\"title\":\"CLI confidential feedback fixture\",\"summary\":\"Private workspace report.\",\"reproduction\":\"lean-beam feedback-report --stdin\",\"expected\":\"A confidential report card is returned.\",\"actual\":\"A confidential report card is returned.\",\"request\":{\"source\":\"$feedback_confidential_secret\"},\"confidential\":true}"
 feedback_confidential_output="$(printf '%s\n' "$feedback_confidential_input" | "$beam_test_cli" --root "$BEAM_TEST_PROJECT" feedback-report --stdin)"
-assert_output_contains "lean-beam confidential feedback" "$feedback_confidential_output" '"confidential": true'
+printf '%s\n' "$feedback_confidential_output" | python3 -c 'import json,sys; assert json.load(sys.stdin)["metadata"]["confidential"] is True'
 assert_output_contains "lean-beam confidential feedback" "$feedback_confidential_output" 'do not post this report publicly'
-assert_output_contains "lean-beam confidential feedback" "$feedback_confidential_output" '"collection_warnings": []'
+printf '%s\n' "$feedback_confidential_output" | python3 -c 'import json,sys; assert json.load(sys.stdin)["collection_warnings"] == []'
 assert_output_omits "lean-beam confidential feedback" "$feedback_confidential_output" "$feedback_confidential_secret"
 assert_output_omits "lean-beam confidential feedback" "$feedback_confidential_output" '"openFiles"'
 assert_output_omits "lean-beam confidential feedback" "$feedback_confidential_output" '"daemon"'
@@ -291,8 +291,7 @@ feedback_confidential_non_project_root_output="$(
   printf '%s\n' "$feedback_confidential_input" \
     | "$beam_test_cli" --root "$feedback_confidential_non_project_root" feedback-report --stdin
 )"
-assert_output_contains "lean-beam confidential feedback without project root" \
-  "$feedback_confidential_non_project_root_output" '"confidential": true'
+printf '%s\n' "$feedback_confidential_non_project_root_output" | python3 -c 'import json,sys; assert json.load(sys.stdin)["metadata"]["confidential"] is True'
 assert_output_omits "lean-beam confidential feedback without project root" \
   "$feedback_confidential_non_project_root_output" "$feedback_confidential_non_project_root"
 

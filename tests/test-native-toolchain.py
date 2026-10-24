@@ -38,7 +38,7 @@ def run(args, *, cwd=REPO, env=None, ok=True):
 
 def check_native_cli_usage(beam, env, management_commands):
     help_result = run([beam, "--help"], env=env)
-    assert "lean-beam [--root PATH] run-at " in help_result.stdout, help_result
+    assert "lean-beam [--pretty] [--root PATH] run-at " in help_result.stdout, help_result
     invalid_command = run([beam, "unknown-command"], env=env, ok=False)
     assert invalid_command.returncode == 2, invalid_command
     response = json.loads(invalid_command.stdout)
@@ -49,7 +49,7 @@ def check_native_cli_usage(beam, env, management_commands):
     assert "usage: lean-beam " in invalid_command.stderr, invalid_command
     assert "--help" in invalid_command.stderr, invalid_command
     assert len(invalid_command.stderr.splitlines()) <= 3, invalid_command
-    assert "lean-beam [--root PATH] run-at " not in invalid_command.stderr, invalid_command
+    assert "lean-beam [--pretty] [--root PATH] run-at " not in invalid_command.stderr, invalid_command
     assert "uncaught exception:" not in invalid_command.stderr, invalid_command
     for text in [help_result.stdout, invalid_command.stderr]:
         assert all(f"  lean-beam {command}" not in text for command in management_commands), text
@@ -371,7 +371,7 @@ def qualify(args, lean_prefix, scratch):
             # Document rejection must precede worker creation in the installed CLI too.
             # serve deliberately ensures a backend session before accepting requests.
             before = json.loads(call("stats").stdout)["result"]
-            assert before["session"]["openDocCount"] == 0, before
+            assert before["session"]["open_doc_count"] == 0, before
             external = scratch / "project with spaces-other"
             external.mkdir()
             outside = external / "Other.lean"
@@ -394,7 +394,7 @@ def qualify(args, lean_prefix, scratch):
                     assert "select a workspace containing the document" in failure["message"], failure
             stats = json.loads(call("stats").stdout)["result"]
             assert stats["session"] == before["session"], (before, stats)
-            assert stats["metrics"]["sessionStarts"] == before["metrics"]["sessionStarts"], (before, stats)
+            assert stats["metrics"]["session_starts"] == before["metrics"]["session_starts"], (before, stats)
             updated = json.loads(call("update", "Demo.lean").stdout)
             version = updated["result"]["version"]
             # Observe the actual volume rather than assuming that macOS folds path case.
@@ -416,7 +416,7 @@ def qualify(args, lean_prefix, scratch):
                 assert alias_update.returncode == 0, case_probe
                 assert json.loads(alias_update.stdout)["result"]["version"] == version, case_probe
                 alias_stats = json.loads(call("stats").stdout)["result"]
-                case_probe["open_document_count"] = alias_stats["session"]["openDocCount"]
+                case_probe["open_document_count"] = alias_stats["session"]["open_doc_count"]
                 write_report(case_evidence, case_probe)
                 assert case_probe["open_document_count"] == 1, case_probe
             else:
@@ -438,7 +438,7 @@ def qualify(args, lean_prefix, scratch):
             assert saved["ok"], saved
             arts = project / ".lake" / "build"
             trace = json.loads((arts / "lib" / "lean" / "Demo.trace").read_text())
-            ir_sig = Path(saved["result"]["irSig"])
+            ir_sig = Path(saved["result"]["ir_sig"])
             assert ir_sig.is_file(), saved
             assert ir_sig.parent == arts / "lib" / "lean", saved
             assert trace["outputs"]["rs"].endswith(".ir.sig"), trace

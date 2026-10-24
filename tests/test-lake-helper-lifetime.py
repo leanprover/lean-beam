@@ -299,7 +299,7 @@ def through_cli(base, compiler, cli, dependency=None):
                         assert (root / ".lake/packages/fixture_dep/.git").exists(), "local dependency was not cloned"
                         assert "info:" in output and "helper configuration warning" in output, output
                         assert not any(line.startswith("trace:") for line in output.splitlines()), output
-                    registry = Path(served["result"]["sessionDir"]) / "beam-daemon.json"
+                    registry = Path(served["result"]["session_dir"]) / "beam-daemon.json"
                     port = json.loads(registry.read_text(encoding="utf-8"))["port"]
                     with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
                         with connection.makefile("rb") as incoming:
@@ -313,9 +313,9 @@ def through_cli(base, compiler, cli, dependency=None):
                             assert error["code"] == "internalError", error
                             assert "exceeds 16777216 bytes" in error["message"], error
                     synced = invoke("sync", "Main.lean")
-                    assert synced["fileProgress"]["done"] is True, synced
-                    assert synced["result"]["readiness"]["saveReady"] is True, synced
-                    assert synced["result"]["readiness"]["blockingErrorCount"] == 0, synced
+                    assert synced["result"]["document_progress"]["done"] is True, synced
+                    assert synced["result"]["readiness"]["save_ready"] is True, synced
+                    assert synced["result"]["readiness"]["blocking_error_count"] == 0, synced
                     stopping = invoke("stop")["result"]
                     assert stopping["state"] == "stopping" and stopping["changed"] is True, stopping
                     assert "warning" not in stopping, stopping

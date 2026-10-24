@@ -380,7 +380,7 @@ lean-beam save "MyPkg/Sub/Module.lean"
 ```
 
 `lean-beam open-files` reports only documents tracked by the current project daemon. Each file's
-`diskStatus` is `matchesTracked`, `differsFromTracked`, `missing`, or `unknown`, comparing the current
+`disk_status` is `matches_tracked`, `differs_from_tracked`, `missing`, or `unknown`, comparing the current
 on-disk source with the broker's tracked text. `checkpointed` means this daemon recorded a successful
 `lean-beam save` for that tracked version and the source still matches. It does not revalidate Lake
 artifacts or predict whether another save will succeed; `lean-beam save` is authoritative for those

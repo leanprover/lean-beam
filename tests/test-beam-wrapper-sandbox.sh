@@ -344,7 +344,7 @@ if [ -e "$registry" ]; then
   echo "expected exact-generation recovery to remove the authoritative fence" >&2
   exit 1
 fi
-recovery_path="$(json_text_field "$recovery_json" result.quarantinedPath)"
+recovery_path="$(json_text_field "$recovery_json" result.quarantined_path)"
 if [ ! -f "$recovery_path" ]; then
   echo "expected sandbox recovery to preserve quarantined evidence" >&2
   printf '%s\n' "$recovery_json" >&2
