@@ -18,6 +18,7 @@ inductive BrokerFailureCode where
   | workerExited
   | syncBarrierIncomplete
   | saveTraceStale
+  | saveImportsChanged
   | saveUnsupportedSetup
   | saveTargetNotModule
   | internalError
@@ -30,6 +31,7 @@ def BrokerFailureCode.name : BrokerFailureCode → String
   | .workerExited => "workerExited"
   | .syncBarrierIncomplete => syncBarrierIncompleteCode
   | .saveTraceStale => saveTraceStaleCode
+  | .saveImportsChanged => saveImportsChangedCode
   | .saveUnsupportedSetup => saveUnsupportedSetupCode
   | .saveTargetNotModule => saveTargetNotModuleCode
   | .internalError => "internalError"
@@ -41,6 +43,7 @@ def BrokerFailureCode.all : Array BrokerFailureCode := #[
   .workerExited,
   .syncBarrierIncomplete,
   .saveTraceStale,
+  .saveImportsChanged,
   .saveUnsupportedSetup,
   .saveTargetNotModule,
   .internalError

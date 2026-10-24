@@ -355,6 +355,7 @@ tmp5="$(mktemp -d /tmp/beam-save-olean-stale-XXXXXX)"
 tmp6="$(mktemp -d /tmp/beam-save-olean-stale-trace-XXXXXX)"
 tmp7="$(mktemp -d /tmp/beam-save-olean-unsupported-setup-XXXXXX)"
 tmp8="$(mktemp -d /tmp/beam-save-olean-module-XXXXXX)"
+tmp9="$(mktemp -d /tmp/beam-save-olean-imports-changed-XXXXXX)"
 race_sentinel="$(mktemp /tmp/beam-save-olean-race-sentinel-XXXXXX)"
 cancel_sentinel="$(mktemp /tmp/beam-save-olean-cancel-sentinel-XXXXXX)"
 log1="$(mktemp /tmp/beam-save-olean-build-log-XXXXXX)"
@@ -370,7 +371,7 @@ save_race_watchdog_ms="${BEAM_SAVE_RACE_WAIT_DIAGNOSTICS_WATCHDOG_MS:-10000}"
 
 cleanup() {
   local root owner_pid
-  for root in "$tmp2" "$tmp3" "$tmp4" "$tmp5" "$tmp6" "$tmp7" "$tmp8"; do
+  for root in "$tmp2" "$tmp3" "$tmp4" "$tmp5" "$tmp6" "$tmp7" "$tmp8" "$tmp9"; do
     if [ -d "$root" ]; then
       beam --root "$root" stop > /dev/null 2>&1 || true
     fi
@@ -387,6 +388,7 @@ cleanup() {
   remove_owned_tmp_tree "$tmp6"
   remove_owned_tmp_tree "$tmp7"
   remove_owned_tmp_tree "$tmp8"
+  remove_owned_tmp_tree "$tmp9"
   remove_owned_tmp_file "$race_sentinel"
   remove_owned_tmp_file "$cancel_sentinel"
   remove_owned_tmp_file "$log1"
@@ -408,6 +410,7 @@ mkproj "$tmp5"
 mkproj "$tmp6"
 mk_setup_sensitive_proj "$tmp7"
 mkproj "$tmp8"
+mkproj "$tmp9"
 
 (cd "$tmp1" && lake_build > /dev/null)
 edit_b "$tmp1"
@@ -777,6 +780,55 @@ beam_start_owner "$tmp6"
   fi
   beam --root "$tmp6" stats > /dev/null
   beam --root "$tmp6" stop > /dev/null
+  rm -f "$save_out" "$save_err"
+)
+
+# An import rebuilt outside Beam after the worker loaded it must not be recorded as the basis of
+# the importer's checkpoint: Lake would trust a trace naming inputs the worker never saw.
+(cd "$tmp9" && lake_build SaveSmoke/A.lean > /dev/null)
+beam_start_owner "$tmp9"
+(
+  cd "$tmp9"
+  beam --root "$tmp9" sync SaveSmoke/A.lean > /dev/null
+  edit_b "$tmp9"
+  lake_build SaveSmoke/B.lean > /dev/null
+  save_out="$(mktemp /tmp/beam-imports-changed-save-out-XXXXXX)"
+  save_err="$(mktemp /tmp/beam-imports-changed-save-err-XXXXXX)"
+  if beam --root "$tmp9" save SaveSmoke/A.lean >"$save_out" 2>"$save_err"; then
+    echo "expected save to reject an importer whose import was rebuilt after loading" >&2
+    cat "$save_out" >&2
+    cat "$save_err" >&2
+    rm -f "$save_out" "$save_err"
+    exit 1
+  fi
+  if ! python3 - "$save_out" <<'PY'
+import json, sys
+error = json.load(open(sys.argv[1]))["error"]
+assert error["code"] == "saveImportsChanged", error
+assert error["data"]["changedImports"] == ["SaveSmoke.B"], error
+assert error["data"]["recoveryPlan"] == ['lean-beam refresh "SaveSmoke/A.lean"'], error
+assert error["data"]["sync"]["readiness"]["saveReady"], error
+PY
+  then
+    echo "expected saveImportsChanged naming SaveSmoke.B with a refresh recovery plan" >&2
+    cat "$save_out" >&2
+    cat "$save_err" >&2
+    rm -f "$save_out" "$save_err"
+    exit 1
+  fi
+  if lake_build --no-build SaveSmoke.A > /dev/null 2>&1; then
+    echo "expected Lake to keep treating the rejected importer as out of date" >&2
+    rm -f "$save_out" "$save_err"
+    exit 1
+  fi
+  beam --root "$tmp9" refresh SaveSmoke/A.lean > /dev/null
+  beam --root "$tmp9" save SaveSmoke/A.lean > /dev/null
+  if ! lake_build --no-build SaveSmoke.A > /dev/null; then
+    echo "expected Lake to accept the importer checkpoint after refresh" >&2
+    rm -f "$save_out" "$save_err"
+    exit 1
+  fi
+  beam --root "$tmp9" stop > /dev/null
   rm -f "$save_out" "$save_err"
 )
 

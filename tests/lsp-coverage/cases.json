@@ -503,6 +503,24 @@
       "method": "$/beam/waitForDiagnostics",
       "coverage": ["standard-lsp-interference"],
       "pointer": "tests/lean/BeamTest/LSP/Requests/DiagnosticsBarrier/BasicTest.lean#checkDiagnosticsBarrierWithStandardLspInterference"
+    },
+    {
+      "id": "importBasis.basic",
+      "method": "$/beam/importBasis",
+      "coverage": ["isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/ImportBasis/BasicTest.lean#checkImportBasisCapturedAtLoad"
+    },
+    {
+      "id": "importBasis.late-check",
+      "method": "$/beam/importBasis",
+      "coverage": ["late-check"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/ImportBasis/BasicTest.lean#checkImportBasisWithoutCaptureIsUnknown"
+    },
+    {
+      "id": "importBasis.stale-version",
+      "method": "$/beam/importBasis",
+      "coverage": ["stale-version"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/ImportBasis/BasicTest.lean#checkImportBasisStaleVersion"
     }
   ]
 }

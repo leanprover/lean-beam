@@ -375,6 +375,11 @@ client protocol.
   Deferred compilation (`compiler.postponeCompile`, including declaration-scoped settings) also
   rejects zero-build saves; use `lake build` for that pipeline. See
   [SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md#command-model) for readiness and preservation guarantees.
+- Running Lake builds on the workspace while a Beam session has documents open is unsupported.
+  `save` refuses a checkpoint whose direct imports changed after the Lean file worker loaded them,
+  with `saveImportsChanged`; recover with `refresh` and save again. Other session state can still
+  go stale, so stop the owner or drop the MCP workspace before running Lake, and start a new
+  session afterward.
 - Beam does not reload Lake workspace configuration during a running Lean session. Runtime-selection
   checks can reject a changed `lean-toolchain`; they do not establish that other configuration is
   unchanged. After

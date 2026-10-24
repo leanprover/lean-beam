@@ -137,6 +137,7 @@ recreate the session afterward.
 
 - The probe result should become real source: edit, save, `update`/`sync`.
 - Probes stop clarifying the problem: change approach rather than repeating variants.
+- `save` fails with `saveImportsChanged`: `refresh`, then save.
 - `sync` fails with `syncBarrierIncomplete`: follow `error.data.recoveryPlan`, saving only the
   listed `error.data.saveDeps` and refreshing the target. If it repeats across several dependency
   hops, run `lake build`.

@@ -114,7 +114,9 @@ evidence. An elaborator that observes server mode can behave differently under `
 Structured Lake options, dynamic libraries, and plugins are supported when the file worker has
 already applied them. Modules with batch-only `moreLeanArgs` fail with `saveUnsupportedSetup`; move
 shared `-D` settings to `leanOptions`, or use `lake build` when the arguments are intentionally
-batch-only.
+batch-only. If an import changed on disk after the file worker loaded it, for example through an
+external `lake build`, saving fails with `saveImportsChanged`; run `lean-beam refresh FILE` so the
+worker reloads its imports, then save again.
 
 Beam assumes Lake workspace configuration remains unchanged while the Lean server is running. After
 editing a lakefile, manifest, package override, `lean-toolchain`, Lean options, plugins, or dynamic

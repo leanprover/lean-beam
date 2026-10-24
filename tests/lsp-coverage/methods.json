@@ -141,6 +141,17 @@
         "satisfied-version",
         "standard-lsp-interference"
       ]
+    },
+    {
+      "method": "$/beam/importBasis",
+      "family": "ImportBasis",
+      "registrySymbol": "ImportBasis.method",
+      "definition": "Beam/LSP/ImportBasis.lean#method",
+      "requiredCoverage": [
+        "isolation",
+        "late-check",
+        "stale-version"
+      ]
     }
   ]
 }

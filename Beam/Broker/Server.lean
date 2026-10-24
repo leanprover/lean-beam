@@ -796,6 +796,14 @@ private def sendNotificationJson (session : Session) (method : String) (param : 
   writeLspNotification session.stdin ({ method, param : Lean.JsonRpc.Notification Json })
   pure session
 
+/-- Send a request whose reply the broker never reads. It registers no pending entry, so the
+reader discards the reply like any unmatched response. -/
+private def sendUntrackedRequestJson (session : Session) (method : String) (param : Json) :
+    IO Session := do
+  let (session, id) := nextRequestId session
+  writeLspRequest session.stdin ({ id, method, param : Lean.JsonRpc.Request Json })
+  pure session
+
 private def sendTextDocumentDidSave (session : Session) (uri : DocumentUri) : IO Session := do
   sendNotificationJson session "textDocument/didSave" (toJson ({
     textDocument := ({ uri := uri : TextDocumentIdentifier })
@@ -932,6 +940,17 @@ private def syncFileSnapshotDetailed
         sendTextDocumentDidSave session snapshot.uri
     | .unchanged =>
         pure session
+  -- Fingerprint the imports as soon as the worker loads them; save later checks the checkpoint
+  -- basis against this record. Nobody awaits the reply: a missing record makes save refuse.
+  let session ←
+    if decision.action == .unchanged then
+      pure session
+    else
+      sendUntrackedRequestJson session importBasisMethod <| toJson ({
+        textDocument := { uri := snapshot.uri, version? := some decision.version }
+        capture := true
+        : Beam.LSP.ImportBasis.Params
+      })
   pure {
     session := { session with docs := decision.docs }
     uri := snapshot.uri
@@ -2219,6 +2238,49 @@ private def syncBarrierOutcome
 
 private initialize savePublicationMutex : Std.Mutex Unit ← Std.Mutex.new ()
 
+private def importsChangedFailure
+    (relPath : String)
+    (syncResult : SyncFileResult)
+    (basis : Beam.LSP.ImportBasis.Result) : BrokerFailure :=
+  let detail :=
+    match basis.status with
+    | .changed =>
+        s!"its imports changed on disk after the Lean worker loaded them: " ++
+          String.intercalate ", " basis.changedImports.toList
+    | _ => "Beam has no record of the imports the Lean worker loaded for it"
+  {
+    code := .saveImportsChanged
+    message :=
+      s!"lean-beam save cannot checkpoint {relPath}: {detail}. " ++
+      "A checkpoint must match the imports it was elaborated against; " ++
+      s!"run `lean-beam refresh \"{relPath}\"` to reload them, then save again."
+    data? := some <| (syncResultErrorData syncResult)
+      |>.setObjVal! "path" (toJson relPath)
+      |>.setObjVal! "changedImports" (toJson basis.changedImports)
+      |>.setObjVal! "recoveryPlan" (toJson #[s!"lean-beam refresh \"{relPath}\""])
+  }
+
+/-- Refuse a checkpoint whose direct imports no longer match those the worker loaded. -/
+private def requireCurrentImportBasis
+    (started : StartedTrackedBarrier)
+    (relPath : String)
+    (syncResult : SyncFileResult)
+    (clientRequestId? : Option String) : HandlerM Unit := do
+  let param := toJson ({
+    textDocument := { uri := started.document.uri, version? := some started.document.version }
+    capture := false
+    : Beam.LSP.ImportBasis.Params
+  })
+  let request ← started.document.withCurrentDocument fun current => do
+    let (current, request) ← startRequestJsonTrackedDetailed current importBasisMethod param
+      (clientRequestId? := clientRequestId?)
+    updateSession current
+    pure <| .ok request
+  let pending ← requestArg (← liftHandlerIO <| started.document.awaitOutcome request)
+  let basis : Beam.LSP.ImportBasis.Result ← liftHandlerIO <| decodeResponseAs pending.result
+  unless basis.status == .current do
+    throwBrokerFailure (importsChangedFailure relPath syncResult basis)
+
 private def saveOleanCore
     (server : ServerRuntime)
     (req : WorkspaceRequest)
@@ -2287,6 +2349,10 @@ private def saveOleanCore
       }
   withFailureProgress barrierProgress? <|
     started.document.recordCompletedSync
+  -- The helper read the dependency traces it will record before this check. If the direct imports
+  -- still match what the worker loaded, that trace describes the elaborated environment.
+  withFailureProgress barrierProgress? <|
+    requireCurrentImportBasis started relPath syncResult req.clientRequestId?
   let plan ← withFailureProgress barrierProgress? <| liftHandlerIO <|
     Publication.create spec.toLeanSaveOutputs
   let producersSettled ← liftHandlerIO <| IO.mkRef true

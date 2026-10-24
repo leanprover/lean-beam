@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import BeamTest.LSP.Handle.Api
 import BeamTest.LSP.Handle.Lifecycle
 import BeamTest.LSP.Requests.DiagnosticsBarrier.BasicTest
+import BeamTest.LSP.Requests.ImportBasis.BasicTest
 import BeamTest.LSP.Requests.Goals.BasicTest
 import BeamTest.LSP.Requests.RunAt.BasicTest
 import BeamTest.LSP.Requests.RunAt.AuxiliaryDeclarationTest
@@ -27,6 +28,7 @@ def main : IO Unit := BeamTest.LSP.Scenario.run do
   BeamTest.LSP.Requests.Goals.BasicTest.run
   BeamTest.LSP.Requests.Todo.BasicTest.run
   BeamTest.LSP.Requests.DiagnosticsBarrier.BasicTest.run
+  BeamTest.LSP.Requests.ImportBasis.BasicTest.run
   BeamTest.LSP.Requests.Save.BasicTest.run
   BeamTest.LSP.Handle.Api.run
   BeamTest.LSP.Handle.Lifecycle.run

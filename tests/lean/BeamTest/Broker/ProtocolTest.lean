@@ -2500,7 +2500,7 @@ private def checkDocumentSourceInputs : IO Unit := do
           workspaceId? := some "document-admission", payload := .updateFile { path }
         }).ok
       require "aliases of one Lean target share didOpen"
-        ((← writes.get).map Prod.fst == #["textDocument/didOpen"])
+        ((← writes.get).map Prod.fst == #["textDocument/didOpen", importBasisMethod])
       for (path, text) in #[("Empty.lean", ""), ("Space λ.lean", "-- λ\r\ndef crlfFixture := 1\r\n"),
           ("Malformed.lean", "this is not valid Lean\n")] do
         IO.FS.writeFile (root / path) text
@@ -2681,7 +2681,7 @@ private def checkDocumentAdmission : IO Unit := do
         }
         require "in-root aliases are admitted" response.ok
       require "in-root aliases share one didOpen"
-        ((← writes.get).map Prod.fst == #["textDocument/didOpen"])
+        ((← writes.get).map Prod.fst == #["textDocument/didOpen", importBasisMethod])
       for request in documentAdmissionRequests "document-admission" outside.toString do
         requireDocumentBoundaryFailure root (← Beam.resolveExistingPath outside)
           (← runtime.dispatchRequest request)
@@ -2691,7 +2691,7 @@ private def checkDocumentAdmission : IO Unit := do
           payload := .close { path := outside.toString }
         }).ok
       require "rejected document requests do not write to an existing session"
-        ((← writes.get).map Prod.fst == #["textDocument/didOpen"])
+        ((← writes.get).map Prod.fst == #["textDocument/didOpen", importBasisMethod])
       let dependencyRoot := root / ".lake" / "packages" / "dependency"
       let dependency := dependencyRoot / "Dep.lean"
       IO.FS.createDirAll dependencyRoot
@@ -2734,7 +2734,7 @@ private def checkDocumentAdmission : IO Unit := do
       }
       require "a symlinked workspace root admits its canonical document" response.ok
       require "a symlinked workspace root opens exactly one document"
-        ((← writes.get).map Prod.fst == #["textDocument/didOpen"])
+        ((← writes.get).map Prod.fst == #["textDocument/didOpen", importBasisMethod])
   finally IO.FS.removeDirAll base
 
 /-- Rejection must finish while an attempted source read would be blocked by the owned writer. -/
@@ -2870,12 +2870,14 @@ private def checkRefreshAdmittedIdentity (race : RefreshRace := .retargetAlias) 
         let sent ← writes.get
         let expected :=
           if race == .pendingSync then
-            #["textDocument/didChange", "textDocument/didSave", diagnosticsBarrierMethod,
-              diagnosticsBarrierMethod]
+            #["textDocument/didChange", "textDocument/didSave", importBasisMethod,
+              diagnosticsBarrierMethod, diagnosticsBarrierMethod]
           else if newerRead then
-            #["textDocument/didChange", "textDocument/didSave", diagnosticsBarrierMethod]
+            #["textDocument/didChange", "textDocument/didSave", importBasisMethod,
+              diagnosticsBarrierMethod]
           else
-            #["textDocument/didClose", "textDocument/didOpen", diagnosticsBarrierMethod]
+            #["textDocument/didClose", "textDocument/didOpen", importBasisMethod,
+              diagnosticsBarrierMethod]
         require "refresh only closes its current admitted source read" (sent.map Prod.fst == expected)
         if newerRead then
           let some newer ← newerDoc.get

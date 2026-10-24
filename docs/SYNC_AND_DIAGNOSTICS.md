@@ -184,6 +184,18 @@ before Lake dependency-trace preparation. This rejection preserves the sync verd
 also leaves the document open. Move shared `-D` settings from `moreLeanArgs` to `leanOptions`, or use
 `lake build` when the arguments are intentionally batch-only.
 
+A checkpoint must describe the imports it was elaborated against. When a Lean file worker loads a
+document's imports, Beam records the Lake trace of each direct import: its dependency hash and
+output hashes. Lake folds each import's own transitive trace into that dependency hash, so a change
+anywhere below a direct import also changes it. After Lake dependency-trace preparation, `save` and
+`close-save` compare these traces with the trace files on disk. If any differ, for example because
+an external `lake build` rebuilt an import with different content, they return
+`saveImportsChanged` with the changed modules under `error.data.changedImports`. If Beam has no
+record of the imports the worker loaded, the error has an empty `error.data.changedImports`. Either
+way the rejection preserves the sync verdict under `error.data.sync` and leaves prior artifacts and
+the Lake trace unchanged; a rejected `close-save` also leaves the document open. Run
+`lean-beam refresh FILE` (MCP: `lean_refresh`) so the worker reloads its imports, then save again.
+
 Save target resolution delegates to Lake's workspace loader for the
 project's real `lakefile.lean` or `lakefile.toml`; the broker does not synthesize fallback Lake
 configuration from `lakefile.lean` text and never batch-builds as part of `save`.
