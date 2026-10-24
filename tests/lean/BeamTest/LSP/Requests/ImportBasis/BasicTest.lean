@@ -63,6 +63,24 @@ def checkImportBasisSavedSinceLoad : ScenarioM Unit := do
     throw <| IO.userError s!"importBasis save at load: expected DepB changed, got {(toJson later).compress}"
   closeDoc doc
 
+/--
+A body edit reuses the header environment, and the broker captures it again with a later sequence.
+The load boundary stays at the first capture, even while the first is still pending.
+-/
+def checkImportBasisLaterCaptureKeepsLoadBoundary : ScenarioM Unit := do
+  let doc ← openDoc depAFixture
+  let firstReq ← sendImportBasis doc (capture := true) (eventSeq := 5)
+  changeDoc doc { line := 8, character := 0, delete := "", insert := "\n" }
+  let laterReq ← sendImportBasis doc (capture := true) (eventSeq := 9)
+  requireStatus "importBasis capture after body edit" .current (← awaitResponseAs laterReq)
+  requireStatus "importBasis capture at load" .current (← awaitResponseAs firstReq)
+  let checkReq ← sendImportBasis doc (capture := false)
+    (savedModules := #[{ module := "BeamTest.Fixtures.Deps.DepB", eventSeq := 7 }])
+  let check : Beam.LSP.ImportBasis.Result ← awaitResponseAs checkReq
+  unless check.status == .changed && check.changedImports == #["BeamTest.Fixtures.Deps.DepB"] do
+    throw <| IO.userError s!"importBasis load boundary: expected DepB changed, got {(toJson check).compress}"
+  closeDoc doc
+
 def checkImportBasisStaleVersion : ScenarioM Unit := do
   let doc ← openDoc depAFixture
   let captureReq ← sendImportBasis doc (capture := true)
@@ -75,6 +93,7 @@ def run : ScenarioM Unit := do
   checkImportBasisCapturedAtLoad
   checkImportBasisWithoutCaptureIsUnknown
   checkImportBasisSavedSinceLoad
+  checkImportBasisLaterCaptureKeepsLoadBoundary
   checkImportBasisStaleVersion
 
 end BeamTest.LSP.Requests.ImportBasis.BasicTest

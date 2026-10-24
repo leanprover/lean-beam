@@ -150,6 +150,7 @@
       "requiredCoverage": [
         "isolation",
         "late-check",
+        "load-boundary",
         "saved-since-load",
         "stale-version"
       ]

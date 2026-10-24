@@ -31,6 +31,11 @@ module whose trace cannot be located unambiguously. Each capture also records th
 sequence of the notification that loaded it, so a check refuses modules that Beam itself saved at or
 after that point, whichever trace the capture observed.
 
+Requests complete in the order the worker accepted them. A body edit reuses the header environment
+and sends another capture with a later sequence; running captures in order means the first capture
+of an environment always records it, so a later one can never advance its load boundary. A check
+likewise waits for every capture accepted before it.
+
 The capture mode is temporary: Lean receives the exact import artifacts from `lake setup-file` but
 does not retain them after loading. An external build racing the import load can still go
 unobserved. Once a worker exposes the loaded artifacts, save can compare them directly and the
@@ -104,6 +109,9 @@ private structure Basis where
 
 private initialize basisRef : IO.Ref (Option Basis) ← IO.mkRef none
 
+/-- Completion of the last accepted capture. The worker accepts requests one at a time. -/
+private initialize capturesRef : IO.Ref (ServerTask Unit) ← IO.mkRef (.pure ())
+
 private unsafe def sameEnvImpl (a b : Environment) : Bool :=
   ptrAddrUnsafe a == ptrAddrUnsafe b
 
@@ -129,14 +137,21 @@ private inductive TraceLocation where
 
 /--
 Lake may give several packages directories for the same root namespace, so the first matching
-search root need not own a module. Require exactly one root with the module's trace.
+search root need not own a module. Require exactly one trace file; an inherited search path can
+name the same directory twice.
 -/
 private def locateTrace (sp : SearchPath) (toolchainLib : System.FilePath) (module : Name) :
     IO TraceLocation := do
-  let candidates ← sp.filterM fun root => (modToFilePath root module "trace").pathExists
+  let mut candidates : Array System.FilePath := #[]
+  for root in sp do
+    let path := modToFilePath root module "trace"
+    if ← path.pathExists then
+      let path ← IO.FS.realPath path
+      unless candidates.contains path do
+        candidates := candidates.push path
   match candidates with
-  | [root] => return .trace (modToFilePath root module "trace")
-  | [] =>
+  | #[path] => return .trace path
+  | #[] =>
       if ← (modToFilePath toolchainLib module "olean").pathExists then return .toolchain
       return .unresolved
   | _ => return .unresolved
@@ -163,9 +178,7 @@ private def collectBasis (env : Environment) (eventSeq : Nat) : IO Basis := do
 private def capture (env : Environment) (eventSeq : Nat) : IO Unit := do
   if (← basisRef.get).any (sameEnv ·.env env) then
     return
-  let basis ← collectBasis env eventSeq
-  basisRef.modify fun cached? =>
-    if cached?.any (sameEnv ·.env env) then cached? else some basis
+  basisRef.set (some (← collectBasis env eventSeq))
 
 private def check (env : Environment) (saved : Array SavedModule) : IO Result := do
   let some basis ← basisRef.get
@@ -182,21 +195,29 @@ private def check (env : Environment) (saved : Array SavedModule) : IO Result :=
       changed := changed.push module
   return { status := if changed.isEmpty then .current else .changed, changedImports := changed }
 
+/-- The loaded header environment, or none if the header failed to parse or load. -/
+private def headerEnv (doc : Lean.Server.FileWorker.EditableDocument) :
+    ServerTask (Option Environment) :=
+  match doc.initSnap.result? with
+  | none => .pure none
+  | some parsed =>
+      parsed.processedSnap.task.asServerTask.mapCheap (·.result?.map (·.cmdState.env))
+
 def handle (p : Params) : RequestM (RequestTask Result) := do
   let doc ← readDoc
   unless p.capture do
     requireDocumentVersion p.textDocument
-  let some parsed := doc.initSnap.result?
-    | return RequestTask.pure { status := .unknown }
-  RequestM.mapTaskCheap parsed.processedSnap.task.asServerTask fun processed => do
-    let some state := processed.result?
-      | -- A header that failed to load replaces the previous basis with none.
-        if p.capture then basisRef.set none
-        return { status := .unknown }
-    let env := state.cmdState.env
-    if p.capture then
-      capture env p.eventSeq
-      return { status := .current }
-    check env p.savedModules
+  let previous ← capturesRef.get
+  let env := previous.bindCheap fun _ => headerEnv doc
+  if p.capture then
+    -- Not a request task: an edit cancelling the request must not skip or reorder the capture.
+    let captured ← ServerTask.BaseIO.mapTaskCheap (t := env) fun
+      | some env => (capture env p.eventSeq).catchExceptions fun _ => basisRef.set none
+      | none => basisRef.set none
+    capturesRef.set captured
+    return captured.mapCheap fun _ => .ok { status := .current }
+  RequestM.mapTaskCheap env fun
+    | some env => check env p.savedModules
+    | none => return { status := .unknown }
 
 end Beam.LSP.ImportBasis

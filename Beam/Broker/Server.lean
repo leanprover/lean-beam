@@ -71,6 +71,9 @@ structure Session where
   nextId : Nat := 1
   nextEventSeq : Nat := 1
   moduleHistory : Std.TreeMap String ModuleHistory := {}
+  /-- Event sequence of each module's last artifact publication, recorded whether or not its
+  document stays tracked. Temporary with the import basis check (issue #370). -/
+  publishedModules : Std.TreeMap String Nat := {}
   docs : Std.TreeMap String DocState := {}
 
 structure SessionState where
@@ -1869,10 +1872,14 @@ namespace Internal
 
 /-- Claim publication with the exact captured owner and accepted basis. The successful final
 cancellation check is the commit cutoff: cancellation cannot revoke the claimed filesystem work.
-Only the promotion action runs outside state; all same-workspace ownership changes wait for it. -/
+Only the promotion action runs outside state; all same-workspace ownership changes wait for it.
+
+Once promotion starts, even if it fails, `module?` enters the session's publication record in the
+same state update that releases the claim, whether or not its document is still tracked. -/
 def withDocumentPublication
     (server : ServerRuntime) (session : Session) (uri : DocumentUri) (basis : DocumentBasis)
-    (cancelRef? : Option (IO.Ref Bool)) (promote : IO α) : IO (Except ResponseFailure α) := do
+    (cancelRef? : Option (IO.Ref Bool)) (promote : IO α) (module? : Option String := none) :
+    IO (Except ResponseFailure α) := do
   let completion ← IO.Promise.new
   let document : DocumentRef := { runtime := server, session, uri, basis, cancelRef? }
   let claimed ← (document.withCurrentDocument fun _ => do
@@ -1896,6 +1903,13 @@ def withDocumentPublication
   finally
     try
       server.withState do
+        -- A later session reloads every import, so a replaced session needs no record.
+        if let some module := module? then
+          if let some current ← storedSession? session.workspaceId then
+            if sameSessionIdentity current session then
+              updateSession { current with
+                nextEventSeq := current.nextEventSeq + 1
+                publishedModules := current.publishedModules.insert module current.nextEventSeq }
         let state ← get
         if state.publication?.any (·.token == claim.token) then
           set { state with publication? := none }
@@ -2275,9 +2289,8 @@ private def requireCurrentImportBasis
     (syncResult : SyncFileResult)
     (clientRequestId? : Option String) : HandlerM Unit := do
   let request ← started.document.withCurrentDocument fun current => do
-    let savedModules := current.moduleHistory.toArray.filterMap fun (module, history) =>
-      if history.lastSaveEventSeq == 0 then none
-      else some { module, eventSeq := history.lastSaveEventSeq : Beam.LSP.ImportBasis.SavedModule }
+    let savedModules := current.publishedModules.toArray.map fun (module, eventSeq) =>
+      { module, eventSeq : Beam.LSP.ImportBasis.SavedModule }
     let param := toJson ({
       textDocument := { uri := started.document.uri, version? := some started.document.version }
       savedModules
@@ -2361,7 +2374,7 @@ private def saveOleanCore
       }
   withFailureProgress barrierProgress? <|
     started.document.recordCompletedSync
-  -- The helper read the dependency traces it will record before this check. If the direct imports
+  -- The helper read the dependency traces it will record before this check. If the loaded imports
   -- still match what the worker loaded, that trace describes the elaborated environment.
   withFailureProgress barrierProgress? <|
     requireCurrentImportBasis started relPath syncResult req.clientRequestId?
@@ -2461,6 +2474,7 @@ private def saveOleanCore
     withFailureProgress barrierProgress? <| liftFailureIO <|
       Internal.withDocumentPublication server started.document.session started.document.uri
         started.document.basis req.cancelRef? plan.promote
+        (module? := DocumentState.trackedModuleName? started.document.session.root path)
     pure {
       document := started.document
       result := leanSaveResult spec started.lakeTraceHash syncResult

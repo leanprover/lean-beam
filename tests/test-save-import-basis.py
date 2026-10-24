@@ -76,11 +76,11 @@ class Case:
         self.lake_run("build", "--no-build", module)
 
     @contextmanager
-    def owner(self):
+    def owner(self, **env):
         log = self.root.parent / "owner.stderr"
         with log.open("w") as err:
             process = subprocess.Popen([self.wrapper, "--root", self.root, "serve"], cwd=self.root,
-                                       env=self.env, stdout=subprocess.DEVNULL, stderr=err)
+                                       env=dict(self.env, **env), stdout=subprocess.DEVNULL, stderr=err)
             try:
                 deadline = time.monotonic() + 60
                 while "serving Beam session" not in log.read_text():
@@ -215,8 +215,20 @@ def unchanged_imports(case):
         case.trusted("W.B")
 
 
+def inherited_search_path(case):
+    case.project({"W.lean": "import W.B\n",
+                  "W/A.lean": "def a : Nat := 1\n",
+                  "W/B.lean": "import W.A\n\ntheorem ta : a = 1 := rfl\n"})
+    # As under `lake env lean-beam serve`: Lake prepends the same library directory again.
+    with case.owner(LEAN_PATH=str(case.root / ".lake/build/lib/lean")):
+        case.ok("save", "W/B.lean")
+        case.ok("refresh", "W/B.lean")
+        case.ok("save", "W/B.lean")
+        case.trusted("W.B")
+
+
 CASES = [external_rebuild, transitive_unchanged_olean, legacy_private_body, split_namespace,
-         rejected_close_save, beam_saved_dependency, unchanged_imports]
+         rejected_close_save, beam_saved_dependency, unchanged_imports, inherited_search_path]
 
 
 def main():
