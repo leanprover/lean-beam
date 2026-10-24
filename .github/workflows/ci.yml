@@ -9,6 +9,8 @@ on:
     branches:
       - main
   pull_request:
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 # Default to one broad macOS runner. BEAM_FULL_MACOS_CI=true enables the full OS matrices.
@@ -369,3 +371,28 @@ jobs:
 
       - name: Validate toolchain compatibility
         run: bash tests/test-beam-toolchain-compat.sh '${{ matrix.toolchain }}'
+
+  ci-result:
+    name: CI result
+    if: ${{ always() }}
+    needs:
+      - toolchains
+      - macos-platform
+      - native-toolchain
+      - shell-lint
+      - lsp
+      - beam-fast
+      - mcp-conformance
+      - mcp-modern
+      - beam-slow
+      - beam-install
+      - beam-toolchain-compat
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require the selected CI coverage
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          MACOS_PROFILE: ${{ needs.toolchains.outputs.macos-profile }}
+          FULL_MACOS: ${{ vars.BEAM_FULL_MACOS_CI }}
+        run: python3 scripts/ci-result.py

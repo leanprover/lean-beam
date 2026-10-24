@@ -206,7 +206,7 @@ class MacOSCoverageTest(unittest.TestCase):
         self.assertEqual(self.profile(self.pull_request()), coverage.Profile.FULL)
 
     def test_main_manual_and_other_events(self):
-        for name in ["push", "workflow_dispatch", "pull_request_target", "", None]:
+        for name in ["push", "workflow_dispatch", "merge_group", "pull_request_target", "", None]:
             self.assertEqual(self.profile({}, name=name), coverage.Profile.FULL)
 
     def test_missing_or_invalid_metadata(self):
