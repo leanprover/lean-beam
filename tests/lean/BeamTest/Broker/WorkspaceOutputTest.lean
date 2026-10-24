@@ -166,47 +166,49 @@ private def checkPromptCapture (cancel : Bool) : IO Unit := do
   }
   let captureRef ← IO.mkRef (none : Option Capture)
   let releasedAt ← IO.mkRef 0
-  try
-    Beam.ProcessJob.withChild child fun scope => do
-      captureRef.set (some (← Capture.start child.stdout child.stderr publisher))
-      let deadline := (← IO.monoMsNow) + 5000
-      let mut stdout := ""
-      let mut stderr := ""
-      while stdout != "α" || stderr != "warning" do
+  let completed ← Beam.ProcessJob.withChild child fun scope => do
+    captureRef.set (some (← Capture.start child.stdout child.stderr publisher))
+    let deadline := (← IO.monoMsNow) + 5000
+    let mut stdout := ""
+    let mut stderr := ""
+    while stdout != "α" || stderr != "warning" do
+      match ← buffer.poll with
+      | .chunk chunk =>
+        match chunk.source with
+        | .stdout => stdout := stdout ++ chunk.text
+        | .stderr => stderr := stderr ++ chunk.text
+      | .waiting _ =>
+        require "short flushed fragments waited for newline or EOF" ((← IO.monoMsNow) < deadline)
+        IO.sleep 1
+      | .closed => throw <| IO.userError "output request closed before producer release"
+    require "producer exited before its release gate" ((← scope.poll) == .running)
+    releasedAt.set (← IO.monoMsNow)
+    child.stdin.putStr "release\n"
+    child.stdin.flush
+    if cancel then
+      -- Observe an active flood, then revoke output without consuming its remainder.
+      let mut emitting := false
+      while !emitting do
         match ← buffer.poll with
-        | .chunk chunk =>
-          match chunk.source with
-          | .stdout => stdout := stdout ++ chunk.text
-          | .stderr => stderr := stderr ++ chunk.text
+        | .chunk chunk => emitting := chunk.source == .stdout && !chunk.text.isEmpty
         | .waiting _ =>
-          require "short flushed fragments waited for newline or EOF" ((← IO.monoMsNow) < deadline)
-          IO.sleep 1
-        | .closed => throw <| IO.userError "output request closed before producer release"
-      require "producer exited before its release gate" ((← scope.poll) == .running)
-      releasedAt.set (← IO.monoMsNow)
-      child.stdin.putStr "release\n"
-      child.stdin.flush
-      if cancel then
-        -- Observe an active flood, then revoke output without consuming its remainder.
-        let mut emitting := false
-        while !emitting do
-          match ← buffer.poll with
-          | .chunk chunk => emitting := chunk.source == .stdout && !chunk.text.isEmpty
-          | .waiting _ =>
-              require "output producer did not start its flood" ((← IO.monoMsNow) < deadline)
-              IO.sleep 1
-          | .closed => throw <| IO.userError "output request closed before cancellation"
-        buffer.discard
-        -- Returning lets the job scope terminate the still-running writer before draining EOF.
-      else
-        while (← scope.poll) == .running do
-          require "output producer did not exit" ((← IO.monoMsNow) < deadline)
-          IO.sleep 1
-  finally
+            require "output producer did not start its flood" ((← IO.monoMsNow) < deadline)
+            IO.sleep 1
+        | .closed => throw <| IO.userError "output request closed before cancellation"
+      buffer.discard
+      -- Returning lets the job scope terminate the still-running writer before draining EOF.
+    else
+      while (← scope.poll) == .running do
+        require "output producer did not exit" ((← IO.monoMsNow) < deadline)
+        IO.sleep 1
+  let outputCleanup ← (do
     if let some capture ← captureRef.get then
       let (stdout, stderr) ← capture.finish
       require "stdout drain did not complete" (match stdout with | .drained => true | _ => false)
-      require "stderr drain did not complete" (match stderr with | .drained => true | _ => false)
+      require "stderr drain did not complete" (match stderr with | .drained => true | _ => false)).toBaseIO
+  discard <| IO.ofExcept completed.cleanup
+  discard <| IO.ofExcept completed.operation
+  discard <| IO.ofExcept outputCleanup
   if cancel then
     require "cancelled capture admitted late output" (match ← buffer.poll with | .closed => true | _ => false)
     IO.println s!"workspace output: active flood cancelled and drained in {(← IO.monoMsNow) - (← releasedAt.get)} ms"

@@ -53,7 +53,42 @@ structure Scope where
 /-- Observe without reaping. Lost ownership is permanent; observation after closure is rejected. -/
 def Scope.poll (scope : Scope) : IO State := scope.observe
 
+/-- The operation and its owned teardown are independent outcomes. Neither erases the other. -/
+structure Completion (α : Type) where
+  operation : Except IO.Error α
+  cleanup : Except IO.Error Unit
+
 namespace Internal
+
+/-- The resource-specific seam shared by native job ownership and deterministic scope tests.
+The scope computes retained ownership; actions cannot supply or change it. -/
+structure ScopeOperations where
+  observe : IO State
+  finalize : Bool → IO Unit
+
+/-- Acquire job observation/cleanup, run the action, then close the scope exactly once.
+Failed assignment cleans up the already-spawned child without admitting the action. -/
+def runScope (assign : IO ScopeOperations) (cleanupUnassigned : IO Unit)
+    (action : Scope → IO α) : BaseIO (Completion α) := do
+  let ownership ← Std.Mutex.new Ownership.retained
+  match ← assign.toBaseIO with
+  | .error error =>
+      return { operation := .error error, cleanup := ← cleanupUnassigned.toBaseIO }
+  | .ok operations =>
+      let scope : Scope := ⟨ownership.atomically do
+        match ← get with
+        | .closed => throw <| IO.userError "process-job scope is closed"
+        | .lost => pure .notChild
+        | .retained =>
+            let state ← operations.observe
+            if state == .notChild then set Ownership.lost
+            pure state⟩
+      let operation ← (action scope).toBaseIO
+      let cleanup ← ownership.atomically do
+        let retained := (← get) == .retained
+        set Ownership.closed
+        (operations.finalize retained).toBaseIO
+      return { operation, cleanup }
 
 /-- Request termination while the caller retains the unreaped child spawned with `setsid := true`
 (which may not yet have established its session). The caller must own that POSIX process group;
@@ -92,26 +127,18 @@ private def closeAndWait (child : IO.Process.Child cfg) (job : USize) (owned : B
 /--
 Own assignment, observation, termination, and one final wait. The caller must not wait/kill the child
 outside this scope. Native loss of ownership is retained here and forbids further PID operations.
+
+The ownership mutex remains held through finalization. A concurrent poll may wait for that final
+wait to finish, then observes a closed scope even when cleanup failed. This is not a prompt polling
+or cancellation guarantee. Cleanup retains the existing native close/termination/wait precedence;
+the completion separates that result from the action, not every native sub-operation.
 -/
-def withChild (child : IO.Process.Child cfg) (action : Scope → IO α) : IO α := do
-  let ownership ← Std.Mutex.new Ownership.retained
-  let job ← try attach (Beam.processChildPid child)
-    catch error =>
-      terminateAndWait child
-      throw error
-  let scope : Scope := ⟨ownership.atomically do
-    match ← get with
-    | .closed => throw <| IO.userError "process-job scope is closed"
-    | .lost => pure .notChild
-    | .retained =>
-        let state ← poll child
-        if state == .notChild then set Ownership.lost
-        pure state⟩
-  try action scope finally
-    ownership.atomically do
-      let retained := (← get) == .retained
-      set Ownership.closed
-      closeAndWait child job retained
+def withChild (child : IO.Process.Child cfg) (action : Scope → IO α) :
+    BaseIO (Completion α) :=
+  Internal.runScope (do
+    let job ← attach (Beam.processChildPid child)
+    return { observe := poll child, finalize := closeAndWait child job })
+    (terminateAndWait child) action
 
 /-- Child-side owner-pipe EOF. POSIX group termination is guarded by session-leader ownership. -/
 @[extern "lean_beam_process_job_parent_lost"]

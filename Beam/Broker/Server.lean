@@ -2375,17 +2375,10 @@ private def saveOleanCore
         s!"save_olean saved text hash {saveResult.textHash}, expected synced hash {started.documentHash}")
         |>.withOptionalFileProgress barrierProgress?
     withFailureProgress barrierProgress? <| liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
-    liftHandlerIO <| producersSettled.set false
-    -- Defer caller cancellation through the helper's existing bounded trace wait, so a normal
-    -- cancellation can dispose the private outputs after their producer has actually finished.
-    withFailureProgress barrierProgress? do
-      match ← liftHandlerIO <| writeLeanSaveTrace privateSpec (← requestHelperControl none req.output?) with
-      | .ok () => pure ()
-      | .error failure =>
-          let failure ← liftHandlerIO <|
-            RequestCancellation.backendFailure req.cancelRef? failure.toResponseFailure
-          throw failure
-    liftHandlerIO <| producersSettled.set true
+    -- Local finalization has no outstanding producer when it returns, including on failure.
+    let traceResult ← liftHandlerIO <| (writePrivateSaveTrace privateSpec).toBaseIO
+    withFailureProgress barrierProgress? <| liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
+    withFailureProgress barrierProgress? <| liftHandlerIO <| IO.ofExcept traceResult
     liftHandlerIO plan.ready
     withFailureProgress barrierProgress? <| liftFailureIO <|
       Internal.withDocumentPublication server started.document.session started.document.uri

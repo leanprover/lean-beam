@@ -81,8 +81,8 @@ private def doc (server : ServerRuntime) (uri : String) : IO DocState := do
 private def waitForGate (gate : System.FilePath) : IO Unit := do
   let deadline := (← IO.monoMsNow) + 20000
   repeat
-    if ← (gate / "entered").pathExists then return
-    require "save did not enter the trace helper" ((← IO.monoMsNow) < deadline)
+    if (← (gate / "entered").pathExists) || (← (gate / "entered.json").pathExists) then return
+    require "save did not reach its preparation gate" ((← IO.monoMsNow) < deadline)
     IO.sleep 10
 
 private def requireNoAdmissions (server : ServerRuntime) : IO Unit :=
@@ -291,6 +291,71 @@ private def completionReply (description : Beam.Runtime.Description) (root gate 
   finally
     server.close
 
+/-- Failed cleanup after an accepted preparation reply must preserve the canonical checkpoint. -/
+private def preparationCleanupFailure (description : Beam.Runtime.Description)
+    (root gate : System.FilePath) : IO Unit := do
+  let server ← ServerRuntime.create (BrokerConfig.ofRuntime root description) workspaceId
+  let obstacle? ← IO.mkRef (none : Option System.FilePath)
+  try
+    discard <| result (← call server (.syncFile { path := "Main.lean" }))
+    let saved : SaveOleanResult ← IO.ofExcept <| fromJson?
+      (← result (← call server (.saveOlean { path := "Main.lean" })))
+    let prior ← snapshotCheckpoint saved
+    let original ← session server
+    let uri := sessionUri (root / "Main.lean")
+    let before ← doc server uri
+    IO.FS.writeFile (gate / "enabled") ""
+    let pending ← IO.asTask (prio := .dedicated) <|
+      call server (.close { path := "Main.lean", saveArtifacts? := some true })
+    try
+      waitForGate gate
+      let entered ← IO.ofExcept <| Json.parse (← IO.FS.readFile (gate / "entered"))
+      let job : System.FilePath ← IO.ofExcept <| entered.getObjValAs? System.FilePath "job"
+      let temporaryRoot ← IO.FS.realPath (gate / "helper-temporary")
+      require "cleanup fault must stay in the fixture's temporary root"
+        (job.fileName == some "job" &&
+         (← IO.FS.realPath (job.parent.bind (·.parent) |>.getD ".")) == temporaryRoot)
+      let obstacle := job / "cleanup-denied"
+      obstacle?.set (some obstacle)
+      IO.FS.createDir obstacle
+      IO.FS.writeFile (obstacle / "owned") "fixture-owned cleanup obstacle\n"
+      IO.setAccessRights obstacle {}
+      let conflict ← call server (.syncFile { path := "Main.lean" })
+      let some error := conflict.error? | throw <| IO.userError "preparation helper lost close reservation"
+      requireJsonString "preparation helper retains close reservation" "reason" "documentClosing"
+        (error.data?.getD Json.null)
+      IO.FS.writeFile (gate / "release") ""
+      let response ← IO.ofExcept pending.get
+      IO.FS.writeFile (gate / "response.json") (toJson response).pretty
+      let some error := response.error? | throw <| IO.userError "cleanup failure committed a save"
+      require "cleanup failure remains an internal error" (error.code == "internalError")
+      let info := error.data?.getD Json.null
+      requireJsonString "cleanup classification" "reason" "helperCleanupFailed" info
+      let cleanup ← requireObjVal "helper failure" "cleanup" info
+      discard <| requireObjVal "directory failure" "temporaryDirectory" cleanup
+      let outcome ← requireObjVal "helper failure" "operationOutcome" info
+      requireJsonString "save preparation completed" "status" "succeeded" outcome
+      let receipt ← requireObjVal "helper failure" "operationResponse" info
+      requireJsonBool "accepted preparation response retained" "ok" true receipt
+      requireCheckpointUnchanged prior
+      requirePrivateRetention saved false
+      require "cleanup failure preserves the backend" ((← session server).epoch == original.epoch)
+      let after ← doc server uri
+      require "cleanup failure preserves the document and checkpoint association"
+        (DocumentState.basis after == DocumentState.basis before &&
+         after.checkpointedVersion? == before.checkpointedVersion?)
+      requireNoAdmissions server
+    finally
+      IO.FS.writeFile (gate / "release") ""
+      discard <| IO.ofExcept pending.get
+  finally
+    -- Restore only the obstacle inside the Python-owned temporary root, after helper teardown.
+    try
+      if let some obstacle ← obstacle?.get then
+        IO.setAccessRights obstacle { user := { read := true, write := true, execution := true } }
+    finally
+      server.close
+
 private def cancelledPreparation (description : Beam.Runtime.Description)
     (root gate : System.FilePath) (closeAfter : Bool) : IO Unit := do
   let server ← ServerRuntime.create (BrokerConfig.ofRuntime root description) workspaceId
@@ -379,8 +444,6 @@ private def cancelledPreparation (description : Beam.Runtime.Description)
       requireNoAdmissions server
       requireJsonBool "sibling continuation survives deferred cancellation" "success" true
         (← result (← call server (.runWith { path := "Other.lean", handle, text := "trivial" })))
-      require "cancelled worker preparation launched the trace helper"
-        (!(← (gate / "trace-entered").pathExists))
     finally
       IO.FS.writeFile (gate / "release") ""
       discard <| Beam.waitTaskWithTimeout pending 20000
@@ -458,12 +521,16 @@ private def uncertainWrite (description : Beam.Runtime.Description) (root gate :
   finally
     server.close
 
-/-- Exercise owner replacement while private preparation awaits the trace helper. -/
+/-- Exercise owner replacement while the private artifact producer is paused. -/
 def run (description : Beam.Runtime.Description) (root : System.FilePath)
     (case : String) : IO Unit := do
   let some gate ← IO.getEnv "BEAM_TEST_SAVE_GATE_DIR"
     | throw <| IO.userError "missing save gate directory"
   let gate := System.FilePath.mk gate
+  if case == "preparation-cleanup-failure" then
+    preparationCleanupFailure description root gate
+    IO.println s!"save owner ({case}): passed"
+    return
   if ["cancel-prepared-close", "cancel-prepared-save", "module-cancel-prepared-close",
       "module-cancel-prepared-save"].contains case then
     cancelledPreparation description root gate (case.endsWith "close")
@@ -553,7 +620,10 @@ def run (description : Beam.Runtime.Description) (root : System.FilePath)
       else
         let some error := response.error?
           | throw <| IO.userError "replaced owner incorrectly finalized"
-        require "replaced owner preserves failure" (error.code == "workerExited")
+        -- Workspace closure rejects the held worker request before final publication;
+        -- terminating the backend itself reports workerExited instead.
+        let expected := if case == "workspace-replace" then "contentModified" else "workerExited"
+        require "replaced owner preserves failure" (error.code == expected)
         let data := error.data?.getD Json.null
         requireFieldAbsent "precommit owner loss has no saved receipt" "saved" data
         requireFieldAbsent "owner loss does not claim closure outcome" "closed" data
