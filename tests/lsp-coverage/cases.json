@@ -529,6 +529,12 @@
       "pointer": "tests/lean/BeamTest/LSP/Requests/ImportBasis/BasicTest.lean#checkImportBasisLaterCaptureKeepsLoadBoundary"
     },
     {
+      "id": "importBasis.failed-capture",
+      "method": "$/beam/importBasis",
+      "coverage": ["failed-capture"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/ImportBasis/BasicTest.lean#checkImportBasisFailedCaptureStaysUnknown"
+    },
+    {
       "id": "importBasis.stale-version",
       "method": "$/beam/importBasis",
       "coverage": ["stale-version"],

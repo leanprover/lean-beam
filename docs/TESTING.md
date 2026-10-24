@@ -391,10 +391,12 @@ which rebuilds imports outside Beam after a file worker loaded them and requires
 date. Cases cover a direct import, a transitive change behind an unchanged direct `.olean`, a
 non-`module` importer of a module-system dependency's private body, a root namespace split across
 two packages, a rejected `close-save` that keeps the document, its handle and the previous
-checkpoint, a dependency saved through Beam, repeated saves with unchanged imports, and an owner
-whose inherited `LEAN_PATH` already names the project's library directory. The
-`$/beam/importBasis` LSP tests cover the Beam-save fence and a later capture of a reused header
-environment deterministically; the broker's `PublicationClaimTest` checks that a promotion stays
+checkpoint, a dependency saved through Beam, repeated saves with unchanged imports, an owner
+whose inherited `LEAN_PATH` already names the project's library directory, and an unchanged
+dependency re-saved under a Lake `srcDir`, which only the publication record of its Lake module
+name can refuse. The `$/beam/importBasis` LSP tests cover the Beam-save fence, a later capture of
+a reused header environment, and a failed capture that must stay unknown after a body edit; the
+broker's `PublicationClaimTest` checks that a promotion stays
 recorded after its document closes. For a focused run, supply
 `--installation PATH --toolchain TOOLCHAIN`.
 

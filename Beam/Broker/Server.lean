@@ -2474,7 +2474,7 @@ private def saveOleanCore
     withFailureProgress barrierProgress? <| liftFailureIO <|
       Internal.withDocumentPublication server started.document.session started.document.uri
         started.document.basis req.cancelRef? plan.promote
-        (module? := DocumentState.trackedModuleName? started.document.session.root path)
+        (module? := some spec.moduleName)
     pure {
       document := started.document
       result := leanSaveResult spec started.lakeTraceHash syncResult

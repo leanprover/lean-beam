@@ -81,6 +81,33 @@ def checkImportBasisLaterCaptureKeepsLoadBoundary : ScenarioM Unit := do
     throw <| IO.userError s!"importBasis load boundary: expected DepB changed, got {(toJson check).compress}"
   closeDoc doc
 
+private def depBTrace : System.FilePath :=
+  ".lake/build/lib/lean/BeamTest/Fixtures/Deps/DepB.trace"
+
+/--
+A capture that could not resolve a trace leaves its environment unknown. Once the trace is back,
+a capture after a body edit reuses that environment and must not make it current.
+-/
+def checkImportBasisFailedCaptureStaysUnknown : ScenarioM Unit := do
+  let doc ← openDoc depAFixture
+  -- Loading the header runs `lake setup-file`, which would rebuild a missing trace.
+  discard <| awaitReq (← sendDiagnosticsBarrier doc)
+  let aside := depBTrace.withExtension "trace-aside"
+  IO.FS.rename depBTrace aside
+  try
+    let firstReq ← sendImportBasis doc (capture := true) (eventSeq := 5)
+    discard <| awaitReq firstReq
+  finally
+    IO.FS.rename aside depBTrace
+  changeDoc doc { line := 8, character := 0, delete := "", insert := "\n" }
+  let laterReq ← sendImportBasis doc (capture := true) (eventSeq := 9)
+  discard <| awaitReq laterReq
+  let checkReq ← sendImportBasis doc (capture := false)
+  let check : Beam.LSP.ImportBasis.Result ← awaitResponseAs checkReq
+  unless check.status == .unknown && check.unresolvedImports == #["BeamTest.Fixtures.Deps.DepB"] do
+    throw <| IO.userError s!"importBasis failed capture: expected DepB unresolved, got {(toJson check).compress}"
+  closeDoc doc
+
 def checkImportBasisStaleVersion : ScenarioM Unit := do
   let doc ← openDoc depAFixture
   let captureReq ← sendImportBasis doc (capture := true)
@@ -94,6 +121,7 @@ def run : ScenarioM Unit := do
   checkImportBasisWithoutCaptureIsUnknown
   checkImportBasisSavedSinceLoad
   checkImportBasisLaterCaptureKeepsLoadBoundary
+  checkImportBasisFailedCaptureStaysUnknown
   checkImportBasisStaleVersion
 
 end BeamTest.LSP.Requests.ImportBasis.BasicTest

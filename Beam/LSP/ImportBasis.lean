@@ -33,8 +33,9 @@ after that point, whichever trace the capture observed.
 
 Requests complete in the order the worker accepted them. A body edit reuses the header environment
 and sends another capture with a later sequence; running captures in order means the first capture
-of an environment always records it, so a later one can never advance its load boundary. A check
-likewise waits for every capture accepted before it.
+of an environment always records it, so a later one can never advance its load boundary. That
+holds for a failed capture too: its environment stays unknown until a new header environment loads.
+A check likewise waits for every capture accepted before it.
 
 The capture mode is temporary: Lean receives the exact import artifacts from `lake setup-file` but
 does not retain them after loading. An external build racing the import load can still go
@@ -106,6 +107,8 @@ private structure Basis where
   eventSeq : Nat
   traces : Array ModuleTrace
   unresolved : Array Name
+  /-- False if the capture failed before examining every loaded module. -/
+  complete : Bool := true
 
 private initialize basisRef : IO.Ref (Option Basis) ← IO.mkRef none
 
@@ -146,7 +149,9 @@ private def locateTrace (sp : SearchPath) (toolchainLib : System.FilePath) (modu
   for root in sp do
     let path := modToFilePath root module "trace"
     if ← path.pathExists then
-      let path ← IO.FS.realPath path
+      -- A concurrent publication may remove the trace before it is resolved.
+      let some path ← (some <$> IO.FS.realPath path).catchExceptions fun _ => pure none
+        | return .unresolved
       unless candidates.contains path do
         candidates := candidates.push path
   match candidates with
@@ -175,17 +180,23 @@ private def collectBasis (env : Environment) (eventSeq : Nat) : IO Basis := do
         | none => unresolved := unresolved.push module
   return { env, eventSeq, traces, unresolved }
 
-private def capture (env : Environment) (eventSeq : Nat) : IO Unit := do
+/--
+The first capture of an environment decides its basis, including a failed one: a later capture of
+the same environment after a body edit must not give it a newer load boundary.
+-/
+private def capture (env : Environment) (eventSeq : Nat) : BaseIO Unit := do
   if (← basisRef.get).any (sameEnv ·.env env) then
     return
-  basisRef.set (some (← collectBasis env eventSeq))
+  let basis ← (collectBasis env eventSeq).catchExceptions fun _ =>
+    pure { env, eventSeq, traces := #[], unresolved := #[], complete := false }
+  basisRef.set (some basis)
 
 private def check (env : Environment) (saved : Array SavedModule) : IO Result := do
   let some basis ← basisRef.get
     | return { status := .unknown }
   unless sameEnv basis.env env do
     return { status := .unknown }
-  unless basis.unresolved.isEmpty do
+  unless basis.complete && basis.unresolved.isEmpty do
     return { status := .unknown, unresolvedImports := basis.unresolved.map (·.toString) }
   let savedSince := saved.filter (·.eventSeq ≥ basis.eventSeq) |>.map (·.module)
   let mut changed := #[]
@@ -212,7 +223,7 @@ def handle (p : Params) : RequestM (RequestTask Result) := do
   if p.capture then
     -- Not a request task: an edit cancelling the request must not skip or reorder the capture.
     let captured ← ServerTask.BaseIO.mapTaskCheap (t := env) fun
-      | some env => (capture env p.eventSeq).catchExceptions fun _ => basisRef.set none
+      | some env => capture env p.eventSeq
       | none => basisRef.set none
     capturesRef.set captured
     return captured.mapCheap fun _ => .ok { status := .current }

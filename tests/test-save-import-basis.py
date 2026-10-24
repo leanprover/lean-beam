@@ -215,6 +215,29 @@ def unchanged_imports(case):
         case.trusted("W.B")
 
 
+def trace_fingerprint(path):
+    trace = json.loads(path.read_text())
+    return trace["depHash"], trace["outputs"]
+
+
+def source_dir_resave(case):
+    case.project({"src/W.lean": "import W.B\n",
+                  "src/W/A.lean": "def a : Nat := 1\n",
+                  "src/W/B.lean": "import W.A\n\ntheorem ta : a = 1 := rfl\n"},
+                 lakefile='name = "w"\ndefaultTargets = ["W"]\n[[lean_lib]]\nname = "W"\nsrcDir = "src"\n')
+    trace = case.root / ".lake/build/lib/lean/W/A.trace"
+    with case.owner():
+        case.ok("sync", "src/W/B.lean")
+        before = trace_fingerprint(trace)
+        case.ok("save", "src/W/A.lean")
+        # Only the publication record of the Lake module W.A can refuse the importer here.
+        assert trace_fingerprint(trace) == before, "re-saving unchanged W.A should keep its trace"
+        case.refused("save", "src/W/B.lean", changed=["W.A"])
+        case.ok("refresh", "src/W/B.lean")
+        case.ok("save", "src/W/B.lean")
+        case.trusted("W.B")
+
+
 def inherited_search_path(case):
     case.project({"W.lean": "import W.B\n",
                   "W/A.lean": "def a : Nat := 1\n",
@@ -228,7 +251,8 @@ def inherited_search_path(case):
 
 
 CASES = [external_rebuild, transitive_unchanged_olean, legacy_private_body, split_namespace,
-         rejected_close_save, beam_saved_dependency, unchanged_imports, inherited_search_path]
+         rejected_close_save, beam_saved_dependency, unchanged_imports, inherited_search_path,
+         source_dir_resave]
 
 
 def main():

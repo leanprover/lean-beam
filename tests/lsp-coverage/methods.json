@@ -149,6 +149,7 @@
       "definition": "Beam/LSP/ImportBasis.lean#method",
       "requiredCoverage": [
         "isolation",
+        "failed-capture",
         "late-check",
         "load-boundary",
         "saved-since-load",
