@@ -250,9 +250,9 @@ private def runInteractiveOnlyDiagnosticSmoke
     throw <| IO.userError
       s!"expected interactive-only diagnostic readiness to be blocked, got {(toJson res).compress}"
   if res.readiness.blockingDiagnostics.isEmpty ||
-      res.readiness.blockingMessages.isEmpty then
+      !res.readiness.blockingMessages.isEmpty then
     throw <| IO.userError
-      s!"expected interactive-only diagnostic result to include Lean-side blocking evidence, got {(toJson res).compress}"
+      s!"expected interactive-only diagnostic result to include located evidence without command-message copies, got {(toJson res).compress}"
   let some lastProgress := progress.back?
     | throw <| IO.userError "expected interactive-only diagnostic sync_file to stream fileProgress"
   if !lastProgress.done then

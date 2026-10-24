@@ -469,6 +469,18 @@
       "pointer": "tests/lean/BeamTest/LSP/Requests/Save/BasicTest.lean#checkSaveReadinessDocumentErrors"
     },
     {
+      "id": "saveReadiness.repeated-located-errors",
+      "method": "$/beam/saveReadiness",
+      "coverage": ["document-errors"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/Save/BasicTest.lean#checkRepeatedReadinessErrors"
+    },
+    {
+      "id": "saveReadiness.no-final-state-errors",
+      "method": "$/beam/saveReadiness",
+      "coverage": ["document-errors"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/Save/BasicTest.lean#checkReadinessWithoutFinalState"
+    },
+    {
       "id": "saveReadiness.reported-only-diagnostics",
       "method": "$/beam/saveReadiness",
       "coverage": ["reported-only-diagnostics"],
