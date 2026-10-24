@@ -8,6 +8,11 @@ import Beam.Broker.Client
 
 namespace Beam.Cli
 
+inductive JsonOutputFormat where
+  | compact
+  | pretty
+  deriving BEq, Repr
+
 /-- A terminal CLI failure. Broker errors remain intact until presentation. -/
 structure CliFailure where
   failure : Beam.Broker.ResponseFailure
@@ -16,6 +21,7 @@ structure CliFailure where
   diagnostic? : Option String := none
   usage? : Option String := none
   remedyCommand? : Option String := none
+  jsonOutputFormat : JsonOutputFormat := .compact
   /-- A final response write has started; never append a replacement JSON response. -/
   responseStarted : Bool := false
 

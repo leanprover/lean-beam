@@ -36,7 +36,7 @@ Beam reads only the on-disk file and never edits `.lean` sources; you edit files
 1. Edit and save the file.
 2. `lean-beam update Foo.lean` and take `result.version` from its JSON.
 3. Probe with that version (`run-at`, `goals`, `hover`, ...).
-4. `lean-beam sync Foo.lean` when you need diagnostics and readiness (`result.readiness.saveReady`;
+4. `lean-beam sync Foo.lean` when you need diagnostics and readiness (`result.readiness.save_ready`;
    MCP: `structuredContent.readiness.save_ready`).
 5. Optionally `lean-beam save MyPkg/Sub/Module.lean` to checkpoint a synced workspace module.
 

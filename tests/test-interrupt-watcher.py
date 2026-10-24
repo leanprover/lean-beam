@@ -19,6 +19,74 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def save_receipt(source_hash="saved-source"):
+    return {
+        "path": "Main.lean",
+        "module": "Main",
+        "version": 1,
+        "sourceHash": source_hash,
+        "olean": "Main.olean",
+        "ilean": "Main.ilean",
+        "c": "Main.c",
+        "trace": "Main.trace",
+        "oleanServer": "Main.server.olean",
+        "oleanPrivate": "Main.private.olean",
+        "ir": "Main.ir",
+        "irSig": "Main.ir.sig",
+        "bc": "Main.bc",
+        "sync": {
+            "path": "Main.lean",
+            "version": 1,
+            "diagnostics": {
+                "counts": {"error": 0, "warning": 0, "information": 0,
+                           "hint": 0, "unknown": 0, "total": 0},
+                "items": [],
+            },
+            "readiness": {
+                "saveReady": True,
+                "reason": "ok",
+                "blockingErrorCount": 0,
+                "blockingDiagnostics": [],
+                "blockingMessages": [],
+            },
+        },
+    }
+
+
+def projected_save_receipt(source_hash="saved-source"):
+    return {
+        "path": "Main.lean",
+        "module": "Main",
+        "version": 1,
+        "source_hash": source_hash,
+        "olean": "Main.olean",
+        "ilean": "Main.ilean",
+        "c": "Main.c",
+        "trace": "Main.trace",
+        "olean_server": "Main.server.olean",
+        "olean_private": "Main.private.olean",
+        "ir": "Main.ir",
+        "ir_sig": "Main.ir.sig",
+        "bc": "Main.bc",
+        "sync": {
+            "path": "Main.lean",
+            "version": 1,
+            "diagnostics": {
+                "counts": {"error": 0, "warning": 0, "information": 0,
+                           "hint": 0, "unknown": 0, "total": 0},
+                "items": [],
+            },
+            "readiness": {
+                "save_ready": True,
+                "reason": "ok",
+                "blocking_error_count": 0,
+                "blocking_diagnostics": [],
+                "blocking_messages": [],
+            },
+        },
+    }
+
+
 class InterruptWatcherTest(unittest.TestCase):
     binary = REPO_ROOT / ".lake/build/bin/beam-cli-daemon-test"
 
@@ -145,7 +213,8 @@ class InterruptWatcherTest(unittest.TestCase):
                             }}
                         else:
                             value = {"kind": "response", "payload": {
-                                "ok": True, "result": "x" * (1024 * 1024),
+                                "ok": True,
+                                "result": save_receipt("x" * (1024 * 1024)),
                             }}
                         if "clientRequestId" in request:
                             value["clientRequestId"] = request["clientRequestId"]
@@ -220,6 +289,8 @@ class InterruptWatcherTest(unittest.TestCase):
                 server.join(timeout=6)
             self.assertFalse(server.is_alive(), "fake broker survived fixture cleanup")
             self.assertEqual(errors, [])
+            self.assertEqual(requests[0]["op"], "save_olean")
+            self.assertEqual(requests[0]["path"], "Main.lean")
 
     @unittest.skipIf(sys.platform == "win32", "requires POSIX signal delivery")
     def test_completed_output_has_default_signal_policy(self):
@@ -242,7 +313,20 @@ class OutputFailureTest(unittest.TestCase):
     """Exercise actual CLI writers without a Lean workspace or an installed runtime."""
 
     binary = InterruptWatcherTest.binary
-    receipt = {"module": "Main", "sourceHash": "saved-source", "olean": "Main.olean"}
+    receipt = save_receipt()
+
+    def public_response(self, response):
+        if response["ok"]:
+            result = projected_save_receipt(self.receipt["sourceHash"])
+            if "fileProgress" in response:
+                result["document_progress"] = response["fileProgress"]
+            result["workspace"] = {"root": "/tmp"}
+            public = {"ok": True, "result": result}
+        else:
+            # Error data is opaque at this boundary; in particular, retain the raw broker receipt.
+            public = dict(response)
+        public["client_request_id"] = "writer-test"
+        return public
 
     def exchange(self, stream, response, event_kind="diagnostic"):
         errors = []
@@ -262,6 +346,8 @@ class OutputFailureTest(unittest.TestCase):
                     with connection.makefile("rb") as incoming:
                         request = json.loads(incoming.read(int(incoming.readline())))
                     self.assertEqual(request["clientRequestId"], "writer-test")
+                    self.assertEqual(request["op"], "save_olean")
+                    self.assertEqual(request["path"], "Main.lean")
                     if stream.startswith("stderr-"):
                         payloads = {
                             "diagnostic": {"path": "Main.lean", "uri": "file:///Main.lean",
@@ -330,20 +416,31 @@ class OutputFailureTest(unittest.TestCase):
             with self.subTest(event_kind=event_kind):
                 result = self.exchange("stderr-fails", response, event_kind)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(json.loads(result.stdout), dict(response, clientRequestId="writer-test"))
+                self.assertEqual(json.loads(result.stdout), self.public_response(response))
 
     def test_optional_stderr_flush_failure_preserves_completed_receipt(self):
         response = {"ok": True, "result": self.receipt}
         result = self.exchange("stderr-flush-fails", response)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), dict(response, clientRequestId="writer-test"))
+        self.assertEqual(json.loads(result.stdout), self.public_response(response))
         self.assertIn("fixture diagnostic", result.stderr)
+
+    def test_success_progress_is_nested_in_projected_result(self):
+        progress = {"updates": 4, "done": True}
+        response = {"ok": True, "result": self.receipt, "fileProgress": progress}
+        result = self.exchange("stderr-fails", response)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        public = json.loads(result.stdout)
+        self.assertEqual(public, self.public_response(response))
+        self.assertEqual(public["client_request_id"], "writer-test")
+        self.assertEqual(public["result"]["document_progress"], progress)
+        self.assertNotIn("fileProgress", public)
 
     def test_recovered_stderr_explains_display_failure_without_changing_result(self):
         response = {"ok": True, "result": self.receipt}
         result = self.exchange("stderr-fails-once", response)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), dict(response, clientRequestId="writer-test"))
+        self.assertEqual(json.loads(result.stdout), self.public_response(response))
         self.assertIn("beam[writer-test]: some workspace output could not be displayed", result.stderr)
         self.assertIn("request outcome is unchanged", result.stderr)
 
@@ -353,16 +450,27 @@ class OutputFailureTest(unittest.TestCase):
                     "data": {"saved": self.receipt, "closed": False}}}
         result = self.exchange("stderr-fails", response)
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertEqual(json.loads(result.stdout), dict(response, clientRequestId="writer-test"))
+        self.assertEqual(json.loads(result.stdout), self.public_response(response))
+        self.assertEqual(json.loads(result.stdout)["error"]["data"]["saved"], self.receipt)
 
     def test_optional_stderr_failure_preserves_unconfirmed_delivery(self):
         result = self.exchange("stderr-fails", None)
         self.assertEqual(result.returncode, 1, result.stderr)
         response = json.loads(result.stdout)
-        self.assertEqual(response["clientRequestId"], "writer-test")
+        self.assertEqual(response["client_request_id"], "writer-test")
         self.assertEqual(response["error"]["code"], "brokerUnavailable")
         self.assertIs(response["error"]["data"]["operationMayHaveCompleted"], True)
         self.assertIn("operation may have completed", response["error"]["message"])
+
+    def test_projection_failure_preserves_observed_save_receipt(self):
+        response = {"ok": True, "result": {"module": "Main", "sourceHash": "saved-source"},
+                    "fileProgress": {"updates": 2, "done": True}}
+        result = self.exchange("stdout", response)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        failure = json.loads(result.stdout)["error"]
+        self.assertEqual(failure["code"], "invalidResult")
+        self.assertEqual(failure["data"]["observed_response"], response)
+        self.assertEqual(failure["document_progress"], {"updates": 2, "done": True})
 
     def test_final_stdout_write_is_never_replaced(self):
         for response in [{"ok": True, "result": self.receipt},
@@ -376,8 +484,7 @@ class OutputFailureTest(unittest.TestCase):
                     self.assertIn("could not write the final JSON response", result.stderr)
                     self.assertNotIn("operation may have completed", result.stderr)
                     if stream == "stdout-flush-fails":
-                        self.assertEqual(json.loads(result.stdout),
-                                         dict(response, clientRequestId="writer-test"))
+                        self.assertEqual(json.loads(result.stdout), self.public_response(response))
                     else:
                         self.assertEqual(len(result.stdout), 12, result.stdout)
 

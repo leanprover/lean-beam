@@ -85,7 +85,7 @@ expect_slow_request_cancelled() {
   assert_json_file_field_equals "$label cancellation code" "$root/$label.out" \
     error.code requestCancelled "$root/$label.err"
   assert_json_file_field_equals "$label request id" "$root/$label.out" \
-    clientRequestId "$request_id" "$root/$label.err"
+    client_request_id "$request_id" "$root/$label.err"
 }
 
 stop_hold_process() {
@@ -362,9 +362,9 @@ start_owner() {
   assert_json_field_equals "serve response" "$(cat "$out")" ok true "$err"
   assert_json_field_equals "serve state" "$(cat "$out")" result.state running "$err"
   assert_json_field_equals \
-    "serve workspace" "$(cat "$out")" result.workspace "$(beam_test_realpath "$root")" "$err"
+    "serve workspace" "$(cat "$out")" result.workspace.root "$(beam_test_realpath "$root")" "$err"
   assert_json_field_equals \
-    "serve session directory" "$(cat "$out")" result.sessionDir \
+    "serve session directory" "$(cat "$out")" result.session_dir \
     "$(beam_test_realpath "$root")/.beam" "$err"
   assert_json_field_equals \
     "serve generation" "$(cat "$out")" result.generation \
@@ -397,9 +397,9 @@ status_json="$("$beam_script" --root "$tmp1" status)"
 assert_json_field_equals "running session status response" "$status_json" ok true
 assert_json_field_equals "running session status state" "$status_json" result.state running
 assert_json_field_equals "running session status generation" "$status_json" result.generation "$daemon1_id"
-assert_json_field_equals "running session status workspace" "$status_json" result.workspace "$resolved_tmp1"
+assert_json_field_equals "running session status workspace" "$status_json" result.workspace.root "$resolved_tmp1"
 assert_json_field_equals \
-  "running session status directory" "$status_json" result.sessionDir "$resolved_tmp1/.beam"
+  "running session status directory" "$status_json" result.session_dir "$resolved_tmp1/.beam"
 
 python3 - "$registry" "$tmp1" "$BEAM_TEST_INSTALLATION" <<'PY'
 import json
@@ -521,7 +521,7 @@ mkdir -p "$environment_session_base"
 ln -s "$environment_session_base" "$environment_session_alias"
 environment_status="$(BEAM_SESSION_ROOT="$environment_session_alias" \
   "$beam_script" --root "$tmp1" status)"
-environment_session_dir="$(json_text_field "$environment_status" result.sessionDir)"
+environment_session_dir="$(json_text_field "$environment_status" result.session_dir)"
 case "$environment_session_dir" in
   "$(beam_test_realpath "$environment_session_base")"/*) ;;
   *)
@@ -1131,7 +1131,7 @@ failed_drain_recovery="$(
 )"
 assert_json_field_equals \
   "failed-drain recovery" "$failed_drain_recovery" result.changed true
-failed_drain_archive="$(json_text_field "$failed_drain_recovery" result.quarantinedPath)"
+failed_drain_archive="$(json_text_field "$failed_drain_recovery" result.quarantined_path)"
 if ! cmp -s "$tmp1/failed-drain-descriptor.json" "$failed_drain_archive"; then
   echo "expected failed-drain recovery to archive the exact draining descriptor" >&2
   exit 1
@@ -1251,7 +1251,7 @@ assert_json_field_equals "abandoned shutdown status" "$abandoned_status" result.
 assert_json_field_equals "abandoned shutdown generation" "$abandoned_status" result.generation "$draining_daemon_id"
 abandoned_recovery="$("$beam_script" --root "$tmp1" recover --generation "$draining_daemon_id")"
 assert_json_field_equals "abandoned shutdown recovery" "$abandoned_recovery" result.changed true
-abandoned_archive="$(json_text_field "$abandoned_recovery" result.quarantinedPath)"
+abandoned_archive="$(json_text_field "$abandoned_recovery" result.quarantined_path)"
 if ! cmp -s "$tmp1/unfinished-shutdown-descriptor.json" "$abandoned_archive"; then
   echo "abandoned shutdown recovery did not preserve the exact descriptor" >&2
   exit 1
@@ -1336,7 +1336,7 @@ if [ -e "$registry" ]; then
   echo "expected explicit recovery to quarantine the stale session descriptor" >&2
   exit 1
 fi
-quarantined_registry="$(json_text_field "$recover_json" result.quarantinedPath)"
+quarantined_registry="$(json_text_field "$recover_json" result.quarantined_path)"
 if [ ! -f "$quarantined_registry" ]; then
   echo "expected explicit recovery to preserve quarantined evidence" >&2
   printf '%s\n' "$recover_json" >&2

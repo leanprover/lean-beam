@@ -59,15 +59,15 @@ fi
     cat "$cmd_err" >&2
     exit 1
   fi
-  run_at_progress_done="$(BEAM_JSON_PAYLOAD="$cmd_out" read_json_text_field fileProgress.done)"
+  run_at_progress_done="$(BEAM_JSON_PAYLOAD="$cmd_out" read_json_text_field result.document_progress.done)"
   if [ "$run_at_progress_done" != "true" ] && [ "$run_at_progress_done" != "false" ]; then
-    echo "expected wrapper run-at to expose top-level fileProgress" >&2
+    echo "expected wrapper run-at to expose result.document_progress" >&2
     printf '%s\n' "$cmd_out" >&2
     cat "$cmd_err" >&2
     exit 1
   fi
-  if [ -n "$(BEAM_JSON_PAYLOAD="$cmd_out" read_json_text_field clientRequestId)" ]; then
-    echo "expected anonymous wrapper run-at to hide generated clientRequestId" >&2
+  if [ -n "$(BEAM_JSON_PAYLOAD="$cmd_out" read_json_text_field client_request_id)" ]; then
+    echo "expected anonymous wrapper run-at to hide generated client_request_id" >&2
     printf '%s\n' "$cmd_out" >&2
     cat "$cmd_err" >&2
     exit 1
@@ -83,7 +83,7 @@ fi
     exit 1
   fi
   if grep -q 'beam\[' "$cmd_err" || grep -q 'beam-wrapper-' "$cmd_err"; then
-    echo "expected anonymous wrapper progress stderr not to leak the generated clientRequestId" >&2
+    echo "expected anonymous wrapper progress stderr not to leak the generated client_request_id" >&2
     cat "$cmd_err" >&2
     exit 1
   fi
@@ -227,14 +227,14 @@ fi
     cat "$literal_newline_err" >&2
     exit 1
   fi
-  if [ -n "$(BEAM_JSON_PAYLOAD="$literal_newline_out" read_json_text_field clientRequestId)" ]; then
-    printf '%s\n' "expected wrapper literal-\\n probe to hide generated clientRequestId" >&2
+  if [ -n "$(BEAM_JSON_PAYLOAD="$literal_newline_out" read_json_text_field client_request_id)" ]; then
+    printf '%s\n' "expected wrapper literal-\\n probe to hide generated client_request_id" >&2
     printf '%s\n' "$literal_newline_out" >&2
     cat "$literal_newline_err" >&2
     exit 1
   fi
   if grep -q 'beam\[' "$literal_newline_err" || grep -q 'beam-wrapper-' "$literal_newline_err"; then
-    printf '%s\n' "expected wrapper literal-\\n stderr not to leak the generated clientRequestId" >&2
+    printf '%s\n' "expected wrapper literal-\\n stderr not to leak the generated client_request_id" >&2
     cat "$literal_newline_err" >&2
     exit 1
   fi
@@ -359,7 +359,7 @@ fi
     printf '%s\n' "$document_symbols_out" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$document_symbols_out" read_json_text_field result.0.name)" != "answerA" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$document_symbols_out" read_json_text_field result.result.0.name)" != "answerA" ]; then
     echo "expected wrapper document-symbols probe to list answerA" >&2
     printf '%s\n' "$document_symbols_out" >&2
     exit 1
@@ -371,7 +371,7 @@ fi
     printf '%s\n' "$workspace_symbols_out" >&2
     exit 1
   fi
-  BEAM_JSON_PAYLOAD="$workspace_symbols_out" read_json_array_len result > /dev/null
+  BEAM_JSON_PAYLOAD="$workspace_symbols_out" read_json_array_len result.result > /dev/null
 
   goals_prev_out="$("$beam_script" goals before GoalSmoke.lean "$goal_version" 1 2)"
   if [ "$(BEAM_JSON_PAYLOAD="$goals_prev_out" read_json_text_field ok)" != "true" ]; then
@@ -401,9 +401,9 @@ fi
   assert_json_field_equals "wrapper todo" "$todo_out" ok true
   assert_json_array_len_equals "wrapper todo" "$todo_out" result.items 1
   assert_json_field_equals "wrapper todo" "$todo_out" result.items.0.kind sorry
-  assert_json_field_equals "wrapper todo" "$todo_out" result.items.0.runAtPosition.line 13
-  assert_json_field_equals "wrapper todo" "$todo_out" result.items.0.runAtPosition.character 2
-  assert_json_field_absent "wrapper todo" "$todo_out" result.items.0.runAtText
+  assert_json_field_equals "wrapper todo" "$todo_out" result.items.0.run_at_position.line 13
+  assert_json_field_equals "wrapper todo" "$todo_out" result.items.0.run_at_position.character 2
+  assert_json_field_absent "wrapper todo" "$todo_out" result.items.0.run_at_text
 
   stats_out="$("$beam_script" stats)"
   hover_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.ops.hover.count)"

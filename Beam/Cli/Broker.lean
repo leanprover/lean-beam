@@ -226,10 +226,11 @@ def requestBroker
 def callBroker
     (root : System.FilePath)
     (client : ProjectDaemonClient)
-    (req : Request) : CliM Unit := do
+    (req : Request)
+    (format : JsonOutputFormat := .compact) : CliM Unit := do
   let result ← requestBrokerResponse root client req
   failOnError result.response result.visibleClientRequestId?
-  printResponse result.response result.visibleClientRequestId?
+  printOperationResponse (.ofRequest (client.sealRequest req)) result.response result.visibleClientRequestId? format (some root)
 
 /-- Prepare the owned session without printing its broker response as CLI readiness. -/
 def ensureProjectSession
@@ -449,7 +450,8 @@ def callBrokerWithProgress
     (root : System.FilePath)
     (client : ProjectDaemonClient)
     (req : Request)
-    (spec : BrokerWaitSpec) : CliM Unit := do
+    (spec : BrokerWaitSpec)
+    (format : JsonOutputFormat := .compact) : CliM Unit := do
   let showProgress ← progressEnabled
   let result ← requestBrokerResponseWithProgress root client req spec showProgress
   let resp := result.response
@@ -470,6 +472,6 @@ def callBrokerWithProgress
         pure ()
     maybeEmitLiteralBackslashNewlineHint visibleClientRequestId? req resp
   discard <| notes.toBaseIO
-  printResponse resp visibleClientRequestId?
+  printOperationResponse (.ofRequest (client.sealRequest req)) resp visibleClientRequestId? format (some root)
 
 end Beam.Cli

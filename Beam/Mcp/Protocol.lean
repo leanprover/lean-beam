@@ -621,17 +621,10 @@ def callToolResult (structured : Json) (isError : Bool := false) : Json :=
     ("isError", toJson isError)
   ]
 
-def toolErrorJson (err : ToolError) : Json :=
-  Json.mkObj <|
-    [
-      ("code", toJson err.code),
-      ("message", toJson err.message)
-    ] ++
-    match err.data? with
-    | some data => [("data", data)]
-    | none => []
+def toolErrorJson (err : Beam.Output.OutputError) : Json :=
+  err.json
 
-def callToolErrorResult (err : ToolError) : Json :=
+def callToolErrorResult (err : Beam.Output.OutputError) : Json :=
   callToolResult (toolErrorJson err) (isError := true)
 
 end Beam.Mcp

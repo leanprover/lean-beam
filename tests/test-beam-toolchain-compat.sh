@@ -406,7 +406,7 @@ import pathlib
 import sys
 
 saved = json.loads(pathlib.Path(sys.argv[1]).read_text())["result"]["saved"]
-for key in ["olean", "oleanServer", "oleanPrivate", "ir", "irSig", "ilean", "c", "trace"]:
+for key in ["olean", "olean_server", "olean_private", "ir", "ir_sig", "ilean", "c", "trace"]:
     if not pathlib.Path(saved[key]).is_file():
         raise SystemExit(f"module save omitted {key}: {saved}")
 metadata = json.loads(pathlib.Path(saved["trace"]).read_text())

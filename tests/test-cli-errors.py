@@ -53,6 +53,53 @@ class CliErrorsTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(result.stdout)
 
+    def test_json_output_is_compact_by_default_and_pretty_on_request(self):
+        compact = self.invoke("--root", self.root, "status")
+        pretty = self.invoke("--pretty", "--root", self.root, "status")
+        self.assertEqual(compact.returncode, 0, compact.stderr)
+        self.assertEqual(pretty.returncode, 0, pretty.stderr)
+        self.assertEqual(compact.stdout.count("\n"), 1, compact.stdout)
+        self.assertGreater(pretty.stdout.count("\n"), 1, pretty.stdout)
+        compact_value = json.loads(compact.stdout)
+        pretty_value = json.loads(pretty.stdout)
+        self.assertEqual(compact_value, pretty_value)
+
+        def object_key_order(value):
+            if isinstance(value, dict):
+                return tuple((key, object_key_order(item)) for key, item in value.items())
+            if isinstance(value, list):
+                return tuple(object_key_order(item) for item in value)
+            return None
+
+        self.assertEqual(object_key_order(compact_value), object_key_order(pretty_value))
+
+    def test_pretty_format_applies_to_error_responses(self):
+        compact = self.invoke("--root", self.root, "sync")
+        pretty = self.invoke("--pretty", "--root", self.root, "sync")
+        compact_error = self.failure(compact, "invalidParams", 2)
+        pretty_error = self.failure(pretty, "invalidParams", 2)
+        self.assertEqual(compact.stdout.count("\n"), 1, compact.stdout)
+        self.assertGreater(pretty.stdout.count("\n"), 1, pretty.stdout)
+        self.assertEqual(compact_error, pretty_error)
+
+    def test_pretty_format_survives_global_option_parse_failures(self):
+        cases = [
+            (("--pretty", "--root"), ("--root",), "--root requires PATH"),
+            (("--root", self.root, "--pretty", "--session-dir", "relative-session"),
+             ("--root", self.root, "--session-dir", "relative-session"),
+             "--session-dir requires an absolute path"),
+        ]
+        for pretty_args, compact_args, detail in cases:
+            with self.subTest(args=pretty_args):
+                pretty = self.invoke(*pretty_args)
+                compact = self.invoke(*compact_args)
+                pretty_error = self.failure(pretty, "invalidParams", 2)
+                compact_error = self.failure(compact, "invalidParams", 2)
+                self.assertIn(detail, pretty_error["message"])
+                self.assertEqual(pretty_error, compact_error)
+                self.assertGreater(pretty.stdout.count("\n"), 1, pretty.stdout)
+                self.assertEqual(compact.stdout.count("\n"), 1, compact.stdout)
+
     def test_usage_is_short_and_names_command(self):
         for args, detail in [((), "a command is required"), (("synk",), "synk"),
                              (("sync",), "sync"), (("hover", "Main.lean"), "hover"),
@@ -313,8 +360,8 @@ class CliErrorsTest(unittest.TestCase):
         result = self.invoke("--cli-error", "broker", executable=self.fixture)
         self.assertEqual(self.failure(result, "fileChanged", 1)["data"], {"version": 7})
         response = json.loads(result.stdout)
-        self.assertEqual(response["clientRequestId"], "fixture-request")
-        self.assertEqual(response["fileProgress"], {"updates": 9, "done": False})
+        self.assertEqual(response["client_request_id"], "fixture-request")
+        self.assertEqual(response["error"]["document_progress"], {"updates": 9, "done": False})
 
     def test_semantic_failure_is_a_completed_response(self):
         result = self.invoke("--cli-error", "semantic", executable=self.fixture)

@@ -107,17 +107,18 @@ from pathlib import Path
 response = json.loads(Path(sys.argv[1]).read_text())
 assert response["ok"] is False, response
 assert response["error"]["code"] == "requestCancelled", response
-assert response.get("clientRequestId", "") == sys.argv[2], response
+assert response.get("client_request_id", "") == sys.argv[2], response
+assert "clientRequestId" not in response, response
 assert "producer has stopped" in response["error"]["message"], response
 PYJSON
   if [ -n "$expected_client_request_id" ]; then
     if ! grep -q "beam\[$expected_client_request_id\]" "$err_path"; then
-      echo "expected $label to preserve its explicit clientRequestId annotation" >&2
+      echo "expected $label to preserve its explicit client_request_id annotation" >&2
       cat "$err_path" >&2
       exit 1
     fi
   elif grep -q 'beam\[' "$err_path"; then
-    echo "expected $label stderr not to include a clientRequestId annotation" >&2
+    echo "expected $label stderr not to include a client_request_id annotation" >&2
     cat "$err_path" >&2
     exit 1
   fi
@@ -397,8 +398,8 @@ signal_owner_pid="$beam_wrapper_last_owner_pid"
     wait "$duplicate_slow_pid" 2>/dev/null || true
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$duplicate_json" read_json_text_field clientRequestId)" != "wrapper-duplicate-active" ]; then
-    echo "expected duplicate active BEAM_REQUEST_ID wrapper response to echo clientRequestId" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$duplicate_json" read_json_text_field client_request_id)" != "wrapper-duplicate-active" ]; then
+    echo "expected duplicate active BEAM_REQUEST_ID wrapper response to echo client_request_id" >&2
     printf '%s\n' "$duplicate_json" >&2
     cat "$duplicate_err" >&2
     kill "$duplicate_slow_pid" > /dev/null 2>&1 || true
@@ -442,8 +443,8 @@ signal_owner_pid="$beam_wrapper_last_owner_pid"
     exit 1
   fi
   stats_out="$("$beam_script" --root "$signal_root" stats)"
-  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.invalidParamsCount)" -lt 1 ]; then
-    echo "expected duplicate active BEAM_REQUEST_ID wrapper conflict to increment invalidParamsCount" >&2
+  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.invalid_params_count)" -lt 1 ]; then
+    echo "expected duplicate active BEAM_REQUEST_ID wrapper conflict to increment invalid_params_count" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1
   fi

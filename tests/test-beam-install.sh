@@ -97,6 +97,22 @@ assert_doctor_not_contains() {
   assert_output_not_contains "$label doctor output" "$output" "$unexpected"
 }
 
+assert_cli_error_json() {
+  local payload_file="$1"
+  local expected_code="$2"
+  local expected_message_fragment="${3:-}"
+  python3 - "$payload_file" "$expected_code" "$expected_message_fragment" <<'PY'
+import json, pathlib, sys
+
+response = json.loads(pathlib.Path(sys.argv[1]).read_text())
+error = response.get("error", {})
+if response.get("ok") is not False or error.get("code") != sys.argv[2]:
+    raise SystemExit(f"expected {sys.argv[2]} error response, got {response!r}")
+if sys.argv[3] and sys.argv[3] not in error.get("message", ""):
+    raise SystemExit(f"expected error message to contain {sys.argv[3]!r}, got {response!r}")
+PY
+}
+
 assert_symlink_target() {
   local path="$1"
   local expected="$2"
@@ -1355,26 +1371,26 @@ assert_not_exists "$unavailable_probe_log"
 
 start_installed_owner "$project_root" "installed-stale"
 
-stale_sync_err="$(mktemp "$tmp_root/install-stale-sync-XXXXXX")"
-if "$installed_lean_beam" --root "$project_root" sync SaveSmoke/A.lean >"$stale_sync_err" 2>&1; then
+stale_sync_out="$(mktemp "$tmp_root/install-stale-sync-out-XXXXXX")"
+stale_sync_err="$(mktemp "$tmp_root/install-stale-sync-err-XXXXXX")"
+if "$installed_lean_beam" --root "$project_root" sync SaveSmoke/A.lean >"$stale_sync_out" 2>"$stale_sync_err"; then
   echo "expected installed wrapper sync to fail on a stale imported target" >&2
+  cat "$stale_sync_out" >&2
   cat "$stale_sync_err" >&2
+  remove_tmp_file "$stale_sync_out"
   remove_tmp_file "$stale_sync_err"
   exit 1
 fi
-if ! grep -q '"code": "syncBarrierIncomplete"' "$stale_sync_err"; then
+if ! assert_cli_error_json "$stale_sync_out" syncBarrierIncomplete \
+    'Run `lake build` or fix the upstream module first'; then
   echo "expected installed wrapper stale-import sync failure to expose syncBarrierIncomplete" >&2
+  cat "$stale_sync_out" >&2
   cat "$stale_sync_err" >&2
+  remove_tmp_file "$stale_sync_out"
   remove_tmp_file "$stale_sync_err"
   exit 1
 fi
-# shellcheck disable=SC2016
-if ! grep -q 'Run `lake build` or fix the upstream module first' "$stale_sync_err"; then
-  echo "expected installed wrapper stale-import sync failure to include a recovery hint" >&2
-  cat "$stale_sync_err" >&2
-  remove_tmp_file "$stale_sync_err"
-  exit 1
-fi
+remove_tmp_file "$stale_sync_out"
 remove_tmp_file "$stale_sync_err"
 
 project_root_standalone="$tmp_root/external-project-standalone"
@@ -1389,29 +1405,30 @@ EOF
 start_installed_owner "$project_root_standalone" "installed-standalone"
 
 standalone_sync="$("$installed_lean_beam" --root "$project_root_standalone" sync StandaloneSaveSmoke.lean)"
-if ! printf '%s\n' "$standalone_sync" | python3 -c 'import json,sys; payload=json.load(sys.stdin); sys.exit(0 if payload.get("error") is None else 1)'; then
+if ! printf '%s\n' "$standalone_sync" | python3 -c 'import json,sys; payload=json.load(sys.stdin); sys.exit(0 if payload.get("ok") is True else 1)'; then
   echo "expected installed wrapper sync to succeed on a standalone file the daemon can open" >&2
   printf '%s\n' "$standalone_sync" >&2
   exit 1
 fi
 
-standalone_save_err="$(mktemp "$tmp_root/install-standalone-save-XXXXXX")"
-if "$installed_lean_beam" --root "$project_root_standalone" save StandaloneSaveSmoke.lean >"$standalone_save_err" 2>&1; then
+standalone_save_out="$(mktemp "$tmp_root/install-standalone-save-out-XXXXXX")"
+standalone_save_err="$(mktemp "$tmp_root/install-standalone-save-err-XXXXXX")"
+if "$installed_lean_beam" --root "$project_root_standalone" save StandaloneSaveSmoke.lean >"$standalone_save_out" 2>"$standalone_save_err"; then
   echo "expected installed wrapper save to reject a standalone file outside the Lake module graph" >&2
+  cat "$standalone_save_out" >&2
   cat "$standalone_save_err" >&2
+  remove_tmp_file "$standalone_save_out"
   remove_tmp_file "$standalone_save_err"
   exit 1
 fi
-if ! grep -q '"code": "saveTargetNotModule"' "$standalone_save_err"; then
+if ! assert_cli_error_json "$standalone_save_out" saveTargetNotModule \
+    'save only works for synced files that belong to the current Lake workspace package graph'; then
   echo "expected installed wrapper standalone save failure to expose saveTargetNotModule" >&2
+  cat "$standalone_save_out" >&2
   cat "$standalone_save_err" >&2
+  remove_tmp_file "$standalone_save_out"
   remove_tmp_file "$standalone_save_err"
   exit 1
 fi
-if ! grep -q 'save only works for synced files that belong to the current Lake workspace package graph' "$standalone_save_err"; then
-  echo "expected installed wrapper standalone save failure to explain the Lake module requirement" >&2
-  cat "$standalone_save_err" >&2
-  remove_tmp_file "$standalone_save_err"
-  exit 1
-fi
+remove_tmp_file "$standalone_save_out"
 remove_tmp_file "$standalone_save_err"

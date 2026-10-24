@@ -120,14 +120,14 @@ echo "[beam-wrapper:diagnostics] starting blocking-error diagnostics"
     cat "$broken_sync_err" >&2
     exit 1
   fi
-  assert_json_completed_file_progress "broken sync" "$broken_sync" fileProgress "$broken_sync_err"
+  assert_json_completed_file_progress "broken sync" "$broken_sync" result.document_progress "$broken_sync_err"
   expect_sync_result_shape "$broken_sync" result "broken sync" "$broken_sync_err"
   expect_no_top_level_readiness_fields "$broken_sync" result "broken sync" "$broken_sync_err"
   expect_json_text_eq "$broken_sync" result.diagnostics.counts.warning 0 \
     "broken sync diagnostic counts" "$broken_sync_err"
-  expect_json_text_eq "$broken_sync" result.readiness.saveReady false \
+  expect_json_text_eq "$broken_sync" result.readiness.save_ready false \
     "broken sync readiness" "$broken_sync_err"
-  expect_json_int_at_least "$broken_sync" result.readiness.blockingErrorCount 1 \
+  expect_json_int_at_least "$broken_sync" result.readiness.blocking_error_count 1 \
     "broken sync readiness" "$broken_sync_err"
   expect_json_text_eq "$broken_sync" result.readiness.reason documentErrors \
     "broken sync readiness" "$broken_sync_err"
@@ -150,7 +150,7 @@ echo "[beam-wrapper:diagnostics] starting blocking-error diagnostics"
     exit 1
   fi
   expect_no_top_level_readiness_fields "$broken_resync" result "unchanged broken sync" "$broken_resync_err"
-  expect_json_int_at_least "$broken_resync" result.readiness.blockingErrorCount 1 \
+  expect_json_int_at_least "$broken_resync" result.readiness.blocking_error_count 1 \
     "unchanged broken sync readiness" "$broken_resync_err"
 
   close_save_json="$(beam_wrapper_mktemp_file close-save-json)"
@@ -184,7 +184,7 @@ echo "[beam-wrapper:diagnostics] starting blocking-error diagnostics"
   fi
 
   stats_out="$("$beam_script" stats)"
-  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.session.openDocCount)" != "0" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.session.open_doc_count)" != "0" ]; then
     echo "expected final close to leave zero open Beam daemon documents" >&2
     printf '%s\n' "$stats_out" >&2
     exit 1
@@ -218,13 +218,13 @@ EOF
     cat "$guard_sync_err" >&2
     exit 1
   fi
-  assert_json_completed_file_progress "IO.eprintln guard_msgs sync" "$guard_sync" fileProgress \
+  assert_json_completed_file_progress "IO.eprintln guard_msgs sync" "$guard_sync" result.document_progress \
     "$guard_sync_err"
   expect_sync_result_shape "$guard_sync" result "IO.eprintln guard_msgs sync" \
     "$guard_sync_err"
-  expect_json_text_eq "$guard_sync" result.readiness.saveReady true \
+  expect_json_text_eq "$guard_sync" result.readiness.save_ready true \
     "IO.eprintln guard_msgs sync readiness" "$guard_sync_err"
-  expect_json_text_eq "$guard_sync" result.readiness.blockingErrorCount 0 \
+  expect_json_text_eq "$guard_sync" result.readiness.blocking_error_count 0 \
     "IO.eprintln guard_msgs sync readiness" "$guard_sync_err"
   expect_json_text_eq "$guard_sync" result.diagnostics.counts.total 0 \
     "IO.eprintln guard_msgs sync diagnostic counts" "$guard_sync_err"
@@ -260,7 +260,7 @@ EOF
     cat "$warn_sync_err" >&2
     exit 1
   fi
-  assert_json_completed_file_progress "warning-only sync" "$warn_sync" fileProgress \
+  assert_json_completed_file_progress "warning-only sync" "$warn_sync" result.document_progress \
     "$warn_sync_err"
   expect_no_top_level_readiness_fields "$warn_sync" result "warning-only sync" "$warn_sync_err"
   expect_json_int_at_least "$warn_sync" result.diagnostics.counts.warning 1 \
@@ -283,13 +283,13 @@ EOF
     cat "$warn_save_err" >&2
     exit 1
   fi
-  assert_json_completed_file_progress "warning-only save" "$warn_save" fileProgress \
+  assert_json_completed_file_progress "warning-only save" "$warn_save" result.document_progress \
     "$warn_save_err"
   expect_no_top_level_readiness_fields "$warn_save" result.sync "warning-only save" "$warn_save_err"
   expect_json_int_at_least "$warn_save" result.sync.diagnostics.counts.warning 1 \
     "warning-only save diagnostic counts" "$warn_save_err"
   expect_sync_result_shape "$warn_save" result.sync "warning-only save" "$warn_save_err"
-  expect_json_text_eq "$warn_save" result.sync.readiness.saveReady true \
+  expect_json_text_eq "$warn_save" result.sync.readiness.save_ready true \
     "warning-only save readiness" "$warn_save_err"
   if grep -Eq '^beam: diagnostic warning SaveSmoke/B\.lean:[0-9]+:[0-9]+: ' "$warn_save_err"; then
     echo "expected warning-only save without +all-diagnostics to suppress warning diagnostics" >&2
@@ -324,7 +324,7 @@ EOF
     exit 1
   fi
   assert_json_completed_file_progress "warning-only sync +all-diagnostics" "$warn_sync_full" \
-    fileProgress "$warn_sync_full_err"
+    result.document_progress "$warn_sync_full_err"
   expect_no_top_level_readiness_fields "$warn_sync_full" result "warning-only sync +all-diagnostics" "$warn_sync_full_err"
   expect_json_int_at_least "$warn_sync_full" result.diagnostics.counts.warning 1 \
     "warning-only sync +all-diagnostics diagnostic counts" "$warn_sync_full_err"
@@ -368,7 +368,7 @@ EOF
     exit 1
   fi
   assert_json_completed_file_progress "warning-only close-save +all-diagnostics" "$warn_close_save" \
-    fileProgress "$warn_close_save_err"
+    result.document_progress "$warn_close_save_err"
   expect_no_top_level_readiness_fields "$warn_close_save" result.saved.sync \
     "warning-only close-save" "$warn_close_save_err"
   expect_json_int_at_least "$warn_close_save" \
@@ -376,7 +376,7 @@ EOF
     "warning-only close-save diagnostic counts" "$warn_close_save_err"
   expect_sync_result_shape "$warn_close_save" result.saved.sync \
     "warning-only close-save" "$warn_close_save_err"
-  expect_json_text_eq "$warn_close_save" result.saved.sync.readiness.saveReady true \
+  expect_json_text_eq "$warn_close_save" result.saved.sync.readiness.save_ready true \
     "warning-only close-save readiness" "$warn_close_save_err"
   warn_close_count="$(grep -Ec '^beam: diagnostic warning SaveSmoke/B\.lean:[0-9]+:[0-9]+: ' "$warn_close_save_err" || true)"
   if [ "$warn_close_count" -eq 0 ]; then
@@ -581,7 +581,7 @@ EOF
     printf '%s\n' "$renamed_refreshed_a" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$renamed_refreshed_a" read_json_text_field result.readiness.saveReady)" != "true" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$renamed_refreshed_a" read_json_text_field result.readiness.save_ready)" != "true" ]; then
     echo "expected recovered renamed refresh to report saveReady = true" >&2
     printf '%s\n' "$renamed_refreshed_a" >&2
     exit 1
@@ -636,7 +636,7 @@ echo "[beam-wrapper:diagnostics] starting stale-import recovery"
   fi
 
   stale_save_err="$(beam_wrapper_mktemp_file stale-save)"
-  if "$beam_script" save SaveSmoke/A.lean >"$stale_save_err" 2>&1; then
+  if "$beam_script" save SaveSmoke/A.lean >"$stale_save_err" 2>"$stale_save_err.stderr"; then
     echo "expected save to reject an importer whose sync barrier cannot complete" >&2
     cat "$stale_save_err" >&2
     exit 1
@@ -646,7 +646,7 @@ echo "[beam-wrapper:diagnostics] starting stale-import recovery"
     cat "$stale_save_err" >&2
     exit 1
   fi
-  if ! grep -q '"code": "syncBarrierIncomplete"' "$stale_save_err"; then
+  if [ "$(json_file_text_field "$stale_save_err" error.code)" != "syncBarrierIncomplete" ]; then
     echo "expected stale-import save failure to expose syncBarrierIncomplete" >&2
     cat "$stale_save_err" >&2
     exit 1
@@ -710,11 +710,11 @@ echo "[beam-wrapper:diagnostics] starting stale-import recovery"
     printf '%s\n' "$refreshed_a" >&2
     exit 1
   fi
-  if [ "$(BEAM_JSON_PAYLOAD="$refreshed_a" read_json_text_field result.readiness.saveReady)" != "true" ]; then
+  if [ "$(BEAM_JSON_PAYLOAD="$refreshed_a" read_json_text_field result.readiness.save_ready)" != "true" ]; then
     echo "expected recovered refresh to report saveReady = true" >&2
     printf '%s\n' "$refreshed_a" >&2
     exit 1
   fi
-  assert_json_completed_file_progress "recovered refresh" "$refreshed_a" fileProgress
+  assert_json_completed_file_progress "recovered refresh" "$refreshed_a" result.document_progress
 )
 echo "[beam-wrapper:diagnostics] passed: stale-import recovery"

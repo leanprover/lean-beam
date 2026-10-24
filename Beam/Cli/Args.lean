@@ -19,6 +19,7 @@ open Beam.Broker
 structure CliOptions where
   explicitRoot? : Option System.FilePath := none
   explicitControlDir? : Option System.FilePath := none
+  jsonOutputFormat : JsonOutputFormat := .compact
   args : List String := []
 
 structure ParsedTextArg where
@@ -39,7 +40,7 @@ def hasSubstring (text needle : String) : Bool :=
   | _ => true
 
 def textArgUsage (cmdHead : String) : String :=
-  s!"usage: lean-beam [--root PATH] {cmdHead} (--stdin | --text-file <path> | -- <text...> | <text...>)"
+  s!"usage: lean-beam [--pretty] [--root PATH] {cmdHead} (--stdin | --text-file <path> | -- <text...> | <text...>)"
 
 def textArgReadsStdin (args : List String) : Bool :=
   match args with
@@ -71,7 +72,7 @@ def parseJsonText (label text : String) : CliM Json := do
       s!"invalid {label}: {(argumentPreview "parse error" err).preview}; input: {preview}")
 
 def handleArgUsage (cmdHead : String) : String :=
-  s!"usage: lean-beam [--root PATH] {cmdHead} <handle-json|-|--handle-file <path>>"
+  s!"usage: lean-beam [--pretty] [--root PATH] {cmdHead} <handle-json|-|--handle-file <path>>"
 
 def handleArgReadsStdin (args : List String) : Bool :=
   match args with
@@ -79,12 +80,12 @@ def handleArgReadsStdin (args : List String) : Bool :=
   | _ => false
 
 private def extractHandleJson (json : Json) : Json :=
-  match json.getObjVal? "handle" with
+  match json.getObjVal? "next_handle" with
   | .ok handle => handle
   | .error _ =>
       match json.getObjVal? "result" with
       | .ok result =>
-          match result.getObjVal? "handle" with
+          match result.getObjVal? "next_handle" with
           | .ok handle => handle
           | .error _ => json
       | .error _ => json
@@ -119,7 +120,7 @@ def parseHandleInput (cmdHead : String) (args : List String) : CliM (Handle × L
 private def parseLeanDiagnosticScopeArgs
     (command : String)
     (args : List String) : CliM Beam.Broker.DiagnosticScope :=
-  let usage := s!"usage: lean-beam [--root PATH] {command} <path> [+all-diagnostics]"
+  let usage := s!"usage: lean-beam [--pretty] [--root PATH] {command} <path> [+all-diagnostics]"
   match args with
   | [] => pure Beam.Broker.DiagnosticScope.errors
   | ["+all-diagnostics"] => pure Beam.Broker.DiagnosticScope.all
@@ -139,7 +140,7 @@ def parseLeanCloseSaveArgs (args : List String) : CliM Beam.Broker.DiagnosticSco
   parseLeanDiagnosticScopeArgs "close-save" args
 
 def leanReferencesUsage : String :=
-  "usage: lean-beam [--root PATH] references <path> <version> <line> <character> [--include-declaration|--exclude-declaration]"
+  "usage: lean-beam [--pretty] [--root PATH] references <path> <version> <line> <character> [--include-declaration|--exclude-declaration]"
 
 def parseLeanReferencesArgs (args : List String) : CliM Bool := do
   match args with
@@ -151,7 +152,7 @@ def parseLeanReferencesArgs (args : List String) : CliM Bool := do
         (fun preview => s!"invalid references arguments: {preview}") (some leanReferencesUsage)
 
 def leanGoalsUsage : String :=
-  "usage: lean-beam [--root PATH] goals before|after <path> <version> <line> <character>"
+  "usage: lean-beam [--pretty] [--root PATH] goals before|after <path> <version> <line> <character>"
 
 def parseLeanGoalsModeArg (mode : String) : CliM GoalMode := do
   match mode with
@@ -176,7 +177,7 @@ private def parseTodoSuggestArg (value : String) : CliM Beam.LSP.Todo.TodoSugges
         s!"invalid todo suggest mode '{preview}' (expected one of: {allowed}): {(argumentPreview "suggest error" err).preview}")
 
 def leanTodoUsage : String :=
-  "usage: lean-beam [--root PATH] todo <path> <version> <startLine> <startCharacter> <endLine> <endCharacter> [--kind <kind> ...] [--suggest none|basic]"
+  "usage: lean-beam [--pretty] [--root PATH] todo <path> <version> <startLine> <startCharacter> <endLine> <endCharacter> [--kind <kind> ...] [--suggest none|basic]"
 
 def parseLeanTodoArgs (args : List String) :
     CliM (Option (Array Beam.LSP.Todo.TodoKind) × Option Beam.LSP.Todo.TodoSuggestMode) := do
@@ -277,16 +278,28 @@ private def resolveSessionDirArg (dir : String) : CliM System.FilePath := do
       s!"cannot inspect --session-dir '{preview}': {(argumentPreview "IO detail" error.toString).preview}")
 
 partial def parseCliOptions (opts : CliOptions) : List String → CliM CliOptions
-  | "--root" :: root :: rest => do
-      let root ← resolveExplicitRootArg root
-      parseCliOptions { opts with explicitRoot? := some root } rest
-  | ["--root"] => throw <| .usage "--root requires PATH" (some "usage: lean-beam --root PATH <command> ...")
-  | "--session-dir" :: dir :: rest => do
-      let dir ← resolveSessionDirArg dir
-      parseCliOptions { opts with explicitControlDir? := some dir } rest
-  | ["--session-dir"] => throw <| .usage "--session-dir requires DIR" (some "usage: lean-beam [--root PATH] --session-dir DIR <command> ...")
-  | rest =>
-      -- Global selectors are prefixes; command-level Lean text remains opaque here.
-      pure { opts with args := rest }
+  | args => do
+      try
+        match args with
+        | "--pretty" :: rest =>
+            parseCliOptions { opts with jsonOutputFormat := .pretty } rest
+        | "--root" :: root :: rest => do
+            let root ← resolveExplicitRootArg root
+            parseCliOptions { opts with explicitRoot? := some root } rest
+        | ["--root"] => throw <| .usage "--root requires PATH" (some "usage: lean-beam [--pretty] --root PATH <command> ...")
+        | "--session-dir" :: dir :: rest => do
+            let dir ← resolveSessionDirArg dir
+            parseCliOptions { opts with explicitControlDir? := some dir } rest
+        | ["--session-dir"] => throw <| .usage "--session-dir requires DIR" (some "usage: lean-beam [--pretty] [--root PATH] --session-dir DIR <command> ...")
+        | rest =>
+            -- Global selectors are prefixes; command-level Lean text remains opaque here.
+            pure { opts with args := rest }
+      catch failure =>
+        let selectedFormat :=
+          if opts.jsonOutputFormat == .pretty || failure.jsonOutputFormat == .pretty then
+            .pretty
+          else
+            .compact
+        throw { failure with jsonOutputFormat := selectedFormat }
 
 end Beam.Cli

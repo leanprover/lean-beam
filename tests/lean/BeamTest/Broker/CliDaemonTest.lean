@@ -665,7 +665,7 @@ private def checkClientResponsePresentation : IO Unit := do
   let semantic := Beam.Broker.Response.success Json.null
   let presented :=
     Beam.Cli.responseOutputJson semantic (some "visible-request")
-  requireJsonString "presented response" "clientRequestId" "visible-request" presented
+  requireJsonString "presented response" "client_request_id" "visible-request" presented
   match fromJson? (α := Beam.Broker.Response) presented with
   | .ok response =>
       throw <| IO.userError
@@ -1797,6 +1797,10 @@ private def withFirstStderrWrite (before : IO Unit) (action : IO α) : IO α := 
   IO.withStderr observed action
 
 /-- Run the real CLI request/rendering path against a parent-owned fake broker. -/
+private def blockedOutputRequest : Beam.Broker.Request := {
+  payload := .saveOlean { path := "Main.lean" }
+}
+
 def blockedOutput (stream : String) (port : UInt16) : Beam.Cli.CliM Unit := do
   let root : System.FilePath := "/tmp"
   let client := projectDaemonClientForTest (.tcp port) root
@@ -1808,13 +1812,13 @@ def blockedOutput (stream : String) (port : UInt16) : Beam.Cli.CliM Unit := do
         -- The parent sends SIGINT before releasing the first progress write.
         unless (← (← IO.getStdin).getLine) == "release\n" do
           throw <| IO.userError "progress start gate was not released") <|
-        (Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
+        (Beam.Cli.callBrokerWithProgress root client blockedOutputRequest
           (Beam.Cli.syncWaitSpec "Main.lean")).run
   | "stderr" =>
       ExceptT.mk <| withFirstStderrWrite (do
         IO.println "diagnostic write reached"
         (← IO.getStdout).flush) <|
-        (Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
+        (Beam.Cli.callBrokerWithProgress root client blockedOutputRequest
           (Beam.Cli.syncWaitSpec "Main.lean")).run
   | "stderr-fails" | "stderr-fails-once" | "stderr-flush-fails" =>
       let stderr ← IO.getStderr
@@ -1837,10 +1841,10 @@ def blockedOutput (stream : String) (port : UInt16) : Beam.Cli.CliM Unit := do
           }
       let spec := { Beam.Cli.syncWaitSpec "Main.lean" with startMsg := "fixture progress start" }
       ExceptT.mk <| IO.withStderr failing <|
-        (Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats spec).run
-  | "stdout" => Beam.Cli.callBroker root client Beam.Broker.Request.stats
+        (Beam.Cli.callBrokerWithProgress root client blockedOutputRequest spec).run
+  | "stdout" => Beam.Cli.callBroker root client blockedOutputRequest
   | "stdout-progress" =>
-      Beam.Cli.callBrokerWithProgress root client Beam.Broker.Request.stats
+      Beam.Cli.callBrokerWithProgress root client blockedOutputRequest
         (Beam.Cli.syncWaitSpec "Main.lean")
   | _ => throw <| Beam.Cli.CliFailure.usage s!"unknown blocked output stream: {stream}"
 

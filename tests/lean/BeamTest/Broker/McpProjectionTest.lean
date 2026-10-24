@@ -5,7 +5,10 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Broker.Errors
+import Beam.Broker.Metrics
+import Beam.Cli.Output
 import Beam.Mcp.Projection
+import Beam.Mcp.Protocol
 import BeamTest.Broker.JsonAssert
 
 open Lean
@@ -13,13 +16,13 @@ open BeamTest.Broker.JsonAssert
 
 namespace BeamTest.Broker.McpProjectionTest
 
-private def expectToolOk (label : String) (result : Except Beam.Mcp.ToolError Json) : IO Json := do
+private def expectToolOk (label : String) (result : Except Beam.Output.OutputError Json) : IO Json := do
   match result with
   | .ok value => pure value
   | .error err => throw <| IO.userError s!"{label}: {err.code}: {err.message}"
 
-private def expectToolError (label expectedCode : String) (result : Except Beam.Mcp.ToolError Json) :
-    IO Beam.Mcp.ToolError := do
+private def expectToolError (label expectedCode : String) (result : Except Beam.Output.OutputError Json) :
+    IO Beam.Output.OutputError := do
   match result with
   | .ok json =>
       throw <| IO.userError s!"{label}: expected error {expectedCode}, got {json.compress}"
@@ -567,16 +570,24 @@ private def checkPublicInputDiagnostics : IO Unit := do
         (message == expected)
 
 private def checkRunAtNormalization : IO Unit := do
-  let semanticFailure := Json.mkObj [("success", toJson false)]
+  let semanticFailure := Json.mkObj [
+    ("success", toJson false),
+    ("messages", toJson (#[] : Array Beam.LSP.RunAt.Message)),
+    ("traces", toJson (#[] : Array String))
+  ]
   let normalizedFailure ← expectToolOk "normalize semantic failure" <|
     Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt)
       (Beam.Broker.Response.success semanticFailure)
   requireJsonBool "semantic failure result" "success" false normalizedFailure
-  requireJsonNull "semantic failure result" "next_handle" normalizedFailure
-  requireJsonNull "semantic failure result" "proof_state" normalizedFailure
+  requireFieldAbsent "semantic failure result" "next_handle" normalizedFailure
+  requireFieldAbsent "semantic failure result" "proof_state" normalizedFailure
   requireFieldAbsent "semantic failure result" "ok" normalizedFailure
   requireFieldAbsent "semantic failure result" "handle" normalizedFailure
   requireFieldAbsent "semantic failure result" "proofState" normalizedFailure
+
+  discard <| expectToolError "malformed runAt result without required success" "invalidResult" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt)
+      (Beam.Broker.Response.success <| Json.mkObj [])
 
   let successWithHandle := Json.mkObj [
     ("success", toJson true),
@@ -593,7 +604,8 @@ private def checkRunAtNormalization : IO Unit := do
   let rawHandle ← requireObjVal "next handle" "raw" nextHandle
   requireJsonString "next handle raw" "value" "raw-handle" rawHandle
   requireFieldAbsent "handle result" "file_progress" normalizedHandle
-  requireFieldAbsent "handle result" "document_progress" normalizedHandle
+  let handleProgress ← requireObjVal "handle result" "document_progress" normalizedHandle
+  requireJsonBool "handle document progress" "done" true handleProgress
   requireFieldAbsent "handle result" "client_request_id" normalizedHandle
   requireFieldAbsent "handle result" "handle" normalizedHandle
 
@@ -621,6 +633,248 @@ private def sampleSyncResult : Beam.Broker.SyncFileResult := {
     }]
   }
 }
+
+private def checkCrossSurfaceResultParity : IO Unit := do
+  let progress : Beam.Broker.SyncFileProgress := {
+    updates := 4, done := true, rangeStartLine? := some 1, rangeEndLine? := some 20
+  }
+  let syncResponse := (Beam.Broker.Response.success <| toJson sampleSyncResult).withFileProgress progress
+  let mcpSync ← expectToolOk "MCP sync result" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .sync) syncResponse
+  let cliSyncEnvelope ← expectToolOk "CLI sync result" <|
+    Beam.Cli.projectResponseOutput (.broker .syncFile) syncResponse
+  requireJsonBool "CLI sync envelope" "ok" true cliSyncEnvelope
+  let cliSync ← requireObjVal "CLI sync envelope" "result" cliSyncEnvelope
+  require "CLI and MCP sync projections have identical decoded results" (cliSync == mcpSync)
+  let cliProgress ← requireObjVal "CLI sync result" "document_progress" cliSync
+  let mcpProgress ← requireObjVal "MCP sync result" "document_progress" mcpSync
+  require "both surfaces preserve the same document progress" (cliProgress == mcpProgress)
+  let readiness ← requireObjVal "shared sync result" "readiness" cliSync
+  requireFieldAbsent "shared readiness" "saveReady" readiness
+  requireFieldAbsent "shared readiness" "blockingErrorCount" readiness
+  requireJsonInt "shared readiness" "blocking_error_count" 1 readiness
+  let diagnostics ← requireObjVal "shared sync result" "diagnostics" cliSync
+  let items ← IO.ofExcept <| diagnostics.getObjValAs? (Array Json) "items"
+  let some item := items[0]?
+    | throw <| IO.userError "shared sync result lost its diagnostic"
+  requireJsonString "shared diagnostic severity" "severity" "warning" item
+  let range ← requireObjVal "shared diagnostic" "range" item
+  let start ← requireObjVal "shared diagnostic range" "start" range
+  requireJsonInt "shared diagnostic range start" "line" 1 start
+  requireJsonInt "shared diagnostic range start" "character" 2 start
+
+  let sampleSave : Beam.Broker.SaveOleanResult := {
+    module := "Demo"
+    sourceHash := "abc"
+    olean := "/tmp/Demo.olean"
+    ilean := "/tmp/Demo.ilean"
+    c := "/tmp/Demo.c"
+    trace := "/tmp/Demo.olean.trace"
+    oleanServer? := some "/tmp/Demo.olean.server"
+    irSig? := some "/tmp/Demo.ir.sig"
+    sync := sampleSyncResult
+  }
+  let saveResponse := (Beam.Broker.Response.success <| toJson sampleSave).withFileProgress progress
+  let mcpSave ← expectToolOk "MCP save result" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .save) saveResponse
+  let cliSaveEnvelope ← expectToolOk "CLI save result" <|
+    Beam.Cli.projectResponseOutput (.broker .saveOlean) saveResponse
+  let cliSave ← requireObjVal "CLI save envelope" "result" cliSaveEnvelope
+  require "CLI and MCP save projections have identical decoded results" (cliSave == mcpSave)
+  requireFieldAbsent "shared save result" "sourceHash" cliSave
+  requireJsonString "shared save result" "source_hash" "abc" cliSave
+
+  let closeSaveResponse := (Beam.Broker.Response.success <|
+    toJson ({ saved := sampleSave } : Beam.Broker.CloseSaveResult)).withFileProgress progress
+  let mcpCloseSave ← expectToolOk "MCP close-save result" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .closeSave) closeSaveResponse
+  let cliCloseSaveEnvelope ← expectToolOk "CLI close-save result" <|
+    Beam.Cli.projectResponseOutput .closeSave closeSaveResponse
+  let cliCloseSave ← requireObjVal "CLI close-save envelope" "result" cliCloseSaveEnvelope
+  require "CLI and MCP close-save projections have identical decoded results"
+    (cliCloseSave == mcpCloseSave)
+
+  let semanticFailure := Beam.Broker.Response.success <| Json.mkObj [
+    ("success", toJson false),
+    ("messages", toJson (#[] : Array Beam.LSP.RunAt.Message)),
+    ("traces", toJson (#[] : Array String))
+  ]
+  let mcpFailure ← expectToolOk "MCP semantic failure" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) semanticFailure
+  let cliFailureEnvelope ← expectToolOk "CLI semantic failure" <|
+    Beam.Cli.projectResponseOutput (.broker .runAt) semanticFailure
+  let cliFailure ← requireObjVal "CLI semantic failure envelope" "result" cliFailureEnvelope
+  require "CLI and MCP preserve semantic failure as an operation result" (cliFailure == mcpFailure)
+  requireFieldAbsent "semantic failure" "proof_state" cliFailure
+  requireFieldAbsent "semantic failure" "next_handle" cliFailure
+
+  let emptySync := Beam.Broker.Response.success <| toJson ({
+    path := "Clean.lean",
+    version := 1
+    diagnostics := { counts := {} }
+    readiness := { saveReady := true, reason := "ok" }
+  } : Beam.Broker.SyncFileResult)
+  let mcpEmpty ← expectToolOk "MCP empty sync" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .sync) emptySync
+  let cliEmptyEnvelope ← expectToolOk "CLI empty sync" <|
+    Beam.Cli.projectResponseOutput (.broker .syncFile) emptySync
+  let cliEmpty ← requireObjVal "CLI empty sync envelope" "result" cliEmptyEnvelope
+  require "empty sync result parity" (cliEmpty == mcpEmpty)
+  let emptyReadiness ← requireObjVal "empty sync result" "readiness" cliEmpty
+  let blockingDiagnostics ← IO.ofExcept <| emptyReadiness.getObjValAs? (Array Json) "blocking_diagnostics"
+  let blockingMessages ← IO.ofExcept <| emptyReadiness.getObjValAs? (Array Json) "blocking_messages"
+  require "known-empty readiness arrays remain present" (blockingDiagnostics.isEmpty && blockingMessages.isEmpty)
+
+  let diagnostics ← requireObjVal "empty sync result" "diagnostics" cliEmpty
+  requireFieldAbsent "empty sync without replay" "items" diagnostics
+
+  let arrayResponse := (Beam.Broker.Response.success <| Json.arr #[toJson (7 : Nat)])
+    |>.withFileProgress progress
+  let mcpArray ← expectToolOk "MCP array result with progress" <|
+    Beam.Mcp.normalizeBrokerResponse .beamVersion arrayResponse
+  let cliArrayEnvelope ← expectToolOk "CLI array result with progress" <|
+    Beam.Cli.projectResponseOutput .opaque arrayResponse
+  let cliArray ← requireObjVal "CLI array response" "result" cliArrayEnvelope
+  require "MCP and CLI safely wrap non-object results carrying progress" (mcpArray == cliArray)
+  let wrappedArray ← IO.ofExcept <| cliArray.getObjValAs? (Array Json) "result"
+  require "non-object result payload is retained" (wrappedArray == #[toJson (7 : Nat)])
+  discard <| requireObjVal "array result progress" "document_progress" cliArray
+
+  let arrayWithoutProgress := Beam.Broker.Response.success <| Json.arr #[toJson (8 : Nat)]
+  let mcpPlainArray ← expectToolOk "MCP array result without progress" <|
+    Beam.Mcp.normalizeBrokerResponse .beamVersion arrayWithoutProgress
+  let cliPlainArrayEnvelope ← expectToolOk "CLI array result without progress" <|
+    Beam.Cli.projectResponseOutput .opaque arrayWithoutProgress
+  let cliPlainArray ← requireObjVal "CLI array response without progress" "result" cliPlainArrayEnvelope
+  require "array result shape is consistent without progress" (mcpPlainArray == cliPlainArray)
+  let wrappedPlainArray ← IO.ofExcept <| cliPlainArray.getObjValAs? (Array Json) "result"
+  require "array payload is retained without progress" (wrappedPlainArray == #[toJson (8 : Nat)])
+  requireFieldAbsent "array result without progress" "document_progress" cliPlainArray
+
+private def checkProjectionFailureEvidence : IO Unit := do
+  let partialReceipt := Json.mkObj [("module", toJson "Main"), ("sourceHash", toJson "saved")]
+  let cases : Array (Beam.Output.Operation × Beam.Mcp.ToolName × Json) := #[
+    (.broker .saveOlean, .leanOperation .save, partialReceipt),
+    (.closeSave, .leanOperation .closeSave,
+      Json.mkObj [("closed", toJson true), ("saved", partialReceipt)])
+  ]
+  for (operation, tool, receipt) in cases do
+    let response := (Beam.Broker.Response.success receipt).withFileProgress { updates := 2, done := true }
+    let mcpError ← expectToolError "MCP projection receipt evidence" "invalidResult" <|
+      Beam.Mcp.normalizeBrokerResponse tool response
+    let cliError ← expectToolError "CLI projection receipt evidence" "invalidResult" <|
+      Beam.Cli.projectResponseOutput operation response
+    require "projection failure parity" (mcpError.json == cliError.json)
+    let data ← requireObjVal "projection failure" "data" cliError.json
+    let observed ← requireObjVal "projection failure data" "observed_response" data
+    require "projection failure retains typed observed receipt" (observed == toJson response)
+    let progress ← requireObjVal "projection failure" "document_progress" cliError.json
+    requireJsonBool "projection failure progress" "done" true progress
+
+private def checkExplicitResultScope : IO Unit := do
+  let globalRequest := Beam.Broker.Request.stats
+  let localRequest := { globalRequest with workspaceId? := some "local:/repo" }
+  require "global stats scope comes from request"
+    (Beam.Output.Operation.ofRequest globalRequest == .globalStats)
+  require "workspace stats scope comes from request"
+    (Beam.Output.Operation.ofRequest localRequest == .workspaceStats)
+  let workspaceStatsEntry := Json.mkObj [
+    ("id", toJson "local:/repo"), ("root", toJson "/repo"),
+    ("session", Json.mkObj [("active", toJson false)]),
+    ("metrics", Beam.Broker.workspaceMetricsJson {})
+  ]
+  let globalStats := Json.mkObj [
+    ("uptimeMs", toJson (1 : Nat)),
+    ("workspaces", Json.mkObj [("local:/repo", workspaceStatsEntry)]),
+    ("daemonIdentity", toJson ({ daemonId := "test", configHash := "config" } : Beam.Broker.DaemonIdentity))
+  ]
+  let localStats := workspaceStatsEntry.setObjVal! "uptimeMs" (toJson (1 : Nat))
+  let projected ← expectToolOk "global stats projection" <|
+    Beam.Mcp.normalizeBrokerResponse .beamStats (.success globalStats)
+  let identity ← requireObjVal "global stats" "daemon_identity" projected
+  requireJsonString "stats identity" "daemon_id" "test" identity
+  discard <| expectToolOk "workspace stats projection" <|
+    Beam.Output.projectResult .workspaceStats localStats
+  discard <| expectToolOk "global workspace stats entry projection" <|
+    Beam.Output.projectResult .globalStats globalStats
+  discard <| expectToolError "global payload cannot masquerade as workspace stats" "invalidResult" <|
+    Beam.Output.projectResult .workspaceStats globalStats
+  discard <| expectToolError "workspace payload cannot masquerade as global stats" "invalidResult" <|
+    Beam.Output.projectResult .globalStats localStats
+  discard <| expectToolError "scoped stats require producer uptime" "invalidResult" <|
+    Beam.Output.projectResult .workspaceStats workspaceStatsEntry
+  let unexpectedNestedScopeFields := Json.mkObj [
+    ("uptimeMs", toJson (1 : Nat)), ("workspaces", Json.mkObj [
+      ("local:/repo", workspaceStatsEntry.setObjVal! "uptimeMs" (toJson (1 : Nat)))
+    ])
+  ]
+  discard <| expectToolError "global workspace entries reject scoped-only uptime" "invalidResult" <|
+    Beam.Output.projectResult .globalStats unexpectedNestedScopeFields
+  let activeStats := localStats.setObjVal! "session" <| Json.mkObj [
+    ("active", toJson true), ("epoch", toJson (3 : Nat)), ("openDocCount", toJson (2 : Nat))
+  ]
+  let activeProjected ← expectToolOk "active workspace stats projection" <|
+    Beam.Output.projectResult .workspaceStats activeStats
+  let activeSession ← requireObjVal "active workspace stats" "session" activeProjected
+  requireJsonInt "active session stats" "open_doc_count" 2 activeSession
+  discard <| expectToolError "active session stats require epoch" "invalidResult" <|
+    Beam.Output.projectResult .workspaceStats <| localStats.setObjVal! "session" <| Json.mkObj [
+      ("active", toJson true), ("openDocCount", toJson (2 : Nat))
+    ]
+  discard <| expectToolError "active session stats require open document count" "invalidResult" <|
+    Beam.Output.projectResult .workspaceStats <| localStats.setObjVal! "session" <| Json.mkObj [
+      ("active", toJson true), ("epoch", toJson (3 : Nat))
+    ]
+  discard <| expectToolError "inactive session stats omit epoch and document count" "invalidResult" <|
+    Beam.Output.projectResult .workspaceStats <| localStats.setObjVal! "session" <| Json.mkObj [
+      ("active", toJson false), ("epoch", toJson (3 : Nat))
+    ]
+  let localDocs := Json.mkObj [
+    ("root", toJson "/repo"),
+    ("session", Json.mkObj [("active", toJson false), ("files", Json.arr #[])])
+  ]
+  let globalDocs := Json.mkObj [("workspaces", Json.mkObj [("local:/repo", localDocs)])]
+  discard <| expectToolOk "global open-doc projection" <|
+    Beam.Output.projectResult .globalOpenDocs globalDocs
+  discard <| expectToolOk "workspace open-doc projection" <|
+    Beam.Output.projectResult .workspaceOpenDocs localDocs
+  discard <| expectToolError "open-doc scope cannot be inferred from payload" "invalidResult" <|
+    Beam.Output.projectResult .workspaceOpenDocs globalDocs
+
+private def checkCrossSurfaceErrorParity : IO Unit := do
+  let staleData := Json.mkObj [
+    ("reason", toJson "documentVersionMismatch"),
+    ("expectedVersion", toJson (3 : Nat)),
+    ("acceptedVersion", toJson (4 : Nat))
+  ]
+  let progress : Beam.Broker.SyncFileProgress := { updates := 2, done := false }
+  let errors := #[
+    Beam.Broker.errorResponseFor .contentModified "stale document" (some staleData) |>.withFileProgress progress,
+    Beam.Broker.errorResponseFor .requestCancelled "caller cancelled",
+    Beam.Broker.errorResponseFor .internalError "explicit null error data" (some Json.null)
+  ]
+  for response in errors do
+    let outputError ← match Beam.Output.projectResponse (.broker .syncFile) response with
+      | .ok _ => throw <| IO.userError "broker error unexpectedly projected as success"
+      | .error error => pure error
+    let mcpError ← match Beam.Mcp.normalizeBrokerResponse (.leanOperation .sync) response with
+      | .ok _ => throw <| IO.userError "MCP broker error unexpectedly projected as success"
+      | .error error => pure error
+    require "MCP retains shared typed error code" (mcpError.code == outputError.code)
+    require "MCP retains shared typed error message" (mcpError.message == outputError.message)
+    require "MCP retains opaque structured error data" (mcpError.data? == outputError.data?)
+    require "MCP retains optional document progress" (mcpError.documentProgress? == outputError.documentProgress?)
+    if mcpError.message == "explicit null error data" then
+      requireJsonNull "explicit null error data" "data" mcpError.json
+    let cliErrorEnvelope := Beam.Cli.responseOutputJson response
+    let cliError ← requireObjVal "CLI error envelope" "error" cliErrorEnvelope
+    require "CLI and MCP share error code/message/data/progress presentation"
+      (cliError == outputError.json)
+    let mcpErrorEnvelope := Beam.Mcp.callToolErrorResult outputError
+    let mcpStructured ← requireObjVal "MCP tool error envelope" "structuredContent" mcpErrorEnvelope
+    require "CLI and MCP expose identical decoded error objects" (cliError == mcpStructured)
+    requireJsonBool "MCP tool error envelope" "isError" true mcpErrorEnvelope
+
 
 private def checkSyncAndSaveNormalization : IO Unit := do
   let normalizedSync ← expectToolOk "normalize sync result" <|
@@ -787,6 +1041,10 @@ def main : IO Unit := do
   checkPublicInputDiagnostics
   checkRunAtNormalization
   checkSyncAndSaveNormalization
+  checkCrossSurfaceResultParity
+  checkCrossSurfaceErrorParity
+  checkExplicitResultScope
+  checkProjectionFailureEvidence
   checkTransportErrorNormalization
   checkTodoNormalization
   checkCodeActionResolveNormalization

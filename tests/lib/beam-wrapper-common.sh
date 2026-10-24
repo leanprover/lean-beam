@@ -57,9 +57,6 @@ read_json_text_field() {
 import json, os, sys
 payload = json.loads(os.environ["BEAM_JSON_PAYLOAD"])
 path = sys.argv[1]
-if path == "ok" and "ok" not in payload:
-    print("false" if payload.get("error") is not None else "true")
-    raise SystemExit(0)
 value = payload
 try:
     for part in path.split("."):
@@ -305,10 +302,14 @@ assert_json_completed_file_progress() {
   shift 3
   assert_json_field_equals "$label" "$payload" "$prefix.done" true "$@"
   assert_json_field_absent "$label" "$payload" "$prefix.rangeStartLine" "$@"
+  assert_json_field_absent "$label" "$payload" "$prefix.range_start_line" "$@"
   assert_json_field_absent "$label" "$payload" "$prefix.line" "$@"
   assert_json_field_absent "$label" "$payload" "$prefix.totalLines" "$@"
-  if BEAM_JSON_PAYLOAD="$payload" json_text_has_field "$prefix.rangeEndLine"; then
-    assert_json_field_int_ge "$label" "$payload" "$prefix.rangeEndLine" 1 "$@"
+  assert_json_field_absent "$label" "$payload" "$prefix.total_lines" "$@"
+  assert_json_field_absent "$label" "$payload" "$prefix.rangeEndLine" "$@"
+  local end_key="$prefix.range_end_line"
+  if BEAM_JSON_PAYLOAD="$payload" json_text_has_field "$end_key"; then
+    assert_json_field_int_ge "$label" "$payload" "$end_key" 1 "$@"
   fi
 }
 

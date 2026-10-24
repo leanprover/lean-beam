@@ -44,7 +44,13 @@ private structure SessionStatus where
   sessionDir : String
   generation? : Option String := none
   detail? : Option String := none
-  deriving ToJson
+
+private instance : ToJson SessionStatus where
+  toJson status := Json.mkObj <|
+    [("state", toJson status.state), ("workspace", toJson ({ root := status.workspace } : Beam.Workspace.Descriptor)),
+     ("session_dir", toJson status.sessionDir)] ++
+    status.generation?.toList.map (fun value => ("generation", toJson value)) ++
+    status.detail?.toList.map (fun value => ("detail", toJson value))
 
 private structure SessionTransitionWarning where
   code : String
@@ -63,7 +69,13 @@ private structure SessionRecoveryResult where
   generation? : Option String := none
   quarantinedPath? : Option String := none
   reason? : Option String := none
-  deriving ToJson
+
+private instance : ToJson SessionRecoveryResult where
+  toJson result := Json.mkObj <|
+    [("state", toJson result.state), ("changed", toJson result.changed)] ++
+    result.generation?.toList.map (fun value => ("generation", toJson value)) ++
+    result.quarantinedPath?.toList.map (fun value => ("quarantined_path", toJson value)) ++
+    result.reason?.toList.map (fun value => ("reason", toJson value))
 
 private def mkSessionStatus
     (state : SessionState)
@@ -95,6 +107,7 @@ private def runLeanRunAt
       leanRunAtRequest path version line character parsedText.text (storeHandle := storeHandle)
     maybeEmitTextDebug req.clientRequestId? action parsedText.source parsedText.text
     callBrokerWithProgress root client req (leanRunAtWaitSpec action path line character)
+      opts.jsonOutputFormat
 
 private def runLeanRunWith
     (runtime : RuntimeAccess)
@@ -119,6 +132,7 @@ private def runLeanRunWith
   maybeEmitTextDebug req.clientRequestId? action parsedText.source parsedText.text
   withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
     callBrokerWithProgress root client req (leanRunWithWaitSpec path (linear := linear))
+      opts.jsonOutputFormat
 
 private def runLeanRelease
     (runtime : RuntimeAccess)
@@ -132,14 +146,14 @@ private def runLeanRelease
       (some (handleArgUsage s!"{action} <path>"))
   let root ← projectRoot opts
   withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
-    callBroker root client <| leanReleaseRequest path handle
+    callBroker root client (leanReleaseRequest path handle) opts.jsonOutputFormat
 
 private def stopProjectSession (runtime : RuntimeAccess) (opts : CliOptions) : CliM Unit := do
   let root ← explicitProjectRoot opts "stop"
   match ← shutdownRegisteredProjectDaemon runtime.control root opts.explicitControlDir? with
   | .absent =>
-      printResponse <| Response.success <|
-        toJson ({ state := .absent, changed := false } : SessionTransitionResult)
+      printResponse (.success <| toJson ({ state := .absent, changed := false } : SessionTransitionResult))
+        none opts.jsonOutputFormat
   | .stopping delivery =>
       let warning? ←
         match delivery with
@@ -154,11 +168,11 @@ private def stopProjectSession (runtime : RuntimeAccess) (opts : CliOptions) : C
               code := "shutdownDeliveryFailed"
               message := ← daemonFailureMessage root failure opts.explicitControlDir?
             } : SessionTransitionWarning)
-      printResponse <| Response.success <| toJson ({
+      printResponse (.success <| toJson ({
         state := .stopping
         changed := true
         warning?
-      } : SessionTransitionResult)
+      } : SessionTransitionResult)) none opts.jsonOutputFormat
 
 private def recoverProjectSession (runtime : RuntimeAccess) (opts : CliOptions) (args : List String) : CliM Unit := do
   let generation ←
@@ -181,7 +195,7 @@ private def recoverProjectSession (runtime : RuntimeAccess) (opts : CliOptions) 
         generation? := some generation
         quarantinedPath? := some quarantinedPath.toString
       }
-  printResponse <| Response.success <| toJson result
+  printResponse (.success <| toJson result) none opts.jsonOutputFormat
 
 /-- Initialize an acquired foreground owner, then hold it until shutdown.
 The caller owns the enclosing signal/owner scopes; initialization must reject pre-readiness stops. -/
@@ -207,7 +221,7 @@ private def serveProject
     (runtime : RuntimeAccess)
     (opts : CliOptions) : CliM Unit := do
   let root ← projectRoot opts
-  withOwnerResponse fun printReadiness => ExceptT.mk <| withOwnerInterruptWatcher fun watcher =>
+  withOwnerResponse (fun printReadiness => ExceptT.mk <| withOwnerInterruptWatcher fun watcher =>
     (withProjectDaemonOwner runtime.resolve root
       (explicitControlDir? := opts.explicitControlDir?) fun owner => do
         IO.eprintln "beam: loading Lake workspace configuration..."
@@ -219,7 +233,7 @@ private def serveProject
         IO.eprintln <|
           "beam: serving Beam session; interrupt this process or run when finished:\n" ++
           wrapperSessionCommand root owner.client.controlDir .stop
-        runThenHoldUntilInterrupted watcher owner (pure ())).run
+        runThenHoldUntilInterrupted watcher owner (pure ())).run) opts.jsonOutputFormat
 
 private def sessionStatus (opts : CliOptions) : CliM Unit := do
   let root ← inspectionRoot opts
@@ -236,7 +250,7 @@ private def sessionStatus (opts : CliOptions) : CliM Unit := do
     | .unresponsive entry failure =>
         pure <| mkSessionStatus .unresponsive root sessionDir (some entry.daemonId)
           (some failure.detail)
-  printResponse <| Response.success (toJson result)
+  printResponse (.success (toJson result)) none opts.jsonOutputFormat
 
 private def dispatchCommand (installation : Installation) (opts : CliOptions) : CliM Unit := do
   match installation.admitCommand opts.args with
@@ -250,7 +264,7 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
   | "version" :: [] | "--version" :: [] =>
       printVersion installation.cliIdentity
   | "toolchain-build-info" :: [] =>
-      printJsonLine compilerBuildInfo
+      printJsonLine compilerBuildInfo opts.jsonOutputFormat
   | "prune" :: args =>
       runPrune home args
   | "feedback-report" :: args =>
@@ -271,7 +285,7 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanHoverRequest path version line character)
-          (leanHoverWaitSpec path line character action)
+          (leanHoverWaitSpec path line character action) opts.jsonOutputFormat
   | "signature-help" :: path :: versionText :: line :: character :: [] =>
       let version ← parseNatArg "version" versionText
       let line ← parseNatArg "line" line
@@ -281,7 +295,7 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanSignatureHelpRequest path version line character)
-          (leanSignatureHelpWaitSpec path line character action)
+          (leanSignatureHelpWaitSpec path line character action) opts.jsonOutputFormat
   | "definition" :: path :: versionText :: line :: character :: [] =>
       let version ← parseNatArg "version" versionText
       let line ← parseNatArg "line" line
@@ -291,7 +305,7 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanDefinitionRequest path version line character)
-          (leanDefinitionWaitSpec path line character action)
+          (leanDefinitionWaitSpec path line character action) opts.jsonOutputFormat
   | "references" :: path :: versionText :: line :: character :: extra =>
       let version ← parseNatArg "version" versionText
       let line ← parseNatArg "line" line
@@ -302,7 +316,7 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanReferencesRequest path version line character includeDeclaration)
-          (leanReferencesWaitSpec path line character action)
+          (leanReferencesWaitSpec path line character action) opts.jsonOutputFormat
   | "document-symbols" :: path :: versionText :: [] =>
       let version ← parseNatArg "version" versionText
       let root ← projectRoot opts
@@ -310,7 +324,7 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanDocumentSymbolsRequest path version)
-          (leanDocumentSymbolsWaitSpec path action)
+          (leanDocumentSymbolsWaitSpec path action) opts.jsonOutputFormat
   | "workspace-symbols" :: queryParts =>
       let query ←
         match joinTextArgs queryParts with
@@ -321,7 +335,7 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanWorkspaceSymbolsRequest query)
-          (leanWorkspaceSymbolsWaitSpec query action)
+          (leanWorkspaceSymbolsWaitSpec query action) opts.jsonOutputFormat
   | "goals" :: modeText :: path :: versionText :: line :: character :: [] =>
       let mode ← parseLeanGoalsModeArg modeText
       let version ← parseNatArg "version" versionText
@@ -332,7 +346,7 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanGoalsRequest path version line character mode)
-          (leanGoalsWaitSpec path line character mode (some action))
+          (leanGoalsWaitSpec path line character mode (some action)) opts.jsonOutputFormat
   | "todo" :: path :: versionText :: startLine :: startCharacter :: endLine :: endCharacter :: extra => do
       let version ← parseNatArg "version" versionText
       let startLine ← parseNatArg "startLine" startLine
@@ -346,6 +360,7 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
         callBrokerWithProgress root client
           (leanTodoRequest path version startLine startCharacter endLine endCharacter kinds? suggest?)
           (leanTodoWaitSpec path startLine startCharacter endLine endCharacter action)
+          opts.jsonOutputFormat
   | "run-with" :: path :: args =>
       runLeanRunWith runtime opts "run-with" path args
   | "run-with-linear" :: path :: args =>
@@ -360,11 +375,11 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanSaveRequest path diagnosticScope)
-          (leanSaveWaitSpec path (action? := some action))
+          (leanSaveWaitSpec path (action? := some action)) opts.jsonOutputFormat
   | "update" :: path :: [] =>
       let root ← projectRoot opts
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
-        callBroker root client <| leanUpdateRequest path
+        callBroker root client (leanUpdateRequest path) opts.jsonOutputFormat
   | "sync" :: path :: extra => do
       let diagnosticScope ← parseLeanSyncArgs extra
       let root ← projectRoot opts
@@ -372,7 +387,7 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanSyncRequest path diagnosticScope)
-          (syncWaitSpec path action)
+          (syncWaitSpec path action) opts.jsonOutputFormat
   | "refresh" :: path :: extra => do
       let diagnosticScope ← parseLeanRefreshArgs extra
       let root ← projectRoot opts
@@ -380,11 +395,11 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanRefreshRequest path diagnosticScope)
-          (refreshWaitSpec path action)
+          (refreshWaitSpec path action) opts.jsonOutputFormat
   | "close" :: path :: [] =>
       let root ← projectRoot opts
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
-        callBroker root client <| leanCloseRequest path
+        callBroker root client (leanCloseRequest path) opts.jsonOutputFormat
   | "close-save" :: path :: extra =>
       let diagnosticScope ← parseLeanCloseSaveArgs extra
       let root ← projectRoot opts
@@ -392,21 +407,21 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
           (leanCloseSaveRequest path diagnosticScope)
-          (leanSaveWaitSpec path (closeAfter := true) (action? := some action))
+          (leanSaveWaitSpec path (closeAfter := true) (action? := some action)) opts.jsonOutputFormat
   | "doctor" :: [] =>
       doctor home installation.doctorLines opts
   | "open-files" :: [] =>
       let root ← inspectionRoot opts
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
-        callBroker root client Request.openDocs
+        callBroker root client Request.openDocs opts.jsonOutputFormat
   | "cancel" :: requestId :: [] =>
       let root ← inspectionRoot opts
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
-        callBroker root client <| Request.cancel requestId
+        callBroker root client (Request.cancel requestId) opts.jsonOutputFormat
   | "stats" :: [] =>
       let root ← inspectionRoot opts
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
-        callBroker root client Request.stats
+        callBroker root client Request.stats opts.jsonOutputFormat
   | "status" :: [] =>
       sessionStatus opts
   | "stop" :: [] =>
@@ -420,7 +435,10 @@ def runCommand (installation : Installation) (opts : CliOptions) : CliM Unit := 
   try dispatchCommand installation opts
   catch failure =>
     if failure.exitCode == 2 && failure.usage?.isNone then
-      throw { failure with usage? := opts.args.head?.bind commandUsage? }
-    else throw failure
+      throw { failure with
+        usage? := opts.args.head?.bind commandUsage?
+        jsonOutputFormat := opts.jsonOutputFormat
+      }
+    else throw { failure with jsonOutputFormat := opts.jsonOutputFormat }
 
 end Beam.Cli

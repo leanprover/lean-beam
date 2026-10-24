@@ -162,8 +162,8 @@ synchronize and save again if the new text needs a checkpoint.
 Other finalization failures after the artifacts and Lake trace have committed retain their
 original error code and message, add the checkpoint under `error.data.saved`, and preserve any
 original error data under `error.data.originalData`. They do not assert `closed = false` when
-notification delivery may have failed. MCP passes this error data through with the broker field
-names, including `sourceHash` inside `saved`; successful MCP save results use snake_case.
+notification delivery may have failed. CLI and MCP pass this error data through with the broker field
+names, including `sourceHash` inside `saved`; successful CLI and MCP save results use snake_case.
 
 Preserving this receipt in the broker does not guarantee that an MCP client receives it.
 Cancellation or transport failure can prevent delivery; the
@@ -195,7 +195,7 @@ reports both errors and retains the backups needed for recovery. These steps do 
 family atomically visible or recover from process death.
 
 A snapshot with `compiler.postponeCompile` enabled, or with declarations still waiting for deferred
-compilation, is not a complete checkpoint. Its sync result has `readiness.saveReady: false` and
+compilation, is not a complete checkpoint. Its sync result has `readiness.save_ready: false` and
 `readiness.reason: "deferredCompilation"`, even when elaboration has no errors. `save` and
 `close-save` reject it with `saveUnsupportedSetup` before changing artifacts or the Lake trace;
 use `lake build` for this compilation pipeline. This also applies to declaration-scoped
@@ -309,7 +309,7 @@ lake build
 ```
 
 This sequence is not a required step after every Beam checkpoint; it is the local fallback when no
-successful clean CI result is available. `saveReady` reports checkpoint eligibility; warnings such
+successful clean CI result is available. `save_ready` reports checkpoint eligibility; warnings such
 as `sorry` may remain. A clean build does not independently establish the intended theorem or its
 allowed axioms. See [trust and proof confirmation](../skills/lean-beam/references/trust-and-validation.md)
 for supported ownership assumptions and the separate comparator workflow.
@@ -324,7 +324,7 @@ Their transport types differ by surface.
 | Progress | Request-scoped operation movement, not diagnostics and not final readiness. | MCP `notifications/progress`; internal broker `fileProgress` events; CLI progress text. |
 | Status | Best-effort notice that a no-token MCP request is doing setup or remains pending. | MCP `notifications/message` with logger `beam.status`. |
 | Streamed diagnostics | Lean-published events observed while a request is pending. | MCP `notifications/message` with logger `lean.diagnostic`; internal broker `diagnostic` events; CLI stderr diagnostics. |
-| Current result | Stable synced-state verdict for one document version. | Final internal broker response or wrapper stdout `diagnostics`, `readiness`, and `fileProgress` fields; MCP spells the progress field `document_progress`. |
+| Current result | Stable synced-state verdict for one document version. | CLI `result` and MCP `structuredContent` share `diagnostics`, `readiness`, and `document_progress`; the internal broker response remains private. |
 
 Wrapper stderr is the human-facing surface. Machine consumers of an owned wrapper session should
 check exit status, then parse final stdout JSON when present. Use MCP for structured live events and
@@ -418,18 +418,19 @@ They always report `updates` and `done`; when Lean publishes range-bearing progr
 report `rangeStartLine` and/or `rangeEndLine`; MCP spells these `range_start_line` and
 `range_end_line`. The range end is the upper line bound reported by
 Lean's progress ranges, not the source file's line count; diagnostics may legitimately refer to
-lines beyond it. The final response retains the latest observed counters and ranges available when
+lines beyond it. The operation result retains the latest observed counters and ranges available when
 that response is constructed, so they may be newer than the last live broker event or throttled MCP
 notification. An operation can also reuse a previously observed value without emitting live file
-progress; `updates` is not a count of work performed by the current request. Use these fields for coarse UI progress
-only. Final machine decisions should use the readiness and diagnostic result fields. MCP includes
-final `document_progress` only for `lean_sync`, `lean_refresh`, `lean_save`, and
-`lean_close_save`; it is not inherited by `runAt` or unrelated tools.
+progress; `updates` is not a count of work performed by the current request. When observed,
+`document_progress` appears on both CLI and MCP operation results, including operations such as
+`runAt`. It may be partial and does not imply that the operation waited for the whole file to finish.
+Use these fields for coarse UI progress only. Final machine decisions should use the readiness and
+diagnostic result fields.
 
 For `sync`, `refresh`, `save`, and `close-save`, the internal diagnostics barrier waits for Lean's
 reporter and command snapshots, then reports `hasFatalSnapshot`: whether a snapshot contains a
 fatal stop preventing further file processing. Ordinary elaboration errors do not set this flag;
-they can finish processing while still blocking artifact save through `readiness.saveReady`.
+they can finish processing while still blocking artifact save through `readiness.save_ready`.
 The final progress `done` value is derived from the barrier's fatal-snapshot status and dependency
 checks. A delayed busy progress notification cannot reject a completed barrier, and an observed
 done notification cannot override a fatal snapshot or a stale-dependency veto. For non-barrier
@@ -438,9 +439,16 @@ calls, file progress may be partial because the request can return before the wh
 
 ## Readiness
 
-Successful sync responses expose one flat result for the current document version. MCP uses
-snake_case field names; broker and CLI JSON use the corresponding camelCase names. The
-machine-facing MCP readiness fields are:
+Successful sync responses expose one flat result for the current document version. CLI's `result`
+and MCP's `structuredContent` use the same snake_case names for Beam-owned operation fields; MCP
+also includes the explicit `workspace` descriptor. The CLI keeps its `ok`/`result` transport
+envelope. The internal broker protocol is separate and may keep its own field names. Standard
+Lean/LSP payloads embedded in a result retain their protocol-defined shape.
+
+Known-empty collections are present as empty arrays. Optional fields are omitted when they were not
+requested or do not apply; for example, `diagnostics.items` is absent unless diagnostic replay was
+requested. CLI JSON is compact by default; `--pretty` changes whitespace only. MCP remains compact.
+The machine-facing readiness fields are:
 
 - `readiness.save_ready`
 - `readiness.reason`
@@ -450,8 +458,9 @@ machine-facing MCP readiness fields are:
 
 `diagnostics.counts.*` reports user-facing Lean-published diagnostic severities. It answers "what
 did Lean report?", while readiness answers "can this synced version be checkpointed?". The backend
-readiness API is authoritative for `saveReady`; diagnostic severity summaries are evidence and
-counts, not a separate broker-side veto.
+readiness API is authoritative for `save_ready`; diagnostic severity summaries are evidence and
+counts, not a separate broker-side veto. The same `readiness` object and names appear in the CLI
+operation result.
 
 `blocking_error_count` is intentionally not named `error_count`: it counts save-blocking evidence,
 including a blocking command message when Lean did not attach a diagnostic. It can therefore differ
@@ -473,10 +482,10 @@ care about and compare it explicitly.
 - `diagnostics.items`, when requested: diagnostics selected by `diagnostic_scope`
 - `readiness`: the current save-readiness verdict and blocking evidence
 
-Successful broker and wrapper saves repeat the synced document's top-level `path` and `version`, add
-the checkpoint fields `module`, `sourceHash`, `olean`, `ilean`, `c`, and `trace`, and nest the
-canonical sync result under `sync`. Module saves also include `oleanServer`, `oleanPrivate`, `ir`,
-and `irSig`; LLVM-enabled builds additionally include `bc`. The `.ir.sig` file is published with
+Successful CLI and MCP saves repeat the synced document's top-level `path` and `version`, add
+the checkpoint fields `module`, `source_hash`, `olean`, `ilean`, `c`, and `trace`, and nest the
+canonical sync result under `sync`. Module saves also include `olean_server`, `olean_private`, `ir`,
+and `ir_sig`; LLVM-enabled builds additionally include `bc`. The `.ir.sig` file is published with
 the module's `.olean` and `.ir` companions, and its hash is included in the Lake save trace.
 Close-save wraps the same save result as
 `{ "closed": true, "saved": <save-result> }`. MCP uses snake_case for the multiword artifact fields;

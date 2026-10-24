@@ -28,6 +28,8 @@ transport I/O. The declarations under `Internal` are the narrow bridge used by t
 
 namespace Beam.Mcp.Server
 
+open Beam.Output
+
 private structure OwnedWorkspace where
   root : System.FilePath
   description : Beam.Runtime.Description
@@ -290,7 +292,7 @@ private def emitDiagnosticLog
     (notifier : Notifier)
     (diagnostic : Beam.Broker.StreamDiagnostic) : IO Unit := do
   let level := diagnosticLogLevel diagnostic.severity?
-  notifier.emitLog level "lean.diagnostic" (diagnosticJson diagnostic)
+  notifier.emitLog level "lean.diagnostic" (Beam.Output.diagnosticJson diagnostic)
 
 private def emitToolStatusLog
     (notifier : Notifier)
@@ -378,13 +380,13 @@ private def toolPath? (arguments : Json) : Option String :=
   (arguments.getObjValAs? String "path").toOption
 
 private def decodeDropWorkspaceDescriptor
-    (arguments : Json) : Except ToolError Beam.Workspace.Descriptor := do
+    (arguments : Json) : Except OutputError Beam.Workspace.Descriptor := do
   let descriptor ←
     match Beam.Workspace.decodeDescriptorField arguments with
     | .ok descriptor => pure descriptor
-    | .error err => throw <| ToolError.invalidInput err
+    | .error err => throw <| OutputError.invalidInput err
   unless (System.FilePath.mk descriptor.root).isAbsolute do
-    throw <| ToolError.invalidInput "workspace root must be an absolute path"
+    throw <| OutputError.invalidInput "workspace root must be an absolute path"
   pure descriptor
 
 structure Internal.PreDispatchReporter where
@@ -552,21 +554,21 @@ private def ensureRuntimeForWorkspace
       return .error <| RpcError.invalidRequest "workspace was replaced during runtime admission; retry"
     pure <| .ok (broker, root, captured.serial)
 
-private def workspaceErrorToToolError (err : Beam.Workspace.RootError) : ToolError :=
-  ToolError.invalidInput err.message
+private def workspaceErrorToOutputError (err : Beam.Workspace.RootError) : OutputError :=
+  OutputError.invalidInput err.message
 
 private structure ResolvedWorkspace where
   descriptor : Beam.Workspace.Descriptor
   root : System.FilePath
   workspaceId : Beam.Broker.WorkspaceId
 
-private def resolveWorkspace (arguments : Json) : IO (Except ToolError ResolvedWorkspace) := do
+private def resolveWorkspace (arguments : Json) : IO (Except OutputError ResolvedWorkspace) := do
   let descriptor ←
     match Beam.Workspace.decodeDescriptorField arguments with
     | .ok descriptor => pure descriptor
-    | .error err => return .error <| ToolError.invalidInput err
+    | .error err => return .error <| OutputError.invalidInput err
   match ← Beam.Lean.Workspace.resolveRoot descriptor.root with
-  | .error err => pure <| .error <| workspaceErrorToToolError err
+  | .error err => pure <| .error <| workspaceErrorToOutputError err
   | .ok root =>
       let descriptor := Beam.Workspace.Descriptor.ofRoot root
       pure <| .ok { descriptor, root, workspaceId := descriptor.cacheKey }
@@ -579,7 +581,7 @@ fall back to lexical normalization, so the canonical descriptor echoed by an ear
 request remains sufficient to evict or idempotently re-evict its cache.
 -/
 private def resolveWorkspaceForDrop
-    (arguments : Json) : IO (Except ToolError ResolvedWorkspace) := do
+    (arguments : Json) : IO (Except OutputError ResolvedWorkspace) := do
   let descriptor ←
     match decodeDropWorkspaceDescriptor arguments with
     | .ok descriptor => pure descriptor
@@ -593,17 +595,6 @@ private def resolveWorkspaceForDrop
   let descriptor := Beam.Workspace.Descriptor.ofRoot root
   pure <| .ok { descriptor, root, workspaceId := descriptor.cacheKey }
 
-private structure BeamStatsResult where
-  uptimeMs : Nat
-  workspaces : Json
-
-private def decodeBeamStatsResult (json : Json) : Except String BeamStatsResult := do
-  let uptimeMs ← json.getObjValAs? Nat "uptimeMs"
-  let workspaces ← json.getObjVal? "workspaces"
-  match workspaces with
-  | .obj _ => pure { uptimeMs, workspaces }
-  | other => throw s!"'workspaces' must be an object, got {other.compress}"
-
 private def handleBeamStats
     (state : ServerState) : IO Json := do
   let runtime ←
@@ -611,24 +602,14 @@ private def handleBeamStats
     | some runtime => pure runtime
     | none =>
         return callToolResult <| Json.mkObj [
-          ("uptimeMs", toJson (0 : Nat)),
+          ("uptime_ms", toJson (0 : Nat)),
           ("workspaces", Json.mkObj [])
         ]
   let brokerResp ← runtime.dispatchRequest Beam.Broker.Request.stats
   match normalizeBrokerResponse .beamStats brokerResp with
   | .error err =>
       pure <| callToolErrorResult err
-  | .ok result =>
-      match decodeBeamStatsResult result with
-      | .error err =>
-          pure <| callToolErrorResult <| ToolError.invalidResult
-            s!"invalid broker stats result: {err}"
-      | .ok stats =>
-          let result := Json.mkObj [
-            ("uptimeMs", toJson stats.uptimeMs),
-            ("workspaces", stats.workspaces)
-          ]
-          pure <| callToolResult result
+  | .ok result => pure <| callToolResult result
 
 private def handleDropWorkspace
     (state : ServerState)
@@ -660,7 +641,7 @@ private def handleDropWorkspace
     | .ok dropped =>
         pure <| .ok <| callToolResult <| resultJson dropped.dropped dropped.invalidatedHandles dropped.reason?
     | .error failure =>
-        pure <| .ok <| callToolErrorResult <| ToolError.fromBrokerError failure.error
+        pure <| .ok <| callToolErrorResult <| OutputError.fromBrokerFailure failure
   finally
     -- Removal commits before cleanup, which may throw. Serials are allocated by ServerState and
     -- never reused. Reconcile only that captured instance; late cleanup must neither erase a
@@ -752,12 +733,12 @@ private def handleBeamFeedback
     match fromJson? (α := Beam.Feedback.Input) (feedbackCoreInputArguments arguments) with
     | .ok input => pure input
     | .error err =>
-        return callToolErrorResult <| ToolError.invalidInput err
+        return callToolErrorResult <| OutputError.invalidInput err
   let includeCollected ←
     match feedbackIncludeCollected arguments with
     | .ok includeCollected => pure includeCollected
     | .error err =>
-        return callToolErrorResult <| ToolError.invalidInput err
+        return callToolErrorResult <| OutputError.invalidInput err
   emitProgress? progress? <|
     if input.confidential then
       "preparing confidential beam_feedback_report"
@@ -804,7 +785,7 @@ private def handleBeamFeedback
       else result.setObjVal! "workspace" (toJson descriptor)
     pure <| callToolResult result
   catch e =>
-    pure <| callToolErrorResult <| ToolError.invalidInput e.toString
+    pure <| callToolErrorResult <| OutputError.invalidInput e.toString
 
 private def brokerRequestForTool
     (workspaceId : Beam.Broker.WorkspaceId)
@@ -838,7 +819,7 @@ def Internal.handleToolCall
     s!"tools/call start id={req.id.label} tool={params.name.key} progressToken={params.progressToken?.isSome}"
   match params.name.validateInputFields params.arguments with
   | .error err =>
-      return .ok <| callToolErrorResult <| ToolError.invalidInput err
+      return .ok <| callToolErrorResult <| OutputError.invalidInput err
   | .ok () => pure ()
   if params.name == .leanDropWorkspace then
     let workspace ←
@@ -888,7 +869,7 @@ def Internal.handleToolCall
     | .ok brokerReq => pure brokerReq
     | .error err =>
         Internal.traceMcp s!"tools/call invalid input id={req.id.label} tool={params.name.key} error={err}"
-        return .ok <| callToolErrorResult <| ToolError.invalidInput err
+        return .ok <| callToolErrorResult <| OutputError.invalidInput err
   let output? ←
     if notifier.logPolicy.mayAllow .info then
       match notifications.attachWorkspaceOutput? with

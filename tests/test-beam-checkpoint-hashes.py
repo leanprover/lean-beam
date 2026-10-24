@@ -20,7 +20,7 @@ from lib.process_watchdog import run_with_watchdog
 REPO = Path(__file__).resolve().parent.parent
 CASES = ["save", "close-save", "save-module", "close-save-module",
          "hash-error", "close-hash-error"]
-OUTPUT_FIELDS = ["olean", "ilean", "c", "oleanServer", "oleanPrivate", "ir", "irSig", "bc"]
+OUTPUT_FIELDS = ["olean", "ilean", "c", "olean_server", "olean_private", "ir", "ir_sig", "bc"]
 OUTPUT_SUFFIXES = (".olean", ".olean.server", ".olean.private", ".ilean", ".c", ".ir", ".ir.sig", ".bc")
 
 
@@ -178,7 +178,7 @@ def check_case(base, case, installation, target, report):
     operation = "close-save" if case.startswith("close-") else "save"
     with owner(case_report, project, wrapper) as process:
         synced = json.loads(beam(case_report, project, wrapper, "sync", "Freshness/Provider.lean").stdout)
-        assert synced["ok"] and synced["result"]["readiness"]["saveReady"], synced
+        assert synced["ok"] and synced["result"]["readiness"]["save_ready"], synced
         case_report["mapped_runtime"] = mapped_runtime(process.pid, lean, installation / target["plugin"])
         result = beam(case_report, project, wrapper, operation, "Freshness/Provider.lean", check=False)
         response = json.loads(result.stdout)
@@ -213,7 +213,7 @@ def check_case(base, case, installation, target, report):
     before_verdict = case_report["provider_before_verdict"]
     assert all(str(path) + ".hash" not in before_verdict for path in paths), before_verdict
     if module:
-        assert all(key in saved for key in ["oleanServer", "oleanPrivate", "ir", "irSig"]), saved
+        assert all(key in saved for key in ["olean_server", "olean_private", "ir", "ir_sig"]), saved
     case_report["written_outputs"] = [str(path) for path in paths]
 
 

@@ -17,26 +17,27 @@ private def indentString : Nat -> String
 private def jsonString (text : String) : String :=
   "\"" ++ Json.escape text ++ "\""
 
--- Presentation-only priority for wrapper/client stdout. This does not change the JSON contract.
+-- Presentation-only priority. Internal broker fields and opaque error data retain their own
+-- spellings; ordering those keys does not introduce aliases in the public schema.
 private def jsonFieldPriority : String -> Nat
   | "ok" => 0
   | "result" => 1
   | "error" => 2
   | "reason" => 13
-  | "expectedVersion" => 4
-  | "acceptedVersion" => 5
+  | "expected_version" | "expectedVersion" => 4
+  | "accepted_version" | "acceptedVersion" => 5
   | "path" => 10
   | "version" => 11
-  | "saveReady" => 12
+  | "save_ready" | "saveReady" => 12
   | "changed" => 14
   | "diagnostics" => 20
   | "counts" => 21
   | "items" => 22
   | "readiness" => 30
-  | "blockingErrorCount" => 32
-  | "blockingDiagnostics" => 33
-  | "blockingMessages" => 34
-  | "fileProgress" => 40
+  | "blocking_error_count" | "blockingErrorCount" => 32
+  | "blocking_diagnostics" | "blockingDiagnostics" => 33
+  | "blocking_messages" | "blockingMessages" => 34
+  | "document_progress" | "fileProgress" => 40
   | "warning" => 51
   | "information" => 52
   | "hint" => 53
@@ -45,16 +46,16 @@ private def jsonFieldPriority : String -> Nat
   | "message" => 80
   | "range" => 81
   | "severity" => 82
-  | "saveBlocking" => 83
-  | "completionBlocking" => 84
+  | "save_blocking" | "saveBlocking" => 83
+  | "completion_blocking" | "completionBlocking" => 84
   | "done" => 85
   | "updates" => 86
   | "start" => 90
   | "end" => 91
   | "line" => 92
   | "character" => 93
-  | "rangeStartLine" => 94
-  | "rangeEndLine" => 95
+  | "range_start_line" | "rangeStartLine" => 94
+  | "range_end_line" | "rangeEndLine" => 95
   | _ => 1000
 
 private def jsonFieldLess (left right : Prod String Json) : Bool :=
@@ -87,5 +88,21 @@ partial def orderedJsonPretty (json : Json) (indent : Nat := 0) : String :=
           let lines := fields.map fun (key, value) =>
             indentString nextIndent ++ jsonString key ++ ": " ++ orderedJsonPretty value nextIndent
           "{\n" ++ String.intercalate ",\n" lines ++ "\n" ++ indentString indent ++ "}"
+
+/-- Compact JSON with the same presentation order as `orderedJsonPretty`. -/
+partial def orderedJsonCompact (json : Json) : String :=
+  match json with
+  | .null => "null"
+  | .bool true => "true"
+  | .bool false => "false"
+  | .num number => number.toString
+  | .str text => jsonString text
+  | .arr values =>
+      "[" ++ String.intercalate "," (values.toList.map orderedJsonCompact) ++ "]"
+  | .obj fields =>
+      let sortedFields := Std.TreeMap.Raw.toList fields |>.mergeSort jsonFieldLess
+      let entries := sortedFields.map fun (key, value) =>
+        jsonString key ++ ":" ++ orderedJsonCompact value
+      "{" ++ String.intercalate "," entries ++ "}"
 
 end Beam
