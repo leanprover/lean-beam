@@ -234,7 +234,8 @@ def checkDeferredCompilationReadiness : ScenarioM Unit := do
     let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs (← sendSaveReadiness doc)
     unless !readiness.saveReady && readiness.saveReadyReason == "deferredCompilation" &&
         readiness.saveReadyMessage?.any (·.contains "lake build") &&
-        readiness.currentDiagnostics.isEmpty && !readiness.blockingCommandMessages.isEmpty do
+        readiness.currentDiagnostics.isEmpty && readiness.blockingDiagnostics.isEmpty &&
+        readiness.blockingCommandMessages.size == 1 do
       throw <| IO.userError s!"{fixture}: incorrect deferred readiness: {(toJson readiness).compress}"
     let outDir ← mkTmpDir "beam-save-deferred"
     let paths := #[outDir / "Deferred.olean", outDir / "Deferred.ilean", outDir / "Deferred.c"]
@@ -388,14 +389,39 @@ def checkSaveReadinessDocumentErrors : ScenarioM Unit := do
   if broken.saveReadyReason != "documentErrors" then
     throw <| IO.userError
       s!"broken saveReadiness: expected reason = documentErrors, got {broken.saveReadyReason}"
-  if broken.blockingDiagnostics.isEmpty && broken.blockingCommandMessages.isEmpty then
+  if broken.blockingDiagnostics.isEmpty || !broken.blockingCommandMessages.isEmpty then
     throw <| IO.userError
-      s!"broken saveReadiness: expected save-blocking evidence, got {(toJson broken).compress}"
+      s!"broken saveReadiness: expected located evidence without command-message copies, got {(toJson broken).compress}"
   unless broken.blockingDiagnostics.all (·.saveBlocking) &&
       broken.blockingCommandMessages.all (·.saveBlocking) do
     throw <| IO.userError
       s!"broken saveReadiness: expected blocking evidence to carry saveBlocking=true, got {(toJson broken).compress}"
 
+  closeDoc doc
+
+def checkRepeatedReadinessErrors : ScenarioM Unit := do
+  let doc ← openDoc "tests/lean/BeamTest/Fixtures/Save/RepeatedErrors.lean"
+  let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs (← sendSaveReadiness doc)
+  unless !readiness.saveReady && readiness.saveReadyReason == "documentErrors" &&
+      readiness.blockingDiagnostics.size == 2 && readiness.blockingCommandMessages.isEmpty do
+    throw <| IO.userError s!"repeated errors lost or duplicated: {(toJson readiness).compress}"
+  let some first := readiness.blockingDiagnostics[0]?
+    | throw <| IO.userError "missing first blocking diagnostic"
+  let some second := readiness.blockingDiagnostics[1]?
+    | throw <| IO.userError "missing second blocking diagnostic"
+  unless first.message == second.message && first.range.start.line != second.range.start.line &&
+      first.saveBlocking && second.saveBlocking do
+    throw <| IO.userError s!"identical errors must retain their distinct locations: {(toJson readiness).compress}"
+  closeDoc doc
+
+def checkReadinessWithoutFinalState : ScenarioM Unit := do
+  let doc ← openDoc "tests/lean/BeamTest/Fixtures/Save/MissingImport.lean"
+  let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs (← sendSaveReadiness doc)
+  unless !readiness.saveReady &&
+      readiness.saveReadyReason == "documentDidNotElaborateSuccessfully" &&
+      !readiness.blockingDiagnostics.isEmpty && readiness.blockingCommandMessages.isEmpty &&
+      readiness.blockingDiagnostics.all (·.saveBlocking) do
+    throw <| IO.userError s!"missing final state must retain located errors: {(toJson readiness).compress}"
   closeDoc doc
 
 def checkSaveRequestsWithStandardLspInterference : ScenarioM Unit := do
@@ -517,6 +543,8 @@ def run : ScenarioM Unit := do
   checkConcurrentDisjointPrivateSaves
   checkSaveArtifactsRejectsSameDocumentEditRace
   checkSaveReadinessDocumentErrors
+  checkRepeatedReadinessErrors
+  checkReadinessWithoutFinalState
   checkSaveRequestsWithStandardLspInterference
   checkSaveRequestsWithMixedConcurrency
   checkReportedOnlyErrorReadiness

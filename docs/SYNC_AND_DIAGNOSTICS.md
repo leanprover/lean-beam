@@ -457,6 +457,12 @@ counts, not a separate broker-side veto.
 including a blocking command message when Lean did not attach a diagnostic. It can therefore differ
 from `diagnostics.counts.error`. Warning counts are reported once, under `diagnostics.counts.warning`.
 
+Each save-blocking frontend error appears once in `blocking_diagnostics`, with its location.
+`blocking_messages` contains command-only blockers without a corresponding frontend diagnostic,
+such as deferred compilation; it does not repeat those located errors. Identical messages at
+different source locations remain separate diagnostics. Requested `diagnostics.items` replay is
+still a separate view of the current user-facing diagnostics, not additional blocking errors.
+
 Lean-side readiness applies the frontend artifact gate to the current synced snapshot: current
 save-blocking frontend errors and deferred compilation block save. This verdict answers whether Beam may checkpoint that
 server snapshot; it is not a batch-equivalence verdict. Diagnostic streams, diagnostic summaries,

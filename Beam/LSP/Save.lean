@@ -412,15 +412,14 @@ def collectSaveReadiness
   let frontendWarningCount := messageSeverityCount MessageSeverity.warning frontendMessages
   let commandErrors ← commandErrorMessages frontendMessages
   let frontendBlockingDiagnostics ← saveBlockingDiagnosticsOfMessages doc frontendMessages
-  let frontendBlockingCommandMessages := saveBlockingCommandMessages commandErrors
+  -- Each frontend error already has a located diagnostic above. Do not also return an
+  -- unlocated copy of the same Message; command-only blockers are added separately below.
   let textHash := currentDocumentTextHash doc
   let fallbackBlockingDiagnostics :=
     if frontendErrorCount == 0 then
       saveBlockingDiagnosticsOfInteractive diagnosticErrors
     else
       frontendBlockingDiagnostics
-  let fallbackBlockingCommandMessages :=
-    if frontendErrorCount == 0 then #[] else frontendBlockingCommandMessages
   let some cmdState := Lean.Language.Lean.waitForFinalCmdState? doc.initSnap
     | return ({
       version := doc.meta.version
@@ -432,7 +431,6 @@ def collectSaveReadiness
       saveReadyReason := saveReadinessNotElaboratedReason
       saveReadyMessage? := some (saveArtifactsErrorMessage diagnosticErrors commandErrors)
       blockingDiagnostics := fallbackBlockingDiagnostics
-      blockingCommandMessages := fallbackBlockingCommandMessages
       : SaveReadinessResult
     }, none, diagnosticErrors, commandErrors)
   let deferredMessage? := deferredCompilationMessage? cmdState
@@ -452,8 +450,7 @@ def collectSaveReadiness
       if frontendErrorCount != 0 then some (saveArtifactsErrorMessage diagnosticErrors commandErrors)
       else deferredMessage?
     blockingDiagnostics := if saveReady then #[] else frontendBlockingDiagnostics
-    blockingCommandMessages := frontendBlockingCommandMessages ++
-      saveBlockingCommandMessages deferredMessage?.toArray
+    blockingCommandMessages := saveBlockingCommandMessages deferredMessage?.toArray
   }
   pure (readiness, some cmdState, diagnosticErrors, commandErrors)
 
