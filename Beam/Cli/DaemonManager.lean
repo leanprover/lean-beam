@@ -771,16 +771,6 @@ private def existingSessionFailure (root sessionDir : System.FilePath)
       [("generation", toJson entry.daemonId), ("recordedConfigHash", toJson entry.configHash),
         ("requestedConfigHash", toJson requestedConfigHash)]
 
-private def configMismatchMessage
-    (root : System.FilePath)
-    (sessionDir : System.FilePath)
-    (entry : SessionDescriptor)
-    (expectedHash : String) : String :=
-  s!"the live Beam session for {root} uses configuration {entry.configHash}, " ++
-    s!"but this command requires {expectedHash}; the current owner was preserved. " ++
-    "Interrupt its foreground owner, then start a new one with the desired configuration:\n" ++
-    wrapperSessionCommand root sessionDir .serve
-
 def sessionSelectorMismatchMessage
     (root sessionDir : System.FilePath)
     (entry : SessionDescriptor) : String :=
@@ -807,13 +797,30 @@ private def generationRecoveryMessage
     (.recoverGeneration entry.daemonId)
   message ++ s!"; when recovery is safe, run:\n{recovery}"
 
+private def registryReadRecoveryPrecondition : String :=
+  "Independently establish that the original owner, daemon, and all other producers have stopped " ++
+    "before archiving this descriptor. If this cannot be established, leave the descriptor in place."
+
 private def registryReadRecoveryMessage
-    (root : System.FilePath)
-    (_sessionDir : System.FilePath)
+    (root sessionDir : System.FilePath)
     (problem : RegistryProblem) : String :=
-  registryRecoveryMessage root problem.detail ++
-    "; installation ownership cannot be established for this descriptor. Preserve it for diagnosis; " ++
-    "after independently stopping its original owner, archive it explicitly as an operator"
+  s!"Beam cannot safely use or replace session descriptor {sessionDir / "beam-daemon.json"} " ++
+    s!"for {root}: {problem.detail}. " ++
+    "Installation ownership cannot be established from this descriptor; preserve it for diagnosis. " ++
+    registryReadRecoveryPrecondition ++ " Only then, as an operator, archive only this exact descriptor to a " ++
+    "distinct path that does not already exist. Do not rewrite its schema, remove the session " ++
+    "directory, or signal a PID from the record."
+
+private def registryReadRecoveryFailure
+    (root sessionDir : System.FilePath)
+    (problem : RegistryProblem)
+    (diagnostics? : Option String := none) : CliFailure :=
+  { CliFailure.setup (registryReadRecoveryMessage root sessionDir problem) with
+    failure.error.data? := some <| Json.mkObj <|
+      [("root", toJson root.toString), ("sessionDir", toJson sessionDir.toString),
+        ("descriptorPath", toJson (sessionDir / "beam-daemon.json").toString),
+        ("detail", toJson problem.detail), ("recoveryPrecondition", toJson registryReadRecoveryPrecondition)] ++
+      diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics)) }
 
 def RegistryBlocker.message
     (root sessionDir : System.FilePath) : RegistryBlocker → String
@@ -859,10 +866,9 @@ def RegistryBlocker.cliFailure (root sessionDir : System.FilePath)
   | .unusable entry _ =>
       failure.withRemedy (wrapperSessionCommand root sessionDir (.recoverGeneration entry.daemonId))
         (("generation", toJson entry.daemonId) :: data)
-  | .invalid _ =>
-      { failure with
-        failure.error.message := blocker.message root sessionDir
-        failure.error.data? := some <| Json.mkObj data }
+  | .invalid problem =>
+      let invalid := registryReadRecoveryFailure root sessionDir problem diagnostics?
+      { invalid with failure.error.code := "sessionRecoveryRequired" }
 
 def selectorMismatchFailure (root sessionDir : System.FilePath)
     (entry : SessionDescriptor) : CliFailure :=
@@ -871,8 +877,18 @@ def selectorMismatchFailure (root sessionDir : System.FilePath)
 
 private def configMismatchFailure (root sessionDir : System.FilePath)
     (entry : SessionDescriptor) (expected : String) : CliFailure :=
-  (CliFailure.setup (configMismatchMessage root sessionDir entry expected)).withRemedy
-    (wrapperSessionCommand root sessionDir .serve)
+  let precondition :=
+    s!"Use the original Beam installation at {entry.installationRoot} to stop its foreground owner. " ++
+      "Wait until that owner, its daemon, and all other producers have stopped before starting " ++
+      "serve with the desired configuration."
+  let message :=
+    s!"The recorded Beam session for {root} uses configuration {entry.configHash}, " ++
+      s!"but this command requires {expected}; its descriptor was preserved. {precondition}"
+  (CliFailure.setup message).withRemedy (wrapperSessionCommand root sessionDir .stop)
+    [("root", toJson root.toString), ("sessionDir", toJson sessionDir.toString),
+      ("generation", toJson entry.daemonId), ("installationRoot", toJson entry.installationRoot),
+      ("recordedConfigHash", toJson entry.configHash), ("requestedConfigHash", toJson expected),
+      ("remedyPrecondition", toJson precondition)]
 
 private inductive RegistryDrainTransition where
   | committed
@@ -1014,10 +1030,8 @@ def recoverProjectDaemon
             -- This is still explicit operator recovery, not a proof that producers have stopped.
             let quarantine ← quarantineRegistry control entry
             pure <| .recoveredGeneration entry.daemonId quarantine
-    | .invalid (.unsafeLeaf detail) =>
-        throw <| CliFailure.setup detail
     | .invalid problem =>
-        throw <| CliFailure.setup <| registryReadRecoveryMessage root control.dir problem
+        throw <| registryReadRecoveryFailure root control.dir problem
     : CliM RecoveryResult).run
 
 private structure OwnedProjectDaemon where

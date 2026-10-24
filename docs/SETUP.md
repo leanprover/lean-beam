@@ -283,6 +283,14 @@ as an escaped display on stderr; use the exact JSON command for execution.
 producers have stopped.
 An unavailable endpoint does not prove that they have stopped. Invalid descriptors require
 operator diagnosis; no generation or recovery command is invented for them.
+Their errors include `root`, `sessionDir`, and `descriptorPath` in `error.data`, identifying the exact
+record to preserve and, only after the cleanup prerequisite is established, archive as an operator.
+When an attached command finds that the recorded session configuration differs from its required configuration,
+`setupError` gives `stop` as the next command. `installationRoot` identifies the original owning
+installation, and `remedyPrecondition` requires using that installation and waiting for every
+producer to stop before starting `serve` again. A configuration-hash mismatch does not identify
+which setting changed.
+`doctor` retains structured failure data when it adds diagnostic lines.
 Unexpected IO faults use `internalError`, rather than being classified as invalid arguments.
 
 If a request send has begun and the CLI loses the reply, its existing error code is retained and

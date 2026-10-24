@@ -1930,6 +1930,13 @@ def main (args : List String) : IO UInt32 :=
   | ["--cli-error", "internal"] => Beam.Cli.run do
       let action : IO Unit := throw <| IO.userError "fixture unexpected fault"
       action
+  | ["--cli-error", "doctor-lookup", root, control] =>
+      let root := System.FilePath.mk root
+      let control := System.FilePath.mk control
+      Beam.Cli.run <| Beam.Cli.doctor "."
+        (fun root => Beam.Cli.withProjectDaemon
+          (fun _ => pure "fixture-requested-config") root (fun _ => pure []) (some control))
+        { explicitRoot? := some root, explicitControlDir? := some control }
   | ["--cli-error", "pre-input", kind] => do
       IO.eprintln "fixture-input-ready"
       (← IO.getStderr).flush

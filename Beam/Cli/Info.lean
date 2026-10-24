@@ -56,7 +56,8 @@ def doctor (home : System.FilePath) (inspect : System.FilePath → CliM (List St
     let inspection ← inspect root
     for line in lines ++ inspection do IO.println line
   catch failure =>
-      throw { failure with failure := { failure.failure with error := {
-        failure.failure.error with data? := some (Json.mkObj [("diagnostics", toJson lines)]) } } }
+    let data := (failure.failure.error.data?.getD (Json.mkObj [])).mergeObj
+      (Json.mkObj [("diagnostics", toJson lines)])
+    throw { failure with failure.error.data? := some data }
 
 end Beam.Cli

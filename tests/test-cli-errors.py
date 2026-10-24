@@ -27,15 +27,17 @@ class CliErrorsTest(unittest.TestCase):
         installation = Path(os.environ.get("BEAM_TEST_INSTALLATION", cls.root / "installation"))
         if "BEAM_TEST_INSTALLATION" not in os.environ:
             stage(installation)
+        cls.installation = installation.resolve()
         cls.cli = installation / "libexec" / ("beam-cli.exe" if os.name == "nt" else "beam-cli")
         cls.fixture = REPO / ".lake/build/bin" / ("beam-cli-daemon-test.exe" if os.name == "nt" else "beam-cli-daemon-test")
         cls.env = dict(os.environ, BEAM_PROGRESS="0")
         cls.env.pop("BEAM_SESSION_ROOT", None)
         cls.env.pop("BEAM_REQUEST_ID", None)
 
-    def invoke(self, *args, executable=None, timeout=15, input=None):
+    def invoke(self, *args, executable=None, timeout=15, input=None, env=None):
         return subprocess.run([str(executable or self.cli), *map(str, args)], cwd=self.root,
-                              env=self.env, text=True, input=input, capture_output=True, timeout=timeout)
+                              env=self.env if env is None else env, text=True, input=input,
+                              capture_output=True, timeout=timeout)
 
     def failure(self, result, code, exit_code):
         self.assertEqual(result.returncode, exit_code, result.stderr)
@@ -282,6 +284,156 @@ class CliErrorsTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIs(json.loads(result.stdout)["ok"], True)
             self.assertFalse((self.root / ".beam").exists())
+
+    def remedy_project(self, parent):
+        project = parent / "project ' with spaces"
+        project.mkdir(mode=0o700)
+        manifest = json.loads((self.installation / "manifest.json").read_text())
+        compiler = Path(manifest["components"]["targets"][0]["lean"]).resolve()
+        (project / "lean-toolchain").write_text(str(compiler.parent.parent) + "\n")
+        (project / "lakefile.toml").write_text('name = "remedy_fixture"\n')
+        return project
+
+    def descriptor_fixture(self, project):
+        return {
+            "schemaVersion": 5, "lifecycle": "live", "daemonId": "fixture-generation",
+            "capability": "fixture-capability", "pid": 999999999, "ownerPid": 999999999,
+            "port": 1, "configHash": "different-recorded-configuration",
+            "daemonBin": "fixture-daemon", "installationRoot": str(self.installation),
+            "startedAt": "fixture", "workspace": {
+                "workspaceId": "beam-cli-project", "root": str(project),
+                "leanCmd": "fixture-lean", "plugin": "fixture-plugin",
+                "toolchain": "fixture-toolchain", "bundleId": "fixture-bundle",
+            },
+        }
+
+    def session_snapshot(self, control):
+        return {str(path.relative_to(control)):
+                ("link", os.readlink(path)) if path.is_symlink() else
+                ("directory", None) if path.is_dir() else ("file", path.read_bytes())
+                for path in control.rglob("*")}
+
+    def assert_descriptor_context(self, error, project, control):
+        data = error["data"]
+        self.assertEqual(data["root"], str(project))
+        self.assertEqual(data["sessionDir"], str(control))
+        self.assertEqual(data["descriptorPath"], str(control / "beam-daemon.json"))
+        self.assertIn(str(control / "beam-daemon.json"), error["message"])
+        self.assertIn("all other producers", data["recoveryPrecondition"])
+        self.assertNotIn("generation", data)
+        self.assertNotIn("remedyCommand", data)
+        self.assertNotIn("recover --generation", error["message"])
+
+    def test_configuration_mismatch_remedy_stops_original_owner_before_restart(self):
+        with tempfile.TemporaryDirectory(prefix="beam-remedy-") as directory:
+            parent = Path(directory).resolve()
+            project = self.remedy_project(parent)
+            control = parent / "session ' with spaces"
+            control.mkdir(mode=0o700)
+            descriptor = control / "beam-daemon.json"
+            descriptor.write_text(json.dumps(self.descriptor_fixture(project)))
+            before = self.session_snapshot(control)
+            result = self.invoke("--root", project, "--session-dir", control, "stats")
+            error = self.failure(result, "setupError", 1)
+            data = error["data"]
+            self.assertEqual(shlex.split(data["remedyCommand"]),
+                             ["lean-beam", "--root", str(project), "--session-dir", str(control), "stop"])
+            self.assertEqual(result.stderr.splitlines()[-1], data["remedyCommand"])
+            self.assertEqual(data["generation"], "fixture-generation")
+            self.assertEqual(data["installationRoot"], str(self.installation))
+            self.assertEqual(data["root"], str(project))
+            self.assertEqual(data["sessionDir"], str(control))
+            self.assertEqual(data["recordedConfigHash"], "different-recorded-configuration")
+            self.assertNotEqual(data["requestedConfigHash"], data["recordedConfigHash"])
+            self.assertIn("original Beam installation", data["remedyPrecondition"])
+            self.assertIn("all other producers", data["remedyPrecondition"])
+            self.assertIn("before starting", error["message"])
+            self.assertNotIn("toolchain changed", error["message"])
+            self.assertEqual(self.session_snapshot(control), before)
+
+    def test_undecodable_descriptor_remedies_keep_exact_selection_and_bytes(self):
+        for selection in ["default", "explicit", "environment"]:
+            for contents in ['{"schemaVersion":999}', '{', '{}']:
+                with self.subTest(selection=selection, contents=contents), \
+                        tempfile.TemporaryDirectory(prefix="beam-remedy-") as directory:
+                    parent = Path(directory).resolve()
+                    project = self.remedy_project(parent)
+                    env = dict(self.env)
+                    selectors = []
+                    control = project / ".beam"
+                    if selection == "explicit":
+                        control = parent / "session ' with spaces"
+                        selectors = ["--session-dir", control]
+                    elif selection == "environment":
+                        env["BEAM_SESSION_ROOT"] = str(parent / "external ' sessions")
+                        status = self.invoke("--root", project, "status", env=env)
+                        self.assertEqual(status.returncode, 0, status.stderr)
+                        control = Path(json.loads(status.stdout)["result"]["sessionDir"])
+                        self.assertFalse(control.exists())
+                    control.mkdir(mode=0o700, parents=True)
+                    (control / "beam-daemon.json").write_text(contents)
+                    (control / "lock").write_text("fixture lock sentinel")
+                    before = self.session_snapshot(control)
+                    for command in [("stats",), ("serve",), ("stop",),
+                                    ("recover", "--generation", "fixture-generation")]:
+                        with self.subTest(command=command):
+                            result = self.invoke("--root", project, *selectors, *command, env=env)
+                            code = "setupError" if command[0] == "recover" else "sessionRecoveryRequired"
+                            error = self.failure(result, code, 1)
+                            self.assert_descriptor_context(error, project, control)
+                            self.assertIn("archive only this exact descriptor", error["message"])
+                            self.assertEqual(self.session_snapshot(control), before)
+
+    def test_nonregular_descriptor_recovery_keeps_exact_path_and_preserves_leaf(self):
+        for kind in ["directory"] + (["symlink"] if os.name != "nt" else []):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix="beam-remedy-") as directory:
+                parent = Path(directory).resolve()
+                project = self.remedy_project(parent)
+                control = parent / "session ' with spaces"
+                control.mkdir(mode=0o700)
+                descriptor = control / "beam-daemon.json"
+                if kind == "directory":
+                    descriptor.mkdir()
+                    (descriptor / "keep").write_text("evidence")
+                else:
+                    target = parent / "linked-descriptor"
+                    target.write_text("do not follow")
+                    descriptor.symlink_to(target)
+                (control / "lock").write_text("fixture lock sentinel")
+                before = self.session_snapshot(control)
+                for command in [("stats",), ("recover", "--generation", "fixture-generation")]:
+                    result = self.invoke("--root", project, "--session-dir", control, *command)
+                    code = "setupError" if command[0] == "recover" else "sessionRecoveryRequired"
+                    self.assert_descriptor_context(self.failure(result, code, 1), project, control)
+                    self.assertEqual(self.session_snapshot(control), before)
+                if kind == "symlink":
+                    self.assertEqual(target.read_text(), "do not follow")
+
+    def test_doctor_diagnostics_preserve_structured_recovery_failure(self):
+        for kind in ["invalid", "configuration-mismatch"]:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory(prefix="beam-remedy-") as directory:
+                parent = Path(directory).resolve()
+                project = self.remedy_project(parent)
+                control = parent / "session ' with spaces"
+                control.mkdir(mode=0o700)
+                contents = "{}" if kind == "invalid" else json.dumps(self.descriptor_fixture(project))
+                (control / "beam-daemon.json").write_text(contents)
+                before = self.session_snapshot(control)
+                result = self.invoke("--cli-error", "doctor-lookup", project, control,
+                                     executable=self.fixture)
+                code = "sessionRecoveryRequired" if kind == "invalid" else "setupError"
+                error = self.failure(result, code, 1)
+                data = error["data"]
+                if kind == "invalid":
+                    self.assert_descriptor_context(error, project, control)
+                else:
+                    self.assertEqual(data["generation"], "fixture-generation")
+                    self.assertEqual(shlex.split(data["remedyCommand"]),
+                                     ["lean-beam", "--root", str(project), "--session-dir", str(control), "stop"])
+                    self.assertEqual(result.stderr.splitlines()[-1], data["remedyCommand"])
+                    self.assertIn("all other producers", data["remedyPrecondition"])
+                self.assertIn(f"registry: {control / 'beam-daemon.json'}", data["diagnostics"])
+                self.assertEqual(self.session_snapshot(control), before)
 
     @unittest.skipIf(os.name == "nt", "POSIX mode observation")
     def test_unsafe_directory_is_rejected_without_repair(self):
