@@ -517,6 +517,12 @@
       "pointer": "tests/lean/BeamTest/LSP/Requests/ImportBasis/BasicTest.lean#checkImportBasisWithoutCaptureIsUnknown"
     },
     {
+      "id": "importBasis.saved-since-load",
+      "method": "$/beam/importBasis",
+      "coverage": ["saved-since-load"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/ImportBasis/BasicTest.lean#checkImportBasisSavedSinceLoad"
+    },
+    {
       "id": "importBasis.stale-version",
       "method": "$/beam/importBasis",
       "coverage": ["stale-version"],

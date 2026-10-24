@@ -48,6 +48,21 @@ def checkImportBasisWithoutCaptureIsUnknown : ScenarioM Unit := do
   requireStatus "importBasis late check" .unknown (← awaitResponseAs checkReq)
   closeDoc doc
 
+/-- A module Beam saved at or after the load point counts as changed, whatever its trace says. -/
+def checkImportBasisSavedSinceLoad : ScenarioM Unit := do
+  let doc ← openDoc depAFixture
+  let captureReq ← sendImportBasis doc (capture := true) (eventSeq := 5)
+  requireStatus "importBasis capture at sequence 5" .current (← awaitResponseAs captureReq)
+  let earlierReq ← sendImportBasis doc (capture := false)
+    (savedModules := #[{ module := "BeamTest.Fixtures.Deps.DepB", eventSeq := 4 }])
+  requireStatus "importBasis save before load" .current (← awaitResponseAs earlierReq)
+  let laterReq ← sendImportBasis doc (capture := false)
+    (savedModules := #[{ module := "BeamTest.Fixtures.Deps.DepB", eventSeq := 5 }])
+  let later : Beam.LSP.ImportBasis.Result ← awaitResponseAs laterReq
+  unless later.status == .changed && later.changedImports == #["BeamTest.Fixtures.Deps.DepB"] do
+    throw <| IO.userError s!"importBasis save at load: expected DepB changed, got {(toJson later).compress}"
+  closeDoc doc
+
 def checkImportBasisStaleVersion : ScenarioM Unit := do
   let doc ← openDoc depAFixture
   let captureReq ← sendImportBasis doc (capture := true)
@@ -59,6 +74,7 @@ def checkImportBasisStaleVersion : ScenarioM Unit := do
 def run : ScenarioM Unit := do
   checkImportBasisCapturedAtLoad
   checkImportBasisWithoutCaptureIsUnknown
+  checkImportBasisSavedSinceLoad
   checkImportBasisStaleVersion
 
 end BeamTest.LSP.Requests.ImportBasis.BasicTest

@@ -99,6 +99,11 @@ run_step "save replay tests" env \
   ELAN_HOME="$host_elan_home" \
   bash tests/test-beam-save-olean.sh
 
+run_step "save import basis" env \
+  HOME="$tmp_env_root/home" CODEX_HOME="$tmp_env_root/codex" CLAUDE_HOME="$tmp_env_root/claude" \
+  ELAN_HOME="$host_elan_home" \
+  python3 tests/lib/process_watchdog.py --timeout 900 -- python3 tests/test-save-import-basis.py
+
 run_step "checkpoint output hashes" env \
   HOME="$tmp_env_root/home" CODEX_HOME="$tmp_env_root/codex" CLAUDE_HOME="$tmp_env_root/claude" \
   ELAN_HOME="$host_elan_home" \

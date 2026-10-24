@@ -950,6 +950,7 @@ private def syncFileSnapshotDetailed
       sendUntrackedRequestJson session importBasisMethod <| toJson ({
         textDocument := { uri := snapshot.uri, version? := some decision.version }
         capture := true
+        eventSeq := session.nextEventSeq
         : Beam.LSP.ImportBasis.Params
       })
   pure {
@@ -2246,9 +2247,14 @@ private def importsChangedFailure
   let detail :=
     match basis.status with
     | .changed =>
-        s!"its imports changed on disk after the Lean worker loaded them: " ++
+        s!"its imports changed after the Lean worker loaded them: " ++
           String.intercalate ", " basis.changedImports.toList
-    | _ => "Beam has no record of the imports the Lean worker loaded for it"
+    | _ =>
+        if basis.unresolvedImports.isEmpty then
+          "Beam has no record of the imports the Lean worker loaded for it"
+        else
+          "Beam could not locate the Lake traces of imports the Lean worker loaded: " ++
+            String.intercalate ", " basis.unresolvedImports.toList
   {
     code := .saveImportsChanged
     message :=
@@ -2258,25 +2264,30 @@ private def importsChangedFailure
     data? := some <| (syncResultErrorData syncResult)
       |>.setObjVal! "path" (toJson relPath)
       |>.setObjVal! "changedImports" (toJson basis.changedImports)
+      |>.setObjVal! "unresolvedImports" (toJson basis.unresolvedImports)
       |>.setObjVal! "recoveryPlan" (toJson #[s!"lean-beam refresh \"{relPath}\""])
   }
 
-/-- Refuse a checkpoint whose direct imports no longer match those the worker loaded. -/
+/-- Refuse a checkpoint whose loaded imports no longer match those the worker loaded. -/
 private def requireCurrentImportBasis
     (started : StartedTrackedBarrier)
     (relPath : String)
     (syncResult : SyncFileResult)
     (clientRequestId? : Option String) : HandlerM Unit := do
-  let param := toJson ({
-    textDocument := { uri := started.document.uri, version? := some started.document.version }
-    capture := false
-    : Beam.LSP.ImportBasis.Params
-  })
   let request ← started.document.withCurrentDocument fun current => do
+    let savedModules := current.moduleHistory.toArray.filterMap fun (module, history) =>
+      if history.lastSaveEventSeq == 0 then none
+      else some { module, eventSeq := history.lastSaveEventSeq : Beam.LSP.ImportBasis.SavedModule }
+    let param := toJson ({
+      textDocument := { uri := started.document.uri, version? := some started.document.version }
+      savedModules
+      : Beam.LSP.ImportBasis.Params
+    })
     let (current, request) ← startRequestJsonTrackedDetailed current importBasisMethod param
-      (clientRequestId? := clientRequestId?)
+      (clientRequestId? := clientRequestId?) (cancelRef? := started.document.cancelRef?)
     updateSession current
     pure <| .ok request
+  liftHandlerIO <| propagatePendingCancellation started.document.session request
   let pending ← requestArg (← liftHandlerIO <| started.document.awaitOutcome request)
   let basis : Beam.LSP.ImportBasis.Result ← liftHandlerIO <| decodeResponseAs pending.result
   unless basis.status == .current do

@@ -504,12 +504,13 @@ def sendDiagnosticsBarrier (doc : DocHandle) (spec : DiagnosticsBarrierSpec := {
   let requestID ← sendRequest Beam.LSP.DiagnosticsBarrier.method (toJson params)
   registerRequest requestID (toJson params)
 
-def sendImportBasis (doc : DocHandle) (capture : Bool) (version? : Option Nat := none) :
+def sendImportBasis (doc : DocHandle) (capture : Bool) (version? : Option Nat := none)
+    (eventSeq : Nat := 0) (savedModules : Array Beam.LSP.ImportBasis.SavedModule := #[]) :
     ScenarioM ReqHandle := do
   let docState ← getDocState doc
   let params : Beam.LSP.ImportBasis.Params := {
     textDocument := { uri := docState.uri, version? := some (version?.getD (docState.versionNo - 1)) }
-    capture
+    capture, eventSeq, savedModules
   }
   let requestID ← sendRequest Beam.LSP.ImportBasis.method (toJson params)
   registerRequest requestID (toJson params)

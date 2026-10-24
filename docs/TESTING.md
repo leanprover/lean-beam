@@ -385,6 +385,16 @@ before owner shutdown. Hash-removal errors must preserve canonical bytes and lea
 For a focused run, supply `--installation PATH --toolchain TOOLCHAIN`, optionally `--case CASE`;
 `--keep NEW-DIRECTORY` retains the evidence and requires a directory that does not yet exist.
 
+The slow suite also runs [tests/test-save-import-basis.py](../tests/test-save-import-basis.py),
+which rebuilds imports outside Beam after a file worker loaded them and requires `save` or
+`close-save` to refuse with `saveImportsChanged` while Lake keeps treating the importer as out of
+date. Cases cover a direct import, a transitive change behind an unchanged direct `.olean`, a
+non-`module` importer of a module-system dependency's private body, a root namespace split across
+two packages, a rejected `close-save` that keeps the document, its handle and the previous
+checkpoint, a dependency saved through Beam, and repeated saves with unchanged imports. The
+`$/beam/importBasis` LSP tests cover the Beam-save fence deterministically. For a focused run,
+supply `--installation PATH --toolchain TOOLCHAIN`.
+
 `lake exe beam-transaction-test` checks reverse recovery order, typed original and recovery errors,
 and commit-cleanup failures. Fast and native-toolchain suites run it. The broker's
 `beam-publication-test` runs in Fast and native-toolchain suites and owns real-filesystem backup,
