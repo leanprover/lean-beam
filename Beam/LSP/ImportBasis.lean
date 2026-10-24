@@ -25,6 +25,10 @@ the direct imports' traces identify the whole loaded basis.
 The broker sends `capture` requests right after it opens or changes a document, so a new header
 environment is fingerprinted as soon as it is loaded. Save sends `check` requests, which never
 capture: a header environment without an early fingerprint has an unknown basis.
+
+The capture mode is temporary: Lean receives the exact import artifacts from `lake setup-file` but
+does not retain them after loading. Once a worker exposes them, save can compare them directly and
+the capture request goes away (https://github.com/leanprover/lean-beam/issues/370).
 -/
 namespace Beam.LSP.ImportBasis
 
@@ -140,7 +144,9 @@ def handle (p : Params) : RequestM (RequestTask Result) := do
   let modules := directImports ⟨doc.initSnap.stx⟩
   RequestM.mapTaskCheap parsed.processedSnap.task.asServerTask fun processed => do
     let some state := processed.result?
-      | return { status := .unknown }
+      | -- A header that failed to load replaces the previous basis with none.
+        if p.capture then basisRef.set none
+        return { status := .unknown }
     let env := state.cmdState.env
     if p.capture then
       capture env modules

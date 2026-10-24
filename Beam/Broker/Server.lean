@@ -942,6 +942,7 @@ private def syncFileSnapshotDetailed
         pure session
   -- Fingerprint the imports as soon as the worker loads them; save later checks the checkpoint
   -- basis against this record. Nobody awaits the reply: a missing record makes save refuse.
+  -- Temporary until the worker retains its loaded import artifacts (issue #370).
   let session ←
     if decision.action == .unchanged then
       pure session
