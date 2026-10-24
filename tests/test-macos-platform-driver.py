@@ -111,6 +111,7 @@ class PlatformDriverTest(unittest.TestCase):
             "beam-cli-daemon-test", "test-installation-entrypoints.py", "test-beam-prune.sh",
             "beam-backend-process-test", "beam-transport-test", "beam-transaction-test",
             "beam-publication-test", "beam-prune-lock-test", "test-system-contracts.py",
+            "test-client-doctor-native.py",
             "test-save-trace-format.py", "test-installation-manifest.py",
             "test-installation-construction.py", "test-installation-lookup.py",
         ]))

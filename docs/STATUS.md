@@ -34,6 +34,8 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 ### Local Beam Layer
 
 - foreground-owned local Beam daemon with typed `lean-beam` operations for Lean workflows
+- read-only `lean-beam doctor clients` inspection for local Codex, Claude Code, Pi, OpenCode,
+  and Mistral Vibe configuration; this does not test running clients or loaded tools
 - experimental Lean wrapper commands for follow-up handle continuation and release
 - installed `lean-beam-search` helper for shorter shell branching/playout workflows
 - explicit `ok` / `error` response envelopes on typed wrapper operations

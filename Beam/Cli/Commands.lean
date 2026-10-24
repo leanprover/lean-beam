@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Lean
 import Beam.Cli.Args
 import Beam.Cli.Broker
+import Beam.Cli.ClientDoctor
 import Beam.Cli.DaemonManager
 import Beam.Cli.Feedback
 import Beam.Cli.Info
@@ -436,8 +437,11 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
   | args => throw <| commandUsageFailure args
 
 /-- Give local parser failures the relevant command syntax without changing broker failures. -/
-def runCommand (installation : Installation) (opts : CliOptions) : CliM Unit := do
-  try dispatchCommand installation opts
+def runCommand (installation : Installation) (opts : CliOptions) : CliM UInt32 := do
+  try
+    match opts.args with
+    | "doctor" :: "clients" :: args => ClientDoctor.command opts args
+    | _ => dispatchCommand installation opts; return 0
   catch failure =>
     if failure.exitCode == 2 && failure.usage?.isNone then
       throw { failure with

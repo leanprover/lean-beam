@@ -27,6 +27,14 @@ private opaque pathIsLinkNative (path : @& String) : IO Bool
 def pathIsLink (path : System.FilePath) : IO Bool :=
   pathIsLinkNative path.toString
 
+/-- POSIX execute-bit observation; Windows execution rights are not inferred from mode bits. -/
+@[extern "lean_beam_file_execute_bits"]
+private opaque fileExecuteBitsNative (path : @& String) : IO (Option Bool)
+
+/-- Inspect one regular file without running it; `none` means unsupported on this platform. -/
+def fileExecuteBits (path : System.FilePath) : IO (Option Bool) :=
+  fileExecuteBitsNative path.toString
+
 /-- Wait for a task for at most `timeoutMs`, without cancelling it on timeout. -/
 partial def waitTaskWithTimeout
     (task : Task α)

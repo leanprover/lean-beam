@@ -29,6 +29,14 @@ private def inspect (root : System.FilePath) : IO Unit := do
   require (← Beam.pathIsLink (root / "link")) "a directory link was not observed"
   require ((← Beam.observePrivateDir (root / "link")) == .symlink) "directory observation followed a link"
   require ((← Beam.observePrivateDir (root / "file")) == .notDirectory) "ordinary file became a directory"
+  let ordinary ← Beam.fileExecuteBits (root / "file")
+  let executable ← Beam.fileExecuteBits (root / "executable")
+  if System.Platform.isWindows then
+    require (ordinary.isNone && executable.isNone)
+      "Windows execution rights were inferred from POSIX mode bits"
+  else
+    require (ordinary == some false && executable == some true)
+      "POSIX execute-bit observation did not distinguish the two regular files"
   let dangling := root / "dangling"
   require (← Beam.pathIsLink dangling) "a dangling link became absent"
   require ((← Beam.observePrivateDir dangling) == .symlink) "a dangling link became absent"

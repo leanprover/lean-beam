@@ -934,6 +934,16 @@ Install manifests name fixed companions and complete targets through the shared 
 [Beam/Installation/Components.lean](../Beam/Installation/Components.lean), with references into one
 artifact inventory. The current formats and rejection of earlier incomplete records are documented
 in [COMPATIBILITY.md](COMPATIBILITY.md).
+
+Client configuration inspection lives in [Beam/Cli/ClientDoctor](../Beam/Cli/ClientDoctor.lean):
+`Types` defines findings and independent MCP/skill states, `Locations` describes candidate files,
+`Parse` handles in-process JSON/JSONC/TOML, and `Inspect` performs bounded reads and static checks.
+Rendering uses the typed report rather than reconstructing state from finding codes. Completed
+reports return a normal CLI exit result; usage/setup failures use `CliFailure`. The report writer
+retains the completed result and suppresses fallback JSON if a write or flush fails. Keep client
+exceptions and configuration contents out of diagnostics. Reuse installation metadata APIs;
+do not execute configured commands or add a second runtime admission path.
+
 Keep [Beam/Cli.lean](../Beam/Cli.lean) as the executable entry point: parse top-level options,
 select the installation adapter, and delegate to `runCommand`. Adapter selection does not validate
 a runtime. Runtime resolution happens at its consumer, after private control-directory validation

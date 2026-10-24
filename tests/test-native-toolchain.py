@@ -119,6 +119,7 @@ def run_ordinary_source_checks(lean_prefix: Path, build_env: dict[str, str]) -> 
         run([sys.executable, REPO / "tests/lib/process_watchdog.py", "--timeout", "30", "--",
              REPO / ".lake/build/bin" / f"{executable}{EXE}"], env=build_env)
     run([sys.executable, "-X", "utf8", REPO / "tests/test-system-contracts.py"], env=build_env)
+    run([sys.executable, "-X", "utf8", REPO / "tests/test-client-doctor-native.py"], env=build_env)
     run([sys.executable, "-X", "utf8", REPO / "tests/test-save-trace-format.py",
          "--lean-prefix", lean_prefix], env=build_env)
     run([sys.executable, "-X", "utf8", REPO / "tests/test-installation-manifest.py"], env=build_env)

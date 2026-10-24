@@ -136,6 +136,8 @@ PY
 
 run_quiet_test "CLI error boundary" python3 tests/test-cli-errors.py
 run_quiet_test "partial-setup doctor" python3 tests/test-beam-doctor.py
+run_quiet_test "client configuration doctor" python3 tests/test-client-doctor.py
+run_quiet_test "native client configuration doctor" python3 tests/test-client-doctor-native.py
 run_quiet_test system-contracts python3 tests/test-system-contracts.py
 run_quiet_test transaction python3 tests/lib/process_watchdog.py \
   --timeout 30 -- .lake/build/bin/beam-transaction-test

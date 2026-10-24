@@ -8,6 +8,7 @@ import Beam.CompilerRevision
 import Beam.Broker.Errors
 import Beam.Cli.Args
 import Beam.Cli.Broker
+import Beam.Cli.ClientDoctor
 import Beam.Cli.Info
 import Beam.Cli.Installation
 import Beam.Broker.Config
@@ -1896,12 +1897,63 @@ def withFailedStdout (stream : String) (action : Beam.Cli.CliM Unit) : IO UInt32
         stdout.flush
         throw <| IO.userError "fixture stdout flush failed"
       }
-  let code ← IO.withStdout failing <| Beam.Cli.run action
+  let code ← IO.withStdout failing <| Beam.Cli.run (action *> pure 0)
   IO.eprintln s!"fixture response write attempts: {← attempts.get}"
   pure code
 
+private def checkClientDoctorFailureIsolation : IO Unit := do
+  let failed ← Beam.Cli.ClientDoctor.inspectSafely .codex false do
+    throw <| IO.userError "DOCTOR_SECRET_SENTINEL"
+  require "client inspection faults must not expose exception contents"
+    (failed.findings.size == 1 && failed.findings[0]?.any (·.code == "inspection.failed") &&
+      !Beam.Cli.hasSubstring ((toJson failed).compress) "DOCTOR_SECRET_SENTINEL")
+  require "client inspection faults are incomplete, not absent"
+    (failed.mcp == .unverified && failed.skill == .unverified && failed.discovered)
+  let explicit ← Beam.Cli.ClientDoctor.inspectSafely .pi true do
+    throw <| IO.userError "DOCTOR_SECRET_SENTINEL"
+  require "inspection faults retain explicit scope and Pi's lack of MCP"
+    (explicit.mcp == .notApplicable && explicit.skill == .outOfScope)
+
+def clientReport (severity : String) : Beam.Cli.ClientDoctor.Report := {
+  workspace := "fixture"
+  clients := #[{
+    client := .codex
+    findings := match severity with
+      | "0" => #[]
+      | "1" => #[{ code := "fixture.error", status := .error, message := "fixture" }]
+      | _ => #[{ code := "fixture.incomplete", status := .unknown, message := "fixture" }]
+  }]
+}
+
+private def checkClientReportOutput : IO Unit := do
+  for severity in ["0", "1", "2"] do
+    let report := clientReport severity
+    for format in [Beam.Cli.JsonOutputFormat.compact, .pretty] do
+      for stream in ["write", "flush"] do
+        let attempts ← IO.mkRef 0
+        let fail := do
+          attempts.modify (· + 1)
+          throw <| IO.userError "fixture report output failed"
+        let stdout ← IO.getStdout
+        let failing := if stream == "write" then { stdout with putStr := fun _ => fail }
+          else { stdout with putStr := fun _ => pure (), flush := fail }
+        let .error failure ← IO.withStdout failing <|
+            (Beam.Cli.ClientDoctor.emitReport report { json := true } format).run
+          | throw <| IO.userError "report output failure was ignored"
+        require "report output attempted once" ((← attempts.get) == 1)
+        require "report output suppresses fallback JSON" failure.responseStarted
+        require "report output retains selected JSON format" (failure.jsonOutputFormat == format)
+        require "report output retains diagnostic exit status"
+          (failure.exitCode == max 1 report.exitCode)
+        let some data := failure.failure.error.data?
+          | throw <| IO.userError "report output lost its completed inspection"
+        require "report output retains the typed report at the output boundary"
+          ((data.getObjVal? "inspection").toOption == some (toJson report))
+
 def main : IO Unit := do
   checkSdkRuntimeAdmission
+  checkClientDoctorFailureIsolation
+  checkClientReportOutput
   checkLeanConfigLowering
   checkProjectDaemonRequestSealing
   checkClientResponsePresentation
@@ -1951,7 +2003,7 @@ def main (args : List String) : IO UInt32 :=
         BeamTest.Broker.CliDaemonTest.withFailedStdout stream <|
           BeamTest.Broker.CliDaemonTest.blockedOutput "stdout" port.toUInt16
       else
-        Beam.Cli.run <| BeamTest.Broker.CliDaemonTest.blockedOutput stream port.toUInt16
+        Beam.Cli.run <| BeamTest.Broker.CliDaemonTest.blockedOutput stream port.toUInt16 *> pure 0
   | ["--cli-error", "owner-output", stream] =>
       BeamTest.Broker.CliDaemonTest.withFailedStdout stream <|
         Beam.Cli.withOwnerResponse fun printReadiness => do
@@ -1962,16 +2014,27 @@ def main (args : List String) : IO UInt32 :=
             -- owner finalizer can. The enclosing output scope must retain the guard.
             let cleanup : IO Unit := throw <| IO.userError "fixture owner cleanup failed"
             cleanup
+  | ["--client-report-output", severity, stream, format] => do
+      let format ← match format with
+        | "compact" => pure Beam.Cli.JsonOutputFormat.compact
+        | "pretty" => pure Beam.Cli.JsonOutputFormat.pretty
+        | _ => throw <| IO.userError "invalid report fixture format"
+      BeamTest.Broker.CliDaemonTest.withFailedStdout stream do
+        discard <| Beam.Cli.ClientDoctor.emitReport
+          (BeamTest.Broker.CliDaemonTest.clientReport severity) { json := true } format
   | ["--cli-error", "internal"] => Beam.Cli.run do
       let action : IO Unit := throw <| IO.userError "fixture unexpected fault"
       action
+      pure 0
   | ["--cli-error", "doctor-lookup", root, control] =>
       let root := System.FilePath.mk root
       let control := System.FilePath.mk control
-      Beam.Cli.run <| Beam.Cli.doctor "."
-        (fun root => Beam.Cli.withProjectDaemon
-          (fun _ => pure "fixture-requested-config") root (fun _ => pure []) (some control))
-        { explicitRoot? := some root, explicitControlDir? := some control }
+      Beam.Cli.run do
+        Beam.Cli.doctor "."
+          (fun root => Beam.Cli.withProjectDaemon
+            (fun _ => pure "fixture-requested-config") root (fun _ => pure []) (some control))
+          { explicitRoot? := some root, explicitControlDir? := some control }
+        pure 0
   | ["--cli-error", "pre-input", kind] => do
       IO.eprintln "fixture-input-ready"
       (← IO.getStderr).flush
@@ -1998,8 +2061,10 @@ def main (args : List String) : IO UInt32 :=
         fileProgress? := some { updates := 9, done := false }
       }
       Beam.Cli.failOnError (.errorResult failure) (some "fixture-request")
+      pure 0
   | ["--cli-error", "semantic"] => Beam.Cli.run do
       let response := Beam.Broker.Response.success (Json.mkObj [("success", toJson false)])
       Beam.Cli.failOnError response
       Beam.Cli.printResponse response
+      pure 0
   | _ => throw <| IO.userError "unexpected CLI daemon test arguments"

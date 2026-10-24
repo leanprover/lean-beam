@@ -72,6 +72,9 @@ def main():
         directory_link(root / "dangling", missing_target)
         missing_target.rmdir()
         (root / "file").write_bytes(b"ordinary file")
+        (root / "file").chmod(0o600)
+        (root / "executable").write_bytes(b"static inspection must not execute this file")
+        (root / "executable").chmod(0o700)
         non_private = root / "non-private"
         non_private.mkdir()
         if os.name == "nt":
@@ -104,6 +107,7 @@ def main():
             assert sentinel.read_bytes() == b"existing leaf must stay unchanged"
             assert before == {path: permissions(path) for path in before}
             assert (root / "file").read_bytes() == b"ordinary file"
+            assert (root / "executable").read_bytes() == b"static inspection must not execute this file"
             assert not missing_target.exists(), "a dangling link's target was recreated"
             if os.name != "nt":
                 inspect_foreign_owner()

@@ -11,7 +11,7 @@ import Beam.Cli.Installation
 namespace Beam.Cli
 
 /-- Execute the CLI, retaining typed failures until the process boundary. -/
-def execute (args : List String) : CliM Unit := do
+def execute (args : List String) : CliM UInt32 := do
   let installation ← Installation.current
   let opts ← parseCliOptions {} args
   runCommand installation opts

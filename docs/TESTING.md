@@ -160,6 +160,14 @@ Additional Beam lanes:
 - [tests/test-beam-doctor.py](../tests/test-beam-doctor.py): missing-toolchain and missing-project-marker
   inspection, session output before toolchain probing, selected-session incident reporting,
   preserved recovery evidence, failure exit status, and absence of setup writes
+- [tests/test-client-doctor.py](../tests/test-client-doctor.py): isolated client homes, read-only
+  snapshots, executable sentinels, typed report/usage distinction and partial-output failure.
+  The fast suite runs these checks. [tests/test-client-doctor-native.py](../tests/test-client-doctor-native.py)
+  also runs in native SDK jobs, including Windows `.exe` aliases and home discovery. Existing
+  system-contract tests execute POSIX execute-bit observation and explicitly unsupported Windows
+  permission checks. The installer suite uses
+  [tests/test-client-doctor-installed.py](../tests/test-client-doctor-installed.py) against real
+  installer output, including OpenCode XDG location parity.
 
 - [tests/test-beam-toolchain-compat.sh](../tests/test-beam-toolchain-compat.sh) `<toolchain>`: exact
   validated or release-line-compatible bundle qualification, admission diagnostics, module save/replay

@@ -360,10 +360,10 @@ def renderFailure (failure : CliFailure) : IO UInt32 := do
   return failure.exitCode
 
 /-- Catch unexpected IO faults once; they are never reclassified as user input errors. -/
-def run (action : CliM Unit) : IO UInt32 := do
+def run (action : CliM UInt32) : IO UInt32 := do
   let outcome ← action.run.toBaseIO
   let failure ← match outcome with
-    | .ok (.ok ()) => return 0
+    | .ok (.ok code) => return code
     | .ok (.error failure) => pure failure
     | .error error => pure (CliFailure.internal error)
   -- Rendering gets one attempt. A broken stdout/stderr must not enter a fallback

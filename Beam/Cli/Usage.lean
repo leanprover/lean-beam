@@ -33,6 +33,7 @@ def commandUsages : List (String × String) := [
   ("close-save", "lean-beam [--pretty] [--root PATH] close-save <path> [+all-diagnostics]"),
   ("feedback-report", "lean-beam [--pretty] [--root PATH] feedback-report --stdin|--input <path> [--bundle none|dir|zip] [--output-dir <path>] [--no-redact]"),
   ("doctor", "lean-beam [--pretty] [--root PATH] doctor"),
+  ("doctor clients", "lean-beam [--pretty] [--root PATH] doctor clients [codex|claude|pi|opencode|vibe] [--config PATH] [--json | --verbose]"),
   ("open-files", "lean-beam [--pretty] [--root PATH] open-files"),
   ("cancel", "lean-beam [--pretty] [--root PATH] cancel <request-id>"),
   ("stats", "lean-beam [--pretty] [--root PATH] stats"),
