@@ -375,6 +375,14 @@ client protocol.
   Deferred compilation (`compiler.postponeCompile`, including declaration-scoped settings) also
   rejects zero-build saves; use `lake build` for that pipeline. See
   [SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md#command-model) for readiness and preservation guarantees.
+- Running Lake builds on the workspace while a Beam session has documents open is unsupported.
+  As a temporary safeguard ([#370](https://github.com/leanprover/lean-beam/issues/370)), `save` and
+  `close-save` refuse with `saveImportsChanged` when they observe that a module the Lean file worker
+  loaded may have changed since loading: its Lake trace differs, Beam saved it afterwards, or its
+  trace cannot be located unambiguously. Recover with `refresh` and save again. The check is
+  conservative but not complete: an external rebuild racing the worker's import load can still go
+  unobserved. Stop the owner or drop the MCP workspace before running Lake, and start a new session
+  afterward.
 - Beam does not reload Lake workspace configuration during a running Lean session. Runtime-selection
   checks can reject a changed `lean-toolchain`; they do not establish that other configuration is
   unchanged. After
@@ -394,8 +402,9 @@ client protocol.
 - After a dependency edit, report it through `update`/`sync`, checkpoint as needed, and refresh affected
   importers before using their results. Before an external rebuild, stop/drop the owning session
   and wait for cleanup; recreate it afterward. If an external rebuild bypasses this boundary, `sync`
-  can still report readiness and `save` can publish a checkpoint from stale imports that incremental
-  `lake build` accepts, even when its proof fails kernel replay. Restarting the session or refreshing
+  can still report readiness from stale imports. `save` refuses the stale imports it can observe, but
+  a rebuild racing the import load can still publish a checkpoint that incremental `lake build`
+  accepts, even when its proof fails kernel replay. Restarting the session or refreshing
   affected importers does not repair checkpoints already published. See
   [external-build recovery](../skills/lean-beam/references/trust-and-validation.md#external-builds-and-retained-state).
 - Full file-worker crash recovery ([#339](https://github.com/leanprover/lean-beam/issues/339))

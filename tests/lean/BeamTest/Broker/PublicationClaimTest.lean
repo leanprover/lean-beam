@@ -49,7 +49,8 @@ private def installSession (server : ServerRuntime) (id : WorkspaceId) (root : F
     if method == "shutdown" then exitCode.set (some 0)
     if let .ok requestId := message.getObjValAs? JsonRpc.RequestID "id" then
       let some request ← PendingRequestStore.remove pending requestId
-        | throw <| IO.userError "publication fixture request was not registered"
+        | if method == importBasisMethod then return
+          throw <| IO.userError "publication fixture request was not registered"
       let result ← if method == diagnosticsBarrierMethod then do
         let params ← IO.ofExcept <| message.getObjValAs? WaitForDiagnosticsParams "params"
         request.progressRef.set (some { updates := 1, done := true })
@@ -57,6 +58,8 @@ private def installSession (server : ServerRuntime) (id : WorkspaceId) (root : F
           version := params.version, hasFatalSnapshot := false,
           saveReadiness := { version := params.version, textHash := hash source }
           : DiagnosticsBarrierResult })
+      else if method == importBasisMethod then
+        pure <| toJson ({ status := .current } : Beam.LSP.ImportBasis.Result)
       else if method == "shutdown" then pure Json.null
       else throw <| IO.userError s!"unexpected publication fixture request: {method}"
       request.resolveResponse result
@@ -300,8 +303,39 @@ private def checkClosingReservation : IO Unit := withFixture fun server owner _ 
     set { state with workspaces := state.workspaces.insert "a" {
       workspace with documents := workspace.documents.release permit } }
 
+private def publishedEvent? (server : ServerRuntime) : IO (Option Nat × Nat) :=
+  server.withState do
+    let some session := ((← get).workspaces.get? "a").bind (·.lean.session?)
+      | throw <| IO.userError "publication record fixture session missing"
+    pure (session.publishedModules.get? "Main", session.nextEventSeq)
+
+/-- The import basis check of later saves sees every promotion, even of a document closed after it. -/
+private def checkPublicationRecord : IO Unit := withFixture fun server owner _ => do
+  let (uri, basis) ← document owner
+  let cancelled ← IO.mkRef true
+  discard <| Internal.withDocumentPublication server owner uri basis (some cancelled) (pure ())
+    (module? := some "Main")
+  require "a refused claim entered the publication record" ((← publishedEvent? server).1.isNone)
+  let failed ← (Internal.withDocumentPublication server owner uri basis none
+    (throw (IO.userError "promotion failed") : IO Unit) (module? := some "Main")).toBaseIO
+  require "failing promotion fixture did not fail" (failed matches .error _)
+  let (some first, _) ← publishedEvent? server
+    | throw <| IO.userError "a failed promotion was not recorded"
+  let outcome ← Internal.withDocumentPublication server owner uri basis none (pure ())
+    (module? := some "Main")
+  require "publication record fixture failed" outcome.isOk
+  let closed ← server.dispatchRequest {
+    workspaceId? := some "a",
+    payload := .close { path := "Main.lean" } }
+  require "publication record fixture could not close its document" closed.ok
+  let (some second, next) ← publishedEvent? server
+    | throw <| IO.userError "closing the document dropped its publication record"
+  require s!"publication record did not advance: {first} then {second}, next {next}"
+    (first < second && second < next)
+
 def run : IO Unit := do
   checkBeforeClaim
+  checkPublicationRecord
   checkClosingReservation
   checkSchedule .reset
   checkSchedule .drop

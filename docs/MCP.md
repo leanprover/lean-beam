@@ -380,6 +380,8 @@ when the client also needs the diagnostics/readiness barrier.
 snapshot, including structured Lake options, dynamic libraries, and plugins already applied by the
 file worker. Modules with batch-only `moreLeanArgs` fail with `saveUnsupportedSetup`; move shared
 `-D` settings to `leanOptions`, or use `lake build` when the arguments are intentionally batch-only.
+If an import changed on disk after the file worker loaded it, saving fails with `saveImportsChanged`;
+call `lean_refresh` so the worker reloads its imports, then save again.
 Successful checkpoints are normally sufficient for the local development loop, but MCP clients
 should describe them as checkpoint success rather than batch-build or CI success. CI must separately
 run `lake build` from clean artifacts. If no successful clean CI result is available, perform the

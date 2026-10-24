@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Lean.Server.FileWorker.RequestHandling
 import Beam.LSP.DiagnosticsBarrier
 import Beam.LSP.Goals
+import Beam.LSP.ImportBasis
 import Beam.LSP.RunAt
 import Beam.LSP.Save
 import Beam.LSP.Todo
@@ -46,5 +47,9 @@ initialize
     Lean.Lsp.WaitForDiagnosticsParams
     DiagnosticsBarrier.Result
     DiagnosticsBarrier.handle
+  registerLspRequestHandler ImportBasis.method
+    ImportBasis.Params
+    ImportBasis.Result
+    ImportBasis.handle
 
 end Beam.LSP

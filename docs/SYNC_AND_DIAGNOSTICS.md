@@ -184,6 +184,25 @@ before Lake dependency-trace preparation. This rejection preserves the sync verd
 also leaves the document open. Move shared `-D` settings from `moreLeanArgs` to `leanOptions`, or use
 `lake build` when the arguments are intentionally batch-only.
 
+A checkpoint must describe the imports it was elaborated against. When a Lean file worker loads a
+document's imports, Beam records the Lake trace (dependency hash and output hashes) of every
+workspace module in the loaded import closure, not only the direct imports: a non-`module` file
+loads private artifacts of module-system dependencies that its direct imports' traces do not cover.
+After Lake dependency-trace preparation, `save` and `close-save` refuse with `saveImportsChanged`
+when a loaded module's trace differs from the file on disk, for example after an external
+`lake build`, or when Beam saved a loaded module after the worker loaded it. Changed modules are
+listed under `error.data.changedImports`. A module whose trace cannot be located unambiguously, or
+a worker whose imports Beam did not record when they loaded, also refuses, with the modules under
+`error.data.unresolvedImports` when known. The rejection preserves the sync verdict under
+`error.data.sync` and leaves prior artifacts and the Lake trace unchanged; a rejected `close-save`
+also leaves the document open. Run `lean-beam refresh FILE` (MCP: `lean_refresh`) so the worker
+reloads its imports, then save again.
+
+This check is a temporary, conservative safeguard
+([#370](https://github.com/leanprover/lean-beam/issues/370)): it can ask for refreshes that a
+`module` importer does not strictly need, and it cannot observe an external rebuild that races the
+worker's import load. Running Lake builds while documents are open remains unsupported.
+
 Save target resolution delegates to Lake's workspace loader for the
 project's real `lakefile.lean` or `lakefile.toml`; the broker does not synthesize fallback Lake
 configuration from `lakefile.lean` text and never batch-builds as part of `save`.

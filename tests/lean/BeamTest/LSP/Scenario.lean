@@ -12,6 +12,7 @@ import Beam.LSP.Goals
 import Beam.LSP.Todo
 import Beam.LSP.Save
 import Beam.LSP.DiagnosticsBarrier
+import Beam.LSP.ImportBasis
 import Beam.LSP.Lib.Goal
 import BeamTest.TestHarness
 
@@ -501,6 +502,17 @@ def sendDiagnosticsBarrier (doc : DocHandle) (spec : DiagnosticsBarrierSpec := {
   let docState ← getDocState doc
   let params := WaitForDiagnosticsParams.mk docState.uri (spec.version?.getD (docState.versionNo - 1))
   let requestID ← sendRequest Beam.LSP.DiagnosticsBarrier.method (toJson params)
+  registerRequest requestID (toJson params)
+
+def sendImportBasis (doc : DocHandle) (capture : Bool) (version? : Option Nat := none)
+    (eventSeq : Nat := 0) (savedModules : Array Beam.LSP.ImportBasis.SavedModule := #[]) :
+    ScenarioM ReqHandle := do
+  let docState ← getDocState doc
+  let params : Beam.LSP.ImportBasis.Params := {
+    textDocument := { uri := docState.uri, version? := some (version?.getD (docState.versionNo - 1)) }
+    capture, eventSeq, savedModules
+  }
+  let requestID ← sendRequest Beam.LSP.ImportBasis.method (toJson params)
   registerRequest requestID (toJson params)
 
 def sendReleaseHandle (doc : DocHandle) (handle : Beam.LSP.RunAt.Handle) : ScenarioM ReqHandle := do

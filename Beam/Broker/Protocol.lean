@@ -1143,6 +1143,9 @@ def syncBarrierIncompleteCode : String :=
 def saveTraceStaleCode : String :=
   "saveTraceStale"
 
+def saveImportsChangedCode : String :=
+  "saveImportsChanged"
+
 def saveUnsupportedSetupCode : String :=
   "saveUnsupportedSetup"
 

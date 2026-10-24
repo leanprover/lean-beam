@@ -71,6 +71,9 @@ structure Session where
   nextId : Nat := 1
   nextEventSeq : Nat := 1
   moduleHistory : Std.TreeMap String ModuleHistory := {}
+  /-- Event sequence of each module's last artifact publication, recorded whether or not its
+  document stays tracked. Temporary with the import basis check (issue #370). -/
+  publishedModules : Std.TreeMap String Nat := {}
   docs : Std.TreeMap String DocState := {}
 
 structure SessionState where
@@ -796,6 +799,14 @@ private def sendNotificationJson (session : Session) (method : String) (param : 
   writeLspNotification session.stdin ({ method, param : Lean.JsonRpc.Notification Json })
   pure session
 
+/-- Send a request whose reply the broker never reads. It registers no pending entry, so the
+reader discards the reply like any unmatched response. -/
+private def sendUntrackedRequestJson (session : Session) (method : String) (param : Json) :
+    IO Session := do
+  let (session, id) := nextRequestId session
+  writeLspRequest session.stdin ({ id, method, param : Lean.JsonRpc.Request Json })
+  pure session
+
 private def sendTextDocumentDidSave (session : Session) (uri : DocumentUri) : IO Session := do
   sendNotificationJson session "textDocument/didSave" (toJson ({
     textDocument := ({ uri := uri : TextDocumentIdentifier })
@@ -932,6 +943,19 @@ private def syncFileSnapshotDetailed
         sendTextDocumentDidSave session snapshot.uri
     | .unchanged =>
         pure session
+  -- Fingerprint the imports as soon as the worker loads them; save later checks the checkpoint
+  -- basis against this record. Nobody awaits the reply: a missing record makes save refuse.
+  -- Temporary until the worker retains its loaded import artifacts (issue #370).
+  let session ←
+    if decision.action == .unchanged then
+      pure session
+    else
+      sendUntrackedRequestJson session importBasisMethod <| toJson ({
+        textDocument := { uri := snapshot.uri, version? := some decision.version }
+        capture := true
+        eventSeq := session.nextEventSeq
+        : Beam.LSP.ImportBasis.Params
+      })
   pure {
     session := { session with docs := decision.docs }
     uri := snapshot.uri
@@ -1848,10 +1872,14 @@ namespace Internal
 
 /-- Claim publication with the exact captured owner and accepted basis. The successful final
 cancellation check is the commit cutoff: cancellation cannot revoke the claimed filesystem work.
-Only the promotion action runs outside state; all same-workspace ownership changes wait for it. -/
+Only the promotion action runs outside state; all same-workspace ownership changes wait for it.
+
+Once promotion starts, even if it fails, `module?` enters the session's publication record in the
+same state update that releases the claim, whether or not its document is still tracked. -/
 def withDocumentPublication
     (server : ServerRuntime) (session : Session) (uri : DocumentUri) (basis : DocumentBasis)
-    (cancelRef? : Option (IO.Ref Bool)) (promote : IO α) : IO (Except ResponseFailure α) := do
+    (cancelRef? : Option (IO.Ref Bool)) (promote : IO α) (module? : Option String := none) :
+    IO (Except ResponseFailure α) := do
   let completion ← IO.Promise.new
   let document : DocumentRef := { runtime := server, session, uri, basis, cancelRef? }
   let claimed ← (document.withCurrentDocument fun _ => do
@@ -1875,6 +1903,13 @@ def withDocumentPublication
   finally
     try
       server.withState do
+        -- A later session reloads every import, so a replaced session needs no record.
+        if let some module := module? then
+          if let some current ← storedSession? session.workspaceId then
+            if sameSessionIdentity current session then
+              updateSession { current with
+                nextEventSeq := current.nextEventSeq + 1
+                publishedModules := current.publishedModules.insert module current.nextEventSeq }
         let state ← get
         if state.publication?.any (·.token == claim.token) then
           set { state with publication? := none }
@@ -2219,6 +2254,58 @@ private def syncBarrierOutcome
 
 private initialize savePublicationMutex : Std.Mutex Unit ← Std.Mutex.new ()
 
+private def importsChangedFailure
+    (relPath : String)
+    (syncResult : SyncFileResult)
+    (basis : Beam.LSP.ImportBasis.Result) : BrokerFailure :=
+  let detail :=
+    match basis.status with
+    | .changed =>
+        s!"its imports changed after the Lean worker loaded them: " ++
+          String.intercalate ", " basis.changedImports.toList
+    | _ =>
+        if basis.unresolvedImports.isEmpty then
+          "Beam has no record of the imports the Lean worker loaded for it"
+        else
+          "Beam could not locate the Lake traces of imports the Lean worker loaded: " ++
+            String.intercalate ", " basis.unresolvedImports.toList
+  {
+    code := .saveImportsChanged
+    message :=
+      s!"lean-beam save cannot checkpoint {relPath}: {detail}. " ++
+      "A checkpoint must match the imports it was elaborated against; " ++
+      s!"run `lean-beam refresh \"{relPath}\"` to reload them, then save again."
+    data? := some <| (syncResultErrorData syncResult)
+      |>.setObjVal! "path" (toJson relPath)
+      |>.setObjVal! "changedImports" (toJson basis.changedImports)
+      |>.setObjVal! "unresolvedImports" (toJson basis.unresolvedImports)
+      |>.setObjVal! "recoveryPlan" (toJson #[s!"lean-beam refresh \"{relPath}\""])
+  }
+
+/-- Refuse a checkpoint whose loaded imports no longer match those the worker loaded. -/
+private def requireCurrentImportBasis
+    (started : StartedTrackedBarrier)
+    (relPath : String)
+    (syncResult : SyncFileResult)
+    (clientRequestId? : Option String) : HandlerM Unit := do
+  let request ← started.document.withCurrentDocument fun current => do
+    let savedModules := current.publishedModules.toArray.map fun (module, eventSeq) =>
+      { module, eventSeq : Beam.LSP.ImportBasis.SavedModule }
+    let param := toJson ({
+      textDocument := { uri := started.document.uri, version? := some started.document.version }
+      savedModules
+      : Beam.LSP.ImportBasis.Params
+    })
+    let (current, request) ← startRequestJsonTrackedDetailed current importBasisMethod param
+      (clientRequestId? := clientRequestId?) (cancelRef? := started.document.cancelRef?)
+    updateSession current
+    pure <| .ok request
+  liftHandlerIO <| propagatePendingCancellation started.document.session request
+  let pending ← requestArg (← liftHandlerIO <| started.document.awaitOutcome request)
+  let basis : Beam.LSP.ImportBasis.Result ← liftHandlerIO <| decodeResponseAs pending.result
+  unless basis.status == .current do
+    throwBrokerFailure (importsChangedFailure relPath syncResult basis)
+
 private def saveOleanCore
     (server : ServerRuntime)
     (req : WorkspaceRequest)
@@ -2287,6 +2374,10 @@ private def saveOleanCore
       }
   withFailureProgress barrierProgress? <|
     started.document.recordCompletedSync
+  -- The helper read the dependency traces it will record before this check. If the loaded imports
+  -- still match what the worker loaded, that trace describes the elaborated environment.
+  withFailureProgress barrierProgress? <|
+    requireCurrentImportBasis started relPath syncResult req.clientRequestId?
   let plan ← withFailureProgress barrierProgress? <| liftHandlerIO <|
     Publication.create spec.toLeanSaveOutputs
   let producersSettled ← liftHandlerIO <| IO.mkRef true
@@ -2383,6 +2474,7 @@ private def saveOleanCore
     withFailureProgress barrierProgress? <| liftFailureIO <|
       Internal.withDocumentPublication server started.document.session started.document.uri
         started.document.basis req.cancelRef? plan.promote
+        (module? := some spec.moduleName)
     pure {
       document := started.document
       result := leanSaveResult spec started.lakeTraceHash syncResult
