@@ -199,9 +199,11 @@ Current Beam coverage includes:
   and first-message limits, cross-root
   unsafe-registry preservation that does not affect the daemon
   serving the other root, configuration-drift preservation of the owner and active request,
+  typed two-installation control refusal and literal execution of the owning installation's stop
+  remedy with the other installation first on `PATH`,
   explicit stop, committed-state reporting after shutdown delivery failure, cancellation of requests
   active during shutdown or owner loss, exact-generation cleanup that preserves a replacement
-  registry, recovery guidance for repeated stop after unconfirmed shutdown, a published draining fence while
+  registry, wait/status guidance for repeated stop after unconfirmed shutdown, a published draining fence while
   a daemon is paused, rejection of attachment or replacement while that generation remains
   published, forced process-group cleanup of the daemon and its backend, explicit recovery of an
   exact retained shutdown record only after the fixture has independently settled its producers,

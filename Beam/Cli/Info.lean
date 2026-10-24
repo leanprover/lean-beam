@@ -47,6 +47,9 @@ def doctor (home : System.FilePath) (inspect : System.FilePath → CliM (List St
     | .absent => pure ["daemon status: absent"]
     | .selectorMismatch entry => pure ["daemon status: session selector mismatch",
         sessionSelectorMismatchMessage root (← Beam.Daemon.controlDirFor root opts.explicitControlDir?) entry]
+    | .recoveryRequired (.unusable entry .shutdownUnconfirmed) => pure [
+        "daemon status: shutdown completion unconfirmed", s!"daemon generation: {entry.daemonId}",
+        "daemon next step: wait for cleanup, then check status"]
     | .recoveryRequired blocker => pure <|
         ["daemon status: recovery required"] ++
         blocker.generation?.toList.map (fun generation => s!"daemon generation: {generation}") ++
@@ -56,6 +59,8 @@ def doctor (home : System.FilePath) (inspect : System.FilePath → CliM (List St
     let inspection ← inspect root
     for line in lines ++ inspection do IO.println line
   catch failure =>
+    -- Current inspection failures carry object data or none. mergeObj replaces non-objects;
+    -- doctor owns the diagnostics key while preserving the other object fields.
     let data := (failure.failure.error.data?.getD (Json.mkObj [])).mergeObj
       (Json.mkObj [("diagnostics", toJson lines)])
     throw { failure with failure.error.data? := some data }

@@ -180,9 +180,11 @@ What is not a valid checkpoint target:
   and an exact `status` remedy. This does not establish owner liveness. `status` state `running`
   means an authenticated workspace probe succeeded, not that Lean elaboration is ready or complete
 - the first successful `stop` acknowledges a shutdown request with `state: "stopping"`. A retained
-  shutdown descriptor means completion is unconfirmed: `status` reports `recoveryRequired`, and
-  repeated stop or attachment gives `sessionRecoveryRequired` with the exact generation and remedy.
-  Let the original owner finish, or perform full supervised cleanup of every original producer
+  shutdown descriptor means completion is unconfirmed: `status` reports `shutdownUnconfirmed`, and
+  repeated stop, serve, or attachment gives `sessionShutdownUnconfirmed` with the generation and an
+  owning-installation `status` remedy. Wait for cleanup and check for `absent` before restarting.
+  Execute the absolute executable in `remedyCommand`; a different installation on `PATH` cannot
+  control this session (`sessionInstallationMismatch`). If cleanup cannot finish, perform full supervised cleanup of every original producer
   before recovering any remaining descriptor. Neither the record nor its age establishes owner death
 - `--text-file` and `--handle-file` require regular-file targets and allow ordinary symlinks;
   directories, devices, FIFOs, and symlink loops observed at admission fail with

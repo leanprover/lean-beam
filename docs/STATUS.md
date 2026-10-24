@@ -236,7 +236,7 @@ client protocol.
   configuration, and preserve unsafe session state. A competing owner computes its proposed
   configuration but cannot replace a mismatched live owner.
 - `lean-beam status` projects internal descriptor observations onto four public states: `absent`,
-  `running`, `recoveryRequired`, and `unresponsive`. `running` means the selected generation
+  `running`, `shutdownUnconfirmed`, `recoveryRequired`, and `unresponsive`. `running` means the selected generation
   answered an authenticated workspace probe; it does not establish Lean worker readiness.
   `serve` refuses any existing descriptor without probing its endpoint and directs a matching-root
   descriptor marked `live` to `status` with `setupError`. `unresponsive` means an endpoint
@@ -248,9 +248,10 @@ client protocol.
   public running-session result instead of exposing broker workspace or epoch fields. `stop`
   acknowledges a newly committed shutdown request as `stopping` and retains committed state in its
   result when immediate shutdown delivery produces a typed warning. A retained shutdown descriptor
-  means completion is unconfirmed: `status` reports `recoveryRequired`, and repeated stop or
-  attachment returns exact-generation manual recovery guidance. This makes no owner-death inference;
-  clients may let owned cleanup finish or perform full supervised recovery after every producer stops.
+  means completion is unconfirmed: `status` reports `shutdownUnconfirmed`, and repeated stop, serve,
+  or attachment returns `sessionShutdownUnconfirmed` with an owning-installation `status` remedy.
+  Let cleanup finish and check for `absent` before restarting. This makes no active-cleanup or
+  owner-death inference; full supervised recovery is conditional on every original producer stopping.
 - Abnormal or ambiguous state is never reclaimed automatically. The descriptor remains as a fence
   after an unexpected broker/owner exit; an unexpected broker exit preserves the live descriptor,
   whose failed connection-establishment probe projects to `recoveryRequired`. After independently

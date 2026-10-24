@@ -26,6 +26,7 @@ private inductive SessionState where
   | absent
   | running
   | stopping
+  | shutdownUnconfirmed
   | recoveryRequired
   | unresponsive
   deriving BEq, Repr
@@ -35,6 +36,7 @@ private instance : ToJson SessionState where
     | .absent => "absent"
     | .running => "running"
     | .stopping => "stopping"
+    | .shutdownUnconfirmed => "shutdownUnconfirmed"
     | .recoveryRequired => "recoveryRequired"
     | .unresponsive => "unresponsive"
 
@@ -230,6 +232,9 @@ private def sessionStatus (opts : CliOptions) : CliM Unit := do
     | .live entry => pure <| mkSessionStatus .running root sessionDir (some entry.daemonId)
     | .selectorMismatch entry =>
         throw <| selectorMismatchFailure root sessionDir entry
+    | .recoveryRequired (.unusable entry .shutdownUnconfirmed) =>
+        pure <| mkSessionStatus .shutdownUnconfirmed root sessionDir (some entry.daemonId)
+          (some RegistryUnsafeReason.shutdownUnconfirmed.message)
     | .recoveryRequired blocker =>
         pure <| mkSessionStatus .recoveryRequired root sessionDir blocker.generation?
           (some blocker.statusDetail)

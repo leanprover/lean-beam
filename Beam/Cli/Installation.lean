@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Cli.DaemonConfig
+import Beam.Cli.Args
 import Beam.Installation.Lookup
 import Beam.Cli.Usage
 
@@ -14,9 +15,17 @@ namespace Beam.Cli
 
 /-- Control uses recorded ownership, never current runtime admission or component availability. -/
 private def _root_.Beam.Installation.admitControl (installation : Installation)
-    (entry : Beam.Daemon.SessionDescriptor) : IO Unit := do
+    (root sessionDir : System.FilePath) (entry : Beam.Daemon.SessionDescriptor) : CliM Unit := do
   unless Beam.sameCanonicalPath (System.FilePath.mk entry.installationRoot) installation.home do
-    throw <| IO.userError s!"sessionInstallationMismatch: session belongs to Beam installation {entry.installationRoot}, not {installation.home}; use lean-beam from its owning installation or interrupt the original foreground owner. The owner and descriptor were preserved."
+    throw <| (CliFailure.make "sessionInstallationMismatch" <|
+      s!"Beam session {entry.daemonId} belongs to installation {entry.installationRoot}, " ++
+        s!"not {installation.home}; its owner and descriptor were preserved. Stop it using its owning installation.").withRemedy
+      (installationSessionCommand (System.FilePath.mk entry.installationRoot) root sessionDir .stop)
+      [("root", toJson root.toString), ("sessionDir", toJson sessionDir.toString),
+        ("generation", toJson entry.daemonId), ("installationRoot", toJson entry.installationRoot),
+        ("currentInstallationRoot", toJson installation.home.toString),
+        ("recoveryPrecondition", toJson ("Use the owning installation to stop this session; " ++
+          "wait until the original owner, daemon, and all other producers have stopped before restarting."))]
 
 private def installationFailure (failure : Beam.Installation.Failure) : CliFailure :=
   match failure with
