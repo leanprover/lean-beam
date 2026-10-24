@@ -25,6 +25,8 @@ Keep source-of-truth boundaries clear:
 - user setup, supported toolchains, first CLI use, MCP setup, installer locations, and offline notes
   belong in [docs/SETUP.md](docs/SETUP.md)
 - public beta scope, limitations, and direction belong in [docs/STATUS.md](docs/STATUS.md)
+- maintainer work cards, upstream proposals, evidence, and removal targets belong in
+  [docs/roadmap/README.md](docs/roadmap/README.md)
 - exact MCP implementation, protocol, tool-list, and conformance notes belong in
   [docs/MCP.md](docs/MCP.md)
 - exact sync, save, progress, diagnostics, readiness, and stale-version behavior belongs in
