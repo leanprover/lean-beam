@@ -905,7 +905,6 @@ assert_json_file_field_equals "configuration mismatch generation" "$drift_owner_
 assert_json_file_field_equals "configuration mismatch stop command" "$drift_owner_out" \
   error.data.remedyCommand "lean-beam --root '$resolved_tmp1' --session-dir '$resolved_tmp1/.beam' stop" \
   "$drift_owner_err"
-printf '%s\n' "$original_selector" > "$tmp1/lean-toolchain"
 if [ -s "$drift_err" ]; then
   echo "ordinary frozen-configuration attachment produced unexpected diagnostics" >&2
   cat "$drift_out" >&2
@@ -941,7 +940,27 @@ if ! kill -0 "$owner1_pid" 2>/dev/null || ! kill -0 "$daemon1_pid" 2>/dev/null; 
   exit 1
 fi
 
-stop_json="$("$beam_script" --root "$tmp1" stop)"
+# Execute the reported remedy while the new project target is still selected. Bind its public
+# entry point to the original installation, as required by the remedy's ownership prerequisite.
+if [ "$(cat "$tmp1/lean-toolchain")" != "$alternate_selector" ]; then
+  echo "expected project target drift to remain present when executing the stop remedy" >&2
+  exit 1
+fi
+stop_json="$(python3 - "$beam_script" "$drift_owner_out" "$BEAM_TEST_INSTALLATION" <<'PYREMEDY'
+import json
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+wrapper, report, installation = sys.argv[1:]
+data = json.loads(Path(report).read_text())["error"]["data"]
+assert data["installationRoot"] == str(Path(installation).resolve()), data
+command = shlex.split(data["remedyCommand"])
+assert command[0] == "lean-beam", command
+subprocess.run([wrapper, *command[1:]], check=True, timeout=20)
+PYREMEDY
+)"
 assert_json_field_equals "explicit session stop" "$stop_json" ok true
 assert_json_field_equals "explicit session stop state" "$stop_json" result.state stopping
 assert_json_field_equals "explicit session stop changed" "$stop_json" result.changed true
@@ -971,6 +990,7 @@ fi
 stopped_status="$("$beam_script" --root "$tmp1" status)"
 assert_json_field_equals "stopped session status state" "$stopped_status" result.state absent
 
+printf '%s\n' "$original_selector" > "$tmp1/lean-toolchain"
 start_owner "$tmp1" "owner-2"
 daemon2_pid="$(read_json_field "$registry" pid)"
 daemon2_id="$(read_json_field "$registry" daemonId)"

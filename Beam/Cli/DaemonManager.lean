@@ -804,12 +804,11 @@ private def registryReadRecoveryPrecondition : String :=
 private def registryReadRecoveryMessage
     (root sessionDir : System.FilePath)
     (problem : RegistryProblem) : String :=
-  s!"Beam cannot safely use or replace session descriptor {sessionDir / "beam-daemon.json"} " ++
+  s!"Beam cannot use session descriptor {sessionDir / "beam-daemon.json"} " ++
     s!"for {root}: {problem.detail}. " ++
-    "Installation ownership cannot be established from this descriptor; preserve it for diagnosis. " ++
-    registryReadRecoveryPrecondition ++ " Only then, as an operator, archive only this exact descriptor to a " ++
-    "distinct path that does not already exist. Do not rewrite its schema, remove the session " ++
-    "directory, or signal a PID from the record."
+    "Preserve it; its installation ownership is unknown. " ++
+    registryReadRecoveryPrecondition ++
+    " Only then archive only this exact descriptor to a distinct, unused path."
 
 private def registryReadRecoveryFailure
     (root sessionDir : System.FilePath)
@@ -849,26 +848,27 @@ def unresponsiveSessionFailure (root sessionDir : System.FilePath)
 
 /-- Recovery guidance is conditional: a failed probe does not establish owner death. -/
 def RegistryBlocker.cliFailure (root sessionDir : System.FilePath)
-    (blocker : RegistryBlocker) (diagnostics? : Option String := none) : CliFailure := Id.run do
-  if let .unusable entry (.endpointProbeFailed failure) := blocker then
-    if probeFailureDisposition failure == .unresponsive then
-      return unresponsiveSessionFailure root sessionDir entry failure diagnostics?
-  let precondition := "Independently verify that the matching owner, daemon, and all other producers have stopped " ++
-    "before recovery; an unavailable endpoint does not establish this."
-  let summary := match blocker with
-    | .unusable _ (.endpointProbeFailed _) => "the recorded endpoint could not confirm this generation"
-    | _ => blocker.statusDetail
-  let failure := CliFailure.make "sessionRecoveryRequired"
-    s!"Beam session for {root} requires recovery: {summary}. {precondition}"
-  let data := [("detail", toJson blocker.statusDetail), ("recoveryPrecondition", toJson precondition)] ++
-    diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics))
-  return match blocker with
-  | .unusable entry _ =>
-      failure.withRemedy (wrapperSessionCommand root sessionDir (.recoverGeneration entry.daemonId))
-        (("generation", toJson entry.daemonId) :: data)
+    (blocker : RegistryBlocker) (diagnostics? : Option String := none) : CliFailure :=
+  match blocker with
   | .invalid problem =>
       let invalid := registryReadRecoveryFailure root sessionDir problem diagnostics?
       { invalid with failure.error.code := "sessionRecoveryRequired" }
+  | .unusable entry reason => Id.run do
+      if let .endpointProbeFailed failure := reason then
+        if probeFailureDisposition failure == .unresponsive then
+          return unresponsiveSessionFailure root sessionDir entry failure diagnostics?
+      let precondition := "Independently verify that the matching owner, daemon, and all other producers have stopped " ++
+        "before recovery; an unavailable endpoint does not establish this."
+      let detail := reason.message
+      let summary := match reason with
+        | .endpointProbeFailed _ => "the recorded endpoint could not confirm this generation"
+        | _ => detail
+      let failure := CliFailure.make "sessionRecoveryRequired"
+        s!"Beam session for {root} requires recovery: {summary}. {precondition}"
+      let data := [("detail", toJson detail), ("recoveryPrecondition", toJson precondition)] ++
+        diagnostics?.toList.map (fun diagnostics => ("diagnostics", toJson diagnostics))
+      return failure.withRemedy (wrapperSessionCommand root sessionDir (.recoverGeneration entry.daemonId))
+        (("generation", toJson entry.daemonId) :: data)
 
 def selectorMismatchFailure (root sessionDir : System.FilePath)
     (entry : SessionDescriptor) : CliFailure :=
