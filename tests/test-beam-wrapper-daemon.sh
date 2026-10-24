@@ -709,10 +709,10 @@ if "$beam_script" --root "$tmp2" recover --generation opaque-generation \
   echo "expected opaque recovery to fail without established installation ownership" >&2
   exit 1
 fi
-if ! grep -Fq "installation ownership cannot be established" "$tmp2/opaque-recover.err"; then
-  cat "$tmp2/opaque-recover.err" >&2
-  exit 1
-fi
+assert_json_file_field_equals "opaque recovery error code" "$tmp2/opaque-recover.out" \
+  error.code setupError "$tmp2/opaque-recover.err"
+assert_json_file_field_equals "opaque recovery descriptor" "$tmp2/opaque-recover.out" \
+  error.data.descriptorPath "$resolved_tmp2/.beam/beam-daemon.json" "$tmp2/opaque-recover.err"
 if "$beam_script" --root "$tmp2" recover --force > /dev/null 2>&1; then
   echo "the removed force form must not bypass installation ownership" >&2
   exit 1
@@ -894,11 +894,17 @@ print(next(target['toolchain'] for target in targets if target['toolchain'] != o
 PYTARGET
 )"
 printf '%s\n' "$alternate_selector" > "$tmp1/lean-toolchain"
-if "$beam_script" --root "$tmp1" stats > /dev/null 2> "$drift_owner_err"; then
+if "$beam_script" --root "$tmp1" stats > "$drift_owner_out" 2> "$drift_owner_err"; then
   echo "expected attachment to reject a changed project target" >&2
   exit 1
 fi
-assert_contains_literal "$drift_owner_err" 'current owner was preserved'
+assert_json_file_field_equals "configuration mismatch error" "$drift_owner_out" \
+  error.code setupError "$drift_owner_err"
+assert_json_file_field_equals "configuration mismatch generation" "$drift_owner_out" \
+  error.data.generation "$daemon1_id" "$drift_owner_err"
+assert_json_file_field_equals "configuration mismatch stop command" "$drift_owner_out" \
+  error.data.remedyCommand "lean-beam --root '$resolved_tmp1' --session-dir '$resolved_tmp1/.beam' stop" \
+  "$drift_owner_err"
 printf '%s\n' "$original_selector" > "$tmp1/lean-toolchain"
 if [ -s "$drift_err" ]; then
   echo "ordinary frozen-configuration attachment produced unexpected diagnostics" >&2
