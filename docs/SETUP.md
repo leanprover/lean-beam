@@ -472,6 +472,12 @@ command reports clients whose configuration or Lean skill files it finds. Select
 reports absent optional integrations. The workspace is the current directory or `--root`; it need
 not be a Lean project. This command does not use `--session-dir`.
 
+When a selected or discovered client is missing an integration, the summary shows a setup reminder,
+the inspected locations, and a manual next step. Missing MCP registration and a missing CLI skill
+remain optional, so these reminders alone return `0`. Choose the step for the workflow you use.
+If no client is discovered, select yours explicitly, for example
+`lean-beam doctor clients codex --verbose`; the empty JSON report includes the same `remediation`.
+
 Checks cover the listed local JSON, JSONC, or TOML files, Beam MCP launch fields, explicitly disabled
 registrations, executable paths, POSIX execute bits, and recognizable standalone installation
 metadata. A valid pinned installation remains independent of the install root's moving `current`
@@ -495,9 +501,9 @@ Running clients, managed/cloud configuration, launch flags, and loaded tools are
 The default output summarizes actionable findings; `--verbose` includes individual checks and
 inspected paths. Completed `--json` inspections emit one report with `kind: "clientInspection"`,
 `workspace`, `scope`, and `clients`. Each client has separate `mcp` and `skill` states plus typed
-`findings` with `code` and `status`. Exit status is `0` for completed checks without errors or
-unknowns, `1` for known errors, and `2` for incomplete checks; errors take precedence. Missing
-optional integrations alone return `0`. Usage/setup failures use the usual CLI error envelope
+`findings` with `code`, `status`, and an optional `remediation`. Exit status is `0` for completed
+checks without errors or unknowns, `1` for known errors, and `2` for incomplete checks; errors take
+precedence. Missing optional integrations alone return `0`. Usage/setup failures use the usual CLI error envelope
 (`ok: false` with `error`) instead of an inspection report, so an incomplete report and invalid
 arguments remain distinguishable even when both exit `2`.
 
@@ -509,6 +515,29 @@ commands, or create Beam state. Config/skill reads are limited to 1 MiB each. Re
 paths and keys, but omit raw file bodies, environment/argument values, and parser exception text.
 Use the [actual-client MCP workflow](#mcp-setup) and version checks to verify a running integration;
 exit `0` from static inspection does not establish connectivity or loaded tools.
+
+## Install The Lean Skill Manually
+
+The Lean skill gives an agent instructions for using Beam's CLI. Skill installation is separate
+from installing the native commands or registering MCP, including when Beam comes with Lean.
+
+Obtain the complete [`skills/lean-beam`](../skills/lean-beam) directory from the matching Beam
+release or checkout. Include its `references` directory; copying only `SKILL.md` loses the detailed
+workflow instructions. Install this folder using your client's skill installation workflow.
+[Installer Locations And Overrides](#installer-locations-and-overrides) lists the Beam conventions
+that the doctor checks.
+
+For Codex on Linux or macOS, run these commands from that matching Beam checkout:
+
+```bash
+mkdir -p "$HOME/.agents/skills"
+cp -R skills/lean-beam "$HOME/.agents/skills/"
+```
+
+On Windows, copy the same whole folder into your user's `.agents/skills` directory. Codex documents
+these user and repository locations in [Where Codex loads local skills](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills).
+Open a new agent session and confirm that the client offers the skill. The doctor checks file
+presence and readability; the client establishes whether it loaded the skill.
 
 ## MCP Setup
 

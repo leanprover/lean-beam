@@ -126,13 +126,24 @@ structure Report where
   limitations : Array String := #[]
   deriving Repr
 
+/-- Shared manual instructions; inspection never applies these setup steps. -/
+def setupGuideUrl : String :=
+  "https://github.com/leanprover/lean-beam/blob/main/docs/SETUP.md"
+
+/-- Empty discovery cannot choose a client on the user's behalf. Keep its next step in JSON too. -/
+def Report.remediation? (report : Report) : Option String :=
+  if report.clients.isEmpty then
+    some s!"Select the client you use to check its setup, for example `lean-beam doctor clients codex --verbose` (replace codex with your client). Manual setup: {setupGuideUrl}."
+  else none
+
 /-- Completed inspections have a fixed discriminator, distinct from CLI usage/setup failures. -/
-instance : ToJson Report := ⟨fun report => Json.mkObj [
+instance : ToJson Report := ⟨fun report => Json.mkObj <| [
   ("kind", toJson "clientInspection"),
   ("workspace", toJson report.workspace),
   ("scope", toJson report.scope),
   ("clients", toJson report.clients),
-  ("limitations", toJson report.limitations)]⟩
+  ("limitations", toJson report.limitations)] ++
+  report.remediation?.toList.map (fun action => ("remediation", toJson action))⟩
 
 /-- Errors take precedence over incomplete inspection. Absence is not a broken optional setup. -/
 def Report.exitCode (report : Report) : UInt32 :=

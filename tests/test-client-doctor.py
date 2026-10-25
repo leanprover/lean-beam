@@ -125,6 +125,75 @@ class ClientDoctorTest(unittest.TestCase):
         self.has_code(report, "mcp.notApplicable", "notConfigured")
         self.has_code(report, "skill.notConfigured", "notConfigured")
 
+    def test_empty_discovery_asks_for_the_users_client(self):
+        report = self.run_doctor()
+        self.assertEqual(report["clients"], [])
+        self.assertIn("lean-beam doctor clients codex --verbose", report["remediation"])
+        for args in [(), ("--verbose",)]:
+            text = self.run_doctor(*args, as_json=False).stdout
+            self.assertIn(report["remediation"], text)
+            self.assertIn(str(self.workspace), text)
+            self.assertNotIn("codex: not configured", text)
+            self.assertNotIn("claude: not configured", text)
+
+    def test_missing_mcp_has_optional_manual_setup_reminders(self):
+        self.write(self.home / ".codex/skills/lean-beam/SKILL.md", "Lean skill\n")
+        for client, command in [("codex", "codex mcp add lean-beam"),
+                                ("claude", "claude mcp add --scope user lean-beam"),
+                                ("opencode", "opencode mcp add"),
+                                ("vibe", "[[mcp_servers]]")]:
+            with self.subTest(client=client):
+                report = self.run_doctor(client)
+                finding = next(f for f in self.findings(report) if f["code"] == "mcp.notConfigured")
+                self.assertEqual(finding["status"], "notConfigured")
+                self.assertIn(command, finding["remediation"])
+                self.assertIn("docs/SETUP.md#mcp-setup", finding["remediation"])
+                for args in [(client,), (client, "--verbose")]:
+                    text = self.run_doctor(*args, as_json=False).stdout
+                    self.assertIn(finding["remediation"], text)
+                    for source in report["clients"][0]["sources"]:
+                        self.assertIn(source["path"], text)
+        discovered = self.run_doctor()
+        self.assertEqual([c["client"] for c in discovered["clients"]], ["codex"])
+        self.assertNotIn("remediation", discovered)
+        self.assertIn("codex mcp add lean-beam", self.run_doctor(as_json=False).stdout)
+
+    def test_missing_skill_has_optional_setup_reminder_without_mcp_repair(self):
+        self.codex_config()
+        report = self.run_doctor("codex")
+        finding = next(f for f in self.findings(report) if f["code"] == "skill.notConfigured")
+        self.assertEqual(finding["status"], "notConfigured")
+        self.assertIn("complete skills/lean-beam directory", finding["remediation"])
+        self.assertIn("docs/SETUP.md#install-the-lean-skill-manually", finding["remediation"])
+        for args in [("codex",), ("codex", "--verbose")]:
+            text = self.run_doctor(*args, as_json=False).stdout
+            self.assertIn(finding["remediation"], text)
+            self.assertNotIn("codex mcp add", text)
+            for source in report["clients"][0]["sources"]:
+                self.assertIn(source["path"], text)
+        compact = self.run_doctor("codex", as_json=False).stdout
+        self.assertIn("Setup reminder:", compact)
+        self.assertIn("0 errors, 0 unverified checks, 0 recommendations.", compact)
+
+    def test_explicit_file_reminder_stays_within_the_selected_scope(self):
+        self.codex_config()
+        selected = self.root / "selected.toml"
+        self.write(selected, "")
+        report = self.run_doctor("codex", "--config", str(selected))
+        finding = next(f for f in self.findings(report) if f["code"] == "mcp.notConfigured")
+        self.assertIn("this file", finding["remediation"])
+        self.assertNotIn("codex mcp add", finding["remediation"])
+        self.assertEqual(report["clients"][0]["skill"], "outOfScope")
+        self.assertEqual([s["path"] for s in report["clients"][0]["sources"]], [str(selected)])
+        text = self.run_doctor("codex", "--config", str(selected), as_json=False).stdout
+        self.assertIn(finding["remediation"], text)
+        self.assertIn(str(selected), text)
+        self.assertNotIn(str(self.home / ".codex/config.toml"), text)
+        self.assertNotIn("#install-the-lean-skill-manually", text)
+        pi = self.run_doctor("pi")
+        mcp = next(f for f in self.findings(pi) if f["code"] == "mcp.notApplicable")
+        self.assertIsNone(mcp.get("remediation"))
+
     def test_empty_pi_summary_does_not_claim_an_integration(self):
         report = self.run_doctor("pi")
         self.assertEqual(report["clients"][0]["mcp"], "notApplicable")

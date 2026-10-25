@@ -108,11 +108,11 @@ private def quoted (text : String) : String := (toJson text).compress
 private def renderVerbose (report : Report) : String := Id.run do
   let mut lines := #[s!"Client configuration inspection: {quoted report.workspace}"]
   if report.clients.isEmpty then lines := lines.push "No client configuration or Lean skills found in the inspected locations."
+  if let some action := report.remediation? then lines := lines.push action
   for client in report.clients do
     lines := lines.push s!"\n{client.client.name}:"
     for source in client.sources do
-      if source.role != .leanSkill || source.state != .notConfigured then
-        lines := lines.push s!"  source [{source.state.name}] {quoted source.path} ({source.purpose})"
+      lines := lines.push s!"  source [{source.state.name}] {quoted source.path} ({source.purpose})"
     for finding in client.findings do
       lines := lines.push s!"  {finding.status.name} [{finding.code}] {finding.message}"
       if let some source := finding.source? then
@@ -128,15 +128,18 @@ def renderText (report : Report) : String := Id.run do
   let mut lines := #["Beam client configuration", ""]
   if report.clients.isEmpty then
     lines := lines.push "No client configuration or Lean skills found."
+    lines := lines.push s!"Workspace inspected: {quoted report.workspace}"
+  if let some action := report.remediation? then lines := lines.push action
   let mut errors := 0
   let mut unknowns := 0
   let mut warnings := 0
   for client in report.clients do
-    let issues := client.findings.filter fun finding =>
-      finding.status == .error || finding.status == .unknown || finding.status == .warning
-    let label := if issues.any (·.status == .error) then "needs attention"
-      else if issues.any (·.status == .unknown) then "partly checked"
-      else if issues.any (·.status == .warning) then "check recommendation"
+    let visibleFindings := client.findings.filter fun finding =>
+      finding.status == .error || finding.status == .unknown || finding.status == .warning ||
+        (finding.status == .notConfigured && finding.remediation?.isSome)
+    let label := if visibleFindings.any (·.status == .error) then "needs attention"
+      else if visibleFindings.any (·.status == .unknown) then "partly checked"
+      else if visibleFindings.any (·.status == .warning) then "check recommendation"
       else if client.skill == .notConfigured &&
           (client.mcp == .notConfigured || client.mcp == .notApplicable) then "not configured"
       else "checked"
@@ -155,17 +158,22 @@ def renderText (report : Report) : String := Id.run do
       | .outOfScope => "skills outside selected scope"
       | .notApplicable => "Lean skill not applicable"
     lines := lines.push s!"{client.client.name}: {label} — {mcp}; {skill}"
-    for finding in issues do
+    for finding in visibleFindings do
       let kind := match finding.status with
         | .error => "Error"
         | .unknown => "Unverified"
+        | .notConfigured => "Setup reminder"
         | _ => "Recommendation"
       if finding.status == .error then errors := errors + 1
       else if finding.status == .unknown then unknowns := unknowns + 1
-      else warnings := warnings + 1
+      else if finding.status == .warning then warnings := warnings + 1
       lines := lines.push s!"  {kind}: {finding.message}"
       if let some source := finding.source? then lines := lines.push s!"    In {quoted source}"
       if let some action := finding.remediation? then lines := lines.push s!"    {action}"
+    if !client.sources.isEmpty && visibleFindings.any (fun finding => finding.status == .notConfigured) then
+      lines := lines.push "  Inspected locations for these reminders:"
+      for source in client.sources do
+        lines := lines.push s!"    {quoted source.path} ({source.purpose})"
   lines := lines.push s!"\n{errors} errors, {unknowns} unverified checks, {warnings} recommendations."
   lines := lines.push "Read-only checks; running clients and loaded tools were not tested."
   lines := lines.push "Use --verbose for inspected paths and individual checks."

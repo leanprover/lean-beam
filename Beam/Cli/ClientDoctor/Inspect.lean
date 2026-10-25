@@ -507,6 +507,19 @@ private def mergeOpenCode (entries : Array Entry) : Array Entry := Id.run do
   -- A malformed override must not erase recognition of an inherited Beam alias.
   return result.filter fun entry => beamNames.contains entry.name
 
+private def mcpSetupRemediation? (client : Client) (explicitConfig : Bool) : Option String :=
+  let action? := match client with
+    | .codex => some "run `codex mcp add lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`"
+    | .claude => some "run `claude mcp add --scope user lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`"
+    | .opencode => some "run `opencode mcp add` with name lean-beam, type local, and your installed MCP server's absolute path"
+    | .vibe => some "add the documented `[[mcp_servers]]` entry to your Vibe configuration"
+    | .pi => none
+  action?.map fun action =>
+    if explicitConfig then
+      s!"If this file should configure Beam MCP, add its client-specific registration here; other configuration files were not inspected. Manual setup: {setupGuideUrl}#mcp-setup."
+    else
+      s!"For MCP use, {action}. Use your installed lean-beam-mcp command's absolute path (the toolchain's bin command for bundled Beam). Manual setup: {setupGuideUrl}#mcp-setup."
+
 def inspectClient (context : Context) (client : Client) (dirs : Array System.FilePath)
     (configOverride? : Option System.FilePath := none) : IO ClientReport := do
   let mut plan := locations context client dirs
@@ -623,11 +636,13 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
     report := add report .general (if client == .pi then "mcp.notApplicable" else "mcp.notConfigured") .notConfigured
       (if client == .pi then "Beam uses Pi's CLI skill; no native Pi MCP configuration is inspected."
        else "No Beam MCP registration was found in the inspected files. MCP is optional for CLI/skill use.")
+      (remediation? := mcpSetupRemediation? client configOverride?.isSome)
   let before := report.findings.size
   for path in plan.skills do report ← inspectSkill path report
   if report.findings.size == before && configOverride?.isNone then
     report := add report .general "skill.notConfigured" .notConfigured
       "No Lean skill was found in the inspected standard locations. Skills are optional for MCP use."
+      (remediation? := some s!"For agent CLI use, install the complete skills/lean-beam directory, including references, in your client's skill directory. MCP-only use does not require this step. Manual setup: {setupGuideUrl}#install-the-lean-skill-manually.")
   return report
 
 end Beam.Cli.ClientDoctor
