@@ -153,6 +153,8 @@ When working locally:
 
 ## Pull Request Messages
 
+- Use the commit convention in `CONTRIBUTING.md` for PR titles: `<type>: <lowercase subject>`.
+  Documentation uses `doc`, not `docs`; omit generator and tool prefixes.
 - Before opening or editing a PR, run `scripts/pr-message.sh` and use the emitted title/body
   scaffold as the source of truth.
 - For macOS-sensitive changes to CI, native helpers, wrappers, installation, bundle resolution, or
@@ -175,5 +177,6 @@ Helpful repo docs:
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [docs/SETUP.md](docs/SETUP.md)
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+- [docs/roadmap/README.md](docs/roadmap/README.md): maintainer card index, ownership, and migration rules
 - [docs/TESTING.md](docs/TESTING.md)
 - [skills/lean-beam/SKILL.md](skills/lean-beam/SKILL.md)

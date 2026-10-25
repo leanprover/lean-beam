@@ -1007,16 +1007,19 @@ separately from the action runtime.
 
 ## Upstream Lean API Backlog
 
-Beam carries a few local workarounds for missing or version-skewed Lean/Lake APIs. When upstream
-support lands, prefer deleting the workaround over preserving compatibility branches.
+The [work-card index](roadmap/README.md) tracks upstream Lean/Lake proposals,
+current evidence, ownership, and the Beam workaround each change could remove.
+Start there when recording an upstream gap; keep setup instructions and current
+public behavior in their existing guides.
 
-- Lean file-worker `lake setup-file` progress is currently exposed as ordinary information
-  diagnostics with a synthetic file-start range. Beam recognizes Lake build-monitor text such as
-  `✔ [1/2] Built ...` so MCP/wrapper clients can see cold Lake setup activity during long syncs
-  and `runAt` probes.
-  This is deliberately brittle. A typed Lean API or LSP notification for setup/build progress,
-  including the module/target caption and completion/failure status, would let Beam stop matching
-  diagnostic strings.
+Native retirement requirements cover
+[non-following leaf metadata](roadmap/cards/ULC-0007-nonfollowing-leaf-metadata/README.md),
+[private directory creation/observation](roadmap/cards/ULC-0008-private-directory-contract/README.md),
+and [owned subprocess lifetimes](roadmap/cards/ULC-0009-owned-subprocess-lifetime/README.md).
+Smaller POSIX creation and child-exit observation proposals have separate cards;
+they do not satisfy the complete Windows security or helper ownership contracts.
+The index records the supported-version gate before a native binding, source,
+object target, or unused linkage can be deleted.
 
 ## Lean Compatibility Shims
 
