@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import Lean.Server.FileWorker.RequestHandling
 import Lean.Server.Requests
 import Beam.LSP.Lib.Goal
+import Beam.LSP.Lib.Placeholder
 import Beam.LSP.Lib.Request
 import Beam.LSP.RunAt.Handles
 
@@ -44,6 +45,7 @@ JSON-RPC method name for the standalone `runAt` request.
 
 This is the only public entry point. Backend selection remains internal:
 
+- placeholder execution at an unfilled `sorry`, `_`, or `?x` term
 - proof/tactic execution when a proof basis can be recovered at the given position
 - command execution otherwise
 -/
@@ -65,6 +67,9 @@ Current request semantics:
 - callers do not choose command vs tactic mode
 - command-mode `text` is one Lean command, not a top-level command sequence
 - proof-mode `text` is one tactic block
+- at an unfilled placeholder (a `sorry`, `_`, or `?x` term that the command left open), proof-mode
+  `text` runs against a goal with the placeholder's expected type and local context, as it would in
+  `by ...` there
 - `position` uses Lean/LSP `Position` semantics against the matching document version
 - proof execution uses Lean's cursor-selected before/after tactic state; the tactic's start
   selects its before-state, while positions inside it may select its after-state
@@ -264,14 +269,6 @@ private partial def finishedHeaderLevelNamesAt (snap : Language.DynamicSnapshot)
       if let some levels ← finishedHeaderLevelNamesAt value text pos then
         return some levels
   return none
-
--- Lean 4.35 moved parsed-command lookup from the server API to the language API.
--- Select the public API while elaborating this definition; there is no runtime fallback.
-private def findParsedCommandAt (doc : FileWorker.EditableDocument) (pos : String.Pos.Raw) :
-    ServerTask (Option Language.Lean.CommandParsedSnapshot) := by
-  first
-  | exact (Language.Lean.findCmdParsedSnap doc.initSnap doc.meta.text pos).asServerTask
-  | exact Lean.Server.RequestM.findCmdParsedSnap doc pos
 
 private def withProofScopeAtPos (position : Lean.Lsp.Position)
     (f : List Name → RequestM α) : RequestM (RequestTask α) := do
@@ -533,6 +530,17 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
     let nextHandle? := outcome.disposition.nextHandleState? result proofSnapshot'
     return (result, nextHandle?)
 
+/--
+Run tactics in place of a placeholder. The placeholder becomes a fresh goal with its expected type
+and local context, so the text works as it would in `by ...` at that position: `exact t` supplies a
+term, and goals the tactics leave open remain for a stored handle.
+-/
+def runPlaceholderText (placeholder : Placeholder) (text : String) (levelNames : List Name) :
+    RequestM (Result × Option StoredHandleState) := do
+  let proofSnapshot ← ProofSnapshot.createWith placeholder.ctx
+    (do pure [← placeholder.mkGoal]) (levelNames := levelNames)
+  runTacticText proofSnapshot (← proofStateOfSnapshot proofSnapshot) text
+
 def runTacticAtBasis (basis : GoalsAtResult) (text : String) (levelNames : List Name) :
     RequestM (Result × Option StoredHandleState) := do
   let ctxInfo := mkBasisCtxInfo basis
@@ -545,18 +553,28 @@ def handleRunAt (p : Params) : RequestM (RequestTask Result) := do
   syncHandleStoreForCurrentDoc
   validatePosition p.position
   checkRequestCancelled
-  let proofTask ← findProofBasisAt p.position
-  RequestM.bindRequestTaskCostly proofTask <| fun
-    | some basis =>
+  let storeHandle := p.storeHandle?.getD false
+  -- A placeholder is more specific than the tactic that contains it.
+  let placeholderTask ← findPlaceholderAt p.position
+  RequestM.bindRequestTaskCostly placeholderTask <| fun
+    | some placeholder =>
         withProofScopeAtPos p.position fun levelNames => do
           checkRequestCancelled
-          let (result, state?) ← runTacticAtBasis basis p.text levelNames
-          maybeAttachHandle result (p.storeHandle?.getD false) state?
-    | none =>
-        withRunAtSnapAtPos p.position fun snap => do
-          checkRequestCancelled
-          let (result, state?) ← runCommandText snap p.text
-          maybeAttachHandle result (p.storeHandle?.getD false) state?
+          let (result, state?) ← runPlaceholderText placeholder p.text levelNames
+          maybeAttachHandle result storeHandle state?
+    | none => do
+      let proofTask ← findProofBasisAt p.position
+      RequestM.bindRequestTaskCostly proofTask <| fun
+        | some basis =>
+            withProofScopeAtPos p.position fun levelNames => do
+              checkRequestCancelled
+              let (result, state?) ← runTacticAtBasis basis p.text levelNames
+              maybeAttachHandle result storeHandle state?
+        | none =>
+            withRunAtSnapAtPos p.position fun snap => do
+              checkRequestCancelled
+              let (result, state?) ← runCommandText snap p.text
+              maybeAttachHandle result storeHandle state?
 
 def handleRunWith (p : RunWithParams) : RequestM (RequestTask Result) := do
   syncHandleStoreForCurrentDoc

@@ -18,6 +18,9 @@ Use this reference when the task needs more than the default loop in `SKILL.md`.
   proof/tactic snapshot at that position, or one Lean can recover from nearby syntax
 - for a tactic replacement, select its first character after indentation to use its before-state;
   inside a simple tactic or at its end, Lean generally selects the after-state
+- on a `sorry`, `_`, or `?x` term that the command left unfilled, the text is tactics run against
+  a goal with that placeholder's type and local context, as in `by ...` there; use `exact t` for a
+  term. Only the placeholder's type is checked, not later parts of the enclosing term
 - standalone comments, blank lines, and many declaration headers often do not have a usable basis
 - nearby whitespace/comments may still work when Lean can recover a neighboring basis, but do not
   assume that from arbitrary file positions

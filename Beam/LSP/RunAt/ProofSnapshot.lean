@@ -60,9 +60,11 @@ def runTacticM (p : ProofSnapshot) (t : TacticM α) : IO (α × ProofSnapshot) :
   let ((a, tacticState), p') ← p.runTermElabM (t p.tacticContext |>.run p.tacticState)
   return (a, { p' with tacticState })
 
-def create (ctx : Elab.ContextInfo) (goals : List MVarId) (levelNames : List Name := []) :
-    IO ProofSnapshot := do
+/-- Snapshot of the goals that `mkGoals` selects or creates in the context's metavariable state. -/
+def createWith (ctx : Elab.ContextInfo) (mkGoals : MetaM (List MVarId))
+    (levelNames : List Name := []) : IO ProofSnapshot := do
   ctx.runMetaM {} do
+    let goals ← mkGoals
     -- InfoTree contexts do not save the term elaborator's universe scope. Start with the
     -- command and declaration-header scopes, then collect parameters from goals and hypotheses.
     let mut levels : CollectLevelParams.State := {}
@@ -90,6 +92,10 @@ def create (ctx : Elab.ContextInfo) (goals : List MVarId) (levelNames : List Nam
       -- elaboration errors can become synthetic sorries and later surface only as `abortTactic`.
       tacticContext := { elaborator := .anonymous, recover := false }
     }
+
+def create (ctx : Elab.ContextInfo) (goals : List MVarId) (levelNames : List Name := []) :
+    IO ProofSnapshot :=
+  createWith ctx (pure goals) (levelNames := levelNames)
 
 end ProofSnapshot
 end Beam.LSP.RunAt

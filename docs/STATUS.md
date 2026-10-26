@@ -15,7 +15,8 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 ### Core Lean Surface
 
 - standalone Lean plugin for `$/lean/runAt`
-- internal proof-first, command-fallback basis selection
+- internal basis selection: an unfilled `sorry`, `_`, or `?x` term first, then a proof, then the
+  command
 - typed response payload with messages, traces, optional proof state, and optional follow-up handle
 - optional follow-up execution through `$/lean/runWith` and `$/lean/releaseHandle`
 - agent-oriented `$/lean/todo` range inspection for actionable items such as sorries, holes,

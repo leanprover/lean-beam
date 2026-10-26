@@ -346,6 +346,58 @@ def checkRunAtCancellation : ScenarioM Unit := do
   closeDoc slowDoc
   closeDoc fastDoc
 
+private def requireRunAtGoals (label : String) (doc : DocHandle) (position : Lean.Lsp.Position)
+    (goals : Array String) : ScenarioM Unit := do
+  let result ← requireRunAtSuccess label doc position "skip"
+  let actual := (result.proofState?.map (·.goals.map (·.target))).getD #[]
+  unless actual == goals do
+    throw <| IO.userError s!"{label}: expected goals {goals}, got {(toJson result).compress}"
+
+def checkRunAtPlaceholders : ScenarioM Unit := do
+  let doc ← openDoc "tests/scenario/docs/RunAtPlaceholders.lean"
+  syncDoc doc
+
+  -- At an unfilled `sorry` term, from its first character through its end, the text is tactics
+  -- run against the goal the `sorry` stands for.
+  for character in [65, 70] do
+    requireRunAtGoals "term sorry" doc { line := 0, character } #["q"]
+  requireRunAtSolvesProof "exact at term sorry" doc { line := 0, character := 65 } "exact hq"
+
+  -- An unsynthesized `_` or `?x` becomes a goal with its expected type and local context,
+  -- including local instances.
+  requireRunAtGoals "term hole" doc { line := 2, character := 50 } #["Nat"]
+  requireRunAtSolvesProof "exact at term hole" doc { line := 2, character := 50 } "exact 0"
+  requireRunAtSolvesProof "local instance at hole" doc { line := 9, character := 72 }
+    "exact default"
+  requireRunAtGoals "named hole" doc { line := 11, character := 53 } #["p"]
+  requireRunAtSolvesProof "exact at named hole" doc { line := 11, character := 53 } "exact hp"
+
+  -- Inside a tactic proof the placeholder is more specific than the tactic containing it.
+  requireRunAtGoals "sorry inside exact" doc { line := 7, character := 31 } #["0 < n"]
+  requireRunAtSolvesProof "proof of nested sorry" doc { line := 7, character := 31 } "exact h"
+  requireRunAtGoals "tactic start before nested sorry" doc { line := 7, character := 2 }
+    #["n ≠ 0"]
+
+  -- A hole that elaboration filled is not a placeholder; the command basis applies.
+  let filled ← requireRunAtSuccess "filled hole" doc { line := 4, character := 42 }
+    "#check (3 : Nat)"
+  if filled.proofState?.isSome then
+    throw <| IO.userError s!"filled hole: expected the command basis, got {(toJson filled).compress}"
+
+  -- Tactics may leave goals at a placeholder; a stored handle continues them.
+  let partialResult : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+    ← sendRunAt doc { line := 2, character := 50, text := "refine ?_ + 1", storeHandle := true }
+  let some handle := partialResult.handle?
+    | throw <| IO.userError s!"partial hole proof: expected a handle, got {(toJson partialResult).compress}"
+  unless partialResult.proofState?.map (·.goals.map (·.target)) == some #["Nat"] do
+    throw <| IO.userError s!"partial hole proof: expected goal Nat, got {(toJson partialResult).compress}"
+  let continued : Beam.LSP.RunAt.Result ← awaitResponseAs
+    (← runWithHandle doc handle { text := "exact 0" })
+  unless continued.success && continued.proofState?.any (·.goals.isEmpty) do
+    throw <| IO.userError s!"partial hole proof: expected the handle to finish, got {(toJson continued).compress}"
+
+  closeDoc doc
+
 def checkRunAtWithStandardLspInterference : ScenarioM Unit := do
   let runAtDoc ← openDoc "tests/scenario/docs/SimpleProof.lean"
   let editDoc ← openDoc "tests/scenario/docs/SimpleProofB.lean"
@@ -361,6 +413,7 @@ def checkRunAtWithStandardLspInterference : ScenarioM Unit := do
 def run : ScenarioM Unit := do
   checkRunAtTacticPositions
   checkRunAtTacticSequences
+  checkRunAtPlaceholders
   checkRunAtElaborationAborts
   checkRunAtSilentDiagnostics
   checkRunAtOneCommandOnly

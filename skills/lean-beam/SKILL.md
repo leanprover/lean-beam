@@ -104,17 +104,16 @@ For a point query, use `lean-beam todo FILE VERSION LINE CHAR LINE CHAR --kind c
 - Positions are LSP coordinates: line and character are zero-based, characters count UTF-16 code
   units, and on an empty line only character `0` is valid.
 - To replace a tactic, probe at its first character after indentation (its before-state).
-- Each probe is isolated and starts from the version it names; one probe never becomes the basis of
-  the next. Independent probes can run in parallel. This isolates elaboration state, not external
-  effects: Lean code may perform IO.
-- Command positions accept one command per request. For several commands, use handles or make a
-  real edit and `sync`.
+- Each probe is isolated and starts from the version it names, so independent probes can run in
+  parallel. This isolates elaboration state, not external effects: Lean code may perform IO.
+- Command positions accept one command; for several, use handles or edit the file and `sync`.
 - Pass the exact text Lean should parse, including indentation and newlines; prefer `--stdin` for
   multiline text. Beam does not re-indent.
 - At a tactic position, the text may be a tactic sequence: start each tactic at the same column, or
   separate them with `;`. Do not start it with `by`; the probe already runs inside the proof.
-- `run-at` does not return full-file diagnostics; use `sync` after a real edit for those.
-- Tactic probes reject newly introduced local `let rec` definitions, even valid ones. Save the
+- At an unfilled `sorry`, `_`, or `?x` term, run-at starts from its goal; text is still tactics.
+- `run-at` returns no file diagnostics; use `sync` after a real edit for those.
+- Tactic probes reject new local `let rec` definitions, even valid ones. Save the
   enclosing declaration and `sync` instead, or probe one complete declaration at a command position.
 
 Prefer small probes at the real source position. Scratch files reload imports and lose context;

@@ -177,7 +177,7 @@ request family owns its method constants, JSON payload types, handler, and reque
   this handler module
 
 Use `Beam.LSP.Lib.*` only for helpers shared across multiple families, such as request hygiene,
-proof-state projection, diagnostics compatibility, and native shared-library naming. Keep
+proof-state projection, unfilled-placeholder lookup, diagnostics compatibility, and native shared-library naming. Keep
 feature-specific mutable state in the owning family.
 
 ## Daemon Runtime Safety
