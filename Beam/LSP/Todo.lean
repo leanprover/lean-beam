@@ -484,8 +484,8 @@ private def goalLeftOpen (mctx : MetavarContext) (goal : MVarId) : Bool :=
 
 /--
 Reports goals that remain open at the end of their proof block. A goal left by one tactic and
-solved later in the block is ordinary proof progress, not an incomplete proof, so each unsolved goal
-is attributed only to the last tactic that left it open. Goals left at the same range share one
+solved or worked on later in the block is ordinary proof progress, not an incomplete proof, so each
+unsolved goal is attributed only to the last tactic that left it open. Goals left at the same range share one
 item, also when a tactic ran once per goal there, as under `<;>` or `all_goals`.
 -/
 private def collectIncompleteProofItems
@@ -497,7 +497,10 @@ private def collectIncompleteProofItems
   -- Per source range, the tactics (by info-tree index) that left open goals there.
   let mut unsolved : Std.HashMap (Nat × Nat) (Array (Nat × TacticNode × Array MVarId)) := {}
   for (goal, i, node) in lastTacticsLeaving config.text.source nodes do
-    if goalLeftOpen (blockFinalMCtx nodes node) goal then
+    -- Both checks are needed: the final context sees steps without a source range, such as the
+    -- `assumption` in `rwa`, and a later tactic that worked on the goal shows that error recovery
+    -- admitted it only because that later work failed, as when a bullet stops early.
+    if goalLeftOpen (blockFinalMCtx nodes node) goal && !goalHandledAfter nodes node.range.stop goal then
       let key := (node.range.start.byteIdx, node.range.stop.byteIdx)
       let runs := unsolved[key]?.getD #[]
       let runs := match runs.findIdx? (·.1 == i) with

@@ -71,3 +71,8 @@ theorem simpaDone (n : Nat) (h : n + 0 = 5) : n = 5 := by
 theorem refineRwa (n k : Nat) (h : n = k) (hk : k = 4) : ∃ m : Nat, m = 4 := by
   refine ⟨n, ?_⟩
   rwa [h]
+
+theorem bulletProgress (n : Nat) (h : n = 0) : n + 0 = 0 ∧ True := by
+  constructor
+  · rw [Nat.add_zero]
+  · trivial

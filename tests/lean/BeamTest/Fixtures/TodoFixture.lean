@@ -127,8 +127,12 @@ def agentItems : Array AgentItem := #[
     goals := #["p", "q"] },
   -- The goal left after a bullet has no source position whose state `runAt` selects.
   { kind := .incompleteProof, start := ⟨62, 2⟩, runAt := ⟨62, 12⟩, selectable := false,
-    goals := #["q"] }
+    goals := #["q"] },
   -- `rwaDone`, `simpaDone`, and `refineRwa` are complete: their closing steps solve the goals.
+  -- The bullet's own goal, which Lean admits after the bullet stops early, is not reported again;
+  -- `rw` records its closing `rfl` attempt at `]`, the narrowest tactic ending where `rw` ends.
+  { kind := .incompleteProof, start := ⟨76, 20⟩, runAt := ⟨76, 21⟩, goals := #["n = 0"],
+    solution? := some "exact h" }
 ]
 
 end BeamTest.Fixtures.TodoFixture
