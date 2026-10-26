@@ -384,6 +384,13 @@ def checkRunAtPlaceholders : ScenarioM Unit := do
   if filled.proofState?.isSome then
     throw <| IO.userError s!"filled hole: expected the command basis, got {(toJson filled).compress}"
 
+  -- A `?_` that a later tactic handled, by solving its goal or with a `sorry` tactic, is not an
+  -- open placeholder: the tactic basis applies there, and its after-state at `refine` holds both
+  -- goals. An unhandled `?_` selects its own goal.
+  requireRunAtGoals "unhandled refine hole" doc { line := 14, character := 14 } #["q"]
+  requireRunAtGoals "refine hole solved later" doc { line := 17, character := 14 } #["p", "q"]
+  requireRunAtGoals "refine hole with a later sorry" doc { line := 22, character := 14 } #["p", "q"]
+
   -- Tactics may leave goals at a placeholder; a stored handle continues them.
   let partialResult : Beam.LSP.RunAt.Result ← awaitResponseAs <|
     ← sendRunAt doc { line := 2, character := 50, text := "refine ?_ + 1", storeHandle := true }

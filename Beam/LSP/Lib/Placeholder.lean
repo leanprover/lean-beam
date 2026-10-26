@@ -18,9 +18,9 @@ open Lean.Server.RequestM
 Unfilled term placeholders: a `sorry`, `_`, or `?x` term that Lean left open when it finished the
 enclosing command.
 
-`RunAt` elaborates speculative text in place of such a placeholder, and `Todo` reports each one with
-the goal that `RunAt` would see there. Sharing the lookup keeps the two requests composable: the
-position and proof state of a todo item are exactly those of a `runAt` at that position.
+`RunAt` runs speculative tactics against a fresh goal standing for such a placeholder. A hole that
+elaboration filled, or whose goal a later tactic handled, is not open, so `RunAt` keeps its tactic or
+command basis there.
 
 A `sorry` tactic is not a term placeholder: Lean records it as a tactic, and `runAt` already runs
 tactic text against its goal.
