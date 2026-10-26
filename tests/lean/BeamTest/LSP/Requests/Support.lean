@@ -88,6 +88,12 @@ def requireDiagnosticSeverity
     throw <| IO.userError
       s!"{label}: expected diagnostic severity {(toJson severity).compress}, got {(toJson result).compress}"
 
+def requireRunAtPosition (label : String) (item : Beam.LSP.Todo.TodoItem) :
+    ScenarioM Lean.Lsp.Position := do
+  let some position := item.runAtPosition?
+    | throw <| IO.userError s!"{label}: expected a runAt position, got {(toJson item).compress}"
+  pure position
+
 def requireRunAtSuccess
     (label : String)
     (doc : DocHandle)

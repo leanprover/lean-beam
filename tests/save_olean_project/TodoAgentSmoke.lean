@@ -54,3 +54,20 @@ theorem refineThenSorry (h : ∃ n : Nat, n > 3 ∧ n < 5) : ∃ m : Nat, m = 4 
 
 theorem exactWithHole (p q : Prop) (hp : p) (hq : q) : p ∧ q := by
   exact ⟨hp, _⟩
+
+theorem seqSkip (p q : Prop) (hp : p) (hq : q) : p ∧ q := by
+  constructor <;> skip
+
+theorem bulletLeavesSecond (p q : Prop) (hp : p) (hq : q) : p ∧ q := by
+  constructor
+  · exact hp
+
+theorem rwaDone (a b : Nat) (h : a = b) (h2 : b = 3) : a = 3 := by
+  rwa [h]
+
+theorem simpaDone (n : Nat) (h : n + 0 = 5) : n = 5 := by
+  simpa using h
+
+theorem refineRwa (n k : Nat) (h : n = k) (hk : k = 4) : ∃ m : Nat, m = 4 := by
+  refine ⟨n, ?_⟩
+  rwa [h]

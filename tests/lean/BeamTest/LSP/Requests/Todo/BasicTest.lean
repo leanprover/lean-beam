@@ -52,11 +52,12 @@ def checkTodoRequest : ScenarioM Unit := do
     | throw <| IO.userError s!"todo all: expected incomplete proofState, got {(toJson incomplete).compress}"
   requireSingleGoalTarget "todo incomplete proof" "True" proofState
 
+  let incompleteAt ← requireRunAtPosition "todo all" incomplete
   let pointIncompleteReq ← sendTodo doc {
-    startLine := incomplete.runAtPosition.line
-    startCharacter := incomplete.runAtPosition.character
-    endLine := incomplete.runAtPosition.line
-    endCharacter := incomplete.runAtPosition.character
+    startLine := incompleteAt.line
+    startCharacter := incompleteAt.character
+    endLine := incompleteAt.line
+    endCharacter := incompleteAt.character
     kinds? := some #[.incompleteProof]
     suggest? := some .none
   }
@@ -98,12 +99,12 @@ def checkTodoRequest : ScenarioM Unit := do
   requireNoTodoKind "todo sorry filter" .hole sorryTodos
   requireNoTodoKind "todo sorry filter" .incompleteProof sorryTodos
 
-  requireRunAtSolvesProof "todo/runAt sorry composition" doc sorryItem.runAtPosition "exact trivial"
-  requireRunAtSolvesProof "todo/runAt incomplete composition" doc incomplete.runAtPosition "exact trivial"
+  requireRunAtSolvesProof "todo/runAt sorry composition" doc (← requireRunAtPosition "todo/runAt sorry composition" sorryItem) "exact trivial"
+  requireRunAtSolvesProof "todo/runAt incomplete composition" doc (← requireRunAtPosition "todo/runAt incomplete composition" incomplete) "exact trivial"
 
   let starterReq ← sendRunAt doc {
-    line := incomplete.runAtPosition.line
-    character := incomplete.runAtPosition.character
+    line := incompleteAt.line
+    character := incompleteAt.character
     text := incomplete.runAtText?.getD "exact ?_"
   }
   let starterOutcome ← awaitReq starterReq
@@ -248,7 +249,7 @@ def checkTodoCodeActions : ScenarioM Unit := do
       s!"todo code action fixture: expected one code action, got {(toJson codeActionTodos).compress}"
   requireRangeEq "todo code action fixture"
     BeamTest.Fixtures.TodoFixture.codeActionRange actionItem.range
-  if actionItem.runAtPosition != BeamTest.Fixtures.TodoFixture.codeActionRange.start then
+  if actionItem.runAtPosition? != some BeamTest.Fixtures.TodoFixture.codeActionRange.start then
     throw <| IO.userError
       s!"todo code action fixture: expected runAtPosition to track the code-action range start, got {(toJson actionItem).compress}"
   if actionItem.message? != some "Replace fixture hole with zero" then
@@ -296,7 +297,7 @@ def checkComplexTodoSemanticItems (doc : DocHandle) : ScenarioM Unit := do
   requireNoTodoKind "todo complex semantic filter" .incompleteProof semanticTodos
 
   let sorryItem ← requireTodoKind "todo complex sorry/runAt composition" .sorry semanticTodos
-  requireRunAtSolvesProof "todo complex sorry/runAt composition" doc sorryItem.runAtPosition "exact trivial"
+  requireRunAtSolvesProof "todo complex sorry/runAt composition" doc (← requireRunAtPosition "todo complex sorry/runAt composition" sorryItem) "exact trivial"
 
 def checkComplexTodoIncompleteProofs (doc : DocHandle) : ScenarioM Unit := do
   let incompleteReq ← sendTodo doc {
@@ -317,7 +318,7 @@ def checkComplexTodoIncompleteProofs (doc : DocHandle) : ScenarioM Unit := do
     | throw <| IO.userError
         s!"todo complex single incomplete proof: expected proofState, got {(toJson incomplete).compress}"
   requireSingleGoalTarget "todo complex single incomplete proof" "True" proofState
-  requireRunAtSolvesProof "todo complex incomplete/runAt composition" doc incomplete.runAtPosition "exact trivial"
+  requireRunAtSolvesProof "todo complex incomplete/runAt composition" doc (← requireRunAtPosition "todo complex incomplete/runAt composition" incomplete) "exact trivial"
 
   let branchReq ← sendTodo doc {
     startLine := BeamTest.Fixtures.TodoFixture.complexBranchSkipStartLine
@@ -337,7 +338,7 @@ def checkComplexTodoIncompleteProofs (doc : DocHandle) : ScenarioM Unit := do
     | throw <| IO.userError
         s!"todo complex branch incomplete proof: expected proofState, got {(toJson branch).compress}"
   requireSingleGoalTarget "todo complex branch incomplete proof" "True" branchProofState
-  requireRunAtSolvesProof "todo complex branch/runAt composition" doc branch.runAtPosition "exact trivial"
+  requireRunAtSolvesProof "todo complex branch/runAt composition" doc (← requireRunAtPosition "todo complex branch/runAt composition" branch) "exact trivial"
 
 def checkComplexTodoDiagnostics (doc : DocHandle) : ScenarioM Unit := do
   let warningReq ← sendTodo doc {
@@ -464,8 +465,8 @@ def checkTodoProofProgress : ScenarioM Unit := do
     kinds? := some #[.incompleteProof]
   }
   let openTodos : Beam.LSP.Todo.TodoResult ← awaitResponseAs openReq
-  let positions := openTodos.items.map (·.runAtPosition)
-  if positions != BeamTest.Fixtures.TodoFixture.progressOpenPositions then
+  let positions := openTodos.items.map (·.runAtPosition?)
+  if positions != BeamTest.Fixtures.TodoFixture.progressOpenPositions.map some then
     throw <| IO.userError
       s!"todo open proofs: expected one item at the end of each open skip, got {(toJson openTodos).compress}"
   for item in openTodos.items do
@@ -475,7 +476,7 @@ def checkTodoProofProgress : ScenarioM Unit := do
       throw <| IO.userError s!"todo open proofs: expected one open goal, got {(toJson item).compress}"
   let some bullet := openTodos.items[0]?
     | throw <| IO.userError "todo open proofs: missing bullet item"
-  requireRunAtSolvesProof "todo open bullet/runAt composition" doc bullet.runAtPosition "exact trivial"
+  requireRunAtSolvesProof "todo open bullet/runAt composition" doc (← requireRunAtPosition "todo open bullet/runAt composition" bullet) "exact trivial"
 
   closeDoc doc
 
@@ -491,9 +492,10 @@ def checkTodoAgentCorpus : ScenarioM Unit := do
   let todos : Beam.LSP.Todo.TodoResult ← awaitResponseAs req
   let expected := BeamTest.Fixtures.TodoFixture.agentItems
   let actual := todos.items.map fun item =>
-    (item.kind, item.range.start, item.runAtPosition,
+    (item.kind, item.range.start, item.runAtPosition?,
       (item.proofState?.map (·.goals.map (·.target))).getD #[])
-  let wanted := expected.map fun item => (item.kind, item.start, item.runAt, item.goals)
+  let wanted := expected.map fun item =>
+    (item.kind, item.start, if item.selectable then some item.runAt else none, item.goals)
   if actual != wanted then
     throw <| IO.userError
       s!"todo agent corpus: expected {(toJson wanted).compress}, got {(toJson todos).compress}"

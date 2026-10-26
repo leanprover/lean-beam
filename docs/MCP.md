@@ -365,17 +365,22 @@ needed. Both commands read the current on-disk file; neither applies or recovers
 `lean_todo` inspects the whole file unless all four range fields are given; code actions need a
 range (see below), and a whole-file request omits them. It reports one item per
 problem, and each item composes with `lean_run_at`: running text at the item's `run_at_position`
-starts from the item's `proof_state`, when it has one.
+starts from the item's `proof_state`, when it has one. Beam checks this for every item with a
+proof state, and omits `run_at_position` when no source position selects that state: for example the
+goals left after a branch bullet, or goals left by a tactic that ran once per goal, as `skip` does
+in `constructor <;> skip`. Edit the file to work on those goals.
 
 - A `sorry` item carries the goal the `sorry` fills.
 - A `hole` item is a `_` or `?x` term that Lean did not fill, for example by unification. A `?_` that
   a tactic turned into a goal is reported where that goal stays open, or not at all once a later
   tactic handles it.
 - In a proof, `lean_run_at` text is always tactics. At a `sorry` or hole written as a term, it runs
-  against that placeholder's goal as in `by ...`; supply a term with `exact`.
+  against that placeholder's goal like the tactics of a `by ...` block there; supply a term with
+  `exact`.
 - An `incomplete_proof` item marks goals still open at the end of their proof block, attributed to
-  the last tactic that left them open; a goal that a later tactic handles is proof progress and is
-  not reported.
+  the last tactic that left them open; a goal that a later step of the block solves is proof
+  progress and is not reported, including steps a tactic runs internally, such as the `assumption`
+  in `rwa`. Goals left at one tactic share one item.
 - An error inside a tactic proof carries the goals of its innermost tactic and runs at that
   tactic's start, so the text replaces the failing tactic. The goal it leaves open is not reported
   again as an `incomplete_proof`.

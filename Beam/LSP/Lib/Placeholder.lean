@@ -20,7 +20,8 @@ enclosing command.
 
 `RunAt` runs speculative tactics against a fresh goal standing for such a placeholder. A hole that
 elaboration filled, or whose goal a later tactic handled, is not open, so `RunAt` keeps its tactic or
-command basis there.
+command basis there. `Todo` reports the open placeholders from this lookup with the same goal, so its
+`sorry` and hole items compose with `runAt` at their positions.
 
 A `sorry` tactic is not a term placeholder: Lean records it as a tactic, and `runAt` already runs
 tactic text against its goal.

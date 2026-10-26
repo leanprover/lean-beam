@@ -110,7 +110,7 @@ Code actions need a range: Lean runs them on the one command at the range end, s
 - At a tactic position, the text may be a tactic sequence: start each tactic at the same column, or
   separate them with `;`. Do not start it with `by`; the probe already runs inside the proof.
 - At an unfilled `sorry`, `_`, or `?x` term, run-at starts from its goal; text is still tactics.
-  At a `todo` item's `run_at_position`, it starts from the item's `proof_state`.
+  At a `todo` item's `run_at_position`, it starts from the item's `proof_state`; without one, edit.
 - `run-at` returns no file diagnostics; use `sync` after a real edit for those.
 - Tactic probes reject new local `let rec` definitions, even valid ones. Save the
   enclosing declaration and `sync` instead, or probe one complete declaration at a command position.

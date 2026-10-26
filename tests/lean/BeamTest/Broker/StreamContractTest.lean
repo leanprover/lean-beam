@@ -360,7 +360,7 @@ def main : IO Unit := do
     let todoPayload ← expectOk todoResp
     let todoResult : Beam.LSP.Todo.TodoResult ← IO.ofExcept <| fromJson? todoPayload
     let todoSorry ← expectTodoKindOnly "todo" .sorry todoResult
-    if todoSorry.runAtPosition != BeamTest.Fixtures.TodoFixture.sorryPosition then
+    if todoSorry.runAtPosition? != some BeamTest.Fixtures.TodoFixture.sorryPosition then
       throw <| IO.userError
         s!"expected todo runAtPosition at {BeamTest.Fixtures.TodoFixture.sorryPosition}, got {(toJson todoSorry).compress}"
 

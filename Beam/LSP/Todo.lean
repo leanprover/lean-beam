@@ -107,7 +107,11 @@ instance : Lean.Lsp.FileSource TodoParams where
 structure TodoItem where
   kind : TodoKind
   range : Lean.Lsp.Range
-  runAtPosition : Lean.Lsp.Position
+  /--
+  Where `runAt` starts from this item's `proofState`, when it has one. It is absent when no source
+  position selects that state, for example the goals left after a branch bullet.
+  -/
+  runAtPosition? : Option Lean.Lsp.Position := none
   runAtText? : Option String := none
   message? : Option String := none
   severity? : Option Lean.Lsp.DiagnosticSeverity := none
@@ -144,7 +148,7 @@ private def positionInRangeClosed (position : Lsp.Position) (range : Lsp.Range) 
 /--
 Todo queries use half-open range overlap for non-empty ranges. Empty query ranges are cursor-style
 point queries, and match todo items whose range contains the point, including the item's end
-position. Including the end makes the point query compose with items whose `runAtPosition` is just
+position. Including the end makes the point query compose with items whose `runAtPosition?` is just
 after the syntax that produced the todo, such as incomplete proof tactic ranges.
 -/
 private def rangeMatchesQuery (item requested : Lsp.Range) : Bool :=
@@ -215,7 +219,7 @@ private def mkSimpleItem
   {
     kind
     range
-    runAtPosition := range.start
+    runAtPosition? := some range.start
     runAtText?
     message?
     severity?
@@ -373,7 +377,7 @@ private def isCoveredIncompleteProofItem (items : Array TodoItem) (item : TodoIt
   item.kind == .incompleteProof && items.any fun other =>
     other.kind == .incompleteProof &&
       strictlyIncludesRange item.range other.range &&
-      item.runAtPosition == other.runAtPosition
+      item.runAtPosition? == other.runAtPosition?
 
 /-- Keep one item per location, with the goal and suggestion of whichever signal found them. -/
 private def dedupeTodoItems (items : Array TodoItem) : Array TodoItem :=
@@ -432,32 +436,57 @@ private def tacticRangeWidth (range : Syntax.Range) : Nat :=
   range.stop.byteIdx - range.start.byteIdx
 
 /--
-Maps each goal to the last tactic leaving it open, preferring the narrowest tactic when several end
-at the same position. Nested tactics such as a rewrite rule and its enclosing `rw` share goals.
+Maps each goal to the index of the last tactic leaving it open, preferring the narrowest tactic when
+several end at the same position. Nested tactics such as a rewrite rule and its enclosing `rw` share
+goals.
 -/
 private def lastTacticsLeaving (source : String) (nodes : Array TacticNode) :
-    Std.HashMap MVarId TacticNode := Id.run do
-  let mut last : Std.HashMap MVarId TacticNode := {}
-  for node in nodes do
+    Std.HashMap MVarId (Nat × TacticNode) := Id.run do
+  let mut last : Std.HashMap MVarId (Nat × TacticNode) := {}
+  for (node, i) in nodes.zipIdx do
     if isStructuralProofMarker source node.range then
       continue
     for goal in node.info.goalsAfter do
       let replaces :=
         match last[goal]? with
         | none => true
-        | some other =>
+        | some (_, other) =>
             rawLT other.range.stop node.range.stop ||
               (node.range.stop == other.range.stop &&
                 tacticRangeWidth node.range < tacticRangeWidth other.range)
       if replaces then
-        last := last.insert goal node
+        last := last.insert goal (i, node)
   return last
 
 /--
+The metavariable context after the outermost tactic containing `node` ran. It holds every
+assignment of `node`'s proof block, including steps without a source range of their own such as the
+`assumption` that `rwa` runs, and it precedes Lean admitting the goals the block left open.
+Tactics are collected in info-tree order, so among equally wide candidates the first is the
+outermost.
+-/
+private def blockFinalMCtx (nodes : Array TacticNode) (node : TacticNode) : MetavarContext :=
+  let contains (other : TacticNode) :=
+    other.range.start ≤ node.range.start && node.range.stop ≤ other.range.stop
+  let root := nodes.foldl (init := node) fun root other =>
+    if contains other && tacticRangeWidth root.range < tacticRangeWidth other.range then other
+    else root
+  let root := (nodes.find? fun other =>
+    contains other && tacticRangeWidth other.range == tacticRangeWidth root.range).getD root
+  root.info.mctxAfter
+
+/-- A goal is left open when nothing assigned it, or only Lean's error recovery admitted it. -/
+private def goalLeftOpen (mctx : MetavarContext) (goal : MVarId) : Bool :=
+  !mctx.dAssignment.contains goal &&
+    match mctx.eAssignment.find? goal with
+    | some value => (instantiateMVarsCore mctx value).1.isSyntheticSorry
+    | none => true
+
+/--
 Reports goals that remain open at the end of their proof block. A goal left by one tactic and
-handled by a later tactic is ordinary proof progress, not an incomplete proof, so each unsolved goal
-is attributed only to the last tactic that left it open. Goals left by the same tactic share one
-item.
+solved later in the block is ordinary proof progress, not an incomplete proof, so each unsolved goal
+is attributed only to the last tactic that left it open. Goals left at the same range share one
+item, also when a tactic ran once per goal there, as under `<;>` or `all_goals`.
 -/
 private def collectIncompleteProofItems
     (config : SnapshotTodoConfig)
@@ -465,31 +494,40 @@ private def collectIncompleteProofItems
     (items : Array TodoItem) : RequestM (Array TodoItem × Array MVarId) := do
   unless wantsKind config.kinds? .incompleteProof do
     return (items, #[])
-  -- One item per reporting range. A macro and its expansion can share a range; the proof state
-  -- then shows the goals that the first recorded tactic of that range left open.
-  let mut unsolved : Std.HashMap (Nat × Nat) (TacticNode × Array MVarId) := {}
-  for (goal, node) in lastTacticsLeaving config.text.source nodes do
-    unless goalHandledAfter nodes node.range.stop goal do
+  -- Per source range, the tactics (by info-tree index) that left open goals there.
+  let mut unsolved : Std.HashMap (Nat × Nat) (Array (Nat × TacticNode × Array MVarId)) := {}
+  for (goal, i, node) in lastTacticsLeaving config.text.source nodes do
+    if goalLeftOpen (blockFinalMCtx nodes node) goal then
       let key := (node.range.start.byteIdx, node.range.stop.byteIdx)
-      let (first, goals) := unsolved[key]?.getD (node, #[])
-      unsolved := unsolved.insert key (first, goals.push goal)
+      let runs := unsolved[key]?.getD #[]
+      let runs := match runs.findIdx? (·.1 == i) with
+        | some j => runs.modify j fun (i, node, goals) => (i, node, goals.push goal)
+        | none => runs.push (i, node, #[goal])
+      unsolved := unsolved.insert key runs
   let mut items := items
   let mut reported := #[]
-  for (_, node, goals) in unsolved.toArray do
-    let lspRange := node.range.toLspRange config.text
-    unless syntaxRangeMatchesQuery node.range config.requestedRange ||
+  for (_, runs) in unsolved.toArray do
+    let runs := runs.qsort (·.1 < ·.1)
+    let some (_, first, _) := runs[0]?
+      | continue
+    let lspRange := first.range.toLspRange config.text
+    unless syntaxRangeMatchesQuery first.range config.requestedRange ||
         rangeMatchesQuery lspRange config.requestedLspRange do
       continue
-    let goals := node.info.goalsAfter.filter goals.contains
-    reported := reported ++ goals.toArray
-    let proofState ← proofStateOfGoals goals { node.ctx with mctx := node.info.mctxAfter }
+    -- Each run of the tactic renders its own goals in the context it left them in.
+    let mut goals := #[]
+    for (_, node, leftOpen) in runs do
+      let left := node.info.goalsAfter.filter leftOpen.contains
+      reported := reported ++ left.toArray
+      let state ← proofStateOfGoals left { node.ctx with mctx := node.info.mctxAfter }
+      goals := goals ++ state.goals
     items := items.push {
       kind := .incompleteProof
       range := lspRange
-      runAtPosition := lspRange.«end»
+      runAtPosition? := some lspRange.«end»
       runAtText? := if config.suggestBasic then some "exact ?_" else none
       message? := some "incomplete proof"
-      proofState? := some proofState
+      proofState? := some { goals }
     }
   return (items, reported)
 
@@ -592,7 +630,7 @@ private def collectDiagnosticItems
     items.push {
       kind := .diagnostic
       range := diagnostic.fullRange
-      runAtPosition := diagnostic.fullRange.start
+      runAtPosition? := some diagnostic.fullRange.start
       message? := some plain.message
       severity? := plain.severity?
     }
@@ -651,7 +689,7 @@ private def collectCodeActionItems
     items.push {
       kind := .codeAction
       range
-      runAtPosition := range.start
+      runAtPosition? := some range.start
       message? := some action.title
       severity? := none
       codeAction? := some action
@@ -764,7 +802,9 @@ private def attachFailedTacticGoal
     | return item
   let proofState ←
     proofStateOfGoals tactic.info.goalsBefore { tactic.ctx with mctx := tactic.info.mctxBefore }
-  return { item with runAtPosition := (tactic.range.toLspRange text).start, proofState? := some proofState }
+  return { item with
+    runAtPosition? := some (tactic.range.toLspRange text).start
+    proofState? := some proofState }
 
 /--
 Ranges of the tactics that failed with an error, whether that error is reported as a diagnostic or
@@ -829,6 +869,40 @@ private def codeActionCommandRange?
   let start := (if i == 0 then none else snaps[i - 1]?).map (·.endPos) |>.getD 0
   pure { start := text.utf8PosToLspPos start, «end» := text.utf8PosToLspPos snap.endPos }
 
+/--
+The proof state `runAt` starts from at `position`, selected as `handleRunAt` does: an open placeholder
+there first, then the tactic state Lean selects at the position.
+-/
+private def runAtProofStateAt (position : Lsp.Position) :
+    RequestM (RequestTask (Option ProofState)) := do
+  let placeholderTask ← findPlaceholderAt position
+  RequestM.bindRequestTaskCostly placeholderTask fun
+    | some placeholder => return .pure (some (← placeholder.proofState))
+    | none => do
+        let basisTask ← findProofBasisAt position
+        RequestM.bindRequestTaskCostly basisTask fun
+          | some basis => return .pure (some (← basisProofState basis))
+          | none => return .pure none
+
+/--
+An item keeps its `runAtPosition?` only when `runAt` there starts from the item's proof state. Goals
+that no source position selects, such as those left after a branch bullet, keep their proof state
+without a position.
+-/
+private partial def keepSelectableRunAtPositions (items : List TodoItem) (acc : Array TodoItem) :
+    RequestM (RequestTask (Array TodoItem)) := do
+  match items with
+  | [] => return .pure acc
+  | item :: rest =>
+      match item.runAtPosition?, item.proofState? with
+      | some position, some expected =>
+          let stateTask ← runAtProofStateAt position
+          RequestM.bindRequestTaskCostly stateTask fun state? => do
+            let selectable := state?.any fun state => toJson state == toJson expected
+            let item := if selectable then item else { item with runAtPosition? := none }
+            keepSelectableRunAtPositions rest (acc.push item)
+      | _, _ => keepSelectableRunAtPositions rest (acc.push item)
+
 def handleTodo (p : TodoParams) : RequestM (RequestTask TodoResult) := do
   requireDocumentVersion p.textDocument
   -- Lean runs code-action providers on the one command at the range end, so a whole-document
@@ -874,6 +948,8 @@ def handleTodo (p : TodoParams) : RequestM (RequestTask TodoResult) := do
         pure <| RequestTask.pure #[]
     RequestM.bindRequestTaskCostly codeActionTask fun codeActions => do
       checkRequestCancelled
-      return RequestTask.pure (← todoResult doc p range snaps.toArray codeActions)
+      let result ← todoResult doc p range snaps.toArray codeActions
+      let itemsTask ← keepSelectableRunAtPositions result.items.toList #[]
+      RequestM.bindRequestTaskCostly itemsTask fun items => return .pure { result with items }
 
 end Beam.LSP.Todo

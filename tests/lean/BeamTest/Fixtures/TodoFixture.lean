@@ -93,6 +93,8 @@ structure AgentItem where
   kind : Beam.LSP.Todo.TodoKind
   start : Lean.Lsp.Position
   runAt : Lean.Lsp.Position
+  /-- Whether `runAt` at `runAt` starts from the item's goals; false when no position selects them. -/
+  selectable : Bool := true
   /-- Goal targets of the item's proof state; empty when the item has none. -/
   goals : Array String := #[]
   /-- Text that `runAt` at the item's position must use to close every goal. -/
@@ -119,7 +121,14 @@ def agentItems : Array AgentItem := #[
   -- The `?_` became a goal that the `sorry` tactic fills: one item, not a hole as well.
   { kind := .sorry, start := ⟨52, 2⟩, runAt := ⟨52, 2⟩, goals := #["k = 4"], solution? := some "omega" },
   -- The failed `exact` left its goal open; the hole that made it fail is the one item.
-  { kind := .hole, start := ⟨55, 13⟩, runAt := ⟨55, 13⟩, goals := #["q"], solution? := some "exact hq" }
+  { kind := .hole, start := ⟨55, 13⟩, runAt := ⟨55, 13⟩, goals := #["q"], solution? := some "exact hq" },
+  -- `skip` ran once per goal: both goals are reported, but `runAt` at its end selects only one run.
+  { kind := .incompleteProof, start := ⟨58, 18⟩, runAt := ⟨58, 22⟩, selectable := false,
+    goals := #["p", "q"] },
+  -- The goal left after a bullet has no source position whose state `runAt` selects.
+  { kind := .incompleteProof, start := ⟨62, 2⟩, runAt := ⟨62, 12⟩, selectable := false,
+    goals := #["q"] }
+  -- `rwaDone`, `simpaDone`, and `refineRwa` are complete: their closing steps solve the goals.
 ]
 
 end BeamTest.Fixtures.TodoFixture

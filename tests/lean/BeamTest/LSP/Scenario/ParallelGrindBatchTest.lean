@@ -121,10 +121,12 @@ def main : IO Unit := do
       initialDiagnostics.diagnostics.filter (fun diag => diag.message.contains sorryWarning) |>.size
 
     let runAtStartedAt ← IO.monoNanosNow
-    let requests ← plans.mapM fun plan =>
+    let requests ← plans.mapM fun plan => do
+      let some position := plan.item.runAtPosition?
+        | throw <| IO.userError s!"todo sorry without a runAt position: {(toJson plan.item).compress}"
       sendRunAt doc {
-        line := plan.item.runAtPosition.line
-        character := plan.item.runAtPosition.character
+        line := position.line
+        character := position.character
         text := insertedText
       }
 

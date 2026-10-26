@@ -602,9 +602,11 @@ def OutputError.fromControlFailure (failure : Beam.Broker.ResponseFailure) : Out
 private def todoItemJson (item : Beam.LSP.Todo.TodoItem) : Json := Json.mkObj <|
   [
     ("kind", toJson item.kind),
-    ("range", toJson item.range),
-    ("run_at_position", toJson item.runAtPosition)
+    ("range", toJson item.range)
   ] ++
+  (match item.runAtPosition? with
+  | some position => [("run_at_position", toJson position)]
+  | none => []) ++
   (match item.runAtText? with
   | some text => [("run_at_text", toJson text)]
   | none => []) ++
