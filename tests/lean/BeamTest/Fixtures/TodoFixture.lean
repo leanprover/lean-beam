@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
+import Beam.LSP.Todo
 
 namespace BeamTest.Fixtures.TodoFixture
 
@@ -18,6 +19,9 @@ def codeActionRepoPath : System.FilePath :=
 
 def complexRepoPath : System.FilePath :=
   System.FilePath.mk "tests/save_olean_project/TodoComplexSmoke.lean"
+
+def progressRepoPath : System.FilePath :=
+  System.FilePath.mk "tests/save_olean_project/TodoProgressSmoke.lean"
 
 def brokerPath : String :=
   "TodoSmoke.lean"
@@ -69,5 +73,53 @@ def complexBranchSkipEndLine : Nat := 60
 
 def complexDiagnosticLine : Nat := 61
 def complexDiagnosticEndCharacter : Nat := 42
+
+-- `TodoProgressSmoke.lean`: complete proofs occupy lines before `progressCompleteEndLine`; each
+-- open proof leaves one goal at the end of a `skip`.
+def progressCompleteEndLine : Nat := 31
+def progressEndLine : Nat := 44
+
+def progressOpenPositions : Array Lean.Lsp.Position := #[
+  { line := 36, character := 8 },
+  { line := 41, character := 21 },
+  { line := 43, character := 62 }
+]
+
+def agentRepoPath : System.FilePath :=
+  System.FilePath.mk "tests/save_olean_project/TodoAgentSmoke.lean"
+
+/-- One expected item of a whole-document todo request on `TodoAgentSmoke.lean`. -/
+structure AgentItem where
+  kind : Beam.LSP.Todo.TodoKind
+  start : Lean.Lsp.Position
+  runAt : Lean.Lsp.Position
+  /-- Goal targets of the item's proof state; empty when the item has none. -/
+  goals : Array String := #[]
+  /-- Text that `runAt` at the item's position must use to close every goal. -/
+  solution? : Option String := none
+
+def agentItems : Array AgentItem := #[
+  { kind := .sorry, start := ⟨7, 4⟩, runAt := ⟨7, 4⟩, goals := #["True"], solution? := some "trivial" },
+  { kind := .diagnostic, start := ⟨10, 8⟩, runAt := ⟨10, 2⟩, goals := #["n + 0 = n"],
+    solution? := some "simp" },
+  { kind := .diagnostic, start := ⟨13, 2⟩, runAt := ⟨13, 2⟩, goals := #["2 + 2 = 5"] },
+  { kind := .diagnostic, start := ⟨16, 2⟩, runAt := ⟨16, 2⟩, goals := #["n * n ≥ n + 1"] },
+  { kind := .sorry, start := ⟨19, 24⟩, runAt := ⟨19, 24⟩, goals := #["n + 0 = n"],
+    solution? := some "exact Nat.add_zero n" },
+  { kind := .incompleteProof, start := ⟨23, 2⟩, runAt := ⟨23, 9⟩, goals := #["n = n"],
+    solution? := some "rfl" },
+  { kind := .sorry, start := ⟨27, 13⟩, runAt := ⟨27, 13⟩, goals := #["a = b"], solution? := some "exact h" },
+  { kind := .incompleteProof, start := ⟨32, 17⟩, runAt := ⟨32, 21⟩, goals := #["0 + (n + 1) = n + 1"],
+    solution? := some "omega" },
+  { kind := .incompleteProof, start := ⟨35, 2⟩, runAt := ⟨35, 17⟩, goals := #["Nat", "?refine_1 = 3"],
+    solution? := some "exact 3\nrfl" },
+  { kind := .hole, start := ⟨39, 50⟩, runAt := ⟨39, 50⟩, goals := #["Nat"], solution? := some "exact 0" },
+  { kind := .sorry, start := ⟨41, 65⟩, runAt := ⟨41, 65⟩, goals := #["q"], solution? := some "exact hq" },
+  { kind := .diagnostic, start := ⟨43, 36⟩, runAt := ⟨43, 36⟩ },
+  -- The `?_` became a goal that the `sorry` tactic fills: one item, not a hole as well.
+  { kind := .sorry, start := ⟨52, 2⟩, runAt := ⟨52, 2⟩, goals := #["k = 4"], solution? := some "omega" },
+  -- The failed `exact` left its goal open; the hole that made it fail is the one item.
+  { kind := .hole, start := ⟨55, 13⟩, runAt := ⟨55, 13⟩, goals := #["q"], solution? := some "exact hq" }
+]
 
 end BeamTest.Fixtures.TodoFixture

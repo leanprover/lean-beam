@@ -179,7 +179,7 @@ private def parseTodoSuggestArg (value : String) : CliM Beam.LSP.Todo.TodoSugges
         s!"invalid todo suggest mode '{preview}' (expected one of: {allowed}): {(argumentPreview "suggest error" err).preview}")
 
 def leanTodoUsage : String :=
-  "usage: lean-beam [--pretty] [--root PATH] todo <path> <version> <startLine> <startCharacter> <endLine> <endCharacter> [--kind <kind> ...] [--suggest none|basic]"
+  "usage: lean-beam [--pretty] [--root PATH] todo <path> <version> [<startLine> <startCharacter> <endLine> <endCharacter>] [--kind <kind> ...] [--suggest none|basic]"
 
 def parseLeanTodoArgs (args : List String) :
     CliM (Option (Array Beam.LSP.Todo.TodoKind) × Option Beam.LSP.Todo.TodoSuggestMode) := do

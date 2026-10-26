@@ -183,8 +183,8 @@ private def sampleRequest : Op → Request
       path := "Demo.lean", version := 7, line := 1, character := 2
     } }
   | .todo => { payload := .todo {
-      path := "Demo.lean", version := 7, line := 1, character := 2,
-      endLine := 3, endCharacter := 4
+      path := "Demo.lean", version := 7,
+      range? := some { start := { line := 1, character := 2 }, «end» := { line := 3, character := 4 } }
     } }
   | .runWith => { payload := .runWith {
       path := "Demo.lean", text := "exact trivial", handle := sampleHandle

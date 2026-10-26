@@ -21,7 +21,7 @@ def commandUsages : List (String × String) := [
   ("document-symbols", "lean-beam [--pretty] [--root PATH] document-symbols <path> <version>"),
   ("workspace-symbols", "lean-beam [--pretty] [--root PATH] workspace-symbols <query...>"),
   ("goals", "lean-beam [--pretty] [--root PATH] goals before|after <path> <version> <line> <character>"),
-  ("todo", "lean-beam [--pretty] [--root PATH] todo <path> <version> <startLine> <startCharacter> <endLine> <endCharacter> [--kind <kind> ...] [--suggest none|basic]"),
+  ("todo", "lean-beam [--pretty] [--root PATH] todo <path> <version> [<startLine> <startCharacter> <endLine> <endCharacter>] [--kind <kind> ...] [--suggest none|basic]"),
   ("run-with", "lean-beam [--pretty] [--root PATH] run-with <path> <handle-json|-|--handle-file <path>> (--stdin | --text-file <path> | -- <text...> | <text...>)"),
   ("run-with-linear", "lean-beam [--pretty] [--root PATH] run-with-linear <path> <handle-json|-|--handle-file <path>> (--stdin | --text-file <path> | -- <text...> | <text...>)"),
   ("release", "lean-beam [--pretty] [--root PATH] release <path> <handle-json|-|--handle-file <path>>"),

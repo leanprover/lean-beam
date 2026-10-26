@@ -2833,18 +2833,16 @@ private def handleTodoOp
     HandlerM Response := do
   let method := todoMethod
   liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
-  let range : Lsp.Range := {
-    start := { line := request.line, character := request.character }
-    «end» := { line := request.endLine, character := request.endCharacter }
-  }
   let snapshot ← liftFailureIO <|
     readRequestSyncSnapshot server req
   let started ← liftFailureIO <| server.withRequestSessionState req do
     startSyncedWorkspaceRequest server req snapshot method
       (fun uri => Json.mkObj <|
         [ ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier }))
-        , ("range", toJson range)
         ] ++
+        (match request.range? with
+        | some range => [("range", toJson range)]
+        | none => []) ++
         (match request.kinds? with
         | some kinds => [("kinds", toJson kinds)]
         | none => []) ++

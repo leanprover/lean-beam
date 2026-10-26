@@ -388,7 +388,7 @@ private def checkToolsListShape : IO Unit := do
     ("lean_document_symbols", #["path", "version", "workspace"]),
     ("lean_workspace_symbols", #["query", "workspace"]),
     ("lean_goals", #["path", "version", "line", "character", "mode", "workspace"]),
-    ("lean_todo", #["path", "version", "start_line", "start_character", "end_line", "end_character", "workspace"]),
+    ("lean_todo", #["path", "version", "workspace"]),
     ("lean_code_action_resolve", #["path", "version", "code_action", "workspace"]),
     ("lean_run_with", #["path", "handle", "text", "workspace"]),
     ("lean_run_with_linear", #["path", "handle", "text", "workspace"]),

@@ -19,9 +19,9 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
   command
 - typed response payload with messages, traces, optional proof state, and optional follow-up handle
 - optional follow-up execution through `$/lean/runWith` and `$/lean/releaseHandle`
-- agent-oriented `$/lean/todo` range inspection for actionable items such as sorries, holes,
-  diagnostics, code actions, and incomplete proofs, exposed through the broker, `lean-beam todo`,
-  and MCP `lean_todo`
+- agent-oriented `$/lean/todo` inspection of a file or range for actionable items such as sorries,
+  holes, diagnostics, code actions, and incomplete proofs, each with the goal `runAt` sees at its
+  position, exposed through the broker, `lean-beam todo`, and MCP `lean_todo`
 - versioned broker/MCP code-action resolution for raw Lean code actions returned by `lean_todo`;
   clients still apply returned LSP workspace edits themselves and then update or sync the file
 - small Lean semantic navigation wrappers for hover, signature help, definition, references,

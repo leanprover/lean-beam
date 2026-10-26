@@ -352,19 +352,32 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
         callBrokerWithProgress root client
           (leanGoalsRequest path version line character mode)
           (leanGoalsWaitSpec path line character mode (some action)) opts.jsonOutputFormat
-  | "todo" :: path :: versionText :: startLine :: startCharacter :: endLine :: endCharacter :: extra => do
+  | "todo" :: path :: versionText :: rest => do
       let version ← parseNatArg "version" versionText
-      let startLine ← parseNatArg "startLine" startLine
-      let startCharacter ← parseNatArg "startCharacter" startCharacter
-      let endLine ← parseNatArg "endLine" endLine
-      let endCharacter ← parseNatArg "endCharacter" endCharacter
+      -- The range is optional: four positional numbers before any option.
+      let (range?, extra) ← match rest with
+        | startLine :: startCharacter :: endLine :: endCharacter :: extra =>
+            if [startLine, startCharacter, endLine, endCharacter].all (!·.startsWith "--") then
+              pure (some ({
+                start := {
+                  line := ← parseNatArg "startLine" startLine
+                  character := ← parseNatArg "startCharacter" startCharacter
+                }
+                «end» := {
+                  line := ← parseNatArg "endLine" endLine
+                  character := ← parseNatArg "endCharacter" endCharacter
+                }
+              } : Lean.Lsp.Range), extra)
+            else
+              pure (none, rest)
+        | _ => pure (none, rest)
       let (kinds?, suggest?) ← parseLeanTodoArgs extra
       let root ← projectRoot opts
       let action := "todo"
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanTodoRequest path version startLine startCharacter endLine endCharacter kinds? suggest?)
-          (leanTodoWaitSpec path startLine startCharacter endLine endCharacter action)
+          (leanTodoRequest path version range? kinds? suggest?)
+          (leanTodoWaitSpec path range? action)
           opts.jsonOutputFormat
   | "run-with" :: path :: args =>
       runLeanRunWith runtime opts "run-with" path args

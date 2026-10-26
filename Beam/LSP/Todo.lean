@@ -11,6 +11,7 @@ import Lean.Elab.Term
 import Lean.Util.Sorry
 import Beam.LSP.Lib.Diagnostics
 import Beam.LSP.Lib.Goal
+import Beam.LSP.Lib.Placeholder
 import Beam.LSP.Lib.Request
 
 open Lean
@@ -93,7 +94,8 @@ instance : FromJson TodoSuggestMode where
 /-- Request payload for agent-oriented todo inspection over a document range. -/
 structure TodoParams where
   textDocument : Lean.Lsp.VersionedTextDocumentIdentifier
-  range : Lean.Lsp.Range
+  /-- The whole document when omitted. -/
+  range? : Option Lean.Lsp.Range := none
   kinds? : Option (Array TodoKind) := none
   suggest? : Option TodoSuggestMode := none
   deriving FromJson, ToJson
@@ -109,7 +111,6 @@ structure TodoItem where
   runAtText? : Option String := none
   message? : Option String := none
   severity? : Option Lean.Lsp.DiagnosticSeverity := none
-  diagnostic? : Option Lean.Lsp.Diagnostic := none
   codeAction? : Option Lean.Lsp.CodeAction := none
   proofState? : Option ProofState := none
   deriving FromJson, ToJson
@@ -117,6 +118,7 @@ structure TodoItem where
 /-- Typed success payload for `$/lean/todo`. -/
 structure TodoResult where
   version : Nat
+  /-- The requested range, or the whole document. -/
   range : Lean.Lsp.Range
   items : Array TodoItem := #[]
   deriving FromJson, ToJson
@@ -307,11 +309,12 @@ Sorry detection deliberately combines three overlapping signals:
 * A lightweight source scan keeps working when later commands fail to elaborate. It skips comments,
   strings, and quoted identifiers, but it is still only a lexical fallback.
 * A syntax-tree walk records actual `Parser.Term.sorry` nodes from Lean's parser.
-* An info-tree pass records terms Lean elaborated as user-written non-synthetic sorries.
+* An info-tree pass records `sorry` tactics and the `sorry` terms Lean left as open placeholders,
+  with the goal that `runAt` sees at the item's position.
 
-The final simplification pass deduplicates the usual overlap. Keeping the signals separate gives
-agents useful todos even for partially broken files while retaining parser/elaborator confirmation
-when Lean gets that far.
+The final simplification pass merges the usual overlap into the most informative item. Keeping the
+signals separate gives agents useful todos even for partially broken files while retaining
+parser/elaborator confirmation and goals when Lean gets that far.
 -/
 private partial def collectSourceTokenSorries
     (text : FileMap)
@@ -372,9 +375,15 @@ private def isCoveredIncompleteProofItem (items : Array TodoItem) (item : TodoIt
       strictlyIncludesRange item.range other.range &&
       item.runAtPosition == other.runAtPosition
 
+/-- Keep one item per location, with the goal and suggestion of whichever signal found them. -/
 private def dedupeTodoItems (items : Array TodoItem) : Array TodoItem :=
   items.foldl (init := #[]) fun acc item =>
-    if acc.any (sameTodoLocation item) then acc else acc.push item
+    match acc.findIdx? (sameTodoLocation item) with
+    | some i =>
+        acc.modify i fun kept => { kept with
+          proofState? := kept.proofState? <|> item.proofState?
+          runAtText? := kept.runAtText? <|> item.runAtText? }
+    | none => acc.push item
 
 private def simplifyTodoItems (items : Array TodoItem) : Array TodoItem :=
   let items := dedupeTodoItems items
@@ -419,67 +428,136 @@ private def wantsSnapshotInfoTree (config : SnapshotTodoConfig) : Bool :=
     wantsKind config.kinds? .hole ||
     wantsKind config.kinds? .incompleteProof
 
-private def collectTermInfoItems
+private def tacticRangeWidth (range : Syntax.Range) : Nat :=
+  range.stop.byteIdx - range.start.byteIdx
+
+/--
+Maps each goal to the last tactic leaving it open, preferring the narrowest tactic when several end
+at the same position. Nested tactics such as a rewrite rule and its enclosing `rw` share goals.
+-/
+private def lastTacticsLeaving (source : String) (nodes : Array TacticNode) :
+    Std.HashMap MVarId TacticNode := Id.run do
+  let mut last : Std.HashMap MVarId TacticNode := {}
+  for node in nodes do
+    if isStructuralProofMarker source node.range then
+      continue
+    for goal in node.info.goalsAfter do
+      let replaces :=
+        match last[goal]? with
+        | none => true
+        | some other =>
+            rawLT other.range.stop node.range.stop ||
+              (node.range.stop == other.range.stop &&
+                tacticRangeWidth node.range < tacticRangeWidth other.range)
+      if replaces then
+        last := last.insert goal node
+  return last
+
+/--
+Reports goals that remain open at the end of their proof block. A goal left by one tactic and
+handled by a later tactic is ordinary proof progress, not an incomplete proof, so each unsolved goal
+is attributed only to the last tactic that left it open. Goals left by the same tactic share one
+item.
+-/
+private def collectIncompleteProofItems
     (config : SnapshotTodoConfig)
-    (info : TermInfo)
-    (items : Array TodoItem) : Array TodoItem := Id.run do
+    (nodes : Array TacticNode)
+    (items : Array TodoItem) : RequestM (Array TodoItem × Array MVarId) := do
+  unless wantsKind config.kinds? .incompleteProof do
+    return (items, #[])
+  -- One item per reporting range. A macro and its expansion can share a range; the proof state
+  -- then shows the goals that the first recorded tactic of that range left open.
+  let mut unsolved : Std.HashMap (Nat × Nat) (TacticNode × Array MVarId) := {}
+  for (goal, node) in lastTacticsLeaving config.text.source nodes do
+    unless goalHandledAfter nodes node.range.stop goal do
+      let key := (node.range.start.byteIdx, node.range.stop.byteIdx)
+      let (first, goals) := unsolved[key]?.getD (node, #[])
+      unsolved := unsolved.insert key (first, goals.push goal)
   let mut items := items
-  if wantsKind config.kinds? .hole &&
-      [``Lean.Elab.Term.elabHole, ``Lean.Elab.Term.elabSyntheticHole].contains info.elaborator then
-    if let some range := info.stx.getRange? (canonicalOnly := true) then
-      let lspRange := range.toLspRange config.text
-      if syntaxRangeMatchesQuery range config.requestedRange ||
-          rangeMatchesQuery lspRange config.requestedLspRange then
-        items := items.push <| mkSimpleItem .hole lspRange (message? := some "term hole")
-  if wantsKind config.kinds? .sorry && info.expr.isNonSyntheticSorry then
-    if let some range := info.stx.getRange? (canonicalOnly := true) then
-      let lspRange := range.toLspRange config.text
-      if syntaxRangeMatchesQuery range config.requestedRange ||
-          rangeMatchesQuery lspRange config.requestedLspRange then
-        items := items.push <| mkSimpleItem .sorry lspRange (message? := some "syntactic sorry")
+  let mut reported := #[]
+  for (_, node, goals) in unsolved.toArray do
+    let lspRange := node.range.toLspRange config.text
+    unless syntaxRangeMatchesQuery node.range config.requestedRange ||
+        rangeMatchesQuery lspRange config.requestedLspRange do
+      continue
+    let goals := node.info.goalsAfter.filter goals.contains
+    reported := reported ++ goals.toArray
+    let proofState ← proofStateOfGoals goals { node.ctx with mctx := node.info.mctxAfter }
+    items := items.push {
+      kind := .incompleteProof
+      range := lspRange
+      runAtPosition := lspRange.«end»
+      runAtText? := if config.suggestBasic then some "exact ?_" else none
+      message? := some "incomplete proof"
+      proofState? := some proofState
+    }
+  return (items, reported)
+
+/-- A `sorry` tactic closes the main goal; `runAt` at its start runs against that goal. -/
+private def collectTacticSorryItems
+    (config : SnapshotTodoConfig)
+    (nodes : Array TacticNode)
+    (items : Array TodoItem) : RequestM (Array TodoItem) := do
+  unless wantsKind config.kinds? .sorry do
+    return items
+  let mut items := items
+  for node in nodes do
+    unless node.info.stx.isOfKind `Lean.Parser.Tactic.tacticSorry do
+      continue
+    let some goal := node.info.goalsBefore.head?
+      | continue
+    let lspRange := node.range.toLspRange config.text
+    unless syntaxRangeMatchesQuery node.range config.requestedRange ||
+        rangeMatchesQuery lspRange config.requestedLspRange do
+      continue
+    let proofState ← proofStateOfGoals [goal] { node.ctx with mctx := node.info.mctxBefore }
+    items := items.push { mkSimpleItem .sorry lspRange (message? := some "syntactic sorry") with
+      proofState? := some proofState }
   return items
 
-private def collectIncompleteProofInfoItem
+/--
+Open `sorry` terms and holes, with the goal that `runAt` elaborates a term against at the item's
+position. A hole that a tactic left as an open goal, as in `refine ⟨?_, ?_⟩`, is reported once,
+where that goal stays open.
+-/
+private def collectPlaceholderItems
     (config : SnapshotTodoConfig)
-    (ctx : ContextInfo)
-    (tacticInfo : TacticInfo)
-    (items : Array TodoItem) : RequestM (Array TodoItem) := do
-  unless wantsKind config.kinds? .incompleteProof do
-    return items
-  unless !tacticInfo.goalsAfter.isEmpty do
-    return items
-  let some range := tacticInfo.stx.getRange? (canonicalOnly := true)
-    | return items
-  if isStructuralProofMarker config.text.source range then
-    return items
-  let lspRange := range.toLspRange config.text
-  unless syntaxRangeMatchesQuery range config.requestedRange ||
-      rangeMatchesQuery lspRange config.requestedLspRange do
-    return items
-  let proofState ← proofStateOfGoals tacticInfo.goalsAfter { ctx with mctx := tacticInfo.mctxAfter }
-  return items.push {
-    kind := .incompleteProof
-    range := lspRange
-    runAtPosition := lspRange.«end»
-    runAtText? := if config.suggestBasic then some "exact ?_" else none
-    message? := some "incomplete proof"
-    proofState? := some proofState
-  }
+    (tree : InfoTree)
+    (openGoals : Array MVarId)
+    (items : Array TodoItem) : RequestM (Array TodoItem × Array MVarId) := do
+  let mut items := items
+  let mut holes := #[]
+  for placeholder in collectPlaceholders tree do
+    let (kind, message) :=
+      match placeholder.kind with
+      | .sorry => (TodoKind.sorry, "syntactic sorry")
+      | .hole => (TodoKind.hole, "term hole")
+    unless wantsKind config.kinds? kind do
+      continue
+    if placeholder.mvarId?.any openGoals.contains then
+      continue
+    let lspRange := placeholder.range.toLspRange config.text
+    unless syntaxRangeMatchesQuery placeholder.range config.requestedRange ||
+        rangeMatchesQuery lspRange config.requestedLspRange do
+      continue
+    items := items.push { mkSimpleItem kind lspRange (message? := some message) with
+      proofState? := some (← placeholder.proofState) }
+    if let some mvarId := placeholder.mvarId? then
+      holes := holes.push mvarId
+  return (items, holes)
 
+/-- Items from one command's info tree, and the goals and holes they report. -/
 private def collectSnapshotInfoTreeItems
     (config : SnapshotTodoConfig)
     (snap : Snapshots.Snapshot)
-    (items : Array TodoItem) : RequestM (Array TodoItem) := do
+    (items : Array TodoItem) : RequestM (Array TodoItem × Array MVarId) := do
   if !wantsSnapshotInfoTree config then
-    return items
-  snap.infoTree.foldInfoM (init := items) fun ctx info items => do
-    match info with
-    | .ofTermInfo info =>
-        return collectTermInfoItems config info items
-    | .ofTacticInfo tacticInfo =>
-        collectIncompleteProofInfoItem config ctx tacticInfo items
-    | _ =>
-        return items
+    return (items, #[])
+  let nodes := collectTacticNodes snap.infoTree
+  let (items, openGoals) ← collectIncompleteProofItems config nodes items
+  let items ← collectTacticSorryItems config nodes items
+  let (items, holes) ← collectPlaceholderItems config snap.infoTree openGoals items
+  return (items, openGoals ++ holes)
 
 private def collectSnapshotItems
     (text : FileMap)
@@ -488,16 +566,19 @@ private def collectSnapshotItems
     (snaps : Array Snapshots.Snapshot)
     (kinds? : Option (Array TodoKind))
     (suggestBasic : Bool)
-    (items : Array TodoItem := #[]) : RequestM (Array TodoItem) := do
+    (items : Array TodoItem := #[]) : RequestM (Array TodoItem × Std.HashSet MVarId) := do
   let config : SnapshotTodoConfig := { text, requestedRange, requestedLspRange, kinds?, suggestBasic }
   if !wantsSnapshotInfoTree config then
-    return items
+    return (items, {})
   let mut items := items
+  let mut reported : Std.HashSet MVarId := {}
   for snap in snaps do
     if wantsKind kinds? .sorry then
       items := collectSyntaxSorries text requestedRange requestedLspRange snap.stx items
-    items ← collectSnapshotInfoTreeItems config snap items
-  pure items
+    let (snapItems, goals) ← collectSnapshotInfoTreeItems config snap items
+    items := snapItems
+    reported := reported.insertMany goals
+  pure (items, reported)
 
 private def collectDiagnosticItems
     (requestedRange : Lsp.Range)
@@ -514,7 +595,6 @@ private def collectDiagnosticItems
       runAtPosition := diagnostic.fullRange.start
       message? := some plain.message
       severity? := plain.severity?
-      diagnostic? := some plain
     }
 
 private def firstOverlappingEditRange?
@@ -583,54 +663,210 @@ private def collectDocumentItems
     (requestedRange : Syntax.Range)
     (requestedLspRange : Lsp.Range)
     (kinds? : Option (Array TodoKind))
-    (suggestBasic : Bool) : RequestM (Array TodoItem) := do
+    (suggestBasic : Bool) : RequestM (Array TodoItem × Std.HashSet MVarId) := do
   let text := doc.meta.text
   let mut items := #[]
   if wantsKind kinds? .sorry then
     items := collectSourceTokenSorries text requestedRange requestedLspRange 0 items
-  items ← collectSnapshotItems text requestedRange requestedLspRange snaps kinds? suggestBasic items
-  pure items
+  collectSnapshotItems text requestedRange requestedLspRange snaps kinds? suggestBasic items
+
+private partial def messageGoals : MessageData → Array MVarId
+  | .ofGoal goal => #[goal]
+  | .compose a b => messageGoals a ++ messageGoals b
+  | .nest _ d | .group d | .tagged _ d | .withContext _ d | .withNamingContext _ d => messageGoals d
+  | _ => #[]
+
+private def diagnosticSeverity : MessageSeverity → Lsp.DiagnosticSeverity
+  | .information => .information
+  | .warning => .warning
+  | .error => .error
+
+/-- Index of the command snapshot containing `pos`. -/
+private def commandIndex? (snaps : Array Snapshots.Snapshot) (pos : String.Pos.Raw) : Option Nat :=
+  snaps.findIdx? (pos < ·.endPos)
+
+/--
+Whether a Lean message only restates an obligation that a structured item already reports: the
+unsolved goals of a tactic block or the placeholder Lean could not synthesize, when every goal it
+names is reported, or a declaration's `sorry` warning, when the declaration's `sorry` is reported.
+Diagnostics that explain a failure, such as a tactic error, are never subsumed.
+-/
+private def isSubsumedMessage
+    (text : FileMap)
+    (snaps : Array Snapshots.Snapshot)
+    (reportedGoals : Std.HashSet MVarId)
+    (sorryCommands : Array Nat)
+    (msg : Message) : Bool :=
+  if msg.data.hasTag (fun tag => tag == `Tactic.unsolvedGoals || tag == `Elab.synthPlaceholder) then
+    let goals := messageGoals msg.data
+    !goals.isEmpty && goals.all reportedGoals.contains
+  else if msg.data.hasTag (· == `hasSorry) then
+    (commandIndex? snaps (text.ofPosition msg.pos)).any sorryCommands.contains
+  else
+    false
+
+private def messageKey (text : FileMap) (msg : Message) : Lsp.Range × Lsp.DiagnosticSeverity :=
+  ({ start := text.leanPosToLspPos msg.pos
+     «end» := text.leanPosToLspPos (msg.endPos.getD msg.pos) }, diagnosticSeverity msg.severity)
+
+/--
+Diagnostic keys to drop. Published diagnostics no longer carry Lean's message tags, so they are
+matched to the document's messages by full range and severity; a key that also belongs to an
+unsubsumed message is kept.
+-/
+private def subsumedDiagnosticKeys
+    (doc : FileWorker.EditableDocument)
+    (snaps : Array Snapshots.Snapshot)
+    (items : Array TodoItem)
+    (reportedGoals : Std.HashSet MVarId) : Array (Lsp.Range × Lsp.DiagnosticSeverity) := Id.run do
+  let text := doc.meta.text
+  let sorryCommands := items.filterMap fun item =>
+    if item.kind == .sorry then commandIndex? snaps (text.lspPosToUtf8Pos item.range.start) else none
+  let messages := (Language.toSnapshotTree doc.initSnap).getAll.foldl (init := #[])
+    fun acc snap => acc ++ snap.diagnostics.msgLog.toList.toArray
+  let mut subsumed := #[]
+  let mut kept := #[]
+  for msg in messages do
+    let key := messageKey text msg
+    if isSubsumedMessage text snaps reportedGoals sorryCommands msg then
+      subsumed := subsumed.push key
+    else
+      kept := kept.push key
+  return subsumed.filter (!kept.contains ·)
+
+/-- The innermost non-structural tactic containing `pos` that received goals. -/
+private def innermostTacticAt?
+    (text : FileMap)
+    (snaps : Array Snapshots.Snapshot)
+    (pos : String.Pos.Raw) : Option TacticNode := do
+  let snap ← (commandIndex? snaps pos).bind (snaps[·]?)
+  (collectTacticNodes snap.infoTree).foldl (init := none) fun best? node =>
+    if node.range.start ≤ pos && pos ≤ node.range.stop &&
+        !node.info.goalsBefore.isEmpty && !isStructuralProofMarker text.source node.range then
+      match best? with
+      | some best =>
+          if tacticRangeWidth node.range < tacticRangeWidth best.range then some node else best?
+      | none => some node
+    else
+      best?
+
+/--
+An error inside a tactic proof is actionable where its innermost tactic starts: `runAt` there runs a
+replacement against the goals that tactic received.
+-/
+private def attachFailedTacticGoal
+    (text : FileMap)
+    (snaps : Array Snapshots.Snapshot)
+    (item : TodoItem) : RequestM TodoItem := do
+  unless item.severity? == some .error do
+    return item
+  let some tactic := innermostTacticAt? text snaps (text.lspPosToUtf8Pos item.range.start)
+    | return item
+  let proofState ←
+    proofStateOfGoals tactic.info.goalsBefore { tactic.ctx with mctx := tactic.info.mctxBefore }
+  return { item with runAtPosition := (tactic.range.toLspRange text).start, proofState? := some proofState }
+
+/--
+Ranges of the tactics that failed with an error, whether that error is reported as a diagnostic or
+subsumed by the item it restates. Unsolved-goals errors name goals a block left open rather than a
+failing tactic, so they are excluded.
+-/
+private def failedTacticRanges
+    (doc : FileWorker.EditableDocument)
+    (snaps : Array Snapshots.Snapshot) : Array Lsp.Range :=
+  let text := doc.meta.text
+  (Language.toSnapshotTree doc.initSnap).getAll.foldl (init := #[]) fun acc snap =>
+    snap.diagnostics.msgLog.toList.foldl (init := acc) fun acc msg =>
+      if msg.severity != .error || msg.data.hasTag (· == `Tactic.unsolvedGoals) then
+        acc
+      else
+        match innermostTacticAt? text snaps (text.ofPosition msg.pos) with
+        | some tactic => acc.push (tactic.range.toLspRange text)
+        | none => acc
 
 private def todoResult
     (doc : FileWorker.EditableDocument)
     (p : TodoParams)
+    (range : Lsp.Range)
     (snaps : Array Snapshots.Snapshot)
     (codeActions : Array Lsp.CodeAction) : RequestM TodoResult := do
-  let requestedSyntaxRange := lspRangeToSyntaxRange doc.meta.text p.range
+  let requestedSyntaxRange := lspRangeToSyntaxRange doc.meta.text range
   let suggestBasic := shouldSuggestBasic p.suggest?
-  let mut items ← collectDocumentItems doc snaps requestedSyntaxRange p.range p.kinds? suggestBasic
+  let (items, reportedGoals) ←
+    collectDocumentItems doc snaps requestedSyntaxRange range p.kinds? suggestBasic
+  let mut items := simplifyTodoItems items
   if wantsKind p.kinds? .diagnostic then
     let diagnostics ← collectCurrentDiagnostics doc
-    items := items ++ collectDiagnosticItems p.range diagnostics
+    let subsumed := subsumedDiagnosticKeys doc snaps items reportedGoals
+    for item in collectDiagnosticItems range diagnostics do
+      if subsumed.contains (item.range, item.severity?.getD .error) then
+        continue
+      items := items.push (← attachFailedTacticGoal doc.meta.text snaps item)
+    -- The error, or the item that subsumes it, explains why its tactic left the goal open.
+    let failedTactics := failedTacticRanges doc snaps
+    items := items.filter fun item =>
+      !(item.kind == .incompleteProof && failedTactics.contains item.range)
   if wantsKind p.kinds? .codeAction then
-    items := items ++ collectCodeActionItems p.range codeActions
-  items := simplifyTodoItems items
+    items := items ++ collectCodeActionItems range codeActions
   pure {
     version := doc.meta.version
-    range := p.range
+    range
     items := items.qsort todoItemLt
   }
 
+private def documentRange (text : FileMap) : Lsp.Range :=
+  { start := { line := 0, character := 0 }, «end» := text.utf8PosToLspPos text.source.rawEndPos }
+
+/--
+Range of the command snapshot where Lean runs code-action providers for `range`: the first snapshot
+ending at or after the range end.
+-/
+private def codeActionCommandRange?
+    (text : FileMap) (snaps : Array Snapshots.Snapshot) (range : Lsp.Range) : Option Lsp.Range := do
+  let stop := text.lspPosToUtf8Pos range.«end»
+  let i ← snaps.findIdx? (·.endPos ≥ stop)
+  let snap ← snaps[i]?
+  let start := (if i == 0 then none else snaps[i - 1]?).map (·.endPos) |>.getD 0
+  pure { start := text.utf8PosToLspPos start, «end» := text.utf8PosToLspPos snap.endPos }
+
 def handleTodo (p : TodoParams) : RequestM (RequestTask TodoResult) := do
   requireDocumentVersion p.textDocument
-  validateRange p.range
+  -- Lean runs code-action providers on the one command at the range end, so a whole-document
+  -- request cannot enumerate them.
+  let p ← match p.range? with
+    | some range => do
+        validateRange range
+        pure p
+    | none =>
+        if p.kinds?.any (·.contains .codeAction) then
+          throw <| RequestError.invalidParams
+            "code_action items need a range: Lean runs code-action providers on the command at the range end"
+        let kinds := (p.kinds?.filter (!·.isEmpty)).getD TodoKind.all
+        pure { p with kinds? := some (kinds.filter (· != .codeAction)) }
   checkRequestCancelled
   let doc ← RequestM.readDoc
+  let range := p.range?.getD (documentRange doc.meta.text)
   let barrier := doc.reporter.bindCheap (fun _ => doc.cmdSnaps.waitAll)
   RequestM.bindTaskCheap barrier fun (snaps, _) => do
     checkRequestCancelled
     let codeActionTask ←
       if wantsKind p.kinds? .codeAction then
         let diagnostics ← collectCurrentDiagnostics doc
+        -- Lean copies the forwarded diagnostics into every action's resolve data. Diagnostics that
+        -- start in other commands cannot apply to that snapshot's providers, so forward only its own.
+        let commandRange? := codeActionCommandRange? doc.meta.text snaps.toArray range
         let plainDiagnostics :=
           diagnostics.filterMap fun diagnostic =>
-            if rangeMatchesQuery diagnostic.fullRange p.range then
+            let inCommand := commandRange?.any fun command =>
+              positionLE command.start diagnostic.fullRange.start &&
+                positionLT diagnostic.fullRange.start command.«end»
+            if inCommand && rangeMatchesQuery diagnostic.fullRange range then
               some <| Widget.InteractiveDiagnostic.toDiagnostic diagnostic
             else
               none
         let params : Lsp.CodeActionParams := {
           textDocument := { uri := p.textDocument.uri }
-          range := p.range
+          range
           context := { diagnostics := plainDiagnostics }
         }
         Lean.Server.handleCodeAction params
@@ -638,6 +874,6 @@ def handleTodo (p : TodoParams) : RequestM (RequestTask TodoResult) := do
         pure <| RequestTask.pure #[]
     RequestM.bindRequestTaskCostly codeActionTask fun codeActions => do
       checkRequestCancelled
-      return RequestTask.pure (← todoResult doc p snaps.toArray codeActions)
+      return RequestTask.pure (← todoResult doc p range snaps.toArray codeActions)
 
 end Beam.LSP.Todo

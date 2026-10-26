@@ -774,7 +774,8 @@ private def checkSyncWaitSpecs : IO Unit := do
   require "refresh complete message should share sync-like formatting"
     ((Beam.Cli.refreshWaitSpec "Demo.lean").completeMsg okResp ==
       "beam: refresh complete for Demo.lean (version 5, fp updates=2)")
-  let publicTodoSpec := Beam.Cli.leanTodoWaitSpec "Demo.lean" 1 0 2 3 "todo"
+  let publicTodoSpec := Beam.Cli.leanTodoWaitSpec "Demo.lean"
+    (some { start := { line := 1, character := 0 }, «end» := { line := 2, character := 3 } }) "todo"
   require "todo wait action should accept public wrapper label"
     (publicTodoSpec.action == "todo")
   requireSubstring "todo start message should use public wrapper label"

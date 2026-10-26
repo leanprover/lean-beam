@@ -82,7 +82,7 @@ lean-beam save MyPkg/Sub/Module.lean
 | Continue from an exact speculative state | `run-at-handle`, then `run-with` / `run-with-linear`, `release` |
 | Type and docs at a position | `hover`, `signature-help` |
 | Navigation and symbols | `definition`, `references`, `document-symbols FILE VERSION`, `workspace-symbols QUERY` |
-| Sorries, holes, errors, code actions in a range | `todo FILE VERSION SL SC EL EC` |
+| Sorries, holes, errors, open goals, code actions | `todo FILE VERSION [SL SC EL EC]` |
 | Fresh diagnostics after a real edit | `sync` (or `refresh`) |
 | Checkpoint one synced module | `save`, `close-save` |
 | Daemon or tracked-file trouble | `open-files`, `doctor`, `stats` |
@@ -92,10 +92,8 @@ lean-beam save MyPkg/Sub/Module.lean
 Handles are pre-stable: use them only when exact continuation matters. They are invalidated by
 edits to the same document, close, worker restart, or daemon restart.
 
-For `todo --kind code_action`, query a point inside the relevant tactic, hole, or diagnostic, or a
-range within one command. Lean selects one command snapshot using the range end; broad ranges do
-not enumerate every command's actions, and an empty result is not a file-wide verdict.
-For a point query, use `lean-beam todo FILE VERSION LINE CHAR LINE CHAR --kind code_action`.
+Code actions need a range: Lean runs them on the one command at the range end, so query a point
+(`todo FILE VERSION L C L C --kind code_action`). An empty result is not a file-wide verdict.
 
 ## run-at Rules
 
@@ -112,6 +110,7 @@ For a point query, use `lean-beam todo FILE VERSION LINE CHAR LINE CHAR --kind c
 - At a tactic position, the text may be a tactic sequence: start each tactic at the same column, or
   separate them with `;`. Do not start it with `by`; the probe already runs inside the proof.
 - At an unfilled `sorry`, `_`, or `?x` term, run-at starts from its goal; text is still tactics.
+  At a `todo` item's `run_at_position`, it starts from the item's `proof_state`.
 - `run-at` returns no file diagnostics; use `sync` after a real edit for those.
 - Tactic probes reject new local `let rec` definitions, even valid ones. Save the
   enclosing declaration and `sync` instead, or probe one complete declaration at a command position.

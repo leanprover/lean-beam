@@ -614,9 +614,6 @@ private def todoItemJson (item : Beam.LSP.Todo.TodoItem) : Json := Json.mkObj <|
   (match item.severity? with
   | some severity => [("severity", toJson <| diagnosticSeverityName (some severity))]
   | none => []) ++
-  (match item.diagnostic? with
-  | some diagnostic => [("diagnostic", toJson diagnostic)]
-  | none => []) ++
   (match item.codeAction? with
   | some codeAction => [("code_action", toJson codeAction)]
   | none => []) ++

@@ -408,10 +408,7 @@ private def checkBrokerRequestAdapters : IO Unit := do
   let todoInput : Beam.Mcp.TodoInput := {
     path := "Demo.lean"
     version := 14
-    startLine := 1
-    startCharacter := 0
-    endLine := 8
-    endCharacter := 3
+    range? := some { start := { line := 1, character := 0 }, «end» := { line := 8, character := 3 } }
     kinds? := some #[.sorry, .incompleteProof]
     suggest? := some .basic
   }
@@ -422,16 +419,25 @@ private def checkBrokerRequestAdapters : IO Unit := do
     | _ => none
   require "todo op" (todoReq.op == .todo)
   require "todo version" (todo.version == 14)
-  require "todo start line" (todo.line == 1)
-  require "todo start character" (todo.character == 0)
-  require "todo end line" (todo.endLine == 8)
-  require "todo end character" (todo.endCharacter == 3)
+  require "todo range" (todo.range? == todoInput.range?)
   require "todo kinds" (todo.kinds? == some #[.sorry, .incompleteProof])
   require "todo suggest" (todo.suggest? == some .basic)
   let todoJson := toJson todoInput
   requireJsonString "todo input json" "path" "Demo.lean" todoJson
   requireFieldAbsent "todo input json" "startLine" todoJson
   requireFieldAbsent "todo input json" "root" todoJson
+  let wholeFileInput : Beam.Mcp.TodoInput := { path := "Demo.lean", version := 14 }
+  requireFieldAbsent "whole-file todo input json" "start_line" (toJson wholeFileInput)
+  let wholeFileReq ← expectOk "whole-file todo tool request" <|
+    Beam.Mcp.leanOperationToBrokerRequest .todo workspaceId (inWorkspace <| toJson wholeFileInput)
+  let wholeFile ← expectRequestPayload "whole-file todo tool request" wholeFileReq fun
+    | .todo request => some request
+    | _ => none
+  require "whole-file todo has no range" wholeFile.range?.isNone
+  let partialRange := (toJson wholeFileInput).setObjVal! "start_line" (toJson 1)
+  match Beam.Mcp.leanOperationToBrokerRequest .todo workspaceId (inWorkspace partialRange) with
+  | .ok _ => throw <| IO.userError "todo accepted a partial range"
+  | .error _ => pure ()
 
   let codeAction : Lean.Lsp.CodeAction := {
     title := "Replace fixture hole with zero"

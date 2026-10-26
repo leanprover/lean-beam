@@ -251,9 +251,9 @@ structure SaveOleanRequest extends RequestFile where
 structure GoalsRequest extends RequestPosition where
   mode? : Option GoalMode := none
 
-structure TodoRequest extends RequestPosition where
-  endLine : Nat
-  endCharacter : Nat
+structure TodoRequest extends RequestVersionedFile where
+  /-- The whole document when omitted. -/
+  range? : Option Lsp.Range := none
   kinds? : Option (Array Beam.LSP.Todo.TodoKind) := none
   suggest? : Option Beam.LSP.Todo.TodoSuggestMode := none
 
@@ -435,8 +435,7 @@ private def Op.requestFields (op : Op) : Array String :=
   | .goals => #["path", "version", "line", "character", "mode"]
   | .todo =>
       #[
-        "path", "version", "line", "character", "endLine", "endCharacter", "kinds",
-        "suggest"
+        "path", "version", "range", "kinds", "suggest"
       ]
   | .runWith =>
       #["path", "text", "storeHandle", "linear", "handle"]
@@ -497,10 +496,8 @@ private def RequestPayload.jsonFields : RequestPayload → List (String × Json)
       request.toRequestPosition.jsonFields ++
       optionalJsonField "mode" request.mode?
   | .todo request =>
-      request.toRequestPosition.jsonFields ++ [
-        ("endLine", toJson request.endLine),
-        ("endCharacter", toJson request.endCharacter)
-      ] ++
+      request.toRequestVersionedFile.jsonFields ++
+      optionalJsonField "range" request.range? ++
       optionalJsonField "kinds" request.kinds? ++
       optionalJsonField "suggest" request.suggest?
   | .runWith request =>
@@ -647,11 +644,10 @@ instance : FromJson Request where
             mode? := ← optionalField? (α := GoalMode) j "mode"
           }
       | .todo => do
-          let target ← decodeRequestPosition j
+          let target ← decodeRequestVersionedFile j
           pure <| .todo {
-            toRequestPosition := target
-            endLine := ← requiredField j "endLine"
-            endCharacter := ← requiredField j "endCharacter"
+            toRequestVersionedFile := target
+            range? := ← optionalField? (α := Lsp.Range) j "range"
             kinds? := ← optionalField? (α := Array Beam.LSP.Todo.TodoKind) j "kinds"
             suggest? := ← optionalField? (α := Beam.LSP.Todo.TodoSuggestMode) j "suggest"
           }

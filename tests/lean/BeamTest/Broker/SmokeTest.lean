@@ -272,10 +272,10 @@ private def runTodoThenSyncDiagnosticSummarySmoke
     payload := .todo {
       path
       version
-      line := 0
-      character := 0
-      endLine := 22
-      endCharacter := 0
+      range? := some {
+        start := { line := 0, character := 0 }
+        «end» := { line := 22, character := 0 }
+      }
       kinds? := some #[.diagnostic]
       suggest? := some .none
     }
@@ -313,10 +313,10 @@ private def runTodoCodeActionResolveSmoke
     payload := .todo {
       path
       version
-      line := BeamTest.Fixtures.TodoFixture.codeActionLine
-      character := BeamTest.Fixtures.TodoFixture.codeActionStartCharacter
-      endLine := BeamTest.Fixtures.TodoFixture.codeActionLine
-      endCharacter := BeamTest.Fixtures.TodoFixture.codeActionEndCharacter
+      range? := some {
+        start := { line := BeamTest.Fixtures.TodoFixture.codeActionLine, character := BeamTest.Fixtures.TodoFixture.codeActionStartCharacter }
+        «end» := { line := BeamTest.Fixtures.TodoFixture.codeActionLine, character := BeamTest.Fixtures.TodoFixture.codeActionEndCharacter }
+      }
       kinds? := some #[.codeAction]
     }
   }

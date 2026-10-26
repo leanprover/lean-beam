@@ -401,6 +401,36 @@ def checkComplexTodoCodeActions (doc : DocHandle) : ScenarioM Unit := do
     throw <| IO.userError
       s!"todo complex code action: expected edit payload, got {(toJson action).compress}"
 
+  -- Earlier holes in the range report errors in other commands. Lean runs providers only on the
+  -- command at the range end, and its resolve data should carry only that command's diagnostics.
+  let broadReq ← sendTodo doc {
+    startLine := 0
+    startCharacter := 0
+    endLine := BeamTest.Fixtures.TodoFixture.complexCodeActionLine
+    endCharacter := BeamTest.Fixtures.TodoFixture.complexCodeActionEndCharacter
+    kinds? := some #[.codeAction]
+  }
+  let broadTodos : Beam.LSP.Todo.TodoResult ← awaitResponseAs broadReq
+  let broadItem ← requireTodoKindWithMessage "todo broad code action"
+    .codeAction "Fill complex fixture hole with zero" broadTodos
+  let some broadData := broadItem.codeAction?.bind (·.data?)
+    | throw <| IO.userError
+        s!"todo broad code action: expected resolve data, got {(toJson broadItem).compress}"
+  let resolveData ← IO.ofExcept <|
+    (fromJson? broadData : Except String Lean.Server.CodeActionResolveData)
+  let forwarded := resolveData.params.context.diagnostics
+  if forwarded.isEmpty ||
+      forwarded.any (·.range.start.line != BeamTest.Fixtures.TodoFixture.complexCodeActionLine) then
+    throw <| IO.userError
+      s!"todo broad code action: expected only diagnostics of the selected command, got {(toJson forwarded).compress}"
+
+  -- Without a range there is no command to run providers on: code actions are omitted by default
+  -- and refused when requested.
+  let wholeTodos : Beam.LSP.Todo.TodoResult ← awaitResponseAs (← sendTodoWholeDocument doc)
+  requireNoTodoKind "todo whole document" .codeAction wholeTodos
+  requireTodoKindAtLeast "todo whole document" .hole 1 wholeTodos
+  expectErrorContains (← sendTodoWholeDocument doc (kinds? := some #[.codeAction])) invalidParamsJson
+
 def checkComplexTodoRequest : ScenarioM Unit := do
   let doc ← openDoc BeamTest.Fixtures.TodoFixture.complexRepoPath
   syncDoc doc
@@ -413,6 +443,89 @@ def checkComplexTodoRequest : ScenarioM Unit := do
 
   closeDoc doc
 
+def checkTodoProofProgress : ScenarioM Unit := do
+  let doc ← openDoc BeamTest.Fixtures.TodoFixture.progressRepoPath
+  syncDoc doc
+
+  let completeReq ← sendTodo doc {
+    startLine := 0
+    startCharacter := 0
+    endLine := BeamTest.Fixtures.TodoFixture.progressCompleteEndLine
+    endCharacter := 0
+  }
+  let completeTodos : Beam.LSP.Todo.TodoResult ← awaitResponseAs completeReq
+  requireNoTodoKind "todo complete proofs" .incompleteProof completeTodos
+
+  let openReq ← sendTodo doc {
+    startLine := BeamTest.Fixtures.TodoFixture.progressCompleteEndLine
+    startCharacter := 0
+    endLine := BeamTest.Fixtures.TodoFixture.progressEndLine
+    endCharacter := 0
+    kinds? := some #[.incompleteProof]
+  }
+  let openTodos : Beam.LSP.Todo.TodoResult ← awaitResponseAs openReq
+  let positions := openTodos.items.map (·.runAtPosition)
+  if positions != BeamTest.Fixtures.TodoFixture.progressOpenPositions then
+    throw <| IO.userError
+      s!"todo open proofs: expected one item at the end of each open skip, got {(toJson openTodos).compress}"
+  for item in openTodos.items do
+    let some proofState := item.proofState?
+      | throw <| IO.userError s!"todo open proofs: expected proofState, got {(toJson item).compress}"
+    if proofState.goals.size != 1 then
+      throw <| IO.userError s!"todo open proofs: expected one open goal, got {(toJson item).compress}"
+  let some bullet := openTodos.items[0]?
+    | throw <| IO.userError "todo open proofs: missing bullet item"
+  requireRunAtSolvesProof "todo open bullet/runAt composition" doc bullet.runAtPosition "exact trivial"
+
+  closeDoc doc
+
+/--
+Each mistake in the agent corpus yields exactly one item, whose proof state is the goal `runAt` uses
+at the item's position: the expected solution closes it there.
+-/
+def checkTodoAgentCorpus : ScenarioM Unit := do
+  let doc ← openDoc BeamTest.Fixtures.TodoFixture.agentRepoPath
+  syncDoc doc
+
+  let req ← sendTodoWholeDocument doc
+  let todos : Beam.LSP.Todo.TodoResult ← awaitResponseAs req
+  let expected := BeamTest.Fixtures.TodoFixture.agentItems
+  let actual := todos.items.map fun item =>
+    (item.kind, item.range.start, item.runAtPosition,
+      (item.proofState?.map (·.goals.map (·.target))).getD #[])
+  let wanted := expected.map fun item => (item.kind, item.start, item.runAt, item.goals)
+  if actual != wanted then
+    throw <| IO.userError
+      s!"todo agent corpus: expected {(toJson wanted).compress}, got {(toJson todos).compress}"
+  for item in expected do
+    if let some solution := item.solution? then
+      requireRunAtSolvesProof s!"todo agent corpus {item.start}" doc item.runAt solution
+
+  -- Tactics at a placeholder may leave goals; the handle continues them.
+  let some hole := expected.find? (·.kind == .hole)
+    | throw <| IO.userError "todo agent corpus: missing hole item"
+  let partialReq ← sendRunAt doc {
+    line := hole.runAt.line
+    character := hole.runAt.character
+    text := "refine ?_ + 1"
+    storeHandle := true
+  }
+  let partialResult : Beam.LSP.RunAt.Result ← awaitResponseAs partialReq
+  let some handle := partialResult.handle?
+    | throw <| IO.userError
+        s!"todo agent corpus: expected a handle for a partial proof, got {(toJson partialResult).compress}"
+  let goals := (partialResult.proofState?.map (·.goals.map (·.target))).getD #[]
+  if goals != #["Nat"] then
+    throw <| IO.userError
+      s!"todo agent corpus: expected the remaining hole as the goal, got {(toJson partialResult).compress}"
+  let continued : Beam.LSP.RunAt.Result ← awaitResponseAs
+    (← runWithHandle doc handle { text := "exact 0" })
+  unless continued.success && continued.proofState?.any (·.goals.isEmpty) do
+    throw <| IO.userError
+      s!"todo agent corpus: expected the handle to finish the proof, got {(toJson continued).compress}"
+
+  closeDoc doc
+
 def run : ScenarioM Unit := do
   checkTodoRequest
   checkTodoInvalidRange
@@ -421,6 +534,8 @@ def run : ScenarioM Unit := do
   checkTodoRequestWithMixedConcurrency
   checkTodoCodeActions
   checkComplexTodoRequest
+  checkTodoProofProgress
   checkTodoInteractiveOnlyDiagnostic
+  checkTodoAgentCorpus
 
 end BeamTest.LSP.Requests.Todo.BasicTest

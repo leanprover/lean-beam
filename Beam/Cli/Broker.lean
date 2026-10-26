@@ -385,9 +385,12 @@ def leanGoalsWaitSpec
 
 def leanTodoWaitSpec
     (path : String)
-    (startLine startCharacter endLine endCharacter : Nat)
+    (range? : Option Lean.Lsp.Range)
     (action : String := "todo") : BrokerWaitSpec :=
-  let pos := s!"{path}:{startLine}:{startCharacter}-{endLine}:{endCharacter}"
+  let pos :=
+    match range? with
+    | some r => s!"{path}:{r.start.line}:{r.start.character}-{r.«end».line}:{r.«end».character}"
+    | none => path
   {
     action := action
     startMsg := s!"beam: querying {action} for {pos} and waiting for Lean diagnostics"

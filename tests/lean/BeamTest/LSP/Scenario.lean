@@ -463,12 +463,24 @@ def sendTodo (doc : DocHandle) (spec : TodoSpec) : ScenarioM ReqHandle := do
       uri := docState.uri
       version? := some (spec.version?.getD (docState.versionNo - 1))
     }
-    range := {
+    range? := some {
       start := { line := spec.startLine, character := spec.startCharacter }
       «end» := { line := spec.endLine, character := spec.endCharacter }
     }
     kinds? := spec.kinds?
     suggest? := spec.suggest?
+  }
+  let requestID ← sendRequest Beam.LSP.Todo.method (toJson params)
+  registerRequest requestID (toJson params)
+
+/-- A todo request without a range, which covers the whole document. -/
+def sendTodoWholeDocument
+    (doc : DocHandle)
+    (kinds? : Option (Array Beam.LSP.Todo.TodoKind) := none) : ScenarioM ReqHandle := do
+  let docState ← getDocState doc
+  let params : Beam.LSP.Todo.TodoParams := {
+    textDocument := { uri := docState.uri, version? := some (docState.versionNo - 1) }
+    kinds?
   }
   let requestID ← sendRequest Beam.LSP.Todo.method (toJson params)
   registerRequest requestID (toJson params)

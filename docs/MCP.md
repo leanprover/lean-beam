@@ -362,10 +362,30 @@ first edit and save the Lean file with the client's normal file-editing tool. Th
 before another snapshot-bound operation, or call `lean_sync` when a diagnostics/readiness barrier is
 needed. Both commands read the current on-disk file; neither applies or recovers speculative text.
 
-`lean_todo` treats code actions differently from its other item kinds. For sorries, holes,
-diagnostics, and incomplete proofs, Beam scans the available document or snapshot information and
-filters it by the requested range. For `code_action` items, Beam forwards the range to Lean once;
-Lean selects one command snapshot using the range end and runs its code-action providers there.
+`lean_todo` inspects the whole file unless all four range fields are given; code actions need a
+range (see below), and a whole-file request omits them. It reports one item per
+problem, and each item composes with `lean_run_at`: running text at the item's `run_at_position`
+starts from the item's `proof_state`, when it has one.
+
+- A `sorry` item carries the goal the `sorry` fills.
+- A `hole` item is a `_` or `?x` term that Lean did not fill, for example by unification. A `?_` that
+  a tactic turned into a goal is reported where that goal stays open, or not at all once a later
+  tactic handles it.
+- In a proof, `lean_run_at` text is always tactics. At a `sorry` or hole written as a term, it runs
+  against that placeholder's goal as in `by ...`; supply a term with `exact`.
+- An `incomplete_proof` item marks goals still open at the end of their proof block, attributed to
+  the last tactic that left them open; a goal that a later tactic handles is proof progress and is
+  not reported.
+- An error inside a tactic proof carries the goals of its innermost tactic and runs at that
+  tactic's start, so the text replaces the failing tactic. The goal it leaves open is not reported
+  again as an `incomplete_proof`.
+- Lean diagnostics that only restate an item are dropped: the unsolved goals of a block, a
+  placeholder Lean could not synthesize, and a declaration's `sorry` warning, when the items report
+  every goal or `sorry` they name. They remain when those item kinds are filtered out.
+
+For `code_action` items, Beam forwards the range to Lean
+once; Lean selects one command snapshot using the range end and runs its code-action providers
+there, with the diagnostics of that command only.
 A range spanning several commands does not enumerate code actions for every command. Query a point
 inside the relevant tactic, hole, or diagnostic, or use a range wholly within one command. Providers
 can further restrict which actions apply, so an empty code-action result does not establish that
