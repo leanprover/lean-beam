@@ -68,8 +68,11 @@ Current request semantics:
 - command-mode `text` is one Lean command, not a top-level command sequence
 - proof-mode `text` is one tactic block
 - at an unfilled placeholder (a `sorry`, `_`, or `?x` term that the command left open), proof-mode
-  `text` runs against a goal with the placeholder's expected type and local context, as it would in
-  `by ...` there
+  `text` runs against a goal with the placeholder's expected type and local context, like the
+  tactics of a `by ...` block there
+- a successful probe checks the text against its goal only: it does not elaborate the rest of the
+  enclosing declaration or run Lean's termination checking, so text that uses the declaration being
+  proved can succeed although the same edit fails
 - `position` uses Lean/LSP `Position` semantics against the matching document version
 - proof execution uses Lean's cursor-selected before/after tactic state; the tactic's start
   selects its before-state, while positions inside it may select its after-state
@@ -532,8 +535,8 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
 
 /--
 Run tactics in place of a placeholder. The placeholder becomes a fresh goal with its expected type
-and local context, so the text works as it would in `by ...` at that position: `exact t` supplies a
-term, and goals the tactics leave open remain for a stored handle.
+and local context, so the text works like the tactics of a `by ...` block there: `exact t` supplies
+a term, and goals the tactics leave open remain for a stored handle.
 -/
 def runPlaceholderText (placeholder : Placeholder) (text : String) (levelNames : List Name) :
     RequestM (Result × Option StoredHandleState) := do

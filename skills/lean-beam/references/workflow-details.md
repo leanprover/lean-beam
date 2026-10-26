@@ -19,8 +19,12 @@ Use this reference when the task needs more than the default loop in `SKILL.md`.
 - for a tactic replacement, select its first character after indentation to use its before-state;
   inside a simple tactic or at its end, Lean generally selects the after-state
 - on a `sorry`, `_`, or `?x` term that the command left unfilled, the text is tactics run against
-  a goal with that placeholder's type and local context, as in `by ...` there; use `exact t` for a
-  term. Only the placeholder's type is checked, not later parts of the enclosing term
+  a goal with that placeholder's type and local context, like the tactics of a `by ...` block there;
+  use `exact t` for a term. Only the placeholder's type is checked, not later parts of the
+  enclosing term
+- a successful probe is not proof that the edit elaborates: probes check the text against its goal
+  only and do not run Lean's termination checking, so text that uses the declaration being proved
+  can succeed; confirm with a real edit and `sync`
 - standalone comments, blank lines, and many declaration headers often do not have a usable basis
 - nearby whitespace/comments may still work when Lean can recover a neighboring basis, but do not
   assume that from arbitrary file positions
