@@ -398,6 +398,93 @@ def checkRunAtPlaceholders : ScenarioM Unit := do
 
   closeDoc doc
 
+private def placeholderContentModifiedJson : Json :=
+  Json.mkObj [("code", toJson "contentModified")]
+
+def checkRunAtPlaceholderContexts : ScenarioM Unit := do
+  let doc ← openDoc "tests/scenario/docs/RunAtPlaceholderContexts.lean"
+  syncDoc doc
+
+  -- The placeholder's goal keeps its local context: `let` values, local instances, the open
+  -- namespace, local notation, and section or header universes.
+  let contexts : List (String × Lean.Lsp.Position × String × Array String) := [
+    ("let", ⟨10, 47⟩, "exact k", #["Nat"]),
+    ("letI", ⟨11, 52⟩, "exact default", #["Nat"]),
+    ("instance", ⟨12, 45⟩, "exact default", #["α"]),
+    ("open", ⟨13, 22⟩, "exact val", #["Nat"]),
+    ("notation", ⟨14, 26⟩, "exact MAGIC", #["Nat"]),
+    ("universe", ⟨15, 45⟩, "exact a", #["α"]),
+    ("unused universe", ⟨16, 33⟩, "have : ULift.{u} Nat := ⟨0⟩; trivial", #["True"]),
+    ("header universe", ⟨17, 50⟩, "have : ULift.{v} Nat := ⟨0⟩; trivial", #["True"])]
+  for (label, position, solution, goals) in contexts do
+    requireRunAtGoals s!"{label} placeholder" doc position goals
+    requireRunAtSolvesProof s!"{label} placeholder solution" doc position solution
+    -- A rejected probe reports the placeholder's goal unchanged.
+    let rejected : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+      ← sendRunAt doc {
+        line := position.line
+        character := position.character
+        text := "exact \"invalid\""
+      }
+    unless !rejected.success &&
+        rejected.proofState?.map (·.goals.map (·.target)) == some goals do
+      throw <| IO.userError s!"{label} placeholder: expected a rejection with goals {goals}, got {(toJson rejected).compress}"
+
+  -- Each probe starts from the placeholder's goal: a local from one probe is visible only through
+  -- the handle that stored it, including among concurrent requests.
+  let letHole : Lean.Lsp.Position := ⟨10, 47⟩
+  let introduced : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+    ← sendRunAt doc {
+      line := letHole.line
+      character := letHole.character
+      text := "have extra : Nat := 1"
+      storeHandle := true
+    }
+  let some extraHandle := introduced.handle?
+    | throw <| IO.userError s!"placeholder isolation: expected a handle, got {(toJson introduced).compress}"
+  requireRunAtFailureMessage "independent probe after a stored local" doc letHole "exact extra"
+    "extra"
+  let continued : Beam.LSP.RunAt.Result ← awaitResponseAs
+    (← runWithHandle doc extraHandle { text := "exact extra" })
+  unless continued.success && continued.proofState?.any (·.goals.isEmpty) do
+    throw <| IO.userError s!"placeholder isolation: expected the handle to see its local, got {(toJson continued).compress}"
+  let mut pending := #[]
+  for i in [:8] do
+    let text := if i % 2 == 0 then "have independent : Nat := 42; exact independent"
+      else "exact independent"
+    pending := pending.push (i, ← sendRunAt doc {
+      line := letHole.line
+      character := letHole.character
+      text
+    })
+  for (i, req) in pending do
+    let result : Beam.LSP.RunAt.Result ← awaitResponseAs req
+    unless result.success == (i % 2 == 0) do
+      throw <| IO.userError s!"concurrent placeholder probe {i}: {(toJson result).compress}"
+  requireRunAtGoals "placeholder after concurrent probes" doc letHole #["Nat"]
+
+  -- Known limitation, documented with runAt: probes do not run Lean's termination checking, so
+  -- text that uses the declaration being proved succeeds although the same edit fails. Update
+  -- these expectations when probes reject self-use. Later declarations stay unknown.
+  requireRunAtSolvesProof "self-reference at a term sorry" doc ⟨20, 28⟩ "exact termSelf"
+  requireRunAtSolvesProof "self-reference at a tactic sorry" doc ⟨21, 33⟩ "exact tacticSelf"
+  requireRunAtFailureMessage "later declaration at a term sorry" doc ⟨20, 28⟩
+    "exact tacticSelf" "tacticSelf"
+
+  -- An edit invalidates handles stored at a placeholder.
+  let minted : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+    ← sendRunAt doc { line := 12, character := 45, text := "skip", storeHandle := true }
+  let some staleHandle := minted.handle?
+    | throw <| IO.userError s!"placeholder invalidation: expected a handle, got {(toJson minted).compress}"
+  changeDoc doc { line := 0, character := 10, insert := " " }
+  syncDoc doc
+  expectErrorContains (← runWithHandle doc staleHandle { text := "exact default" })
+    placeholderContentModifiedJson
+  expectErrorContains (← runWithHandle doc extraHandle { text := "exact extra" })
+    placeholderContentModifiedJson
+
+  closeDoc doc
+
 def checkRunAtWithStandardLspInterference : ScenarioM Unit := do
   let runAtDoc ← openDoc "tests/scenario/docs/SimpleProof.lean"
   let editDoc ← openDoc "tests/scenario/docs/SimpleProofB.lean"
@@ -414,6 +501,7 @@ def run : ScenarioM Unit := do
   checkRunAtTacticPositions
   checkRunAtTacticSequences
   checkRunAtPlaceholders
+  checkRunAtPlaceholderContexts
   checkRunAtElaborationAborts
   checkRunAtSilentDiagnostics
   checkRunAtOneCommandOnly
