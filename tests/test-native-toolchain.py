@@ -595,7 +595,9 @@ def qualify(args, lean_prefix, scratch):
     run([real_elan, "toolchain", "link", "native-other", lean_prefix], env=env)
     (project / "lean-toolchain").write_text("native-other\n")
     mismatch = call("serve", ok=False)
-    assert mismatch.returncode != 0 and "not a member of this Beam installation" in mismatch.stderr, mismatch
+    assert mismatch.returncode == 1, mismatch
+    assert json.loads(mismatch.stdout)["error"]["code"] == "setupError", mismatch
+    assert "has no runtime for" in mismatch.stderr and "compiler was found" in mismatch.stderr, mismatch
 
     # An inherited elan override must neither hide a foreign project selector nor reject
     # a project that explicitly selects this installation.
@@ -609,7 +611,8 @@ def qualify(args, lean_prefix, scratch):
         if matching:
             assert resolved.returncode == 0 and "target membership: present" in resolved.stdout, resolved
         else:
-            assert resolved.returncode != 0 and "not a member of this Beam installation" in resolved.stderr, resolved
+            assert resolved.returncode == 1 and not resolved.stdout, resolved
+            assert "has no runtime for" in resolved.stderr and "compiler was found" in resolved.stderr, resolved
 
     (project / "lean-toolchain").write_text("native-not-installed\n")
     missing_selector = call("doctor", ok=False)
