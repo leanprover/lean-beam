@@ -365,8 +365,9 @@ needed. Both commands read the current on-disk file; neither applies or recovers
 `lean_todo` inspects the whole file unless all four range fields are given; code actions need a
 range (see below), and a whole-file request omits them. It reports one item per
 problem, and each item composes with `lean_run_at`: running text at the item's `run_at_position`
-starts from the item's `proof_state`, when it has one. Beam checks this for every item with a
-proof state, and omits `run_at_position` when no source position selects that state: for example the
+starts from the item's `proof_state`, when it has one. A `sorry` or hole item's goal comes from the
+lookup `lean_run_at` uses; for the goals that tactics left, Beam checks that `lean_run_at` selects
+those goals there, and omits `run_at_position` otherwise: for example for the
 goals left after a branch bullet, or goals left by a tactic that ran once per goal, as `skip` does
 in `constructor <;> skip`. Edit the file to work on those goals.
 
