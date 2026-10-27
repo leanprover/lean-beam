@@ -40,6 +40,12 @@ its execution admission until it settles. Process utilities (`beam_version`, `be
 wait for the fence. Pending responses do not hold either fence. There is no additional response-order guarantee
 for workspace control operations.
 
+Execution admission is charged to one typed pool at registration and released from it exactly
+once, after execution settles; cancellation does not release it. Ordinary requests share a
+configurable pool. Workspace drops and observation (`beam_version`, `beam_stats`, `ping`) fall back
+to separate fixed reserves, each with reserved output storage, when the ordinary pool or its output
+budget is full.
+
 Busy means the request did not execute. An output-limit error can follow a completed operation.
 A missing or cancelled response is not evidence that a save did not commit. Output delay must not
 retain a completed operation's broker resources or publication authority; see

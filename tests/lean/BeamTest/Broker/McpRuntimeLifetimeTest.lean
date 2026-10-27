@@ -73,15 +73,17 @@ local macro "stdioPrivate% " name:ident : term =>
 
 private def withCoordinator
     (test : (stdioPrivate% Beam.Mcp.Server.Coordinator) → IO.Ref (Array String) → IO Unit)
-    (beforeWrite : IO Unit := pure ()) : IO Unit := do
+    (beforeWrite : IO Unit := pure ())
+    (limits : Beam.Mcp.Admission.Limits := {})
+    (outputLimits : Beam.Mcp.StdioOutput.Limits := {}) : IO Unit := do
   let frames ← IO.mkRef (#[] : Array String)
-  let writer ← Beam.Mcp.StdioOutput.start fun frame => do
+  let writer ← Beam.Mcp.StdioOutput.start (limits := outputLimits) fun frame => do
     beforeWrite
     frames.modify (·.push frame.text)
   let coordinator := (stdioPrivate% Beam.Mcp.Server.Coordinator.mk)
     (← ServerState.create)
-    (← Std.Mutex.new ((stdioPrivate% Beam.Mcp.Server.RoutingState.mk) 1 {} {} none false 0))
-    writer 32
+    (← Std.Mutex.new ((stdioPrivate% Beam.Mcp.Server.RoutingState.mk) 1 {} {} none false {}))
+    writer limits
   try test coordinator frames
   finally
     writer.fail (IO.userError "coordinator fixture cleanup")
@@ -93,10 +95,33 @@ private def registerFixture
     (protectStarted : Bool := false) : IO (stdioPrivate% Beam.Mcp.Server.InFlightRequest) := do
   let policy := if protectStarted then (stdioPrivate% Beam.Mcp.Server.ClientCancellationPolicy.protectStarted)
     else (stdioPrivate% Beam.Mcp.Server.ClientCancellationPolicy.cooperative)
+  -- Protected fixtures stand for workspace drops; the rest are ordinary work.
+  let requestClass : Beam.Mcp.Admission.RequestClass :=
+    if protectStarted then .workspaceControl else .ordinary
   let .ok request ← (stdioPrivate% Beam.Mcp.Server.Coordinator.registerRequest)
-      coordinator (.string id) policy
+      coordinator (.string id) policy requestClass
     | throw <| IO.userError "coordinator fixture could not register its request"
   pure request
+
+private def tryRegister
+    (coordinator : (stdioPrivate% Beam.Mcp.Server.Coordinator)) (id : String)
+    (requestClass : Beam.Mcp.Admission.RequestClass) :
+    IO (Option (stdioPrivate% Beam.Mcp.Server.InFlightRequest)) := do
+  let policy := if requestClass == .ordinary then
+      (stdioPrivate% Beam.Mcp.Server.ClientCancellationPolicy.cooperative)
+    else (stdioPrivate% Beam.Mcp.Server.ClientCancellationPolicy.protectStarted)
+  (stdioPrivate% Beam.Mcp.Server.Coordinator.reserveRequestId)
+    coordinator (.string id) policy requestClass
+
+private def admissionLedger (coordinator : (stdioPrivate% Beam.Mcp.Server.Coordinator)) :
+    IO Beam.Mcp.Admission.Ledger := do
+  let routing ← ((stdioPrivate% Beam.Mcp.Server.Coordinator.routing) coordinator).atomically get
+  pure ((stdioPrivate% Beam.Mcp.Server.RoutingState.admissions) routing)
+
+private def requirePool (label : String)
+    (request : (stdioPrivate% Beam.Mcp.Server.InFlightRequest))
+    (pool : Beam.Mcp.Admission.Pool) : IO Unit :=
+  require label ((stdioPrivate% Beam.Mcp.Server.InFlightRequest.pool) request == pool)
 
 private def awaitDelivery (request : (stdioPrivate% Beam.Mcp.Server.InFlightRequest)) : IO Unit := do
   let some result ← IO.wait ((stdioPrivate% Beam.Mcp.Server.InFlightRequest.output) request).deliveryTask
@@ -174,7 +199,7 @@ private def checkUnrepresentableReplyIds : IO Unit :=
     require "no private admission identity was allocated"
       ((stdioPrivate% Beam.Mcp.Server.RoutingState.nextBrokerId) routing == 1)
     require "no execution admission was allocated"
-      ((stdioPrivate% Beam.Mcp.Server.RoutingState.executionAdmissions) routing == 0)
+      ((stdioPrivate% Beam.Mcp.Server.RoutingState.admissions) routing == {})
     require "no request was retained"
       ((stdioPrivate% Beam.Mcp.Server.RoutingState.admitted) routing).isEmpty
     require "no operation effects began" ((← effects.get) == 0)
@@ -236,9 +261,7 @@ private def checkExecutionAdmissionLifetime : IO Unit := do
       for index in [:32] do
         requests := requests.push (← registerFixture coordinator s!"admitted-{index}")
       for index in [32:40] do
-        let request? ← (stdioPrivate% Beam.Mcp.Server.Coordinator.reserveRequestId)
-          coordinator (.string s!"busy-{index}")
-          (stdioPrivate% Beam.Mcp.Server.ClientCancellationPolicy.cooperative)
+        let request? ← tryRegister coordinator s!"busy-{index}" .ordinary
         require "overflow requests are rejected before execution" request?.isNone
       let some _ ← IO.wait entered.result?
         | throw <| IO.userError "fixture writer never reached its gate"
@@ -324,7 +347,7 @@ private def checkLiveExecutionFence : IO Unit := do
       (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator later (.str "later")
       let routing ← ((stdioPrivate% Beam.Mcp.Server.Coordinator.routing) coordinator).atomically get
       require "all execution admissions are released before any delivery"
-        ((stdioPrivate% Beam.Mcp.Server.RoutingState.executionAdmissions) routing == 0)
+        ((stdioPrivate% Beam.Mcp.Server.RoutingState.admissions) routing == {})
       require "physical output remains blocked throughout live execution" ((← frames.get).isEmpty)
       for request in #[prior, drop, later] do
         require "only delivery remains pending"
@@ -503,6 +526,113 @@ private def checkEvictionCleanupDuringEof : IO Unit :=
       state.closeRuntime
       IO.FS.removeDirAll root
 
+private def busyReplies (frames : IO.Ref (Array String)) : IO Nat := do
+  let responses ← (← frames.get).mapM fun frame =>
+    IO.ofExcept <| (Json.parse frame).mapError IO.userError
+  pure <| responses.filter (fun response =>
+    match response.getObjVal? "error" with
+    | .ok error => (error.getObjValAs? Int "code").toOption == some (-32024)
+    | .error _ => false) |>.size
+
+/-- Ordinary saturation by cancelled-but-unsettled work leaves recovery admissible, with
+separate bounded reserves for drops and observation, and exact capacity reuse. -/
+private def checkRecoveryCapacity (ordinary : Nat) : IO Unit :=
+  withCoordinator (limits := { ordinary }) fun coordinator frames => do
+    let mut stuck := #[]
+    for index in [:ordinary] do
+      stuck := stuck.push (← registerFixture coordinator s!"stuck-{index}")
+    for request in stuck do (stdioPrivate% Beam.Mcp.Server.InFlightRequest.cancel) request
+    require "cancellation does not release unsettled admission"
+      ((← tryRegister coordinator "ordinary-busy" .ordinary).isNone)
+    let some drop ← tryRegister coordinator "drop-1" .workspaceControl
+      | throw <| IO.userError "drop was busy under cancelled ordinary saturation"
+    requirePool "drop is charged to the control reserve" drop .controlReserve
+    let some queuedDrop ← tryRegister coordinator "drop-2" .workspaceControl
+      | throw <| IO.userError "second drop was busy"
+    require "control reserve is bounded"
+      ((← tryRegister coordinator "drop-busy" .workspaceControl).isNone)
+    let some version ← tryRegister coordinator "version" .observation
+      | throw <| IO.userError "queued drops starved observation"
+    requirePool "observation is charged to its own reserve" version .observationReserve
+    let some stats ← tryRegister coordinator "stats" .observation
+      | throw <| IO.userError "second observation was busy"
+    require "observation reserve is bounded"
+      ((← tryRegister coordinator "observation-busy" .observation).isNone)
+    -- Settlement (here: the queued drop and one stuck request) returns capacity to its own pool.
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator queuedDrop (.str "queued")
+    let some redrop ← tryRegister coordinator "drop-3" .workspaceControl
+      | throw <| IO.userError "settled reserve capacity was not reusable"
+    requirePool "reused drop capacity stays in the reserve" redrop .controlReserve
+    let some settled := stuck[0]? | throw <| IO.userError "fixture has no stuck request"
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator settled (.str "settled")
+    let some fresh ← tryRegister coordinator "fresh" .ordinary
+      | throw <| IO.userError "settled ordinary capacity was not reusable"
+    requirePool "fresh work uses the ordinary pool" fresh .ordinary
+    discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
+    for request in (stuck.extract 1 stuck.size) ++ #[drop, redrop, version, stats, fresh] do
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator request (.str "eof")
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
+    require "EOF releases every pool exactly once" ((← admissionLedger coordinator) == {})
+    require "each exhausted pool replied busy without executing" ((← busyReplies frames) == 3)
+
+/-- An ordinary pool with room does not help when ordinary output storage is full; recovery
+admission then uses the reserve pool together with its own output budget. -/
+private def checkRecoveryOutputBudget : IO Unit := do
+  let entered ← IO.Promise.new
+  let release ← IO.Promise.new
+  withCoordinator (outputLimits := { pendingBytes := 4096 }) (fun coordinator _ => do
+    try
+      let blocker ← registerFixture coordinator "blocker"
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator blocker (.str "blocked")
+      let some _ ← IO.wait entered.result?
+        | throw <| IO.userError "output budget fixture never blocked its writer"
+      require "full ordinary output rejects ordinary work"
+        ((← tryRegister coordinator "ordinary-busy" .ordinary).isNone)
+      let some drop ← tryRegister coordinator "drop" .workspaceControl
+        | throw <| IO.userError "full ordinary output denied recovery admission"
+      requirePool "drop falls back to the reserve and its output budget" drop .controlReserve
+      let some version ← tryRegister coordinator "version" .observation
+        | throw <| IO.userError "full ordinary output denied observation"
+      requirePool "observation falls back to its reserve" version .observationReserve
+      release.resolve ()
+      discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
+      for request in #[drop, version] do
+        (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator request (.str "eof")
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
+      require "output-limited admissions release exactly once" ((← admissionLedger coordinator) == {})
+    finally release.resolve ()) (beforeWrite := do
+      entered.resolve ()
+      let some _ ← IO.wait release.result?
+        | throw <| IO.userError "output budget fixture release was dropped")
+
+/-- Task-start failure completes through `failOwnedRequest`, which must release reserve capacity. -/
+private def checkReserveReleaseOnFailure : IO Unit :=
+  withCoordinator (limits := { ordinary := 1 }) fun coordinator frames => do
+    let stuck ← registerFixture coordinator "stuck"
+    let json := Json.mkObj [
+      ("jsonrpc", .str "2.0"), ("id", .str "drop"), ("method", .str "tools/call"),
+      ("params", Json.mkObj [("name", .str "lean_drop_workspace"), ("arguments", Json.mkObj [])])]
+    let .ok (.request req) := Incoming.fromJson? json
+      | throw <| IO.userError "invalid failure fixture request"
+    for attempt in [:3] do
+      let some drop ← tryRegister coordinator "drop" .workspaceControl
+        | throw <| IO.userError s!"reserve capacity leaked after failure {attempt}"
+      requirePool "failure fixture uses the reserve" drop .controlReserve
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.failOwnedRequest) coordinator req drop
+        (IO.userError "task start failed")
+      (stdioPrivate% Beam.Mcp.Server.InFlightRequest.awaitExecution) drop
+    discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator stuck (.str "eof")
+    (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
+    require "failures and EOF release every pool" ((← admissionLedger coordinator) == {})
+    let responses ← (← frames.get).mapM fun frame =>
+      IO.ofExcept <| (Json.parse frame).mapError IO.userError
+    require "each failed start has an internal-error reply"
+      ((responses.filter fun response =>
+        match response.getObjVal? "error" with
+        | .ok error => (error.getObjValAs? Int "code").toOption == some (-32603)
+        | .error _ => false).size == 3)
+
 def run : IO Unit := do
   checkPermanentClosure
   checkSharedCleanupFailure
@@ -515,6 +645,11 @@ def run : IO Unit := do
   checkQueuedEviction true
   checkQueuedEviction false
   checkStartedEviction
+  checkRecoveryCapacity 1
+  checkRecoveryCapacity 2
+  checkRecoveryCapacity 32
+  checkRecoveryOutputBudget
+  checkReserveReleaseOnFailure
   checkEvictionCleanupDuringEof
 
 end BeamTest.Broker.McpRuntimeLifetimeTest

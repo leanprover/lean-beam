@@ -132,6 +132,10 @@ A remote transport needs an explicit Source model and authorization policy.
 ## Runtime Setup
 
 The installed `bin/lean-beam-mcp` wrapper starts the MCP executable from its concrete installation.
+It forwards its arguments. `--max-unfinished-requests N` sets the ordinary execution-admission pool
+(default 32) described under [Transport Lifetime](#transport-lifetime); `N` must be a decimal integer
+from 1 to 1024, and any other value is rejected at startup, before the server reads stdin.
+This is unrelated to Lean's thread count and to the output byte budgets.
 Both standalone and bundled MCP use
 [Beam/Installation/Lookup.lean](../Beam/Installation/Lookup.lean) to select a complete runtime
 from the installation's published component set. A standalone set may contain several targets;
@@ -202,11 +206,28 @@ does not replace the retained runtime.
 
 The transport reserves space for a small terminal error before accepting work. One writer owns
 stdout. Execution admission is released after operation cleanup, independently of pending delivery.
-At most 32 execution admissions are unfinished at once. A client-cancelled call keeps its admission
-until it settles, so 32 cancelled calls that never observe cancellation exhaust admission: every
-later request, including `lean_drop_workspace` and `beam_version`, receives `-32024`, and only
-restarting the server recovers. Normal output shares a 64 MiB budget;
-each admission reserves 4 KiB from it, and an encoded successful response may use up to 8 MiB.
+An execution admission covers a request from registration until its execution settles: queued,
+running, and client-cancelled but unsettled work all hold one. A client-cancelled call keeps its
+admission until it settles; cancellation alone never frees capacity. Admission is split into pools:
+
+- the ordinary pool holds at most `--max-unfinished-requests` admissions (default 32, range
+  1–1024; see [Runtime Setup](#runtime-setup))
+- `lean_drop_workspace` uses the ordinary pool while it has room, and otherwise a fixed reserve
+  of 2
+- `beam_version`, `beam_stats`, and `ping` use the ordinary pool while it has room, and otherwise
+  a separate fixed reserve of 2, so queued drops cannot starve them
+
+A request is charged to one pool at registration and released from that pool exactly once. If
+ordinary work that never observes cancellation fills the ordinary pool and is cancelled, a drop
+can still be admitted: its backend shutdown stops that work, which then releases its capacity.
+The reserves do not make every stall recoverable. A drop still waits for uncancelled earlier
+calls, does not interrupt a Lake load holding the broker state lock, and cannot deliver its
+response if the client never reads stdout.
+
+Normal output shares a 64 MiB budget; each ordinary admission reserves 4 KiB from it, and an
+encoded successful response may use up to 8 MiB. Reserve-pool admissions take their 4 KiB from a
+separate 1 MiB output budget, so a full ordinary output budget does not deny recovery; a
+reserve-pool response that does not fit that budget receives `-32023`.
 These frame budgets include envelope metadata, the newline, and retained diagnostic labels.
 They do not bound broker computation, input decoding, or result construction.
 
@@ -216,7 +237,8 @@ not be delivered, but effects such as a committed save are not undone. Do not bl
 operation that may have effects. A missing or cancelled response is likewise not evidence that a
 save did not commit. Delayed output retains neither broker resources nor publication authority
 after operation cleanup. Admission overload instead produces error `-32024` before the
-request executes; the client may retry after pending work/output drains. Neither condition closes
+request executes, when every pool the request may use is full; the client may retry after pending
+work/output drains. Neither condition closes
 other requests or workspaces.
 
 Busy replies and unowned protocol errors use a separate 256 KiB reserve, enough for 64 small
@@ -511,9 +533,9 @@ and cleanup before the drop runs; later workspace-bound calls wait for the drop'
 cleanup and may then recreate the same descriptor. A call the client has cancelled stops fencing
 the drop, even if it has not settled: it keeps its execution admission until it does, and the
 drop's backend shutdown can be what stops it. To evict a workspace whose earlier call is stuck,
-cancel that call; this also releases a drop that is already waiting, provided admission capacity
-remains for the drop itself. `beam_version` and
-`beam_stats` never wait for the fence. These fences never wait for stdout. Responses may arrive out
+cancel that call; this also releases a drop that is already waiting. A queued drop keeps its
+admission until its fence clears, even if cancelled. `beam_version` and `beam_stats` never wait
+for the fence. These fences never wait for stdout. Responses may arrive out
 of execution order, including responses to workspace control operations.
 Registration or a progress notification alone does not grant execution ownership.
 

@@ -366,6 +366,11 @@ client protocol.
   safely. Previously admitted, uncancelled calls drain first; a cancelled call that has not settled
   does not delay the drop, whose backend shutdown can stop it. Later workspace-bound calls wait for
   eviction to finish and may recreate the same descriptor; `beam_version` and `beam_stats` do not.
+- MCP stdio admits at most `--max-unfinished-requests` ordinary requests (default 32), counting
+  queued, running, and cancelled-but-unsettled work. `lean_drop_workspace` and process observation
+  (`beam_version`, `beam_stats`, `ping`) keep small fixed reserves, so cancelled work that never
+  settles cannot block the drop that would stop it. Requests beyond every applicable pool receive
+  `-32024` without executing.
 - MCP JSON-RPC envelopes, `tools/call` parameters, and broker operation fields are closed at their
   current protocol boundaries; undeclared or operation-irrelevant fields are rejected rather than
   ignored. MCP `_meta` remains open for protocol-defined metadata.

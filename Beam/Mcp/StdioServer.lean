@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Broker.Server
+import Beam.Mcp.Admission
 import Beam.Mcp.Server
 import Beam.Mcp.Stdio
 import Beam.Mcp.StdioOutput
@@ -68,6 +69,8 @@ private structure InFlightRequest where
   id : RequestId
   brokerId : String
   cancellationPolicy : ClientCancellationPolicy
+  /-- The admission pool charged at registration and released once, after execution settles. -/
+  pool : Admission.Pool
   state : Std.Mutex InFlightState
   executionDone : IO.Promise Unit
   -- Resolved once the client cancels; the request may still be settling its execution.
@@ -82,7 +85,7 @@ private structure RoutingState where
   admitted : Std.TreeMap String InFlightRequest := {}
   controlBarrier? : Option InFlightRequest := none
   closing : Bool := false
-  executionAdmissions : Nat := 0
+  admissions : Admission.Ledger := {}
 
 private inductive RequestRegistrationError where
   | duplicate
@@ -97,13 +100,14 @@ private structure Coordinator where
   state : ServerState
   routing : Std.Mutex RoutingState
   output : Beam.Mcp.StdioOutput.Writer
-  executionLimit : Nat := 32
+  limits : Admission.Limits
 
-private def Coordinator.create : IO Coordinator := do
+private def Coordinator.create (limits : Admission.Limits) : IO Coordinator := do
   pure {
     state := ← ServerState.create
     routing := ← Std.Mutex.new {}
     output := ← Beam.Mcp.StdioOutput.start writeFrame
+    limits
   }
 
 private def Coordinator.validateReplyId (coordinator : Coordinator) (id : Json) : IO Unit := do
@@ -113,49 +117,65 @@ private def Coordinator.validateReplyId (coordinator : Coordinator) (id : Json) 
   | .error _ =>
       throw <| IO.userError "JSON-RPC request ID cannot fit the reserved MCP error envelope"
 
+/-- Reserve terminal output for the first candidate pool whose output budget has room. Reserve
+pools use their own output budget, so pending ordinary output cannot deny a recovery admission. -/
+private def Coordinator.reserveOutput (coordinator : Coordinator) :
+    List Admission.Pool → IO (Option (Admission.Pool × Beam.Mcp.StdioOutput.Slot))
+  | [] => pure none
+  | pool :: pools => do
+      let budget := if pool.isReserve then .recovery else .shared
+      match ← coordinator.output.tryReserve budget with
+      | some output => pure (some (pool, output))
+      | none => coordinator.reserveOutput pools
+
 private def Coordinator.registerRequest
     (coordinator : Coordinator)
     (id : RequestId)
-    (cancellationPolicy : ClientCancellationPolicy) :
+    (cancellationPolicy : ClientCancellationPolicy)
+    (requestClass : Admission.RequestClass) :
     IO (Except RequestRegistrationError InFlightRequest) := do
   coordinator.validateReplyId id
-  -- Ignore duplicates before reserving capacity; registration is driven by the sole reader.
-  let unavailable? ← coordinator.routing.atomically do
+  -- Ignore duplicates before reserving capacity; registration is driven by the sole reader, so a
+  -- pool with room here keeps it until the commit below.
+  let candidates : Except RequestRegistrationError (List Admission.Pool) ←
+      coordinator.routing.atomically do
     let routing ← get
-    if routing.inFlight.contains id then return some .duplicate
-    if routing.closing then return some .closing
-    if routing.executionAdmissions >= coordinator.executionLimit then return some .busy
-    return none
-  if let some reason := unavailable? then return .error reason
-  let some output ← coordinator.output.tryReserve | return .error .busy
+    if routing.inFlight.contains id then return .error .duplicate
+    if routing.closing then return .error .closing
+    return .ok <| routing.admissions.candidates coordinator.limits requestClass
+  let candidates ← match candidates with
+    | .error reason => return .error reason
+    | .ok candidates => pure candidates
+  let some (pool, output) ← coordinator.reserveOutput candidates | return .error .busy
   let request : InFlightRequest := {
     id
     brokerId := ""
     cancellationPolicy
+    pool
     output
     state := ← Std.Mutex.new {}
     executionDone := ← IO.Promise.new
     clientCancelled := ← IO.Promise.new
   }
-  let result ← coordinator.routing.atomically do
+  let result : Except RequestRegistrationError InFlightRequest ←
+      coordinator.routing.atomically do
     let routing ← get
     if routing.inFlight.contains id then
-      pure <| .error .duplicate
-    else if routing.closing then
-      pure <| .error .closing
-    else if routing.executionAdmissions >= coordinator.executionLimit then
-      pure <| .error .busy
-    else
-      let brokerId := s!"mcp:{routing.nextBrokerId}"
-      let request := { request with brokerId }
-      set {
-        routing with
-          nextBrokerId := routing.nextBrokerId + 1
-          inFlight := routing.inFlight.insert id request
-          admitted := routing.admitted.insert brokerId request
-          executionAdmissions := routing.executionAdmissions + 1
-      }
-      pure <| .ok request
+      return .error .duplicate
+    if routing.closing then
+      return .error .closing
+    let some admissions := routing.admissions.acquire? coordinator.limits pool
+      | return .error .busy
+    let brokerId := s!"mcp:{routing.nextBrokerId}"
+    let request := { request with brokerId }
+    set {
+      routing with
+        nextBrokerId := routing.nextBrokerId + 1
+        inFlight := routing.inFlight.insert id request
+        admitted := routing.admitted.insert brokerId request
+        admissions
+    }
+    return .ok request
   if let .error _ := result then output.release
   pure result
 
@@ -183,7 +203,7 @@ private def Coordinator.completeRequest
 private def Coordinator.finishExecution (coordinator : Coordinator) (request : InFlightRequest) : IO Unit :=
   coordinator.routing.atomically do
     if ← request.executionDone.isResolved then return
-    modify fun routing => { routing with executionAdmissions := routing.executionAdmissions - 1 }
+    modify fun routing => { routing with admissions := routing.admissions.release request.pool }
     request.state.atomically do modify fun current => { current with brokerRequest? := none }
     request.executionDone.resolve ()
 
@@ -526,17 +546,13 @@ private def finishReporterSafely
   catch e =>
     traceMcpSafely s!"request reporter finish failed id={req.id.label}: {e.toString}"
 
-/-- Process utilities never touch a workspace runtime, so workspace control does not fence them. -/
-private def isProcessLocal : Except String CallToolParams → Bool
-  | .ok params => params.name == .beamVersion || params.name == .beamStats
-  | .error _ => false
-
 private def Coordinator.spawnToolRequest
     (coordinator : Coordinator)
     (opts : Options)
     (req : Request)
     (evidence : RequestProtocolEvidence)
     (parsedParams : Except String CallToolParams)
+    (requestClass : Admission.RequestClass)
     (request : InFlightRequest) : IO Unit := do
   let admission ←
     try
@@ -552,7 +568,8 @@ private def Coordinator.spawnToolRequest
         return
   let barrier? ←
     try
-      if isProcessLocal parsedParams then pure none else coordinator.currentControlBarrier?
+      -- Observation never touches a workspace runtime, so workspace control does not fence it.
+      if requestClass == .observation then pure none else coordinator.currentControlBarrier?
     catch e =>
       coordinator.failOwnedRequest req request e
       return
@@ -606,15 +623,12 @@ private def Coordinator.handleControlToolRequest
               finishReporterSafely req reporter.finish
       coordinator.spawnOwnedRequest req request work
 
-private def isWorkspaceControl : Except String CallToolParams → Bool
-  | .ok params => params.name == .leanDropWorkspace
-  | .error _ => false
-
 private def Coordinator.reserveRequestId
     (coordinator : Coordinator)
     (id : RequestId)
-    (cancellationPolicy : ClientCancellationPolicy) : IO (Option InFlightRequest) := do
-  match ← coordinator.registerRequest id cancellationPolicy with
+    (cancellationPolicy : ClientCancellationPolicy)
+    (requestClass : Admission.RequestClass) : IO (Option InFlightRequest) := do
+  match ← coordinator.registerRequest id cancellationPolicy requestClass with
   | .ok request => pure <| some request
   | .error .duplicate =>
       Internal.traceMcp s!"ignoring duplicate active request id={id.label}"
@@ -627,12 +641,6 @@ private def Coordinator.reserveRequestId
       coordinator.sendUnowned <| errorResponse id RpcError.serverBusy
       pure none
 
-private def Coordinator.reserveRequest
-    (coordinator : Coordinator)
-    (req : Request)
-    (cancellationPolicy : ClientCancellationPolicy) : IO (Option InFlightRequest) :=
-  coordinator.reserveRequestId req.id cancellationPolicy
-
 private def Coordinator.handleInvalidMessage
     (coordinator : Coordinator)
     (json : Json)
@@ -642,7 +650,7 @@ private def Coordinator.handleInvalidMessage
   | none =>
       coordinator.sendUnowned <| errorResponse Json.null invalidRequest
   | some id =>
-      let some request ← coordinator.reserveRequestId id .protectStarted
+      let some request ← coordinator.reserveRequestId id .protectStarted .ordinary
         | return
       coordinator.finishRequest request <| errorResponse id invalidRequest
 
@@ -666,12 +674,14 @@ private def Coordinator.handleIncoming
   | .request req =>
       let parsedToolParams? :=
         if req.method == "tools/call" then some <| parseCallToolParams req.params? else none
+      let tool? := parsedToolParams?.bind fun parsed => parsed.toOption.map (·.name)
+      let requestClass := Admission.classify req.method tool?
       let cancellationPolicy :=
         match parsedToolParams? with
-        | some parsedParams =>
-            if isWorkspaceControl parsedParams then .protectStarted else .cooperative
+        | some _ =>
+            if requestClass == .workspaceControl then .protectStarted else .cooperative
         | none => .protectStarted
-      let some request ← coordinator.reserveRequest req cancellationPolicy
+      let some request ← coordinator.reserveRequestId req.id cancellationPolicy requestClass
         | return
       let evidence ←
         match req.protocolEvidence with
@@ -681,10 +691,10 @@ private def Coordinator.handleIncoming
             return
       match parsedToolParams? with
       | some parsedParams =>
-        if isWorkspaceControl parsedParams then
+        if requestClass == .workspaceControl then
           coordinator.handleControlToolRequest opts req evidence parsedParams request
         else
-          coordinator.spawnToolRequest opts req evidence parsedParams request
+          coordinator.spawnToolRequest opts req evidence parsedParams requestClass request
         pure ()
       | none =>
         let response ←
@@ -698,9 +708,9 @@ private def Coordinator.handleIncoming
   | .notification notification =>
       coordinator.handleNotification notification
 
-partial def runStdio (opts : Options) : IO Unit := do
+partial def runStdio (opts : Options) (limits : Admission.Limits := {}) : IO Unit := do
   let stdin ← IO.getStdin
-  let coordinator ← Coordinator.create
+  let coordinator ← Coordinator.create limits
   let readerDone : IO.Promise (Except IO.Error Unit) ← IO.Promise.new
   let rec loop : IO Unit := do
     let input ← stdin.getLine

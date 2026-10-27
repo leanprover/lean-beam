@@ -3482,11 +3482,108 @@ def run_admission_overload(repo_root, fixture_root, timeout):
             for request in requests[32:]:
                 expect_error_code(client.read_response(request), -32024)
             require(client.proc.poll() is None, "admission overload terminated the MCP server")
+            # Observation keeps a reserve beyond the saturated ordinary pool.
+            observed = expect_result(client.request(
+                "tools/call", {"name": "beam_version", "arguments": {}},
+                request_id="version-under-overload"))
+            require(observed.get("isError") is not True, f"beam_version failed under overload: {observed}")
+            expect_result(client.request("ping", request_id="ping-under-overload"))
             release.write_text("release\n")
             for request in requests[:32]:
                 result = expect_result(client.read_response(request))
                 require_success("admitted overload request", result.get("structuredContent", {}))
             expect_result(client.request("tools/list"))
+        finally:
+            release.write_text("release\n")
+            client.close()
+
+
+def run_recovery_capacity(repo_root, fixture_root, timeout):
+    installation = Path(os.environ["BEAM_TEST_INSTALLATION"])
+    exe = installation / "bin/lean-beam-mcp"
+    for value in ["0", "-1", "1025", "99999999999999999999", "two", ""]:
+        rejected = subprocess.run(
+            [str(exe), "--max-unfinished-requests", value],
+            input="", capture_output=True, text=True, timeout=timeout,
+        )
+        require(
+            rejected.returncode != 0
+            and rejected.stdout == ""
+            and "--max-unfinished-requests" in rejected.stderr,
+            f"invalid --max-unfinished-requests {value!r} was not rejected before serving: {rejected}",
+        )
+    with tempfile.TemporaryDirectory(prefix="lean-beam-mcp-recovery-capacity-") as tmp:
+        root = Path(tmp) / "project"
+        started = Path(tmp) / "started"
+        release = Path(tmp) / "release"
+        copy_project_fixture(fixture_root, root)
+        client = McpClient(
+            repo_root, root, timeout, label="recovery-capacity",
+            server_command=[exe, "--max-unfinished-requests", "2"],
+            extra_env={"BEAM_MCP_GATE_STARTED": started, "BEAM_MCP_GATE_RELEASE": release},
+        )
+        update_params = {"name": "lean_update", "arguments": {"path": "McpConcurrency.lean"}}
+        drop_params = {"name": "lean_drop_workspace", "arguments": {}}
+        try:
+            client.initialize()
+            version = client.call_tool("lean_update", {"path": "McpConcurrency.lean"})["version"]
+            line = (root / "McpConcurrency.lean").read_text().splitlines().index("  trivial")
+            stuck_params = {"name": "lean_run_at", "arguments": {
+                "path": "McpConcurrency.lean", "version": version,
+                "line": line, "character": 2, "text": "mcp_unresponsive_gate",
+            }}
+            # Fill the configured ordinary pool with producers that ignore cancellation.
+            stuck = []
+            for index in range(2):
+                started.unlink(missing_ok=True)
+                stuck.append(client.send_request("tools/call", stuck_params, request_id=f"stuck-{index}"))
+                wait_for_file(started, timeout, f"unresponsive gate {index}")
+            busy = client.send_request("tools/call", update_params, request_id="ordinary-busy")
+            expect_error_code(client.read_response(busy), -32024)
+            # Uncancelled producers fence drops. Two drops queue in the control reserve; a third
+            # is rejected without executing, and observation stays available beside them.
+            drops = [client.send_request("tools/call", drop_params, request_id=f"drop-{index}")
+                     for index in range(2)]
+            excess = client.send_request("tools/call", drop_params, request_id="drop-busy")
+            expect_error_code(client.read_response(excess), -32024)
+            observed = expect_result(client.request(
+                "tools/call", {"name": "beam_version", "arguments": {}},
+                request_id="version-beside-queued-drops"))
+            require(observed.get("isError") is not True, f"queued drops starved beam_version: {observed}")
+            expect_result(client.request("ping", request_id="ping-beside-queued-drops"))
+            require(not any(client.response_ready(drop) for drop in drops),
+                    "a drop ran before uncancelled earlier work drained")
+            for request in stuck:
+                client.notify("notifications/cancelled", {"requestId": request, "reason": "recover"})
+            first = expect_result(client.read_response(drops[0]))
+            require(first.get("structuredContent", {}).get("dropped") is True,
+                    f"saturated recovery drop did not evict: {first}")
+            second = expect_result(client.read_response(drops[1]))
+            require(second.get("structuredContent", {}).get("dropped") is False,
+                    f"repeated drop did not report an absent workspace: {second}")
+            # Backend shutdown settles the cancelled producers; their capacity then returns.
+            deadline = time.monotonic() + timeout
+            attempt = 0
+            while True:
+                attempt += 1
+                response = client.read_response(client.send_request(
+                    "tools/call", update_params, request_id=f"fresh-update-{attempt}"))
+                if "error" in response and response["error"].get("code") == -32024:
+                    require(time.monotonic() < deadline,
+                            "cancelled producers never released ordinary capacity after the drop")
+                    time.sleep(0.05)
+                    continue
+                fresh = expect_result(response)
+                require(fresh.get("isError") is not True, f"fresh work failed after recovery: {fresh}")
+                break
+            for index in range(2):
+                reused = expect_result(client.request(
+                    "tools/call", update_params, request_id=f"reused-update-{index}"))
+                require(reused.get("isError") is not True, f"reused capacity failed: {reused}")
+            for request in stuck:
+                require(not client.response_ready(request),
+                        "a cancelled unresponsive producer produced a terminal response")
+                client.forget_request(request)
         finally:
             release.write_text("release\n")
             client.close()
@@ -4028,6 +4125,7 @@ def main():
     run_legacy_eof_teardown(repo_root, fixture_root, args.timeout)
     run_output_limit_isolation(repo_root, fixture_root, args.timeout)
     run_admission_overload(repo_root, fixture_root, args.timeout)
+    run_recovery_capacity(repo_root, fixture_root, args.timeout)
     run_diagnostic_overflow(repo_root, fixture_root, args.timeout)
     run_blocked_stdout_eof_cleanup(repo_root, fixture_root, args.timeout)
     run_closed_stdout_regression(repo_root, fixture_root, args.timeout)

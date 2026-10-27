@@ -8,6 +8,7 @@ import Beam.Mcp.Server
 import Beam.Mcp.Options
 import Beam.Mcp.Stdio
 import BeamTest.Broker.McpDropFailureTest
+import BeamTest.Broker.McpAdmissionTest
 import BeamTest.Broker.McpOutputTest
 import BeamTest.Broker.McpRuntimeLifetimeTest
 import BeamTest.Broker.JsonAssert
@@ -1834,6 +1835,7 @@ def main (args : List String) : IO Unit := do
   | ["--drop-failure-tests"] => return ← BeamTest.Broker.McpDropFailureTest.run
   | ["--runtime-admission-tests"] => return ← checkRuntimeAdmissionPolicy
   | _ => pure ()
+  BeamTest.Broker.McpAdmissionTest.run
   BeamTest.Broker.McpOutputTest.run
   BeamTest.Broker.McpRuntimeLifetimeTest.run
   checkJsonHelpers

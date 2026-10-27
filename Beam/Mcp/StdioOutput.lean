@@ -16,6 +16,8 @@ open _root_.Lean
 structure Limits where
   pendingBytes : Nat := 64 * 1024 * 1024
   rejectionBytes : Nat := 256 * 1024
+  /-- Admissions charged to a recovery reserve never compete with ordinary pending output. -/
+  recoveryBytes : Nat := 1024 * 1024
   reservedResponseBytes : Nat := 4 * 1024
   responseBytes : Nat := 8 * 1024 * 1024
   diagnosticBytes : Nat := 256 * 1024
@@ -93,7 +95,13 @@ private def encode (json : Json) (label : String) (limit : Nat) : Except OutputL
 
 private inductive SlotKind where
   | request
+  | recovery
   | rejection
+
+/-- The output budget an execution admission reserves its terminal reply from. -/
+inductive Budget where
+  | shared
+  | recovery
 
 private structure WorkspaceText where
   buffer : Beam.WorkspaceOutput.Buffer
@@ -135,6 +143,7 @@ private structure State where
   nextTextId : Nat := 0
   pending : Std.TreeMap Nat Pending := {}
   pendingBytes : Nat := 0
+  recoveryBytes : Nat := 0
   rejectionBytes : Nat := 0
 
 /-- Keep accounting in one pure transition for insertion, replacement, and retirement. -/
@@ -151,12 +160,16 @@ private def State.replace (current : State) (limits : Limits) (id : Nat)
   | .request => return { current with
       pending := pending
       pendingBytes := current.pendingBytes - oldBytes + newBytes }
+  | .recovery => return { current with
+      pending := pending
+      recoveryBytes := current.recoveryBytes - oldBytes + newBytes }
   | .rejection => return { current with
       pending := pending
       rejectionBytes := current.rejectionBytes - oldBytes + newBytes }
 
 private def State.fits (current : State) (limits : Limits) : Bool :=
-  current.pendingBytes <= limits.pendingBytes && current.rejectionBytes <= limits.rejectionBytes
+  current.pendingBytes <= limits.pendingBytes && current.recoveryBytes <= limits.recoveryBytes &&
+    current.rejectionBytes <= limits.rejectionBytes
 
 /-- One writer owns stdout. Pending slots contain only text and delivery promises. -/
 structure Writer where
@@ -187,7 +200,12 @@ private def failState (error : IO.Error) : Std.AtomicT State IO (Option (Array P
   match current.phase with
   | .failed _ | .finished => pure none
   | _ =>
-      set { current with phase := .failed error, pending := {}, pendingBytes := 0, rejectionBytes := 0 }
+      set { current with
+        phase := .failed error
+        pending := {}
+        pendingBytes := 0
+        recoveryBytes := 0
+        rejectionBytes := 0 }
       pure <| some <| current.pending.toArray.map Prod.snd
 
 private def Writer.publishFailure (writer : Writer) (error : IO.Error) (pending : Array Pending) : IO Unit := do
@@ -203,7 +221,10 @@ def Writer.fail (writer : Writer) (error : IO.Error) : IO Unit := do
   writer.publishFailure error pending
 
 /-- Try to reserve a small terminal reply. Normal overload never fails the session. -/
-def Writer.tryReserve (writer : Writer) : IO (Option Slot) := do
+def Writer.tryReserve (writer : Writer) (budget : Budget := .shared) : IO (Option Slot) := do
+  let kind : SlotKind := match budget with
+    | .shared => .request
+    | .recovery => .recovery
   let done ← IO.Promise.new
   let id? ← writer.state.atomically do
     let current ← get
@@ -212,7 +233,7 @@ def Writer.tryReserve (writer : Writer) : IO (Option Slot) := do
     | .draining | .finished => throw <| IO.userError "MCP output is draining"
     | .accepting =>
         let id := current.nextId
-        let next := current.replace writer.limits id (some { done })
+        let next := current.replace writer.limits id (some { kind, done })
         if !next.fits writer.limits then return none
         set { next with nextId := id + 1 }
         pure (some id)
@@ -339,7 +360,8 @@ private def Slot.accept (slot : Slot) (response : Nat → Json) (label : String)
         let some pending := current.pending.get? slot.id | return .ok ()
         if pending.cancelled || pending.response?.isSome then return .ok ()
         let limit := match pending.kind with
-          | .request => if reserved then slot.writer.limits.reservedResponseBytes else slot.writer.limits.responseBytes
+          | .request | .recovery =>
+              if reserved then slot.writer.limits.reservedResponseBytes else slot.writer.limits.responseBytes
           | .rejection => slot.writer.limits.reservedResponseBytes
         let frame ← match encode (response pending.omittedDiagnostics) label limit with
           | .ok frame => pure frame
@@ -530,6 +552,7 @@ private def Writer.settle (writer : Writer) : IO (Except IO.Error Unit) :=
 
 def start (write : Frame → IO Unit) (limits : Limits := {}) : IO Writer := do
   if limits.reservedResponseBytes == 0 || limits.pendingBytes < limits.reservedResponseBytes ||
+      limits.recoveryBytes < limits.reservedResponseBytes ||
       limits.rejectionBytes < limits.reservedResponseBytes then
     throw <| IO.userError "MCP output budgets must each hold a nonempty reserved response"
   let writer : Writer := {

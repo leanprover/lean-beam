@@ -44,6 +44,6 @@ def main (args : List String) : IO Unit := do
   if opts.showVersion then
     IO.println (← readIdentity installation).text
     return
-  Server.runStdio (serverOptions installation)
+  Server.runStdio (serverOptions installation) { ordinary := opts.maxUnfinishedRequests }
 
 end Beam.Mcp.Application
