@@ -90,10 +90,17 @@ The current public distribution path starts from a Lean Beam source checkout. To
 release, check out that tag first, then run the installer from the checkout root. After installation,
 run the installed commands from the Lean project you want to work on.
 
+Obtain a checkout with:
+
+```bash
+git clone https://github.com/leanprover/lean-beam.git
+cd lean-beam
+```
+
 From a Lean Beam checkout, run one installer command that matches how you plan to use it:
 
 ```bash
-./scripts/install-beam.sh            # CLI and MCP wrappers only
+./scripts/install-beam.sh            # interactive toolchain, skill, and MCP selection
 ./scripts/install-beam.sh --codex    # wrappers plus Codex skills
 ./scripts/install-beam.sh --claude   # wrappers plus Claude Code skills
 ./scripts/install-beam.sh --pi       # wrappers plus Pi Agent skills
@@ -107,6 +114,10 @@ MCP client registrations to set up. It then shows a compact write summary and as
 runtime/wrapper install area, selected skill locations, and selected MCP config locations. For
 non-interactive scripts, pass `--dont-ask`; this only skips prompts for requested Beam-owned
 install/config paths and does not allow replacing unrelated user files.
+
+Select the supported Lean toolchains used by your projects. Accepting the default selects Beam's
+repo-pinned toolchain; it does not discover and install every project's target. Each installer run
+selects the complete set, so include all targets you want the new installation to retain.
 
 These forms install:
 
@@ -276,6 +287,139 @@ fi
 Replace `Foo.lean` and the coordinates with a saved file and position in your project.
 The guard skips JSON parsing and probes when `update` fails; read its stderr diagnostic first.
 
+The `python3` line extracts `result.version` for shell examples. You can also copy that version
+number from the printed `lean-beam update` JSON.
+
+Keep this owner running for the remaining CLI examples. When finished with Beam, interrupt the
+foreground owner or run `lean-beam --root ROOT stop` through the same
+installation and session selection. `stop` acknowledges a shutdown request; confirm completed
+cleanup with the owner or supervisor before starting a replacement or an external build.
+
+Beam reads the saved file on disk, not unsaved editor buffers. After a real source edit, save the
+file normally and then update or sync that workspace module before trusting later probes:
+
+```bash
+lean-beam update "MyPkg/Sub/Module.lean"
+lean-beam sync "MyPkg/Sub/Module.lean"
+```
+
+For multiline tactics at a tactic position, pass the text on stdin:
+
+```bash
+printf '%s\n' 'skip' 'skip' |
+  lean-beam run-at "Foo.lean" "$version" 10 2 --stdin
+```
+
+Read those commands like this:
+
+- `lean-beam update` opens or updates the broker's LSP mirror and returns the current document
+  version without waiting for diagnostics
+- `lean-beam run-at` tries speculative Lean text without editing the file
+- `lean-beam sync` waits for diagnostics/readiness after a real saved edit
+- `lean-beam refresh` reads saved source before reopening the tracked document for fresh diagnostics;
+  see the [refresh contract](SYNC_AND_DIAGNOSTICS.md#command-model)
+- `lean-beam save` checkpoints one synced workspace module; it does not validate downstream importers
+- `lean-beam doctor` explains toolchain support and runtime bundle selection
+
+Tactic probes through the CLI or MCP cannot introduce local `let rec` definitions, even valid ones.
+Save the complete enclosing theorem or definition and sync to check it, then use the returned
+version for later probes; edits invalidate existing handles. A speculative check of one complete
+declaration at a command position uses Lean's normal termination checks. See the skill's
+[local recursion workflow](../skills/lean-beam/references/lean-run-at-semantics.md#5-introducing-local-recursion-in-a-tactic-probe).
+
+Position and range probes are version-bound. Use the `version` returned by `lean-beam update` or
+`lean-beam sync` for `run-at`, `hover`, `signature-help`, `definition`, `references`,
+`document-symbols`, `goals`, and `todo`. Workspace symbol queries are workspace-scoped and do not
+take a file version. If Beam reports `contentModified`, update or sync the file again and retry
+with the accepted current version rather than guessing.
+
+Useful follow-up commands:
+
+```bash
+lean-beam open-files
+lean-beam refresh "MyPkg/Sub/Module.lean"
+lean-beam save "MyPkg/Sub/Module.lean"
+```
+
+`lean-beam open-files` reports only documents tracked by the current project daemon. Each file's
+`disk_status` is `matches_tracked`, `differs_from_tracked`, `missing`, or `unknown`, comparing the current
+on-disk source with the broker's tracked text. `checkpointed` means this daemon recorded a successful
+`lean-beam save` for that tracked version and the source still matches. It does not revalidate Lake
+artifacts or predict whether another save will succeed; `lean-beam save` is authoritative for those
+checks.
+
+The `open-files` result contains `session.active` and `session.files`. The workspace result from
+`lean-beam stats` also has a single `session` object, plus `metrics` for operation counters retained
+across Lean server session restarts. Workspace identity and root appear on the enclosing result;
+an active stats session adds only `epoch` and `open_doc_count` to `active`. Resetting or recreating the
+workspace starts fresh counters, as does restarting the daemon.
+
+The running Lean server and existing file workers are not guaranteed to pick up Lake workspace
+configuration changes. After editing a lakefile, manifest, package override, `lean-toolchain`, Lean
+options, plugins, or dynamic libraries, stop the original owner through its original installation
+and session selection and confirm completed cleanup. Start the replacement owner with an
+installation containing the project's selected target; a toolchain change may require a different
+bundled installation. See [toolchain changes](#changing-the-project-toolchain).
+`lean-beam refresh` reopens a file within the current server and is not sufficient for this case.
+
+### Work Across Files
+
+Suppose `MyPkg/A.lean` imports `MyPkg/B.lean`, and both belong to the current Lake workspace.
+After editing and saving `B.lean`, checkpoint it before refreshing an already-open `A.lean`.
+Use the same CLI installation, root, and session selection throughout. The commands below run
+from that project root; for bundled Beam, keep the `elan run SELECTOR` prefix.
+
+Run each step separately and inspect its result before continuing. Stop if a step fails; do not
+append a build command to bypass a failed save or refresh.
+
+| Step | CLI | MCP |
+| --- | --- | --- |
+| Check the saved dependency and require `readiness.save_ready` | `lean-beam sync MyPkg/B.lean` | `lean_sync` with `path: "MyPkg/B.lean"` |
+| Checkpoint that dependency | `lean-beam save MyPkg/B.lean` | `lean_save` with the same path |
+| Reload the importer's saved source and imports | `lean-beam refresh MyPkg/A.lean` | `lean_refresh` with `path: "MyPkg/A.lean"` |
+
+Every MCP call must use the same `workspace: {"root": "/absolute/path/to/project"}`. MCP saves and
+refreshes must run through that server's tools; starting a CLI daemon does not repair its workspace.
+After refresh succeeds, inspect the importer's diagnostics and readiness and use its returned
+`version` for subsequent probes (`result.version` on CLI, `structuredContent.version` on MCP).
+If you edit the importer too, save its source before refreshing it and checkpoint it when needed.
+
+This updates the chosen modules; it does not validate every transitive importer. Apply the same
+order to other affected files you intend to use. For full project evidence, follow the
+[batch-build procedure](../skills/lean-beam/references/workflow-details.md#before-a-local-batch-build)
+after confirmed cleanup. For a blocked barrier, follow the
+[dependency recovery guidance](SYNC_AND_DIAGNOSTICS.md#failures-and-recovery) instead of
+repeating probes against retained state.
+
+### Batch Builds And Proof Confirmation
+
+`lean-beam save` is an inner-loop development checkpoint from Lean's accepted server state. It
+includes structured Lake options, dynamic libraries, and plugins already applied by the file worker
+and avoids repeated module builds. Modules with batch-only `moreLeanArgs` fail with
+`saveUnsupportedSetup`; move shared `-D` settings to `leanOptions`, or use `lake build` when the
+arguments are intentionally batch-only. A successful checkpoint is normally sufficient for local
+development, so do not run a clean build after every Beam loop. At the end of the development loop,
+use a successful CI `lake build` from a clean checkout or clean Lake build directory as
+batch-build evidence.
+
+If no successful clean CI result is available, or when investigating code that may observe server
+mode, use the [local batch-build procedure](../skills/lean-beam/references/workflow-details.md#before-a-local-batch-build)
+once. It requires confirmation from the original owner or supervisor that the owner and all
+producers completed cleanup before cleaning or building. If cleanup is pending, failed, or
+unconfirmed, stop and coordinate.
+
+This is a completion fallback, not a step after every Beam checkpoint. The exact checkpoint
+contract and the distinction between the inner loop and batch builds live in
+[SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md#development-checkpoints-and-batch-validation).
+
+Independent proof confirmation needs a separate trusted challenge and checking environment; follow
+[trust and proof confirmation](../skills/lean-beam/references/trust-and-validation.md).
+
+Detailed Lean workflow guidance lives in
+[../skills/lean-beam/SKILL.md](../skills/lean-beam/SKILL.md).
+
+### CLI Output And Lifecycle Reference
+
 `lean-beam serve` is the only wrapper command that starts a project session. Its
 loading notice goes to stderr. While preparation is pending, elapsed waiting messages appear at
 five-second intervals and follow the normal progress setting: enabled on a terminal, forced with
@@ -295,10 +439,6 @@ daemon-to-CLI path even when stderr goes to a file. Beam drops the oldest pendin
 `beam: earlier workspace output omitted` on its own line, and skips the truncated line's remainder
 through the next newline. Normal completion retains the bounded tail; cancellation discards
 pending optional output. No transcript file is created.
-
-Interrupt the foreground process, or run `lean-beam --root ROOT stop`, to close the daemon and its
-backend processes. Lean queries and file operations attach to an existing owner and report the exact
-`serve` command when no session exists.
 
 The foreground owner handles Ctrl-C and, on POSIX, SIGTERM and SIGHUP from acquisition through
 cleanup. A signal received during startup remains latched; repeated signals do not bypass cleanup.
@@ -404,101 +544,6 @@ reports on stderr and exits nonzero without replacing that readiness response. H
 status and the command's output contract. Use MCP for structured live progress and diagnostics;
 Beam does not expose its raw port,
 session capability, or generic broker request record as an installed client interface.
-
-The `python3` line extracts `result.version` for shell examples. You can also copy that version
-number from the printed `lean-beam update` JSON.
-
-Beam reads the saved file on disk, not unsaved editor buffers. After a real source edit, save the
-file normally and then update or sync that workspace module before trusting later probes:
-
-```bash
-lean-beam update "MyPkg/Sub/Module.lean"
-lean-beam sync "MyPkg/Sub/Module.lean"
-```
-
-For multiline speculative Lean text, pass the text on stdin:
-
-```bash
-printf '%s\n' 'example : True := by' '  trivial' |
-  lean-beam run-at "Foo.lean" "$version" 10 2 --stdin
-```
-
-Read those commands like this:
-
-- `lean-beam update` opens or updates the broker's LSP mirror and returns the current document
-  version without waiting for diagnostics
-- `lean-beam run-at` tries speculative Lean text without editing the file
-- `lean-beam sync` waits for diagnostics/readiness after a real saved edit
-- `lean-beam refresh` reads saved source before reopening the tracked document for fresh diagnostics;
-  see the [refresh contract](SYNC_AND_DIAGNOSTICS.md#command-model)
-- `lean-beam save` checkpoints one synced workspace module; it does not validate downstream importers
-- `lean-beam doctor` explains toolchain support and runtime bundle selection
-
-Tactic probes through the CLI or MCP cannot introduce local `let rec` definitions, even valid ones.
-Save the complete enclosing theorem or definition and sync to check it, then use the returned
-version for later probes; edits invalidate existing handles. A speculative check of one complete
-declaration at a command position uses Lean's normal termination checks. See the skill's
-[local recursion workflow](../skills/lean-beam/references/lean-run-at-semantics.md#5-introducing-local-recursion-in-a-tactic-probe).
-
-Position and range probes are version-bound. Use the `version` returned by `lean-beam update` or
-`lean-beam sync` for `run-at`, `hover`, `signature-help`, `definition`, `references`,
-`document-symbols`, `goals`, and `todo`. Workspace symbol queries are workspace-scoped and do not
-take a file version. If Beam reports `contentModified`, update or sync the file again and retry
-with the accepted current version rather than guessing.
-
-Useful follow-up commands:
-
-```bash
-lean-beam open-files
-lean-beam refresh "MyPkg/Sub/Module.lean"
-lean-beam save "MyPkg/Sub/Module.lean"
-```
-
-`lean-beam open-files` reports only documents tracked by the current project daemon. Each file's
-`disk_status` is `matches_tracked`, `differs_from_tracked`, `missing`, or `unknown`, comparing the current
-on-disk source with the broker's tracked text. `checkpointed` means this daemon recorded a successful
-`lean-beam save` for that tracked version and the source still matches. It does not revalidate Lake
-artifacts or predict whether another save will succeed; `lean-beam save` is authoritative for those
-checks.
-
-The `open-files` result contains `session.active` and `session.files`. The workspace result from
-`lean-beam stats` also has a single `session` object, plus `metrics` for operation counters retained
-across Lean server session restarts. Workspace identity and root appear on the enclosing result;
-an active stats session adds only `epoch` and `open_doc_count` to `active`. Resetting or recreating the
-workspace starts fresh counters, as does restarting the daemon.
-
-The running Lean server and existing file workers are not guaranteed to pick up Lake workspace
-configuration changes. After editing a lakefile, manifest, package override, `lean-toolchain`, Lean
-options, plugins, or dynamic libraries, run `lean-beam --root ROOT stop`, then start a new
-`lean-beam serve` owner before the next wrapper command that uses the Lean server.
-`lean-beam refresh` reopens a file within the current server and is not sufficient for this case.
-
-### Batch Builds And Proof Confirmation
-
-`lean-beam save` is an inner-loop development checkpoint from Lean's accepted server state. It
-includes structured Lake options, dynamic libraries, and plugins already applied by the file worker
-and avoids repeated module builds. Modules with batch-only `moreLeanArgs` fail with
-`saveUnsupportedSetup`; move shared `-D` settings to `leanOptions`, or use `lake build` when the
-arguments are intentionally batch-only. A successful checkpoint is normally sufficient for local
-development, so do not run a clean build after every Beam loop. At the end of the development loop,
-use a successful CI `lake build` from a clean checkout or clean Lake build directory as
-batch-build evidence.
-
-If no successful clean CI result is available, or when investigating code that may observe server
-mode, use the [local batch-build procedure](../skills/lean-beam/references/workflow-details.md#before-a-local-batch-build)
-once. It requires confirmation from the original owner or supervisor that the owner and all
-producers completed cleanup before cleaning or building. If cleanup is pending, failed, or
-unconfirmed, stop and coordinate.
-
-This is a completion fallback, not a step after every Beam checkpoint. The exact checkpoint
-contract and the distinction between the inner loop and batch builds live in
-[SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md#development-checkpoints-and-batch-validation).
-
-Independent proof confirmation needs a separate trusted challenge and checking environment; follow
-[trust and proof confirmation](../skills/lean-beam/references/trust-and-validation.md).
-
-Detailed Lean workflow guidance lives in
-[../skills/lean-beam/SKILL.md](../skills/lean-beam/SKILL.md).
 
 ## Inspect Client Configuration
 
@@ -616,6 +661,11 @@ The server prefers stateless MCP `2026-07-28` and also accepts the initializatio
 `2025-11-25` lifecycle while clients migrate. This is automatic: modern clients can discover the
 server and attach protocol metadata to each call, while older supported clients initialize
 normally. The workspace descriptor shown below is explicit in both cases.
+
+These commands rerun the full installer, including runtime construction and complete toolchain
+selection. Before using them for an existing installation, stop its owners and MCP servers and
+confirm cleanup, and select every target you want to retain. To register an already installed
+command without reinstalling, use the manual instructions below.
 
 ```bash
 ./scripts/install-beam.sh --codex-mcp
@@ -969,9 +1019,13 @@ current schema-4 runtimes, prevents planning; Beam does not silently skip it or 
 deletion. After stopping all users of the old runtime, preserve and move only the exact reported
 runtime directory outside `versions`, then rerun the preview. Do not apply that procedure to the
 current runtime or to an unknown, foreign, or symlinked entry without establishing its ownership.
-Stop foreground owners through their original installation and restart agents and MCP clients
-before removing an old version. A different installation cannot control those owners after the
-original version is removed.
+Before removing an old runtime, stop its foreground owners through their original installation
+and confirm cleanup. Update any client registration pinned to that old runtime and restart clients
+against the intended installation. For each MCP server in use, check its running identity with
+`beam_version`. A restart alone can select the same old absolute executable.
+Leave a runtime in place while any process
+still uses it; pruning does not discover active users. `prune --apply` removes all previewed old
+runtimes, so do not apply it while any previewed runtime remains in use.
 
 Apply the displayed runtime cleanup with:
 
@@ -979,8 +1033,7 @@ Apply the displayed runtime cleanup with:
 lean-beam prune --apply
 ```
 
-Restart active owners, agents, and MCP clients before `prune --apply`; a process can remain bound
-to an old generation after the launcher's `current` link changes. Pruning coordinates with the
+Apply only after the cleanup and installation checks above. Pruning coordinates with the
 installer's atomic-directory lock and refuses symlinked or unmarked runtime directories. A crashed
 installer fails closed and requires explicit recovery rather than automatic stale-lock removal.
 

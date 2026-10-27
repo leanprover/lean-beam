@@ -401,8 +401,9 @@ needed. Both commands read the current on-disk file; neither applies or recovers
 
 `lean_todo` inspects the whole file unless all four range fields are given; code actions need a
 range (see below), and a whole-file request omits them. It reports one item per
-problem, and each item composes with `lean_run_at`: running text at the item's `run_at_position`
-starts from the item's `proof_state`, when it has one. The goal of a `sorry` or hole term comes from
+problem. For a goal-bearing item that includes both `run_at_position` and `proof_state`, running
+text at that position starts from those goals. Diagnostics and code actions can carry a position
+without a proof state. The goal of a `sorry` or hole term comes from
 the lookup `lean_run_at` uses; for the goals that tactics left, Beam checks that `lean_run_at` selects
 those goals there, and omits `run_at_position` otherwise: for example for the
 goals left after a branch bullet, or goals left by a tactic that ran once per goal, as `skip` does
@@ -578,7 +579,8 @@ update per request and removes obsolete progress when accepting the final respon
 may therefore return without a progress notification; clients must use the final result for its
 outcome. Beam does not produce separate generic `starting`, `preparing`, and `running` updates,
 and it offers at most one terminal `done=true` file-progress event. Operation results include
-`document_progress` whenever Lean progress was observed, including for `lean_run_at`. Barrier calls
+`document_progress` when processing metadata is available, including for `lean_run_at`. That
+metadata can start with default values before a notification. Barrier calls
 may reuse the latest observation available when the response is constructed, so it may be newer
 than the last throttled notification. Progress can be partial; clients must not treat it as the
 operation's final success verdict.
@@ -632,7 +634,7 @@ as `structuredContent`; the CLI returns it as the value of `result` inside its
 use snake_case for Beam-owned operation fields, including readiness and `document_progress`. The
 CLI emits compact JSON by default; `--pretty` changes whitespace only. Standard Lean/LSP values
 embedded in results keep their protocol-defined field names. Broker error codes and typed
-`error.data` remain structured. Beam-owned error fields use snake_case, including typed nested sync
+error data remain structured. Beam-owned error fields use snake_case, including typed nested sync
 and save results. Beam-owned wrapper keys for opaque backend evidence also use snake_case, while the
 evidence contents keep their original shape. Data with no known typed projection is retained under
 `data.original_data` (an explicit JSON `null` remains `null`). If recognized Beam-owned data fails
@@ -641,8 +643,8 @@ all original evidence. Such a response does not provide normalized recovery fiel
 evidence and report the schema mismatch rather than blindly retrying. The original error code and
 message remain unchanged. If a completed broker response cannot be projected
 into the public schema, `invalidResult` retains that original response under
-`error.data.observed_response`. Inspect that receipt before repeating an operation that may have
-committed; a projection failure does not undo it.
+`structuredContent.data.observed_response` in an MCP tool failure. Inspect that receipt before
+repeating an operation that may have committed; a projection failure does not undo it.
 
 Known-empty arrays are emitted as `[]`. Optional fields are omitted when a value is unavailable,
 not applicable, or not requested. For example, `diagnostics.items` is absent unless replay was
@@ -651,13 +653,13 @@ empty collection from an absent optional value without creating configurable res
 Structured operation results are always JSON objects. If an operation's underlying value is an
 array, scalar, or `null`, MCP places that value under `value` in `structuredContent`, and the CLI
 places it under `value` inside the `result` object. This wrapper is present even when no
-`document_progress` was observed.
+`document_progress` is present.
 
 For an array-valued document-symbol query, the decoded shapes are
 `{ "ok": true, "result": { "value": [ ... ] } }` on the CLI and
 `structuredContent: { "value": [ ... ] }` on MCP.
 
-Broker failures use the same structured `code`, `message`, optional `data`, and observed
+Broker failures use the same structured `code`, `message`, optional `data`, and available
 `document_progress` fields on both surfaces. The CLI keeps them in `{ "ok": false, "error": ... }`;
 MCP returns the error object as `structuredContent` with `isError: true`, inside the MCP transport
 response. Beam-owned error fields in `data` use the same snake_case projection as successful typed
@@ -722,8 +724,8 @@ path/version/diagnostics/readiness object. Optional backend artifacts (`olean_se
 
 `lean_close_save` returns `{ "closed": true, "saved": <save-result> }`. Once its source is
 accepted, it reserves the document through checkpointing and closure. Competing document tools
-return `contentModified` with `error.data.reason = "documentClosing"`; coordinate with the
-close-save caller before retrying. A delayed request invalidated by closure or backend replacement
+return `contentModified` with `structuredContent.data.reason = "documentClosing"` and
+`isError: true`; coordinate with the close-save caller before retrying. A delayed request invalidated by closure or backend replacement
 uses `documentAdmissionExpired`. Beam-owned fields in the error data use snake_case; opaque backend
 evidence keeps its supplied shape.
 See the [close-save contract](SYNC_AND_DIAGNOSTICS.md) for failure cleanup and checkpoint receipts.
@@ -732,7 +734,7 @@ Save and close-save
 answers are closed typed shapes rather than passthrough broker JSON; unexpected artifact fields are
 rejected before a tool reply is constructed. The CLI `result` for the same operation has the same
 operation fields. A `lean_run_at` result is deliberately smaller; it can include
-`document_progress` when Lean reported progress:
+`document_progress` when processing metadata is available:
 
 ```json
 {
@@ -761,8 +763,8 @@ tool arguments, but only on the tools listed below. Log delivery is session-wide
 | --- | --- | --- | --- | --- |
 | `lean_sync`, `lean_refresh` | Preparation, throttled Lake setup, and file-progress updates. | One `beam.status` on the first setup observation or after two seconds. | `diagnostic_scope`, `diagnostics_in_result` | Path/version, complete diagnostic counts, readiness, `document_progress`, and optional diagnostic items. |
 | `lean_save`, `lean_close_save` | Preparation, throttled Lake setup, and file-progress updates. | One `beam.status` on the first setup observation or after two seconds. | `diagnostic_scope` | Checkpoint result embedding the same sync/readiness result and `document_progress`; no diagnostic replay argument. |
-| `lean_run_at`, `lean_run_at_handle` | Preparation, Lake setup when observed, and file progress when Lean publishes it. | One `beam.status` on the first setup observation or after two seconds. | None | Run result messages, traces, proof state, optional handle, and `document_progress` when observed; no full-file diagnostic replay. |
-| `lean_run_with`, `lean_run_with_linear` | Preparation and file progress when Lean publishes it. | One `beam.status` after two seconds. | None | Continuation result, optional next handle, and `document_progress` when observed. |
+| `lean_run_at`, `lean_run_at_handle` | Preparation, Lake setup when observed, and file progress when Lean publishes it. | One `beam.status` on the first setup observation or after two seconds. | None | Run result messages, traces, proof state, optional handle, and `document_progress` when available; no full-file diagnostic replay. |
+| `lean_run_with`, `lean_run_with_linear` | Preparation and file progress when Lean publishes it. | One `beam.status` after two seconds. | None | Continuation result, optional next handle, and `document_progress` when available. |
 | `lean_update` | Preparation phase only. | One `beam.status` after two seconds. | None | New document version and changed flag; no readiness barrier. |
 | `lean_hover`, `lean_signature_help`, `lean_definition`, `lean_references`, `lean_document_symbols`, `lean_goals`, `lean_todo`, `lean_code_action_resolve` | Preparation and file progress when Lean publishes it. | One `beam.status` after two seconds. | None | Operation-specific structured result. |
 | `lean_workspace_symbols` | Preparation phase only. | One pathless `beam.status` after two seconds. | None | Workspace-symbol result. |

@@ -44,14 +44,19 @@ candidate compiler to decide whether to reject it. Missing targets require anoth
 Floating channel names require an explicit local link or an exact project pin; Beam does not
 resolve them over the network or reinterpret them as the newest locally installed release.
 
-A workspace retains the runtime it accepted. Changing its selector to another installation rejects
-further runtime use until that workspace is dropped and recreated. Another alias for the same
+A workspace retains the runtime it accepted. After changing its selector to another installation,
+CLI users must stop the original owner through its original installation, confirm cleanup, and
+start a new owner. MCP users must drop the old workspace and confirm cleanup before recreating it;
+a bundled target needs its matching MCP server. Follow the
+[toolchain-change procedure](SETUP.md#changing-the-project-toolchain). Another alias for the same
 canonical Lean installation preserves the binding and its documents and handles.
 
 ## Updating a local Lean build
 
-Treat the selected Lean installation and its matching Beam runtime as immutable during use. After
-rebuilding Lean or relinking a target, rerun the installer and restart Beam owners and MCP clients.
+Treat the selected Lean installation and its matching Beam runtime as immutable during use. Before
+rebuilding Lean or relinking a target, stop all affected CLI owners and drop any affected MCP
+workspaces, then confirm their cleanup. Rebuild or relink, construct a new Beam installation, and
+restart owners and clients against it.
 Construction records the exact compiler revision and Lean/Lake descriptions, but a Git revision does
 not distinguish every local modification or compiler configuration. Runtime admission trusts the
 published installation record; it does not rehash arbitrary in-place changes on every request.

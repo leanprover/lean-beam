@@ -20,8 +20,9 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 - typed response payload with messages, traces, optional proof state, and optional follow-up handle
 - optional follow-up execution through `$/lean/runWith` and `$/lean/releaseHandle`
 - agent-oriented `$/lean/todo` inspection of a file or range for actionable items such as sorries,
-  holes, diagnostics, code actions, and incomplete proofs, each with the goal `runAt` sees at its
-  position, exposed through the broker, `lean-beam todo`, and MCP `lean_todo`
+  holes, diagnostics, code actions, and incomplete proofs. Goal-bearing items can include a
+  position where `runAt` selects those goals; diagnostics and code actions need not carry a proof
+  state. The operation is exposed through the broker, `lean-beam todo`, and MCP `lean_todo`.
 - versioned broker/MCP code-action resolution for raw Lean code actions returned by `lean_todo`;
   clients still apply returned LSP workspace edits themselves and then update or sync the file
 - small Lean semantic navigation wrappers for hover, signature help, definition, references,
@@ -38,14 +39,15 @@ Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md
 - read-only `lean-beam doctor clients` inspection for local Codex, Claude Code, Pi, OpenCode,
   and Mistral Vibe configuration; this does not test running clients or loaded tools
 - experimental Lean wrapper commands for follow-up handle continuation and release
-- installed `lean-beam-search` helper for shorter shell branching/playout workflows
+- `lean-beam-search` helper from the standalone installer for shorter shell branching/playout workflows
 - explicit `ok` / `error` response envelopes on typed wrapper operations
 - `lean-beam open-files` daemon introspection for tracked documents, including `disk_status`,
   the daemon-recorded `checkpointed` marker, and the last compact `document_progress`
 - local broker workspaces keyed by explicit workspace ids, each owning its own LSP session, document
   mirror, handles, sync/save history, and metrics
-- compact `document_progress` reporting on slow Lean wrapper calls when matching LSP progress
-  notifications were observed while the request was pending
+- compact `document_progress` metadata on CLI and MCP results; values can be initialized,
+  retained from earlier progress, or derived from a diagnostics barrier, and are not by themselves
+  an operation-success or save-readiness verdict
 - explicit support for installed custom elan-linked Lean toolchains through
   `--custom-toolchain <toolchain>`, recorded as constructed members of the installation
 - conservative installed-state maintenance through `lean-beam prune`, with a dry run by default,
@@ -158,11 +160,11 @@ reuse matching speculative execution rather than replaying it from scratch. Beam
 apply the source edit.
 
 Programmatic wrapper consumers invoke the same typed `lean-beam` operations as human callers and
-receive one final JSON response for completed broker operations and ordinary CLI failures, with
+receive one final JSON response for completed broker operations and ordinary operation failures, with
 human diagnostics on stderr. Broker failures retain their code and data; local usage errors exit
 `2`, a missing live owner exits `3`, and request interruption exits `130`. Unexpected faults remain
 `internalError`. Check the exit status and the command's output contract; see the
-[CLI error and exit contract](SETUP.md#use-beam-from-a-lean-project). Clients that require structured live
+[CLI error and exit contract](SETUP.md#cli-output-and-lifecycle-reference). Clients that require structured live
 progress and diagnostics should use MCP. Beam does not install a raw generic broker client. A
 foreground `lean-beam serve` process owns each wrapper daemon. Normal owner exit tears it down;
 abrupt owner loss closes the ownership pipe, requests cooperative shutdown, and leaves the session
@@ -394,14 +396,14 @@ client protocol.
   loaded may have changed since loading: its Lake trace differs, Beam saved it afterwards, or its
   trace cannot be located unambiguously. Recover with `refresh` and save again. The check is
   conservative but not complete: an external rebuild racing the worker's import load can still go
-  unobserved. Stop the owner or drop the MCP workspace before running Lake, and start a new session
-  afterward.
+  unobserved. Stop affected CLI owners and drop any affected MCP workspaces before running Lake,
+  confirm cleanup, and start fresh sessions afterward.
 - Beam does not reload Lake workspace configuration during a running Lean session. Runtime-selection
   checks can reject a changed `lean-toolchain`; they do not establish that other configuration is
-  unchanged. After
-  editing a lakefile, manifest, package override, `lean-toolchain`, Lean options, plugins, or dynamic
-  libraries, run `lean-beam --root ROOT stop`, then start a new `lean-beam serve` owner before the
-  next wrapper command that uses the Lean server; `lean-beam refresh` does not restart the server.
+  unchanged. After editing a lakefile, manifest, package override, `lean-toolchain`, Lean options,
+  plugins, or dynamic libraries, confirm cleanup of affected owners/workspaces before recreating
+  them. Use the [toolchain-change procedure](SETUP.md#changing-the-project-toolchain) when selecting
+  a replacement installation; `lean-beam refresh` does not restart the server.
 - A Beam checkpoint contains the Lean server's accepted environment. Elaborators can
   distinguish server execution from batch execution, so exceptional custom elaboration can produce
   an artifact that differs from a fresh `lake build` artifact. Successful checkpoints are normally
@@ -442,7 +444,8 @@ Windows support is experimental. Native Windows builds and CI exercise the imple
 official elan Windows distribution is deferred until the libuv investigation and required fixes
 are complete. Native build or test success alone does not establish readiness for that distribution.
 
-- Agent-skill distribution currently relies on a local checkout and local install script; it is not
+- The agent skill ships in the source checkout. Install it with the checkout installer or
+  [copy the complete skill directory manually](SETUP.md#install-the-lean-skill-manually); it is not
   yet published through a registry or marketplace flow.
 - Rocq goal inspection and its agent skill are available in the separate, frozen [rocq-beam](https://github.com/ejgallego/rocq-beam) project.
 
