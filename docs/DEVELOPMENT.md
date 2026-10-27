@@ -943,6 +943,10 @@ reports return a normal CLI exit result; usage/setup failures use `CliFailure`. 
 retains the completed result and suppresses fallback JSON if a write or flush fails. Keep client
 exceptions and configuration contents out of diagnostics. Reuse installation metadata APIs;
 do not execute configured commands or add a second runtime admission path.
+Keep named overrides until all source files establish the Beam aliases. OpenCode merging accepts
+only source entries admitted by its per-file validator, represented by `OpenCodeSourceEntry`.
+Policy extraction records whether a setting concerns MCP tools or skill access; rendering and
+generic policy matching must not infer that domain from a mention of Beam's name.
 
 Keep [Beam/Cli.lean](../Beam/Cli.lean) as the executable entry point: parse top-level options,
 select the installation adapter, and delegate to `runCommand`. Adapter selection does not validate

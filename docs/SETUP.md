@@ -497,6 +497,10 @@ are outside an explicit-file inspection; Pi package manifests are outside this s
 Otherwise, discovery follows the installer home overrides and standard workspace locations.
 Known Claude local/project/user registrations and OpenCode local-file merges retain source paths;
 ambiguous selection, trust/approval state, custom launchers, and unresolved overrides are unverified.
+Overrides of a recognized server alias remain in scope. OpenCode source entries are checked before
+merging; an invalid source cannot be repaired by fields inherited from another file. Its supported
+`disabled` flag and Vibe's `enable_mcp` switch contribute to MCP state. Skill access restrictions
+contribute to skill state independently of MCP registration.
 Checked means the supported static checks passed within the reported scope. Relevant policy that
 cannot be interpreted keeps the result unverified. For Vibe, use a command array to preserve paths
 containing spaces; command strings that require argument splitting remain unverified.

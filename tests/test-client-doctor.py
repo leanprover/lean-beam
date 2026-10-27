@@ -458,6 +458,110 @@ class ClientDoctorTest(unittest.TestCase):
         self.has_code(report, "skill.readable", "ok")
         self.assertEqual(report["clients"][0]["skill"], "unverified")
 
+    def test_codex_project_override_retains_a_beam_alias(self):
+        self.write(self.home / ".codex/config.toml", "[mcp_servers.proofs]\n"
+                   f"command={json.dumps(str(self.executable))}\nsupports_parallel_tool_calls=true\n")
+        project = self.workspace / ".codex/config.toml"
+        self.write(project, "[mcp_servers.proofs]\nenabled=false\n")
+        report = self.run_doctor("codex", expected=2)
+        self.has_code(report, "config.layers", "unknown")
+        self.assertEqual(report["clients"][0]["mcp"], "unverified")
+        self.assertNotIn("launch.file", {f["code"] for f in self.findings(report)})
+        self.write(project, "[mcp_servers.other]\nenabled=false\n")
+        self.assertEqual(self.run_doctor("codex")["clients"][0]["mcp"], "checked")
+
+    def test_opencode_source_validation_precedes_merging(self):
+        user = self.home / ".config/opencode/opencode.json"
+        project = self.workspace / "opencode.json"
+        self.json_file(user, {"mcp": {"proofs": {
+            "type": "local", "command": [str(self.executable)]}}})
+        for entry in [{"command": [str(self.executable)]},
+                      {"type": "local", "command": [str(self.executable)], "cwd": 7},
+                      {"type": "local", "command": [str(self.executable)],
+                       "environment": {"DOCTOR_SECRET_SENTINEL": 7}}]:
+            with self.subTest(entry=entry):
+                self.json_file(project, {"mcp": {"proofs": entry}})
+                report = self.run_doctor("opencode", expected=1)
+                self.has_code(report, "mcp.invalidEntry", "error")
+                self.assertEqual(report["clients"][0]["mcp"], "error")
+                self.assertNotIn("launch.file", {f["code"] for f in self.findings(report)})
+                self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+        # A valid empty array is a complete source, but cannot inherit a usable command.
+        self.json_file(project, {"mcp": {"proofs": {
+            "type": "local", "command": [], "enabled": True}}})
+        report = self.run_doctor("opencode", expected=1)
+        self.has_code(report, "mcp.invalidEntry", "error")
+        self.assertNotIn("launch.file", {f["code"] for f in self.findings(report)})
+        # The client accepts this through its enabled-override branch and discards command.
+        self.json_file(project, {"mcp": {"proofs": {
+            "enabled": True, "command": ["/missing/lean-beam-mcp"]}}})
+        report = self.run_doctor("opencode")
+        launch = next(f for f in self.findings(report) if f["code"] == "launch.file")
+        self.assertEqual(launch["source"], str(user))
+
+    def test_opencode_disabled_field_uses_client_precedence(self):
+        config = self.home / ".config/opencode/opencode.json"
+        for flags, expected in [({"disabled": True}, 1), ({"disabled": False}, 0),
+                                ({"disabled": True, "enabled": True}, 0)]:
+            with self.subTest(flags=flags):
+                self.json_file(config, {"mcp": {"lean-beam": {
+                    "type": "local", "command": [str(self.executable)], **flags}}})
+                report = self.run_doctor("opencode", expected=expected)
+                self.assertEqual(report["clients"][0]["mcp"], "error" if expected else "checked")
+                if expected: self.has_code(report, "mcp.disabled", "error")
+
+    def test_vibe_global_mcp_switch(self):
+        config = self.home / ".vibe/config.toml"
+        entry = "[[mcp_servers]]\nname='lean-beam'\ntransport='stdio'\n" + \
+            f"command=[{json.dumps(str(self.executable))}]\n"
+        self.write(config, "enable_mcp=false\n" + entry)
+        report = self.run_doctor("vibe", expected=1)
+        self.has_code(report, "mcp.disabled", "error")
+        self.assertEqual(report["clients"][0]["mcp"], "error")
+        self.write(config, "enable_mcp=true\n" + entry)
+        self.assertEqual(self.run_doctor("vibe")["clients"][0]["mcp"], "checked")
+        self.write(config, "enable_mcp=false\n" + entry)
+        self.write(self.workspace / ".vibe/config.toml", "enable_mcp=true\n")
+        report = self.run_doctor("vibe", expected=2)
+        self.has_code(report, "policy.notEvaluated", "unknown")
+        self.assertEqual(report["clients"][0]["mcp"], "unverified")
+
+    def test_claude_skill_policies_do_not_poison_mcp_state(self):
+        self.write(self.home / ".claude/skills/lean-beam/SKILL.md", "Lean skill\n")
+        self.json_file(self.home / ".claude.json", {"mcpServers": {
+            "proofs": {"command": str(self.executable)}}})
+        settings = self.home / ".claude/settings.json"
+        for policy in [{"permissions": {"deny": ["Skill(lean-beam)"]}},
+                       {"permissions": {"deny": ["Skill"]}},
+                       {"skillOverrides": {"lean-beam": "off"}}]:
+            with self.subTest(policy=policy):
+                self.json_file(settings, policy)
+                report = self.run_doctor("claude", expected=2)
+                self.has_code(report, "policy.notEvaluated", "unknown")
+                self.assertEqual(report["clients"][0]["skill"], "unverified")
+                self.assertEqual(report["clients"][0]["mcp"], "checked")
+        self.json_file(settings, {"permissions": {"deny": ["Skill", "mcp__proofs__beam_run_at"]}})
+        report = self.run_doctor("claude", expected=2)
+        self.assertEqual(report["clients"][0]["skill"], "unverified")
+        self.assertEqual(report["clients"][0]["mcp"], "unverified")
+        self.json_file(settings, {"permissions": {"deny": ["Read"]},
+                                  "skillOverrides": {"other-skill": "off"}})
+        report = self.run_doctor("claude")
+        self.assertEqual(report["clients"][0]["skill"], "checked")
+        self.assertEqual(report["clients"][0]["mcp"], "checked")
+
+    def test_vibe_normalized_aliases_in_tool_policy(self):
+        config = self.home / ".vibe/config.toml"
+        for name, normalized in [("proofs.v1", "proofs_v1"), ("__proofs.v1--", "proofs_v1"),
+                                 ("proofs😀", "proofs"), ("p" * 257, "p" * 256)]:
+            with self.subTest(name=name):
+                self.write(config, f"disabled_tools={json.dumps([normalized + '_lean_run_at'])}\n"
+                           f"[[mcp_servers]]\nname={json.dumps(name, ensure_ascii=False)}\ntransport='stdio'\n"
+                           f"command=[{json.dumps(str(self.executable))}]\n")
+                report = self.run_doctor("vibe", expected=2)
+                self.has_code(report, "policy.notEvaluated", "unknown")
+                self.assertEqual(report["clients"][0]["mcp"], "unverified")
+
     def test_installer_shapes_for_all_five_clients(self):
         self.codex_config()
         self.json_file(self.home / ".claude.json", {
@@ -785,8 +889,9 @@ class ClientDoctorTest(unittest.TestCase):
         self.assertEqual(launch["source"], str(user))
         self.json_file(user, {"mcp": {"lean-beam": {"type": "local", "command": ["/missing/lean-beam-mcp"]}}})
         self.json_file(project, {"mcp": {"lean-beam": {"command": [str(self.executable)]}}})
-        self.has_code(self.run_doctor("opencode"), "launch.file", "ok")
-        self.json_file(project, {"mcp": {"lean-beam": {"command": [str(self.executable), "arg"]}}})
+        self.has_code(self.run_doctor("opencode", expected=1), "mcp.invalidEntry", "error")
+        self.json_file(project, {"mcp": {"lean-beam": {
+            "type": "local", "command": [str(self.executable), "arg"]}}})
         self.has_code(self.run_doctor("opencode", expected=2), "launch.arguments", "unknown")
 
     def test_opencode_inherited_partial_entry_remains_unknown(self):
@@ -802,7 +907,7 @@ class ClientDoctorTest(unittest.TestCase):
             ([], 2, "config.entryShape"), ("DOCTOR_SECRET_SENTINEL", 2, "config.entryShape"),
             ({"command": None}, 1, "mcp.invalidEntry"),
             ({"command": ["DOCTOR_SECRET_SENTINEL", 7]}, 1, "mcp.invalidEntry"),
-            ({"command": ["other-mcp"]}, 2, "launch.relative"),
+            ({"command": ["other-mcp"]}, 1, "mcp.invalidEntry"),
         ]:
             with self.subTest(override=override):
                 self.json_file(self.workspace / "opencode.json", {"mcp": {"beam-alias": override}})
