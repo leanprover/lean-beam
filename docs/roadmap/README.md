@@ -4,6 +4,11 @@ A card records one problem, its evidence, the next decision, and the local code
 that a fix could remove. This is the public upstream and design backlog; [Status](../STATUS.md)
 remains the source of truth for current public behavior.
 
+[#296](https://github.com/leanprover/lean-beam/pull/296) is the draft meta-PR for
+this index and its cards. It has no release milestone: individual implementation
+PRs and issues carry their own release decisions. Listing a proposal here does
+not make it a release prerequisite or an upstream commitment.
+
 `BUC` identifies older Beam requests collected from downstream LIRIS work.
 `ULC` identifies Lean/Lake upstream opportunities. Existing identifiers are
 retained so historical reports remain traceable. The [#262](https://github.com/leanprover/lean-beam/pull/262) native contracts are
@@ -41,13 +46,13 @@ not evidence that the required API is already available.
 | [ULC-0009: Complete owned subprocess lifetime](cards/ULC-0009-owned-subprocess-lifetime/README.md) | Candidate: agree complete helper lifetime/ownership; async wait alone is insufficient. |
 | [BUC-0001: Stale import dependency reporting](cards/BUC-0001-stale-import-dependency-reporting/README.md) | Candidate: reproduce stale-import warnings with unavailable dependency hints. |
 | [BUC-0004: runAt diagnostic origin mapping](cards/BUC-0004-runat-diagnostic-origin/README.md) | Candidate: recover the diagnostic-origin prototype and retest a minimal range projection. |
+| [BUC-0005: Todo result filtering](cards/BUC-0005-diagnostics-todo-progress/README.md) | Beam implementation in #377, targeted for 0.2.0; final review and qualification remain separate. |
 
 ## Deferred work
 
 | Card | Decision needed |
 | --- | --- |
 | [BUC-0003: Handle continuation state](cards/BUC-0003-handle-continuation-state/README.md) | Deferred: reproduce a concrete continuation ambiguity before adding metadata. |
-| [BUC-0005: Todo result filtering](cards/BUC-0005-diagnostics-todo-progress/README.md) | Deferred: reduce todo noise separately from established readiness/progress semantics. |
 | [BUC-0007: Save and refresh batching](cards/BUC-0007-save-refresh-batching/README.md) | Deferred: establish a concrete need before adding batching. |
 | [ULC-0002: Backend readiness primitive](cards/ULC-0002-backend-readiness-primitive/README.md) | Deferred: no agreed reusable readiness API; not a prerequisite for stale URI metadata. |
 | [ULC-0006: Compatibility shim retirement](cards/ULC-0006-compatibility-shim-retirement/README.md) | Deferred to a support-window decision; detailed shim inventory stays in the developer guide. |
@@ -71,9 +76,10 @@ not an implementation of these filesystem or subprocess contracts.
 
 ## Current review and release boundaries
 
-This index was reconciled against Beam `c716816dbd3ab392279978b5a930536cd4d3df59`.
-The review is source and backlog reconciliation, not fresh qualification of every
-historical report. Each card states its own evidence revision and missing tests.
+The release references below were refreshed against Beam
+`e0d48a8a097d8488f5706f1443735235047ed4d3` on 2026-10-27. This is backlog
+reconciliation, not fresh qualification of every historical report. Each card
+states its own evidence revision and missing tests.
 
 - ULC-0003 and ULC-0004 now include the diagnostic API acceptance requirements
   identified during the review of [#369](https://github.com/leanprover/lean-beam/pull/369).
@@ -82,8 +88,14 @@ historical report. Each card states its own evidence revision and missing tests.
   its non-consuming POSIX observation request remains open.
 - ULC-0016 records the retained-import contract referenced by
   [#370](https://github.com/leanprover/lean-beam/issues/370). The related
-  [#368](https://github.com/leanprover/lean-beam/pull/368) implementation remains
-  proposed until merged and qualified.
+  [#368](https://github.com/leanprover/lean-beam/pull/368) workaround has landed;
+  the upstream replacement and its deletion conditions remain proposals.
+- [#386](https://github.com/leanprover/lean-beam/pull/386) retired Lean 4.33
+  support. ULC-0006 still requires preserving adapters needed by admitted targets.
+- The 0.2.0 milestone includes client inspection (#272), user guidance (#380),
+  term-placeholder execution (#384, landed), and the TODO worklist (#377,
+  pending review). The related-tools overview (#210) targets 0.3.0. These are
+  implementation assignments, not changes to upstream card status.
 - The resolved BUC cards close only their stated reporting or behavior slices.
   They do not close unrelated worker-death, startup-timeout or cancellation work.
 

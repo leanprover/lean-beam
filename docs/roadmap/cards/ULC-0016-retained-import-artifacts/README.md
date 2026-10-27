@@ -3,7 +3,7 @@
 - Status: candidate
 - Priority: high
 - Origin: Beam checkpoint review / Lean file worker / Lake
-- Last reviewed: 2026-10-24
+- Last reviewed: 2026-10-27 (Beam status references; upstream evidence unchanged)
 - Backlog owner: Beam integration coordinator
 - Implementer: unassigned
 - Issue: Beam follow-up: https://github.com/leanprover/lean-beam/issues/370
@@ -32,11 +32,11 @@ Source inspected at Lean 4.36.0-rc1 revision
 passes `ModuleSetup.importArts` into header processing. This is a useful origin
 for retained evidence; it is not yet an agreed snapshot API.
 
-[Beam #368](https://github.com/leanprover/lean-beam/pull/368) proposes an early
-trace-capture workaround and save-time comparison. It is pending work, not
-support shipped by this card. The source inspected for that proposal was
-`5860df2e219d904ac6712a166e5f664f6ccf205f`; no new end-to-end reproduction is
-claimed here.
+[Beam #368](https://github.com/leanprover/lean-beam/pull/368) landed an early
+trace-capture workaround and save-time comparison. That Beam implementation
+does not provide the upstream contract proposed here. The original source
+inspection used `5860df2e219d904ac6712a166e5f664f6ccf205f`; this status refresh
+does not claim a new end-to-end reproduction.
 
 Acceptance for the upstream contract:
 
@@ -54,7 +54,7 @@ Lean/Lake work and agree ownership before selecting an API.
 
 ## Beam workaround and removal
 
-If #368 lands, a complete upstream replacement could remove its early
+A complete upstream replacement could remove #368's early
 `$/beam/importBasis` capture requests after open/change and the corresponding
 worker-side capture state. Keep the save-time comparison, snapshot checks and
 publication guarantees. Removal requires the contract on all admitted targets.

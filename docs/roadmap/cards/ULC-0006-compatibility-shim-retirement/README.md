@@ -3,7 +3,7 @@
 - Status: deferred
 - Priority: low
 - Origin: Beam compatibility policy
-- Last reviewed: 2026-10-19
+- Last reviewed: 2026-10-27
 - Backlog owner: Beam integration coordinator
 - Implementer: unassigned
 - Issue: none linked
@@ -14,8 +14,12 @@
 This is a support-window decision, not an upstream API request. The old list
 of source identity, traces, C emission, and diagnostics shims is obsolete.
 Current [compatibility guidance](../../../DEVELOPMENT.md#lean-compatibility-shims)
-identifies `mkModuleOutputDescrsCompat`: Lake 4.33–4.35 requires `c`, while
+identifies `mkModuleOutputDescrsCompat`: Lake 4.34–4.35 requires `c`, while
 4.36 and the pinned nightly use optional `c?`.
+
+[#386](https://github.com/leanprover/lean-beam/pull/386) retired Lean 4.33.
+That does not retire the descriptor branch still required by admitted 4.34 and
+4.35 toolchains.
 
 Revisit only when [Compatibility Policy](../../../COMPATIBILITY.md) changes the
 admitted window. Delete the obsolete branch with the retired target; do not
