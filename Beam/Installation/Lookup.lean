@@ -53,6 +53,8 @@ private def installerTargetArguments (toolchain : String) : Except String (List 
   return ["--custom-toolchain", toolchain]
 
 def UnavailableTarget.remedy (target : UnavailableTarget) : TargetRemedy := Id.run do
+  if let some requested := target.selected.installerToolchain? then
+    if let .error detail := installerTargetArguments requested then return .manual detail
   if target.bundled then
     return .manual <| "bundled Beam serves only its containing Lean installation; use Beam bundled " ++
       "with the selected SDK, or construct a separate standalone Beam installation for that target"

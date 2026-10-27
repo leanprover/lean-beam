@@ -79,6 +79,14 @@ private def remedyExample (directory : System.FilePath) : IO Unit := do
     match bad.remedy with
     | .manual _ => pure ()
     | .install .. => throw <| IO.userError "unsupported selector received an installer command"
+  let unsupportedBundle := { target with
+    bundled := true
+    selected.installerToolchain? := some "leanprover/lean4:v4.33.1" }
+  match unsupportedBundle.remedy with
+  | .manual detail =>
+      require ((detail.splitOn "does not admit official target").length > 1)
+        "bundled guidance suggested provisioning an unsupported official release"
+  | .install .. => throw <| IO.userError "unsupported bundled target received an installer command"
   for manual in [{ target with bundled := true }, { target with installRoot? := none },
       { target with selected.installerToolchain? := none },
       { target with retainedTargets := #["/unregistered-sdk"] },
