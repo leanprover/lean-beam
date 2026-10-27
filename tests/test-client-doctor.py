@@ -499,16 +499,44 @@ class ClientDoctorTest(unittest.TestCase):
         launch = next(f for f in self.findings(report) if f["code"] == "launch.file")
         self.assertEqual(launch["source"], str(user))
 
-    def test_opencode_disabled_field_uses_client_precedence(self):
+    def test_opencode_native_conversion_is_unverified(self):
+        user = self.home / ".config/opencode/opencode.json"
+        project = self.workspace / "opencode.json"
+        local = {"type": "local", "command": [str(self.executable)]}
+        # Native conversion is whole-entry validation, not a disabled/ enabled field rewrite.
+        for fields in [{"disabled": True}, {"disabled": False},
+                       {"disabled": True, "enabled": True},
+                       {"disabled": False, "timeout": 5000},
+                       {"disabled": False, "cwd": 7}, {"codemode": False},
+                       {"timeout": {"catalog": 5000, "execution": 5000}}]:
+            with self.subTest(fields=fields):
+                self.json_file(user, {"mcp": {"lean-beam": {**local, **fields}}})
+                report = self.run_doctor("opencode", expected=2)
+                self.has_code(report, "config.sourceUnsupported", "unknown")
+                self.assertEqual(report["clients"][0]["mcp"], "unverified")
+                self.assertNotIn("launch.file", {f["code"] for f in self.findings(report)})
+        # An unsupported project layer must never manufacture enabled=true over this base.
+        self.json_file(user, {"mcp": {"lean-beam": {**local, "enabled": False}}})
+        self.json_file(project, {"mcp": {"lean-beam": {
+            **local, "disabled": False, "timeout": 5000}}})
+        report = self.run_doctor("opencode", expected=2)
+        self.assertEqual(report["clients"][0]["mcp"], "unverified")
+        self.assertNotIn("launch.file", {f["code"] for f in self.findings(report)})
+
+    def test_opencode_timeout_uses_numeric_value(self):
         config = self.home / ".config/opencode/opencode.json"
-        for flags, expected in [({"disabled": True}, 1), ({"disabled": False}, 0),
-                                ({"disabled": True, "enabled": True}, 0)]:
-            with self.subTest(flags=flags):
-                self.json_file(config, {"mcp": {"lean-beam": {
-                    "type": "local", "command": [str(self.executable)], **flags}}})
-                report = self.run_doctor("opencode", expected=expected)
-                self.assertEqual(report["clients"][0]["mcp"], "error" if expected else "checked")
-                if expected: self.has_code(report, "mcp.disabled", "error")
+        base = json.dumps({"mcp": {"lean-beam": {
+            "type": "local", "command": [str(self.executable)], "timeout": "TIMEOUT"}}})
+        for spelling in ["5000", "5000.0", "50000e-1", "5e3", "5.000e3"]:
+            with self.subTest(timeout=spelling):
+                self.write(config, base.replace('"TIMEOUT"', spelling))
+                report = self.run_doctor("opencode")
+                self.assertEqual(report["clients"][0]["mcp"], "checked")
+        for spelling in ["0", "-0.0", "-5000", "5000.1", "5e-3", "1e309", '"5000"']:
+            with self.subTest(timeout=spelling):
+                self.write(config, base.replace('"TIMEOUT"', spelling))
+                report = self.run_doctor("opencode", expected=1)
+                self.has_code(report, "mcp.invalidEntry", "error")
 
     def test_vibe_global_mcp_switch(self):
         config = self.home / ".vibe/config.toml"
@@ -525,6 +553,50 @@ class ClientDoctorTest(unittest.TestCase):
         report = self.run_doctor("vibe", expected=2)
         self.has_code(report, "policy.notEvaluated", "unknown")
         self.assertEqual(report["clients"][0]["mcp"], "unverified")
+
+    def test_uninspected_vibe_override_prevents_certain_disable(self):
+        user = self.home / ".vibe/config.toml"
+        project = self.workspace / ".vibe/config.toml"
+        self.write(user, "enable_mcp=false\n[[mcp_servers]]\nname='lean-beam'\n"
+                   "transport='stdio'\n" + f"command=[{json.dumps(str(self.executable))}]\n")
+        self.write(project, "enable_mcp=true\n#" + "x" * (1024 * 1024))
+        report = self.run_doctor("vibe", expected=2)
+        self.has_code(report, "file.tooLarge", "unknown")
+        self.has_code(report, "policy.notEvaluated", "unknown")
+        self.assertEqual(report["clients"][0]["mcp"], "unverified")
+        self.assertNotIn("mcp.disabled", {f["code"] for f in self.findings(report)})
+        self.assertNotIn("launch.file", {f["code"] for f in self.findings(report)})
+        # Restoring complete coverage restores a conclusive result.
+        project.unlink()
+        self.has_code(self.run_doctor("vibe", expected=1), "mcp.disabled", "error")
+
+    def test_incomplete_sources_gate_effective_checks_for_other_clients(self):
+        launcher = json.dumps(str(self.executable))
+        cases = [
+            ("codex", self.home / ".codex/config.toml",
+             f"[mcp_servers.lean-beam]\ncommand={launcher}\nenabled=false\n",
+             self.workspace / ".codex/config.toml", "#"),
+            ("opencode", self.home / ".config/opencode/opencode.json",
+             json.dumps({"mcp": {"lean-beam": {
+                 "type": "local", "command": [str(self.executable)], "enabled": False}}}),
+             self.workspace / "opencode.json", "{}"),
+            ("claude", self.home / ".claude.json",
+             json.dumps({"mcpServers": {"lean-beam": {"command": str(self.executable)}},
+                         "disabledMcpServers": ["lean-beam"]}),
+             self.workspace / ".claude/settings.json", "{}"),
+        ]
+        for client, user, text, override, prefix in cases:
+            with self.subTest(client=client):
+                self.write(user, text)
+                self.write(override, prefix + " " * (1024 * 1024))
+                report = self.run_doctor(client, expected=2)
+                self.has_code(report, "file.tooLarge", "unknown")
+                self.assertEqual(report["clients"][0]["mcp"], "unverified")
+                codes = {f["code"] for f in self.findings(report)}
+                self.assertNotIn("mcp.disabled", codes)
+                self.assertNotIn("launch.file", codes)
+                override.unlink()
+                self.has_code(self.run_doctor(client, expected=1), "mcp.disabled", "error")
 
     def test_claude_skill_policies_do_not_poison_mcp_state(self):
         self.write(self.home / ".claude/skills/lean-beam/SKILL.md", "Lean skill\n")

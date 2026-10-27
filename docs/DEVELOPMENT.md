@@ -945,6 +945,10 @@ exceptions and configuration contents out of diagnostics. Reuse installation met
 do not execute configured commands or add a second runtime admission path.
 Keep named overrides until all source files establish the Beam aliases. OpenCode merging accepts
 only source entries admitted by its per-file validator, represented by `OpenCodeSourceEntry`.
+Do not synthesize settings from OpenCode native-format fields: its whole-entry conversion and
+fallback are outside the supported subset. Numeric checks use values, not JSON spelling.
+Keep source acquisition completeness separate from collected settings; missing files establish
+absence, but unread or undecodable files cannot establish effective selection or disablement.
 Policy extraction records whether a setting concerns MCP tools or skill access; rendering and
 generic policy matching must not infer that domain from a mention of Beam's name.
 

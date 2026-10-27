@@ -73,6 +73,21 @@ def main():
         assert "mcp.notConfigured" not in findings, result
         inspect("codex", "--config", str(root / "absent.toml"), expected=1)
         inspect("unknown-client", expected=2, report=False)
+        opencode = home / ".config/opencode/opencode.json"
+        opencode.parent.mkdir(parents=True)
+        local = {"type": "local", "command": [str(launcher)]}
+        source = json.dumps({"mcp": {"lean-beam": {**local, "timeout": "TIMEOUT"}}})
+        for spelling in ["5000", "5000.0", "50000e-1"]:
+            opencode.write_text(source.replace('"TIMEOUT"', spelling), encoding="utf-8")
+            value = inspect("opencode", expected=expected)
+            codes = {f["code"] for f in value["clients"][0]["findings"]}
+            assert "launch.file" in codes and "mcp.invalidEntry" not in codes, value
+        opencode.write_text(json.dumps({"mcp": {"lean-beam": {**local, "enabled": False}}}), encoding="utf-8")
+        (workspace / "opencode.json").write_text(json.dumps({"mcp": {"lean-beam": {
+            **local, "disabled": False, "timeout": 5000}}}), encoding="utf-8")
+        value = inspect("opencode", expected=2)
+        assert value["clients"][0]["mcp"] == "unverified", value
+        assert any(f["code"] == "config.sourceUnsupported" for f in value["clients"][0]["findings"]), value
         vibe = home / ".vibe/config.toml"
         vibe.parent.mkdir()
         vibe.write_text("[[mcp_servers]]\nname = 'lean-beam'\ntransport = 'stdio'\ndisabled = true\n"

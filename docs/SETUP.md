@@ -498,9 +498,12 @@ Otherwise, discovery follows the installer home overrides and standard workspace
 Known Claude local/project/user registrations and OpenCode local-file merges retain source paths;
 ambiguous selection, trust/approval state, custom launchers, and unresolved overrides are unverified.
 Overrides of a recognized server alias remain in scope. OpenCode source entries are checked before
-merging; an invalid source cannot be repaired by fields inherited from another file. Its supported
-`disabled` flag and Vibe's `enable_mcp` switch contribute to MCP state. Skill access restrictions
-contribute to skill state independently of MCP registration.
+merging; an invalid source cannot be repaired by fields inherited from another file. OpenCode's
+native-format conversion (including `disabled` and object-valued timeouts) is unverified; doctor checks local definitions
+using `type`, `command`, and `enabled`. Effective-setting checks require all relevant files to be
+inspected: an unread overriding file cannot establish that an integration is disabled. Vibe's
+`enable_mcp` switch contributes to MCP state. Skill restrictions contribute to skill state
+independently of MCP registration.
 Checked means the supported static checks passed within the reported scope. Relevant policy that
 cannot be interpreted keeps the result unverified. For Vibe, use a command array to preserve paths
 containing spaces; command strings that require argument splitting remain unverified.

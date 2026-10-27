@@ -282,7 +282,7 @@ private def vibeAlias (name : String) : String :=
   String.ofList <| (((chars.dropWhile trim).reverse.dropWhile trim).reverse.take 256)
 
 private def inspectPolicies (client : Client) (policies : Array PolicySetting) (entries : Array Entry)
-    (report : ClientReport) : ClientReport := Id.run do
+    (report : ClientReport) (sourcesComplete : Bool) : ClientReport := Id.run do
   let mut report := report
   let aliases := entries.map (·.name)
   let names := #["lean-beam"] ++ aliases ++
@@ -300,7 +300,7 @@ private def inspectPolicies (client : Client) (policies : Array PolicySetting) (
     if client == .vibe && policy.key == "enable_mcp" then
       if entries.isEmpty then continue
       if value == .bool true then continue
-      let certain := !policy.conditional &&
+      let certain := sourcesComplete && !policy.conditional &&
         (policies.filter (·.key == "enable_mcp")).size == 1 && value == .bool false
       report := add report .mcp (if certain then "mcp.disabled" else "policy.notEvaluated")
         (if certain then .error else .unknown)
@@ -463,8 +463,10 @@ private def decodeOpenCodeSource (value : Json) : Except Unit (Array String) := 
   if let some cwd := field? value "cwd" then
     let _ ← string cwd
   if let some timeout := field? value "timeout" then
-    let ms ← timeout.getNat? |>.mapError (fun _ => ())
-    unless ms > 0 do throw ()
+    -- OpenCode consumes JavaScript numbers: integer value, not JSON decimal spelling.
+    let number ← timeout.getNum? |>.mapError (fun _ => ())
+    let ms := number.toFloat
+    unless ms.isFinite && ms > 0 && ms == ms.floor do throw ()
   return command
 
 private def decodeLaunch (client : Client) (value : Json) : Except Unit (String × Array String) := do
@@ -511,21 +513,20 @@ private def decodeLaunch (client : Client) (value : Json) : Except Unit (String 
 /-- OpenCode validates each source before merging; an enabled override discards other fields.
     https://github.com/anomalyco/opencode/blob/v1.19.4/packages/opencode/src/config/parse.ts -/
 private def prepareOpenCodeEntry (entry : Entry) (report : ClientReport) : Option OpenCodeSourceEntry × ClientReport := Id.run do
-  let .ok fields := object entry.value
+  let .ok _ := object entry.value
     | return (none, add report .mcp "config.entryShape" .unknown
         "A Beam server definition has an unsupported shape; expected a server object." entry.source entry.key)
-  let mut value := entry.value
-  if let some disabled := field? value "disabled" then
-    let .ok disabled := disabled.getBool?
-      | return (none, add report .mcp "config.disabledShape" .unknown
-          "OpenCode's disabled setting is not a supported boolean." entry.source entry.key)
-    let fields := fields.filter (·.1 != "disabled")
-    value := Json.mkObj <| (if (field? value "enabled").isSome then fields
-      else fields.push ("enabled", .bool (!disabled))).toList
-  if field? value "type" == some (.str "remote") ||
-      (field? value "timeout").any (·.getObj?.isOk) then
+  let value := entry.value
+  -- Native conversion validates the whole native definition before falling back to V1.
+  -- Do not approximate that conversion by synthesizing enabled from individual fields.
+  let nativeTimeout := (field? value "timeout").any fun timeout =>
+    match timeout with | .obj _ | .arr _ | .null => true | _ => false
+  if #["disabled", "codemode", "oauth"].any (fun key => (field? value key).isSome) ||
+      nativeTimeout || field? value "type" == some (.str "remote") then
     return (none, add report .mcp "config.sourceUnsupported" .unknown
-      "This OpenCode source uses launch settings outside the supported local definition." entry.source entry.key)
+      "OpenCode native-format conversion or remote settings are outside this inspection."
+      entry.source entry.key
+      "Review this definition in OpenCode; doctor checks local entries using type, command, and enabled.")
   if (decodeOpenCodeSource value).isOk then return (some ⟨{ entry with value }⟩, report)
   if let some enabled := (field? entry.value "enabled").bind (·.getBool?.toOption) then
     return (some ⟨{ entry with value := Json.mkObj [("enabled", .bool enabled)] }⟩, report)
@@ -745,10 +746,13 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
   let mut policies : Array ClaudePolicy := #[]
   let mut toolPolicies : Array PolicySetting := #[]
   let mut conditional := false
+  -- Absence is inspected; unread or undecodable layers cannot establish effective settings.
+  let mut sourcesComplete := true
   let mut opencodeProjects := 0
   let mut opencodeDirectories := 0
   for source in plan.configs do
     if !source.path.isAbsolute then
+      sourcesComplete := false
       report := add { report with discovered := true } configArea "location.relative" .unknown
         "A config override is relative; it was not resolved against an assumed client launch directory."
       continue
@@ -759,6 +763,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
           sources := report.sources.push { path := source.path.toString, role := source.role, conditional := source.conditional, state := .ok } }
         match ← parseConfig source.format text with
         | .error () =>
+            sourcesComplete := false
             report := add report configArea "config.syntax" .error
               "Configuration is not valid JSON/TOML for this client; source text is omitted." source.path.toString
         | .ok value =>
@@ -770,6 +775,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
               policies := policies ++ collected
             match entries context client source value with
             | .error () =>
+                sourcesComplete := false
                 report := add report configArea "config.shape" .unknown
                   (if client == .pi then "Configuration has an unsupported shape; expected a settings object."
                    else "Configuration has an unsupported shape; expected a config object and the client's MCP server container.")
@@ -787,6 +793,9 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
                   (!selected.isEmpty || (client == .vibe && (field? value "mcp_servers").isSome)))
                 if client == .pi then report ← inspectPiSettings context source value report configOverride?.isNone
     | other =>
+        match other with
+        | .missing => pure ()
+        | _ => sourcesComplete := false
         report := readProblem report source.path.toString source.role configArea other source.conditional
         if configOverride?.isSome then report := { report with discovered := true }
         if configOverride?.isSome then
@@ -817,12 +826,12 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
     found := mergeOpenCode prepared
     conditional := !found.isEmpty && (opencodeProjects > 1 || opencodeDirectories > 1)
   let selected := if client == .claude then selectClaude found else found
-  report := inspectPolicies client toolPolicies selected report
+  report := inspectPolicies client toolPolicies selected report sourcesComplete
   let selectionConditional := if client == .claude then
       selected.any fun entry => entry.conditional || (selected.filter (·.name == entry.name)).size > 1
     else conditional
   let checkLaunch := (selected.size == 1 || client == .opencode) && !selectionConditional &&
-    !inlineOverride && sourceEntriesAdmitted
+    !inlineOverride && sourceEntriesAdmitted && sourcesComplete
   if (selected.size > 1 && client != .opencode && client != .claude) || selectionConditional then
     report := add report .mcp "config.layers" .unknown
       "Multiple Beam definitions or trust/approval-dependent project settings are present. Effective selection/merging is not verified."
@@ -830,7 +839,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
     if client == .claude then
       let disabled := policies.filter fun policy => policy.names.contains entry.name &&
         (!policy.projectOnly || entry.scope == .project)
-      if !disabled.isEmpty then
+      if !disabled.isEmpty && sourcesComplete then
         for policy in disabled do
           report := add report .mcp "mcp.disabled" .error
             s!"Beam server {(toJson entry.name).compress} is explicitly disabled for the selected scope."
@@ -838,7 +847,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
             "Remove this server's name from the disabled list if you intend to use it through MCP."
         continue
     let checkEntry := if client == .claude then
-        !entry.conditional && (selected.filter (·.name == entry.name)).size == 1
+        sourcesComplete && !entry.conditional && (selected.filter (·.name == entry.name)).size == 1
       else checkLaunch
     report ← inspectEntry client entry report checkEntry
   if selected.isEmpty && (report.mcp == .notConfigured || report.mcp == .notApplicable) then
