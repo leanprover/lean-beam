@@ -48,7 +48,7 @@ def failureOutputForArgs : List String → FailureOutput
   | "--pretty" :: rest => failureOutputForArgs rest
   | "--root" :: _ :: rest | "--session-dir" :: _ :: rest => failureOutputForArgs rest
   | "doctor" :: rest => if rest.contains "--json" then .json else .text
-  | "--version" :: _ | "version" :: _ | "--help" :: _ | "help" :: _ | "prune" :: _ => .text
+  | "--version" :: _ | "version" :: _ | "-h" :: _ | "--help" :: _ | "help" :: _ | "prune" :: _ => .text
   | _ => .jsonAndDiagnostic
 
 def commandUsage? (command : String) : Option String :=

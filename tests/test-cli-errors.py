@@ -65,19 +65,24 @@ class CliErrorsTest(unittest.TestCase):
         return response["error"]
 
     def test_help_and_version_succeed(self):
-        for args in [("--help",), ("help",), ("--version",), ("version",)]:
+        for args in [("-h",), ("--help",), ("help",), ("--version",), ("version",)]:
             with self.subTest(args=args):
                 result = self.invoke(*args)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(result.stdout)
 
     def test_human_command_errors_do_not_emit_json(self):
-        for args in [("prune", "--unknown"), ("help", "--unknown"), ("version", "--unknown")]:
+        for args in [("prune", "--unknown"), ("-h", "--unknown"), ("help", "--unknown"), ("version", "--unknown")]:
             with self.subTest(args=args):
                 result = self.invoke(*args)
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(result.stdout, "")
                 self.assertIn("beam:", result.stderr)
+        for command in ["-h", "--help", "--version"]:
+            result = self.invoke("--root", self.root / "missing", command)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("beam:", result.stderr)
         record = self.installation / "manifest.json"
         contents = record.read_bytes()
         try:
