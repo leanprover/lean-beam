@@ -605,6 +605,10 @@ class ClientDoctorTest(unittest.TestCase):
         settings = self.home / ".claude/settings.json"
         for policy in [{"permissions": {"deny": ["Skill(lean-beam)"]}},
                        {"permissions": {"deny": ["Skill"]}},
+                       {"permissions": {"deny": ["Skill(*)"]}},
+                       {"permissions": {"deny": ["Skill(other *)"]}},
+                       {"permissions": {"deny": ["Skill(other:alias)"]}},
+                       {"permissions": {"deny": ["Skill(unfinished"]}},
                        {"skillOverrides": {"lean-beam": "off"}}]:
             with self.subTest(policy=policy):
                 self.json_file(settings, policy)
@@ -616,11 +620,14 @@ class ClientDoctorTest(unittest.TestCase):
         report = self.run_doctor("claude", expected=2)
         self.assertEqual(report["clients"][0]["skill"], "unverified")
         self.assertEqual(report["clients"][0]["mcp"], "unverified")
-        self.json_file(settings, {"permissions": {"deny": ["Read"]},
-                                  "skillOverrides": {"other-skill": "off"}})
-        report = self.run_doctor("claude")
-        self.assertEqual(report["clients"][0]["skill"], "checked")
-        self.assertEqual(report["clients"][0]["mcp"], "checked")
+        for key in ["allow", "deny", "ask"]:
+            with self.subTest(unrelated_rule=key):
+                self.json_file(settings, {"permissions": {key: ["Read", "Skill(other-skill)"]},
+                                          "skillOverrides": {"other-skill": "off"}})
+                report = self.run_doctor("claude")
+                self.assertEqual(report["clients"][0]["skill"], "checked")
+                self.assertEqual(report["clients"][0]["mcp"], "checked")
+                self.assertNotIn("policy.notEvaluated", {f["code"] for f in self.findings(report)})
 
     def test_vibe_normalized_aliases_in_tool_policy(self):
         config = self.home / ".vibe/config.toml"

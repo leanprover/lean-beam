@@ -120,22 +120,19 @@ private def isBeam (client : Client) (name : String) (value : Json) : Bool :=
     isMcpExecutable (System.FilePath.mk command) ||
       (client == .vibe && command.contains "lean-beam-mcp"))
 
-private def namedEntries (client : Client) (source : ConfigSource)
+private def namedEntries (source : ConfigSource)
     (keyPrefix : String) (value : Json) (localScope := false) : Except Unit (Array Entry) := do
   let values ← object value
-  return values.filterMap fun (name, value) =>
-    -- Retain named overrides until every source has established the Beam aliases.
-    if client == .opencode || client == .claude || client == .codex || isBeam client name value then
-      some {
-        source := source.path.toString
-        key := s!"{keyPrefix}.{name}"
-        name
-        value
-        conditional := source.conditional
-        scope := if localScope then .local
-          else if source.role == .projectConfig then .project else .user
-      }
-    else none
+  -- Retain named overrides until every source has established the Beam aliases.
+  return values.map fun (name, value) => {
+    source := source.path.toString
+    key := s!"{keyPrefix}.{name}"
+    name
+    value
+    conditional := source.conditional
+    scope := if localScope then .local
+      else if source.role == .projectConfig then .project else .user
+  }
 
 private def retainBeamAliases (client : Client) (entries : Array Entry) : Array Entry :=
   let names := (entries.filter fun entry => isBeam client entry.name entry.value).map (·.name)
@@ -150,21 +147,21 @@ private def entries (context : Context) (client : Client) (source : ConfigSource
   | .codex =>
       match field? value "mcp_servers" with
       | none => return #[]
-      | some servers => namedEntries client source "mcp_servers" servers
+      | some servers => namedEntries source "mcp_servers" servers
   | .opencode =>
       match field? value "mcp" with
       | none => return #[]
-      | some servers => namedEntries client source "mcp" servers
+      | some servers => namedEntries source "mcp" servers
   | .claude =>
       let mut result := #[]
       if let some servers := field? value "mcpServers" then
-        result ← namedEntries client source "mcpServers" servers
+        result ← namedEntries source "mcpServers" servers
       if let some projects := field? value "projects" then
         let _ ← object projects
         if let some project := field? projects context.workspace.toString then
           let _ ← object project
           if let some servers := field? project "mcpServers" then
-            result := result ++ (← namedEntries client source "projects.<workspace>.mcpServers" servers true)
+            result := result ++ (← namedEntries source "projects.<workspace>.mcpServers" servers true)
       return result
   | .vibe =>
       match field? value "mcp_servers" with
@@ -202,6 +199,17 @@ private structure PolicySetting where
 private def isClaudeSkillRule (rule : Json) : Bool :=
   rule.getStr?.toOption.any fun text => text == "Skill" || text.startsWith "Skill("
 
+/-- Only exclude simple exact names known to be unrelated; retain unfamiliar rule syntax. -/
+private def claudeSkillRuleMayApply : Json → Bool
+  | .str text =>
+      if text.startsWith "Skill(" && text.endsWith ")" then
+        let name := ((text.drop 6).toString.dropEnd 1).toString
+        let simple := !name.isEmpty && name.all fun ch =>
+          (ch.toNat < 128 && ch.isAlphanum) || ch == '_' || ch == '-'
+        !simple || name.contains "lean-beam"
+      else true
+  | _ => true
+
 /-- Route skill access rules before generic tool-policy inspection; no permissions are evaluated.
     https://code.claude.com/docs/en/skills#restrict-claudes-skill-access -/
 private def splitClaudePermissions (value : Json) : Json × Json := Id.run do
@@ -211,7 +219,8 @@ private def splitClaudePermissions (value : Json) : Json × Json := Id.run do
   for (key, setting) in fields do
     if ["allow", "deny", "ask"].contains key then
       if let .ok rules := setting.getArr? then
-        skills := skills ++ rules.filter (fun rule => isClaudeSkillRule rule || rule == .str "*")
+        skills := skills ++ rules.filter (fun rule =>
+          (isClaudeSkillRule rule || rule == .str "*") && claudeSkillRuleMayApply rule)
         tools := tools.push (key, .arr <| rules.filter (!isClaudeSkillRule ·))
         continue
     tools := tools.push (key, setting)
@@ -293,7 +302,7 @@ private def inspectPolicies (client : Client) (policies : Array PolicySetting) (
       if (client == .claude && policy.key == "permissions") ||
           policy.value.getStr?.isOk || mentionsPattern #["lean-beam"] policy.value then
         report := add report .skill "policy.notEvaluated" .unknown
-          "Skill policy may affect Beam; effective permissions were not evaluated."
+          "Skill permissions may restrict Beam; review them in your client."
           policy.source policy.key
       continue
     let value := policy.value
@@ -305,7 +314,7 @@ private def inspectPolicies (client : Client) (policies : Array PolicySetting) (
       report := add report .mcp (if certain then "mcp.disabled" else "policy.notEvaluated")
         (if certain then .error else .unknown)
         (if certain then "Vibe's MCP integration is explicitly disabled by enable_mcp."
-         else "Vibe's enable_mcp selection could not be verified.") policy.source policy.key
+         else "Vibe's enable_mcp setting could not be verified.") policy.source policy.key
         (if certain then "Set enable_mcp = true if you intend to use Beam through MCP."
          else "Review enable_mcp in the inspected Vibe configurations.")
       continue
@@ -314,7 +323,7 @@ private def inspectPolicies (client : Client) (policies : Array PolicySetting) (
     if (!entries.isEmpty || mentionsBeam value) &&
         (allowList || value.getStr?.isOk || toolPolicyMayApply names value) then
       report := add report .mcp "policy.notEvaluated" .unknown
-        "Tool policy may affect Beam; effective permissions were not evaluated."
+        "Tool permissions may restrict Beam; review them in your client."
         policy.source policy.key
   return report
 
@@ -524,9 +533,9 @@ private def prepareOpenCodeEntry (entry : Entry) (report : ClientReport) : Optio
   if #["disabled", "codemode", "oauth"].any (fun key => (field? value key).isSome) ||
       nativeTimeout || field? value "type" == some (.str "remote") then
     return (none, add report .mcp "config.sourceUnsupported" .unknown
-      "OpenCode native-format conversion or remote settings are outside this inspection."
+      "This OpenCode entry uses settings doctor cannot verify."
       entry.source entry.key
-      "Review this definition in OpenCode; doctor checks local entries using type, command, and enabled.")
+      "Check this registration in OpenCode.")
   if (decodeOpenCodeSource value).isOk then return (some ⟨{ entry with value }⟩, report)
   if let some enabled := (field? entry.value "enabled").bind (·.getBool?.toOption) then
     return (some ⟨{ entry with value := Json.mkObj [("enabled", .bool enabled)] }⟩, report)
@@ -546,7 +555,7 @@ private def inspectEntry (client : Client) (entry : Entry)
   -- Overrides may legally provide only some fields. Validate launches only after selection.
   if !checkLaunch then
     return add report .mcp "mcp.definition" .ok
-      "A Beam definition was found; launch fields are not validated without effective selection."
+      "A Beam registration was found; its launch settings were not verified."
       entry.source entry.key
   let disabledKey := if client == .vibe then "disabled" else "enabled"
   let disabledValue := client == .vibe
@@ -554,7 +563,7 @@ private def inspectEntry (client : Client) (entry : Entry)
     return add report .mcp "mcp.disabled" .error
       "Beam's MCP registration is explicitly disabled." entry.source entry.key
       "Enable the registration in this client if you intend to use Beam through MCP."
-  if client == .opencode && (object value).isOk &&
+  if client == .opencode &&
       (field? value "command").isNone && (field? value "type").isNone &&
       (field? value "enabled").any (·.getBool?.isOk) then
     return add report .mcp "config.partial" .unknown
@@ -834,7 +843,8 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
     !inlineOverride && sourceEntriesAdmitted && sourcesComplete
   if (selected.size > 1 && client != .opencode && client != .claude) || selectionConditional then
     report := add report .mcp "config.layers" .unknown
-      "Multiple Beam definitions or trust/approval-dependent project settings are present. Effective selection/merging is not verified."
+      "Beam has multiple registrations or settings that depend on client trust."
+      (remediation? := some "Check which Beam registration your client uses.")
   for entry in selected do
     if client == .claude then
       let disabled := policies.filter fun policy => policy.names.contains entry.name &&
