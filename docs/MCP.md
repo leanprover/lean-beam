@@ -202,7 +202,10 @@ does not replace the retained runtime.
 
 The transport reserves space for a small terminal error before accepting work. One writer owns
 stdout. Execution admission is released after operation cleanup, independently of pending delivery.
-At most 32 execution admissions are unfinished at once. Normal output shares a 64 MiB budget;
+At most 32 execution admissions are unfinished at once. A client-cancelled call keeps its admission
+until it settles, so 32 cancelled calls that never observe cancellation exhaust admission: every
+later request, including `lean_drop_workspace` and `beam_version`, receives `-32024`, and only
+restarting the server recovers. Normal output shares a 64 MiB budget;
 each admission reserves 4 KiB from it, and an encoded successful response may use up to 8 MiB.
 These frame budgets include envelope metadata, the newline, and retained diagnostic labels.
 They do not bound broker computation, input decoding, or result construction.
@@ -508,7 +511,8 @@ and cleanup before the drop runs; later workspace-bound calls wait for the drop'
 cleanup and may then recreate the same descriptor. A call the client has cancelled stops fencing
 the drop, even if it has not settled: it keeps its execution admission until it does, and the
 drop's backend shutdown can be what stops it. To evict a workspace whose earlier call is stuck,
-cancel that call; this also releases a drop that is already waiting. `beam_version` and
+cancel that call; this also releases a drop that is already waiting, provided admission capacity
+remains for the drop itself. `beam_version` and
 `beam_stats` never wait for the fence. These fences never wait for stdout. Responses may arrive out
 of execution order, including responses to workspace control operations.
 Registration or a progress notification alone does not grant execution ownership.
