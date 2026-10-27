@@ -5,7 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
-import Beam.Install.ToolchainPolicy
+import Beam.Installation.ToolchainPolicy
 import Beam.Installation.Components
 import Beam.Path
 import Beam.System
@@ -52,7 +52,7 @@ private def readRequiredToolchainCmdTrim (toolchain exe : String) (args : Array 
 
 /-- A canonical selector must name the compiler that `lean --version` reports. -/
 def expectedCanonicalLeanVersionPrefix? (toolchain : String) : Option String := do
-  some s!"Lean (version {← canonicalLeanVersion? toolchain},"
+  some s!"Lean (version {← Beam.Installation.ToolchainPolicy.canonicalLeanVersion? toolchain},"
 
 /-- Observe one already selected SDK; every command uses this concrete installation. -/
 def fingerprintLeanInstallation (root : System.FilePath) : IO ToolchainFingerprint := do

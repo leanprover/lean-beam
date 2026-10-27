@@ -8,7 +8,7 @@ import Beam.Installation.Manifest
 import Beam.Installation.Bundled
 import Beam.Installation.LocalTarget
 import Beam.Installation.StandaloneLayout
-import Beam.Install.ToolchainPolicy
+import Beam.Installation.ToolchainPolicy
 import Beam.Project
 import Beam.Runtime
 import Beam.Version
@@ -45,11 +45,11 @@ private def installerTargetArguments (toolchain : String) : Except String (List 
   if (System.FilePath.mk toolchain).isAbsolute ||
       ["./", "../", ".\\", "..\\"].any (fun start => toolchain.startsWith start) then
     throw "a filesystem selector must be registered under an Elan link name before installation"
-  if Beam.Install.releaseToolchainSupported toolchain then
+  if Beam.Installation.ToolchainPolicy.releaseToolchainSupported toolchain then
     return ["--toolchain", toolchain]
   if toolchain.startsWith "leanprover/lean4:" then
     throw <| s!"this Beam revision does not admit official target '{toolchain}' for installation; " ++
-      s!"select a supported exact target such as {Beam.Install.validatedToolchains.headD "a validated Lean toolchain"}"
+      s!"select a supported exact target such as {Beam.Installation.ToolchainPolicy.validatedToolchains.headD "a validated Lean toolchain"}"
   return ["--custom-toolchain", toolchain]
 
 def UnavailableTarget.remedy (target : UnavailableTarget) : TargetRemedy := Id.run do
