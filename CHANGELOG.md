@@ -61,6 +61,11 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   An explicit root can be inspected after Lean project markers disappear; setup failures still
   produce a nonzero exit status.
 
+### Documentation
+
+- Added a descriptive related-tools comparison for `lean-lsp-mcp`, Pantograph, and Beam's
+  saved-file probe layer.
+
 ### Fixed
 
 - Preserve request outcome details in CLI failure reports. Lost replies explain that the operation
