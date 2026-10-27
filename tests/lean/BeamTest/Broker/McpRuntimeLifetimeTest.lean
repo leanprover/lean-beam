@@ -605,6 +605,39 @@ private def checkRecoveryOutputBudget : IO Unit := do
       let some _ ← IO.wait release.result?
         | throw <| IO.userError "output budget fixture release was dropped")
 
+/-- Completed drops release execution while their replies stay undelivered. Once those replies
+fill the control output budget, further drops are busy, but observation is still admitted. -/
+private def checkReserveOutputIsolation : IO Unit := do
+  let entered ← IO.Promise.new
+  let release ← IO.Promise.new
+  withCoordinator (outputLimits := { pendingBytes := 4096, controlBytes := 8192 }) (fun coordinator _ => do
+    try
+      let blocker ← registerFixture coordinator "blocker"
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator blocker (.str "blocked")
+      let some _ ← IO.wait entered.result?
+        | throw <| IO.userError "isolation fixture never blocked its writer"
+      for index in [:2] do
+        let some drop ← tryRegister coordinator s!"drop-{index}" .workspaceControl
+          | throw <| IO.userError s!"drop {index} was busy"
+        requirePool "drop uses the control reserve" drop .controlReserve
+        (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator drop (.str "dropped")
+      require "undelivered replies do not pin control execution capacity"
+        ((← admissionLedger coordinator).controlReserve == 0)
+      require "a full control output budget makes further drops busy"
+        ((← tryRegister coordinator "drop-busy" .workspaceControl).isNone)
+      let some version ← tryRegister coordinator "version" .observation
+        | throw <| IO.userError "undelivered control replies denied observation"
+      requirePool "observation uses its own reserve" version .observationReserve
+      release.resolve ()
+      discard <| (stdioPrivate% Beam.Mcp.Server.Coordinator.beginClosing) coordinator
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator version (.str "eof")
+      (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
+      require "isolated admissions release exactly once" ((← admissionLedger coordinator) == {})
+    finally release.resolve ()) (beforeWrite := do
+      entered.resolve ()
+      let some _ ← IO.wait release.result?
+        | throw <| IO.userError "isolation fixture release was dropped")
+
 /-- Task-start failure completes through `failOwnedRequest`, which must release reserve capacity. -/
 private def checkReserveReleaseOnFailure : IO Unit :=
   withCoordinator (limits := { ordinary := 1 }) fun coordinator frames => do
@@ -649,6 +682,7 @@ def run : IO Unit := do
   checkRecoveryCapacity 2
   checkRecoveryCapacity 32
   checkRecoveryOutputBudget
+  checkReserveOutputIsolation
   checkReserveReleaseOnFailure
   checkEvictionCleanupDuringEof
 

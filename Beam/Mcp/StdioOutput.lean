@@ -16,8 +16,9 @@ open _root_.Lean
 structure Limits where
   pendingBytes : Nat := 64 * 1024 * 1024
   rejectionBytes : Nat := 256 * 1024
-  /-- Admissions charged to a recovery reserve never compete with ordinary pending output. -/
-  recoveryBytes : Nat := 1024 * 1024
+  /-- Reserve admissions never compete with ordinary pending output, or with each other. -/
+  controlBytes : Nat := 512 * 1024
+  observationBytes : Nat := 512 * 1024
   reservedResponseBytes : Nat := 4 * 1024
   responseBytes : Nat := 8 * 1024 * 1024
   diagnosticBytes : Nat := 256 * 1024
@@ -93,15 +94,16 @@ private def encode (json : Json) (label : String) (limit : Nat) : Except OutputL
     throw (.tooLarge limit)
   pure frame
 
-private inductive SlotKind where
-  | request
-  | recovery
-  | rejection
-
 /-- The output budget an execution admission reserves its terminal reply from. -/
 inductive Budget where
   | shared
-  | recovery
+  | control
+  | observation
+  deriving BEq
+
+private inductive SlotKind where
+  | request (budget : Budget)
+  | rejection
 
 private structure WorkspaceText where
   buffer : Beam.WorkspaceOutput.Buffer
@@ -115,7 +117,7 @@ private def WorkspaceText.bytes (text : WorkspaceText) : Nat :=
   Beam.WorkspaceOutput.byteLimit + Beam.WorkspaceOutput.chunkLimit + text.encodedLimit
 
 private structure Pending where
-  kind : SlotKind := .request
+  kind : SlotKind := .request .shared
   cancelled : Bool := false
   diagnostics : Array Frame := #[]
   diagnosticBytes : Nat := 0
@@ -143,7 +145,8 @@ private structure State where
   nextTextId : Nat := 0
   pending : Std.TreeMap Nat Pending := {}
   pendingBytes : Nat := 0
-  recoveryBytes : Nat := 0
+  controlBytes : Nat := 0
+  observationBytes : Nat := 0
   rejectionBytes : Nat := 0
 
 /-- Keep accounting in one pure transition for insertion, replacement, and retirement. -/
@@ -157,18 +160,22 @@ private def State.replace (current : State) (limits : Limits) (id : Nat)
     | some next => current.pending.insert id next
     | none => current.pending.erase id
   match reference.kind with
-  | .request => return { current with
+  | .request .shared => return { current with
       pending := pending
       pendingBytes := current.pendingBytes - oldBytes + newBytes }
-  | .recovery => return { current with
+  | .request .control => return { current with
       pending := pending
-      recoveryBytes := current.recoveryBytes - oldBytes + newBytes }
+      controlBytes := current.controlBytes - oldBytes + newBytes }
+  | .request .observation => return { current with
+      pending := pending
+      observationBytes := current.observationBytes - oldBytes + newBytes }
   | .rejection => return { current with
       pending := pending
       rejectionBytes := current.rejectionBytes - oldBytes + newBytes }
 
 private def State.fits (current : State) (limits : Limits) : Bool :=
-  current.pendingBytes <= limits.pendingBytes && current.recoveryBytes <= limits.recoveryBytes &&
+  current.pendingBytes <= limits.pendingBytes && current.controlBytes <= limits.controlBytes &&
+    current.observationBytes <= limits.observationBytes &&
     current.rejectionBytes <= limits.rejectionBytes
 
 /-- One writer owns stdout. Pending slots contain only text and delivery promises. -/
@@ -204,7 +211,8 @@ private def failState (error : IO.Error) : Std.AtomicT State IO (Option (Array P
         phase := .failed error
         pending := {}
         pendingBytes := 0
-        recoveryBytes := 0
+        controlBytes := 0
+        observationBytes := 0
         rejectionBytes := 0 }
       pure <| some <| current.pending.toArray.map Prod.snd
 
@@ -222,9 +230,7 @@ def Writer.fail (writer : Writer) (error : IO.Error) : IO Unit := do
 
 /-- Try to reserve a small terminal reply. Normal overload never fails the session. -/
 def Writer.tryReserve (writer : Writer) (budget : Budget := .shared) : IO (Option Slot) := do
-  let kind : SlotKind := match budget with
-    | .shared => .request
-    | .recovery => .recovery
+  let kind : SlotKind := .request budget
   let done ← IO.Promise.new
   let id? ← writer.state.atomically do
     let current ← get
@@ -360,7 +366,7 @@ private def Slot.accept (slot : Slot) (response : Nat → Json) (label : String)
         let some pending := current.pending.get? slot.id | return .ok ()
         if pending.cancelled || pending.response?.isSome then return .ok ()
         let limit := match pending.kind with
-          | .request | .recovery =>
+          | .request _ =>
               if reserved then slot.writer.limits.reservedResponseBytes else slot.writer.limits.responseBytes
           | .rejection => slot.writer.limits.reservedResponseBytes
         let frame ← match encode (response pending.omittedDiagnostics) label limit with
@@ -552,7 +558,8 @@ private def Writer.settle (writer : Writer) : IO (Except IO.Error Unit) :=
 
 def start (write : Frame → IO Unit) (limits : Limits := {}) : IO Writer := do
   if limits.reservedResponseBytes == 0 || limits.pendingBytes < limits.reservedResponseBytes ||
-      limits.recoveryBytes < limits.reservedResponseBytes ||
+      limits.controlBytes < limits.reservedResponseBytes ||
+      limits.observationBytes < limits.reservedResponseBytes ||
       limits.rejectionBytes < limits.reservedResponseBytes then
     throw <| IO.userError "MCP output budgets must each hold a nonempty reserved response"
   let writer : Writer := {

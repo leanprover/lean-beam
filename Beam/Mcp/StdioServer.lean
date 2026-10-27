@@ -117,13 +117,19 @@ private def Coordinator.validateReplyId (coordinator : Coordinator) (id : Json) 
   | .error _ =>
       throw <| IO.userError "JSON-RPC request ID cannot fit the reserved MCP error envelope"
 
-/-- Reserve terminal output for the first candidate pool whose output budget has room. Reserve
-pools use their own output budget, so pending ordinary output cannot deny a recovery admission. -/
+private def outputBudget : Admission.Pool → Beam.Mcp.StdioOutput.Budget
+  | .ordinary => .shared
+  | .controlReserve => .control
+  | .observationReserve => .observation
+
+/-- Reserve terminal output for the first candidate pool whose output budget has room. Each reserve
+pool has its own output budget, so neither pending ordinary output nor the other reserve's
+undelivered replies can deny a recovery admission. -/
 private def Coordinator.reserveOutput (coordinator : Coordinator) :
     List Admission.Pool → IO (Option (Admission.Pool × Beam.Mcp.StdioOutput.Slot))
   | [] => pure none
   | pool :: pools => do
-      let budget := if pool.isReserve then .recovery else .shared
+      let budget := outputBudget pool
       match ← coordinator.output.tryReserve budget with
       | some output => pure (some (pool, output))
       | none => coordinator.reserveOutput pools
@@ -676,6 +682,8 @@ private def Coordinator.handleIncoming
         if req.method == "tools/call" then some <| parseCallToolParams req.params? else none
       let tool? := parsedToolParams?.bind fun parsed => parsed.toOption.map (·.name)
       let requestClass := Admission.classify req.method tool?
+      -- Cancellation protection is independent of the admission class: non-tool requests such as
+      -- `ping` stay protected once started, while observational tool calls stay cooperative.
       let cancellationPolicy :=
         match parsedToolParams? with
         | some _ =>

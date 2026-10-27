@@ -43,8 +43,8 @@ for workspace control operations.
 Execution admission is charged to one typed pool at registration and released from it exactly
 once, after execution settles; cancellation does not release it. Ordinary requests share a
 configurable pool. Workspace drops and observation (`beam_version`, `beam_stats`, `ping`) fall back
-to separate fixed reserves, each with reserved output storage, when the ordinary pool or its output
-budget is full.
+to separate fixed reserves, each with its own output budget, when the ordinary pool or its output
+budget is full. At most `N + 4` requests are admitted at once.
 
 Busy means the request did not execute. An output-limit error can follow a completed operation.
 A missing or cancelled response is not evidence that a save did not commit. Output delay must not

@@ -40,10 +40,6 @@ inductive Pool where
   | observationReserve
   deriving BEq, Repr
 
-def Pool.isReserve : Pool → Bool
-  | .ordinary => false
-  | .controlReserve | .observationReserve => true
-
 /-- Pools a class may use, in order of preference. -/
 def RequestClass.pools : RequestClass → List Pool
   | .ordinary => [.ordinary]

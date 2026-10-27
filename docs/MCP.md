@@ -217,7 +217,9 @@ admission until it settles; cancellation alone never frees capacity. Admission i
 - `beam_version`, `beam_stats`, and `ping` use the ordinary pool while it has room, and otherwise
   a separate fixed reserve of 2, so queued drops cannot starve them
 
-A request is charged to one pool at registration and released from that pool exactly once. If
+At most `N + 4` requests are therefore admitted at once, where `N` is the ordinary limit. A request
+is charged to the first pool in which both its execution slot and its terminal-reply storage fit,
+and is released from that pool exactly once. If
 ordinary work that never observes cancellation fills the ordinary pool and is cancelled, a drop
 can still be admitted: its backend shutdown stops that work, which then releases its capacity.
 The reserves do not make every stall recoverable. A drop still waits for uncancelled earlier
@@ -225,9 +227,10 @@ calls, does not interrupt a Lake load holding the broker state lock, and cannot 
 response if the client never reads stdout.
 
 Normal output shares a 64 MiB budget; each ordinary admission reserves 4 KiB from it, and an
-encoded successful response may use up to 8 MiB. Reserve-pool admissions take their 4 KiB from a
-separate 1 MiB output budget, so a full ordinary output budget does not deny recovery; a
-reserve-pool response that does not fit that budget receives `-32023`.
+encoded successful response may use up to 8 MiB. Reserve-pool admissions take their 4 KiB from
+their own 512 KiB output budget, one for drops and one for observation. A full ordinary output
+budget therefore does not deny recovery, and undelivered drop replies cannot deny observation. A
+reserve-pool response that does not fit its budget receives `-32023`.
 These frame budgets include envelope metadata, the newline, and retained diagnostic labels.
 They do not bound broker computation, input decoding, or result construction.
 

@@ -14,7 +14,7 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 - Cancelled MCP calls that never settle can no longer lock out recovery. `lean_drop_workspace`
   and `beam_version`, `beam_stats`, and `ping` fall back to small fixed admission and output
   reserves when the ordinary pool is full, with separate reserves so queued drops cannot starve
-  observation.
+  observation. At most `N + 4` requests are admitted at once.
 
 - A client-cancelled MCP call no longer blocks `lean_drop_workspace`. Before, if the cancelled
   call never observed cancellation (for example a looping `#eval` probe), the drop never ran and
