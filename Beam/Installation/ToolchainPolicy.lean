@@ -6,7 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Lean
 
-namespace Beam.Install
+namespace Beam.Installation.ToolchainPolicy
 
 private def canonicalNat? (text : String) : Option Nat := do
   let value ← text.toNat?
@@ -51,4 +51,4 @@ def releaseToolchainSupported (toolchain : String) : Bool :=
     let [major, minor, _] := ((version.splitOn "-").headD "").splitOn "." | return false
     return compatibleReleaseLines.contains s!"leanprover/lean4:v{major}.{minor}"
 
-end Beam.Install
+end Beam.Installation.ToolchainPolicy
