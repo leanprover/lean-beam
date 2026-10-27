@@ -526,6 +526,12 @@ private def checkEvictionCleanupDuringEof : IO Unit :=
       state.closeRuntime
       IO.FS.removeDirAll root
 
+/-- `closeTransport` only starts draining output; wait until queued replies reach the frames. -/
+private def awaitDelivered (coordinator : (stdioPrivate% Beam.Mcp.Server.Coordinator)) : IO Unit := do
+  let writer := (stdioPrivate% Beam.Mcp.Server.Coordinator.output) coordinator
+  let some (.ok ()) ← IO.wait writer.finishedTask
+    | throw <| IO.userError "recovery fixture writer did not drain"
+
 private def repliesWithCode (frames : IO.Ref (Array String)) (code : Int) : IO Nat := do
   let responses ← (← frames.get).mapM fun frame =>
     IO.ofExcept <| (Json.parse frame).mapError IO.userError
@@ -573,6 +579,7 @@ private def checkRecoveryCapacity (ordinary : Nat) : IO Unit :=
       (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator request (.str "eof")
     (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
     require "EOF releases every pool exactly once" ((← admissionLedger coordinator) == {})
+    awaitDelivered coordinator
     require "each exhausted pool replied busy without executing" ((← repliesWithCode frames (-32024)) == 3)
 
 /-- An ordinary pool with room does not help when ordinary output storage is full; recovery
@@ -658,6 +665,7 @@ private def checkReserveReleaseOnFailure : IO Unit :=
     (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator stuck (.str "eof")
     (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
     require "failures and EOF release every pool" ((← admissionLedger coordinator) == {})
+    awaitDelivered coordinator
     require "each failed start has an internal-error reply"
       ((← repliesWithCode frames (-32603)) == 3)
 
