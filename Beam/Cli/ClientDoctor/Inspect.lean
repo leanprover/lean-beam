@@ -235,7 +235,8 @@ private def claudePolicies (context : Context) (source : ConfigSource) (value : 
   return (report, policies)
 
 /-- Claude precedence is per name, local > project > user, with whole-entry replacement.
-    Retain formerly recognized aliases if an override changes their shape or launcher. -/
+    Retain formerly recognized aliases if an override changes their shape or launcher.
+    https://code.claude.com/docs/en/mcp#scope-hierarchy-and-precedence -/
 private def selectClaude (entries : Array Entry) : Array Entry :=
   entries.filter fun entry =>
     (entries.any fun other => other.name == entry.name && isBeam .claude other.name other.value) &&
@@ -492,7 +493,8 @@ private partial def mergeObjects (earlier later : Json) : Json :=
   | _, _ => later
 
 /-- OpenCode merges objects recursively; scalars and command arrays are replaced.
-    Keep the command's source when a later layer only changes another field. -/
+    Keep the command's source when a later layer only changes another field.
+    https://opencode.ai/docs/config/#precedence-order -/
 private def mergeOpenCode (entries : Array Entry) : Array Entry := Id.run do
   let beamNames := (entries.filter fun entry => isBeam .opencode entry.name entry.value).map (·.name)
   let mut result : Array Entry := #[]
@@ -516,9 +518,9 @@ private def mcpSetupRemediation? (client : Client) (explicitConfig : Bool) : Opt
     | .pi => none
   action?.map fun action =>
     if explicitConfig then
-      s!"If this file should configure Beam MCP, add its client-specific registration here; other configuration files were not inspected. Manual setup: {setupGuideUrl}#mcp-setup."
+      s!"Add the client-specific Beam MCP registration to this file if needed. Setup: {setupGuideUrl}#mcp-setup."
     else
-      s!"For MCP use, {action}. Use your installed lean-beam-mcp command's absolute path (the toolchain's bin command for bundled Beam). Manual setup: {setupGuideUrl}#mcp-setup."
+      s!"For MCP use, {action}. Setup: {setupGuideUrl}#mcp-setup."
 
 def inspectClient (context : Context) (client : Client) (dirs : Array System.FilePath)
     (configOverride? : Option System.FilePath := none) : IO ClientReport := do
@@ -635,14 +637,15 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
   if selected.isEmpty && (report.mcp == .notConfigured || report.mcp == .notApplicable) then
     report := add report .general (if client == .pi then "mcp.notApplicable" else "mcp.notConfigured") .notConfigured
       (if client == .pi then "Beam uses Pi's CLI skill; no native Pi MCP configuration is inspected."
-       else "No Beam MCP registration was found in the inspected files. MCP is optional for CLI/skill use.")
+       else "No Beam MCP registration found. Optional for CLI/skill use.")
       (remediation? := mcpSetupRemediation? client configOverride?.isSome)
   let before := report.findings.size
   for path in plan.skills do report ← inspectSkill path report
   if report.findings.size == before && configOverride?.isNone then
     report := add report .general "skill.notConfigured" .notConfigured
-      "No Lean skill was found in the inspected standard locations. Skills are optional for MCP use."
-      (remediation? := some s!"For agent CLI use, install the complete skills/lean-beam directory, including references, in your client's skill directory. MCP-only use does not require this step. Manual setup: {setupGuideUrl}#install-the-lean-skill-manually.")
+      (if client == .pi then "No Lean skill found for Pi's CLI workflow."
+       else "No Lean skill found. Optional for MCP use.")
+      (remediation? := some s!"For agent CLI use, install the complete skills/lean-beam directory, including references. Setup: {setupGuideUrl}#install-the-lean-skill-manually.")
   return report
 
 end Beam.Cli.ClientDoctor

@@ -152,7 +152,10 @@ class ClientDoctorTest(unittest.TestCase):
                     text = self.run_doctor(*args, as_json=False).stdout
                     self.assertIn(finding["remediation"], text)
                     for source in report["clients"][0]["sources"]:
-                        self.assertIn(source["path"], text)
+                        if "--verbose" in args:
+                            self.assertIn(source["path"], text)
+                        else:
+                            self.assertNotIn(source["path"], text)
         discovered = self.run_doctor()
         self.assertEqual([c["client"] for c in discovered["clients"]], ["codex"])
         self.assertNotIn("remediation", discovered)
@@ -170,10 +173,13 @@ class ClientDoctorTest(unittest.TestCase):
             self.assertIn(finding["remediation"], text)
             self.assertNotIn("codex mcp add", text)
             for source in report["clients"][0]["sources"]:
-                self.assertIn(source["path"], text)
+                if "--verbose" in args:
+                    self.assertIn(source["path"], text)
+                else:
+                    self.assertNotIn(source["path"], text)
         compact = self.run_doctor("codex", as_json=False).stdout
         self.assertIn("Setup reminder:", compact)
-        self.assertIn("0 errors, 0 unverified checks, 0 recommendations.", compact)
+        self.assertIn("0 errors, 0 unverified checks, 0 recommendations, 1 setup reminder.", compact)
 
     def test_explicit_file_reminder_stays_within_the_selected_scope(self):
         self.codex_config()
@@ -187,7 +193,8 @@ class ClientDoctorTest(unittest.TestCase):
         self.assertEqual([s["path"] for s in report["clients"][0]["sources"]], [str(selected)])
         text = self.run_doctor("codex", "--config", str(selected), as_json=False).stdout
         self.assertIn(finding["remediation"], text)
-        self.assertIn(str(selected), text)
+        self.assertNotIn(str(selected), text)
+        self.assertIn("Use --verbose for inspected paths", text)
         self.assertNotIn(str(self.home / ".codex/config.toml"), text)
         self.assertNotIn("#install-the-lean-skill-manually", text)
         pi = self.run_doctor("pi")
@@ -201,6 +208,10 @@ class ClientDoctorTest(unittest.TestCase):
         text = self.run_doctor("pi", as_json=False).stdout
         self.assertIn("pi: not configured", text)
         self.assertNotIn("CLI skill integration", text)
+        self.assertIn("Pi's CLI workflow", text)
+        self.assertNotIn("optional for mcp", text.lower())
+        self.assertNotIn("MCP-only", text)
+        self.assertIn("1 setup reminder.", text)
 
     def test_explicit_settings_scope_does_not_claim_skills_are_absent(self):
         config = self.root / "settings.json"
@@ -539,7 +550,7 @@ class ClientDoctorTest(unittest.TestCase):
         self.write(self.home / ".codex/skills/lean-beam/SKILL.md", "Lean skill\n")
         compact = self.run_doctor("codex", as_json=False).stdout
         self.assertIn("codex: checked — MCP config checked; Lean skill found", compact)
-        self.assertIn("0 errors, 0 unverified checks, 0 recommendations.", compact)
+        self.assertIn("0 errors, 0 unverified checks, 0 recommendations, 0 setup reminders.", compact)
         self.assertNotIn(str(self.home), compact)
         self.assertNotIn("[launch.file]", compact)
         verbose = self.run_doctor("codex", "--verbose", as_json=False).stdout
@@ -708,13 +719,24 @@ class ClientDoctorTest(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
 
     def test_cli_usage_has_diagnostic_exit_status(self):
-        for args in [("unknown-client",), ("--config", "/tmp/config"), ("pi", "codex")]:
+        for args in [("unknown-client",), ("--config", "/tmp/config"), ("pi", "codex"),
+                     ("codex", "--config"), ("codex", "--config", "--json"),
+                     ("codex", "--config", "--verbose"), ("codex", "--config", "")]:
             result = self.run_doctor(*args, expected=2, as_json=False)
             failure = json.loads(result.stdout)
             self.assertFalse(failure["ok"])
             self.assertEqual(failure["error"]["code"], "invalidParams")
             self.assertNotIn("kind", failure)
-            self.assertTrue(result.stderr)
+            self.assertEqual(result.stderr.count("usage: lean-beam"), 1, result.stderr)
+            self.assertNotIn("usage:", failure["error"]["message"])
+            if args[:2] == ("codex", "--config"):
+                self.assertEqual(failure["error"]["message"], "--config requires a file path.")
+
+    def test_option_like_config_filename_can_use_a_relative_path(self):
+        self.write(self.workspace / "--json", "")
+        report = self.run_doctor("codex", "--config", "./--json")
+        self.assertEqual(report["scope"], "explicitConfigFile")
+        self.has_code(report, "mcp.notConfigured", "notConfigured")
 
     def test_json_formats_preserve_report_and_diagnostic_status(self):
         for contents, status in [(None, 0), ("malformed = [", 1),

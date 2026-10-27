@@ -55,6 +55,6 @@ assert any(source["path"] == str(opencode_home / "skills/lean-beam/SKILL.md")
            and source["state"] == "ok" for source in clients["opencode"]["sources"]), clients["opencode"]
 text = subprocess.run([str(cli), "doctor", "clients"], cwd=workspace,
                       text=True, capture_output=True, timeout=15, check=True).stdout
-assert "0 errors, 0 unverified checks, 0 recommendations." in text, text
+assert "0 errors, 0 unverified checks, 0 recommendations, 1 setup reminder." in text, text
 assert snapshot() == before, "installed doctor modified files or created state"
 print("Installed doctor: five skills and three installer registrations checked; files unchanged.")

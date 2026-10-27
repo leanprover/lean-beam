@@ -36,9 +36,12 @@ def parseOptions (args : List String) : Except String Options := do
         parse rest { options with verbose := true }
     | "--config" :: path :: rest =>
         if options.config?.isSome then throw "--config was specified more than once."
+        if path.isEmpty || path.startsWith "--" then throw "--config requires a file path."
         parse rest { options with config? := some (System.FilePath.mk path) }
+    | ["--config"] => throw "--config requires a file path."
     | arg :: rest =>
-        let some client := Client.parse? arg | throw usage
+        let some client := Client.parse? arg
+          | throw "Unknown client or option. Choose codex, claude, pi, opencode, or vibe."
         if options.client?.isSome then throw "Select at most one client."
         parse rest { options with client? := some client }
   parse args {}
@@ -133,6 +136,7 @@ def renderText (report : Report) : String := Id.run do
   let mut errors := 0
   let mut unknowns := 0
   let mut warnings := 0
+  let mut reminders := 0
   for client in report.clients do
     let visibleFindings := client.findings.filter fun finding =>
       finding.status == .error || finding.status == .unknown || finding.status == .warning ||
@@ -167,14 +171,12 @@ def renderText (report : Report) : String := Id.run do
       if finding.status == .error then errors := errors + 1
       else if finding.status == .unknown then unknowns := unknowns + 1
       else if finding.status == .warning then warnings := warnings + 1
+      else if finding.status == .notConfigured then reminders := reminders + 1
       lines := lines.push s!"  {kind}: {finding.message}"
       if let some source := finding.source? then lines := lines.push s!"    In {quoted source}"
       if let some action := finding.remediation? then lines := lines.push s!"    {action}"
-    if !client.sources.isEmpty && visibleFindings.any (fun finding => finding.status == .notConfigured) then
-      lines := lines.push "  Inspected locations for these reminders:"
-      for source in client.sources do
-        lines := lines.push s!"    {quoted source.path} ({source.purpose})"
-  lines := lines.push s!"\n{errors} errors, {unknowns} unverified checks, {warnings} recommendations."
+  let reminderLabel := if reminders == 1 then "setup reminder" else "setup reminders"
+  lines := lines.push s!"\n{errors} errors, {unknowns} unverified checks, {warnings} recommendations, {reminders} {reminderLabel}."
   lines := lines.push "Read-only checks; running clients and loaded tools were not tested."
   lines := lines.push "Use --verbose for inspected paths and individual checks."
   return String.intercalate "\n" lines.toList

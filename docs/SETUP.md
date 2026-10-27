@@ -472,9 +472,10 @@ command reports clients whose configuration or Lean skill files it finds. Select
 reports absent optional integrations. The workspace is the current directory or `--root`; it need
 not be a Lean project. This command does not use `--session-dir`.
 
-When a selected or discovered client is missing an integration, the summary shows a setup reminder,
-the inspected locations, and a manual next step. Missing MCP registration and a missing CLI skill
-remain optional, so these reminders alone return `0`. Choose the step for the workflow you use.
+When a selected or discovered client is missing an integration, the summary shows a setup reminder
+and a manual next step. Use `--verbose` or JSON for all inspected locations. Missing MCP registration
+and a missing CLI skill remain optional, so these reminders alone return `0`. Choose the step for
+the workflow you use.
 If no client is discovered, select yours explicitly, for example
 `lean-beam doctor clients codex --verbose`; the empty JSON report includes the same `remediation`.
 
