@@ -85,6 +85,9 @@ def definitionMethod : String :=
 def referencesMethod : String :=
   "textDocument/references"
 
+def waitForILeansMethod : String :=
+  "$/lean/waitForILeans"
+
 def documentSymbolsMethod : String :=
   "textDocument/documentSymbol"
 

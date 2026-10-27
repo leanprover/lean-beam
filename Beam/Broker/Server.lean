@@ -2702,6 +2702,20 @@ private def handleReferencesOp
     (request : ReferencesRequest)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none) :
     HandlerM Response := do
+  -- Lean's watchdog answers references from an index that the file worker finalizes only after
+  -- it reports the file done, so done progress alone is not enough. Wait for this version's index,
+  -- or a fresh document answers `[]` and an edited one answers from its previous text. The
+  -- watchdog ignores cancellation of this wait; it ends once the version or a newer one finishes,
+  -- or the worker closes.
+  liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
+  let snapshot ← liftFailureIO <| readRequestSyncSnapshot server req
+  let started ← liftFailureIO <| server.withRequestSessionState req do
+    startSyncedWorkspaceRequest server req snapshot waitForILeansMethod
+      (fun uri => Json.mkObj [("uri", toJson uri), ("version", toJson request.version)])
+      (expectedVersion? := some request.version)
+      (position? := some { line := request.line, character := request.character })
+      (emitProgress? := emitProgress?)
+  discard <| awaitSyncedDocumentRequest started
   let method := referencesMethod
   handlePositionLspOp server req request.toRequestPosition method
     [("context", Json.mkObj [
