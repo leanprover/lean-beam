@@ -76,6 +76,19 @@ and needs a matching Beam runtime. Follow the custom-target installation steps a
 SDK. Beam matches canonical compiler paths, so the existing relative project selector can stay in
 place.
 
+If a locally selected compiler is missing from the Beam target set, the CLI error identifies the
+`lean-toolchain` file, its interpreted selector, the resolved compiler, and the bound installation.
+Its JSON data includes `selector_path`, `selector_text`, `lean_command`, `installation_root`, and
+`retained_targets`. When the standalone installer can provide the target, `remedy_command` names
+the install root and includes every retained target alongside the requested one. Run it from the
+Beam source checkout named in the message; the command uses POSIX shell syntax and retains the
+installer's normal confirmation and qualification steps. Restart clients after installing.
+
+Bundled SDKs, direct filesystem selectors, unsupported official releases, and unrecognized
+installation layouts receive manual guidance instead of an invented installer command. A raw SDK
+path can first be registered under an explicit Elan link name for `--custom-toolchain`. Runtime
+admission remains local and exact; displaying a remedy never executes it or changes selection.
+
 ## Layout qualification
 
 The POSIX fast suite runs `tests/test-nonstandard-toolchain.py` with the selected installed SDK.
