@@ -12,6 +12,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- `references` now waits for Lean to finish the requested document version, so a query right after
+  `update` reports that version's references instead of `[]` or locations from the previous text
+  ([#399](https://github.com/leanprover/lean-beam/pull/399), @ejgallego).
 - Cancelled MCP calls that never settle can no longer lock out recovery. `lean_drop_workspace`
   and `beam_version`, `beam_stats`, and `ping` fall back to small fixed admission and output
   reserves when the ordinary pool is full, with separate reserves so queued drops cannot starve
