@@ -31,7 +31,9 @@ def Failure.message : Failure → String
   | .invalid detail => s!"invalid Beam installation: {detail}; reinstall Beam before starting runtime work"
   | .changed => "Beam installation generation changed; restart with a complete installation"
   | .unavailable command =>
-      s!"project target {command} is not a member of this Beam installation; install Beam for that target"
+      s!"This Beam installation has no runtime for {command}. " ++
+        "The project's Lean compiler was found; install Beam for this exact target. " ++
+        "For a local Lean build, see https://github.com/leanprover/lean-beam/blob/main/docs/CUSTOM_TOOLCHAINS.md"
   | .noTarget => "missing project lean-toolchain; select an exact installed target before starting standalone Beam"
   | .selection error => error.message
   | .io error => error.toString

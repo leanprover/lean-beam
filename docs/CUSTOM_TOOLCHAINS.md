@@ -65,8 +65,14 @@ pruning; stop their owners and clients before removing them.
 
 Run `lean-beam doctor` from the project. A present target reports its installation root, recorded
 target, Lean executable, daemon, plugin, and generation. An unavailable target fails with setup
-guidance without executing Elan or the candidate compiler. Session and recovery information is
-printed before installation inspection, so a broken runtime does not hide recorded owner state.
+guidance without executing Elan or the candidate compiler. If installation inspection fails,
+session and recovery information remains in the error response's `error.data.diagnostics` field.
+
+A Lean source checkout may select a relative SDK path such as `build/release/stage1`. If doctor
+reports that the compiler was found but this Beam installation has no runtime for it, the SDK exists
+and needs a matching Beam runtime. Follow the custom-target installation steps above using that
+SDK. Beam matches canonical compiler paths, so the existing relative project selector can stay in
+place.
 
 ## Layout qualification
 

@@ -83,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
                 arguments += ["--session-dir", str(control)]
             refused = run(cli_g, *arguments, "serve", env=admission_env,
                           cwd=rejected_project, ok=False)
-            assert "not a member of this Beam installation" in refused.stderr, refused.stderr
+            assert "has no runtime for" in refused.stderr, refused.stderr
             if existing:
                 assert [path.name for path in control.iterdir()] == ["retained-owner-state"]
                 assert (control / "retained-owner-state").read_bytes() == b"must not change\n"
@@ -92,6 +92,36 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
                 assert not control.exists(), f"rejected target created session state: {control}"
             if explicit:
                 assert not (rejected_project / ".beam").exists()
+    # A Lean source checkout can select its stage1 SDK directly, without a lakefile.
+    # Distinguish an existing compiler without a Beam runtime from a missing compiler.
+    source_root = directory / "lean4 source"
+    source_compiler = source_root / "build/release/stage1/bin" / ("lean" + EXE)
+    source_compiler.parent.mkdir(parents=True)
+    source_compiler.write_bytes((foreign / "bin" / ("lean" + EXE)).read_bytes())
+    source_compiler.chmod(0o755)
+    selector = source_root / "lean-toolchain"
+    selector.write_text("build/release/stage1\n")
+    selector_bytes = selector.read_bytes()
+    for arguments, cwd in [((), source_root), (("--root", str(source_root)), directory)]:
+        diagnosis = run(cli_g, *arguments, "doctor", env=admission_env, cwd=cwd, ok=False)
+        assert diagnosis.returncode == 1
+        error = json.loads(diagnosis.stdout)["error"]
+        assert error["code"] == "setupError", error
+        assert str(source_compiler.resolve()) in error["message"], error
+        assert "has no runtime for" in error["message"], error
+        assert "compiler was found" in error["message"], error
+        assert "docs/CUSTOM_TOOLCHAINS.md" in error["message"], error
+        assert f"project root: {source_root}" in error["data"]["diagnostics"], error
+        assert "daemon status: absent" in error["data"]["diagnostics"], error
+        assert "compiler was found" in diagnosis.stderr, diagnosis.stderr
+        assert not (source_root / ".beam").exists(), "doctor created session state"
+        assert selector.read_bytes() == selector_bytes, "doctor changed project selection"
+    source_compiler.unlink()
+    diagnosis = run(cli_g, "doctor", env=admission_env, cwd=source_root, ok=False)
+    assert "unavailable locally" in diagnosis.stderr, diagnosis.stderr
+    assert "has no runtime for" not in diagnosis.stderr, diagnosis.stderr
+    assert not (source_root / ".beam").exists()
+    assert not marker.exists(), "doctor invoked a compiler or provider while inspecting the target"
     assert not Path(admission_env["HOME"]).exists()
     assert not Path(admission_env["ELAN_HOME"]).exists()
     # Frontends and each separately compiled target carry independent shared-library closure.
