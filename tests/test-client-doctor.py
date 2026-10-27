@@ -312,6 +312,59 @@ class ClientDoctorTest(unittest.TestCase):
         self.assertEqual(self.run_doctor("opencode")["clients"][0]["mcp"], "checked")
         self.json_file(global_config, {"permission": {"bash": {"*": "deny"}}})
         self.assertEqual(self.run_doctor("opencode")["clients"][0]["mcp"], "checked")
+        for alias, tool_prefix in [("proofs.v1", "proofs_v1"), ("proofs.β", "proofs__"),
+                                   ("proofs😀", "proofs__")]:
+            with self.subTest(alias=alias):
+                self.json_file(self.workspace / "opencode.json", {"mcp": {
+                    alias: {"type": "local", "command": [str(self.executable)]}}})
+                self.json_file(global_config, {"permission": {tool_prefix + "_beam_run_at": "deny"}})
+                report = self.run_doctor("opencode", expected=2)
+                self.has_code(report, "policy.notEvaluated", "unknown")
+                self.assertEqual(report["clients"][0]["mcp"], "unverified")
+
+    def test_nested_skill_policies_remain_unverified(self):
+        skill = self.home / ".agents/skills/lean-beam/SKILL.md"
+        self.write(skill, "Lean skill\n")
+        self.codex_config()
+        config = self.home / ".codex/config.toml"
+        self.write(config, config.read_text() + "\n[[skills.config]]\n"
+                   f"path={json.dumps(str(skill))}\nenabled=false\n")
+        report = self.run_doctor("codex", expected=2)
+        self.has_code(report, "policy.notEvaluated", "unknown")
+        self.has_code(report, "skill.readable", "ok")
+        self.assertEqual(report["clients"][0]["skill"], "unverified")
+        self.assertEqual(report["clients"][0]["mcp"], "checked")
+        self.write(self.home / ".config/opencode/skills/lean-beam/SKILL.md", "Lean skill\n")
+        self.json_file(self.home / ".config/opencode/opencode.json", {
+            "mcp": {"lean-beam": {"type": "local", "command": [str(self.executable)]}},
+            "permission": {"skill": {"lean-beam": "deny"}}})
+        report = self.run_doctor("opencode", expected=2)
+        self.has_code(report, "policy.notEvaluated", "unknown")
+        self.has_code(report, "skill.readable", "ok")
+        self.assertEqual(report["clients"][0]["skill"], "unverified")
+        self.assertEqual(report["clients"][0]["mcp"], "checked")
+
+        for permission in ["deny", {"*": "deny"}]:
+            with self.subTest(permission=permission):
+                self.json_file(self.home / ".config/opencode/opencode.json", {"permission": permission})
+                report = self.run_doctor("opencode", expected=2)
+                self.has_code(report, "policy.notEvaluated", "unknown")
+                self.assertEqual(report["clients"][0]["skill"], "unverified")
+                self.assertEqual(report["clients"][0]["mcp"], "notConfigured")
+
+    def test_vibe_allow_list_can_exclude_beam_without_naming_it(self):
+        config = self.home / ".vibe/config.toml"
+        for tools, expected in [(["read_file", "skill"], 2), ([], 0)]:
+            with self.subTest(tools=tools):
+                self.write(config, f"enabled_tools={json.dumps(tools)}\n"
+                           "[[mcp_servers]]\nname='lean-beam'\ntransport='stdio'\n"
+                           f"command=[{json.dumps(str(self.executable))}]\n")
+                report = self.run_doctor("vibe", expected=expected)
+                if tools:
+                    self.has_code(report, "policy.notEvaluated", "unknown")
+                    self.assertEqual(report["clients"][0]["mcp"], "unverified")
+                else:
+                    self.assertEqual(report["clients"][0]["mcp"], "checked")
 
     def test_vibe_arrays_and_tokenized_strings(self):
         config = self.home / ".vibe/config.toml"
@@ -320,11 +373,14 @@ class ClientDoctorTest(unittest.TestCase):
                        f"command={json.dumps(command)}\nargs={json.dumps(list(args))}\n")
         write_command([str(self.executable)])
         self.assertEqual(self.run_doctor("vibe")["clients"][0]["mcp"], "checked")
-        write_command([str(self.executable), "DOCTOR_SECRET_SENTINEL"], ["--extra"])
-        report = self.run_doctor("vibe", expected=2)
-        self.has_code(report, "launch.arguments", "unknown")
-        self.has_code(report, "launch.file", "ok")
-        self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+        for command, args in [([str(self.executable), "DOCTOR_SECRET_SENTINEL"], []),
+                              ([str(self.executable)], ["DOCTOR_SECRET_SENTINEL"])]:
+            with self.subTest(command=command, args=args):
+                write_command(command, args)
+                report = self.run_doctor("vibe", expected=2)
+                self.has_code(report, "launch.arguments", "unknown")
+                self.has_code(report, "launch.file", "ok")
+                self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
         for command in [str(self.executable), '"' + str(self.executable) + '"',
                         str(self.executable) + " --extra"]:
             with self.subTest(command=command):
@@ -342,7 +398,8 @@ class ClientDoctorTest(unittest.TestCase):
         self.write(self.home / ".vibe/config.toml", "[[mcp_servers]]\nname='lean-beam'\n"
                    f"transport='stdio'\ncommand=[{json.dumps(str(self.executable))}]\n")
         parent_config = self.workspace / ".vibe/config.toml"
-        self.write(parent_config, "[[mcp_servers]]\nname='lean-beam'\ndisabled=true\n")
+        self.write(parent_config, "[[mcp_servers]]\nname='lean-beam'\ntransport='stdio'\n"
+                   f"command=[{json.dumps(str(self.executable))}]\ndisabled=true\n")
         child = self.workspace / "src"
         (child / ".git").mkdir(parents=True)
         report = self.run_doctor("vibe", global_args=("--root", str(child)), expected=2)
@@ -366,6 +423,25 @@ class ClientDoctorTest(unittest.TestCase):
         report = self.run_doctor("vibe", global_args=("--root", str(project)))
         self.assertEqual(report["clients"][0]["mcp"], "checked")
         self.assertNotIn(str(outside), [s["path"] for s in report["clients"][0]["sources"]])
+
+    def test_vibe_home_is_canonical_before_ancestor_discovery(self):
+        actual = self.home / "custom-vibe"
+        self.write(actual / "config.toml", "[[mcp_servers]]\nname='lean-beam'\ntransport='stdio'\n"
+                   f"command=[{json.dumps(str(self.executable))}]\n")
+        old = self.home / ".vibe/config.toml"
+        self.write(old, "not valid TOML!\n")
+        alias = self.root / "vibe-link"
+        alias.symlink_to(actual, target_is_directory=True)
+        unused = self.home / "unused"
+        unused.mkdir()
+        workspace = self.home / "project/src"
+        workspace.mkdir(parents=True)
+        for home in [alias, unused / ".." / "custom-vibe"]:
+            with self.subTest(home=home):
+                self.env["VIBE_HOME"] = str(home)
+                report = self.run_doctor("vibe", global_args=("--root", str(workspace)))
+                self.assertEqual(report["clients"][0]["mcp"], "checked")
+                self.assertNotIn(str(old), [s["path"] for s in report["clients"][0]["sources"]])
 
     def test_successful_checks_do_not_erase_unverified_selection(self):
         self.codex_config()

@@ -5,6 +5,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 
 import Beam.Cli.ClientDoctor.Types
 import Beam.Cli.ClientDoctor.Parse
+import Beam.Path
 
 namespace Beam.Cli.ClientDoctor
 
@@ -43,7 +44,8 @@ def workspaceDirectories (context : Context) : IO (Array System.FilePath) := do
 /-- Vibe searches nearest-first, stopping before VIBE_HOME's parent, independently of Git.
     https://github.com/mistralai/mistral-vibe/blob/v3.0.3/vibe/core/config/layers/project.py -/
 def vibeProjectConfig? (context : Context) : IO (Option System.FilePath) := do
-  let stop := (clientHome context .vibe).parent.getD context.userHome
+  let home ← Beam.resolvePathForCreation (clientHome context .vibe)
+  let stop := home.parent.getD context.userHome
   let mut dir := context.workspace
   for _ in [:context.workspace.components.length + 1] do
     if dir == stop then return none

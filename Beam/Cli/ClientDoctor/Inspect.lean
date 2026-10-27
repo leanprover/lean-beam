@@ -195,26 +195,61 @@ private def collectPolicies (client : Client) (source : ConfigSource) (value : J
       let setting ← field? value key
       return { source := source.path.toString, key, value := setting }
 
-/-- Recognize potentially relevant rules, without evaluating wildcards or policy precedence. -/
-private partial def mentionsPolicy (names : Array String) : Json → Bool
+/-- Recognize references anywhere in a skill setting or a policy rule's patterns. -/
+private partial def mentionsPattern (names : Array String) : Json → Bool
   | .str text => text.contains "*" || text.contains "?" || names.any (fun name => text.contains name)
-  | .arr values => values.any (mentionsPolicy names)
+  | .arr values => values.any (mentionsPattern names)
   | .obj values => values.toArray.any fun (key, value) =>
-      mentionsPolicy names (.str key) ||
-        (["allow", "deny", "ask"].contains key && mentionsPolicy names value)
+      mentionsPattern names (.str key) || mentionsPattern names value
   | _ => false
 
-private def inspectPolicies (policies : Array ToolPolicy) (entries : Array Entry)
+/-- Tool maps select a tool at the outer key; nested native-tool patterns are not MCP names.
+    Preserve explicit Beam references recursively, including unfamiliar policy containers. -/
+private def toolPolicyMayApply (names : Array String) (value : Json) : Bool :=
+  mentionsBeam value || match object value with
+  | .ok fields => fields.any fun (key, rule) =>
+      mentionsPattern names (.str key) ||
+        (["allow", "deny", "ask"].contains key && mentionsPattern names rule)
+  | .error () => mentionsPattern names value
+
+/-- Match OpenCode's ASCII tool namespace, including JS's two UTF-16 units for non-BMP characters.
+    https://github.com/anomalyco/opencode/blob/v1.19.4/packages/opencode/src/mcp/catalog.ts -/
+private def openCodeAlias (name : String) : String :=
+  name.foldl (fun result ch =>
+    if (ch.toNat < 128 && ch.isAlphanum) || ch == '_' || ch == '-' then result.push ch
+    else result ++ (if ch.toNat > 65535 then "__" else "_")) ""
+
+private def inspectPolicies (client : Client) (policies : Array ToolPolicy) (entries : Array Entry)
     (report : ClientReport) : ClientReport := Id.run do
   let mut report := report
+  let aliases := entries.map (·.name)
+  let names := #["lean-beam"] ++ aliases ++
+    (if client == .opencode then aliases.map openCodeAlias else #[])
   for policy in policies do
-    let names := if policy.key == "skills" then #["lean-beam"]
-      else #["lean-beam"] ++ entries.map (·.name)
-    let relevant := policy.key == "skills" || !entries.isEmpty || mentionsBeam policy.value
-    if relevant && (policy.value.getStr?.isOk || mentionsPolicy names policy.value) then
-      report := add report (if policy.key == "skills" then .skill else .mcp)
-        "policy.notEvaluated" .unknown
-        "Tool or skill policy may affect Beam; effective permissions were not evaluated."
+    let skill? : Option (String × Json) := if policy.key == "skills" then some ("skills", policy.value)
+      else if client == .opencode && policy.key == "permission" then
+        if policy.value.getStr?.isOk then some ("permission", policy.value)
+        else ((field? policy.value "skill").map ("permission.skill", ·)).orElse fun _ =>
+          (field? policy.value "*").map ("permission.*", ·)
+      else none
+    if let some (key, skill) := skill? then
+      if skill.getStr?.isOk || mentionsPattern #["lean-beam"] skill then
+        report := add report .skill "policy.notEvaluated" .unknown
+          "Skill policy may affect Beam; effective permissions were not evaluated."
+          policy.source key
+    if policy.key == "skills" then continue
+    -- OpenCode's skill rule applies to skill loading, independently of MCP registration.
+    let value := if client == .opencode && policy.key == "permission" then
+        match object policy.value with
+        | .ok fields => Json.mkObj <| (fields.filter (·.1 != "skill")).toList
+        | .error () => policy.value
+      else policy.value
+    let allowList := client == .vibe && policy.key == "enabled_tools" &&
+      (value.getArr?.toOption.any (!·.isEmpty))
+    if (!entries.isEmpty || mentionsBeam value) &&
+        (allowList || value.getStr?.isOk || toolPolicyMayApply names value) then
+      report := add report .mcp "policy.notEvaluated" .unknown
+        "Tool policy may affect Beam; effective permissions were not evaluated."
         policy.source policy.key
   return report
 
@@ -662,7 +697,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
     found := mergeOpenCode found
     conditional := !found.isEmpty && (opencodeProjects > 1 || opencodeDirectories > 1)
   let selected := if client == .claude then selectClaude found else found
-  report := inspectPolicies toolPolicies selected report
+  report := inspectPolicies client toolPolicies selected report
   let selectionConditional := if client == .claude then
       selected.any fun entry => entry.conditional || (selected.filter (·.name == entry.name)).size > 1
     else conditional
