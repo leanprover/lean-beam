@@ -85,6 +85,24 @@ printf '%s\n' "$HANDLE_JSON" | lean-beam run-with-linear "Foo.lean" - "exact tri
 printf '%s\n' "$HANDLE_JSON" | lean-beam release "Foo.lean" -
 ```
 
+For opt-in elaboration timing, place `--profile` immediately before the text selector:
+
+```bash
+lean-beam run-at "Foo.lean" <version> <line> <character> --profile -- "simp"
+lean-beam run-at-handle "Foo.lean" <version> <line> <character> --profile --text-file proof.txt
+lean-beam run-with "Foo.lean" --handle-file handle.json --profile -- "exact trivial"
+```
+
+`run-with-linear` accepts the same flag; MCP uses `profile: true`. For a complete declaration,
+select its start and submit the declaration text. For a whole tactic proof, select the first tactic's
+before-state and submit the tactic block without `by`. Inspect `success` and the ordinary messages
+first, then `profile.elapsed_ms` and `profile.spans`. Parse failures have no profile. Timings measure
+re-elaboration in the loaded environment, not the original file or a cold build; nested and parallel
+spans overlap. `truncated` reports bounded output, and profiling suppresses rendered `traces`.
+Output is limited to 1024 spans, 8192 visited trace nodes, and depth 128; these limits do not bound
+Lean’s trace allocation. Keep profiling optional when comparing proof candidates, because
+instrumentation adds overhead.
+
 Short search helper:
 
 ```bash

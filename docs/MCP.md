@@ -399,6 +399,25 @@ first edit and save the Lean file with the client's normal file-editing tool. Th
 before another snapshot-bound operation, or call `lean_sync` when a diagnostics/readiness barrier is
 needed. Both commands read the current on-disk file; neither applies or recovers speculative text.
 
+The four speculative execution tools accept optional `profile: true`. The result then includes
+`profile` when execution reached elaboration, even if the Lean text failed. Parse failures and
+unrequested profiling omit it. `profile` contains `elapsed_ms`, `threshold_ms` (currently 1),
+`spans`, and `truncated`. Each span has `thread`, `category`, `tag`, `start_ms`, `duration_ms`,
+optional `parent` (an earlier span index), and optional `range` relative to the submitted text.
+Known-empty spans remain `[]`. Ranges are not document coordinates.
+
+This measures speculative re-elaboration in the already-loaded environment. The wall-clock interval
+starts after parsing and ends after request-owned elaboration tasks settle; it excludes snapshot
+selection, import loading, response projection, and transport. It is neither the original file's
+elaboration time nor cold-build or native CPU time. Scope intervals can overlap across nesting and
+threads: do not sum them or treat them as exclusive costs. Instrumentation itself adds overhead.
+
+Profiling returns at most 1024 spans, visits at most 8192 trace nodes, and limits traversal depth to
+128. `truncated: true` signals that projection stopped at a limit. These bounds limit response
+construction, not Lean's upstream trace allocation. Profiling preserves ordinary diagnostics but
+returns `traces: []` instead of formatting the trace tree's lazy labels. The profiler settings and
+trace state are request-local and do not persist into follow-up handles.
+
 `lean_todo` inspects the whole file unless all four range fields are given; code actions need a
 range (see below), and a whole-file request omits them. It reports one item per
 problem, and each item composes with `lean_run_at`: running text at the item's `run_at_position`

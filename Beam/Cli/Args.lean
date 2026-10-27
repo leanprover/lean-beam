@@ -42,7 +42,7 @@ def hasSubstring (text needle : String) : Bool :=
   | _ => true
 
 def textArgUsage (cmdHead : String) : String :=
-  s!"usage: lean-beam [--pretty] [--root PATH] {cmdHead} (--stdin | --text-file <path> | -- <text...> | <text...>)"
+  s!"usage: lean-beam [--pretty] [--root PATH] {cmdHead} [--profile] (--stdin | --text-file <path> | -- <text...> | <text...>)"
 
 def textArgReadsStdin (args : List String) : Bool :=
   match args with
@@ -66,6 +66,14 @@ def parseTextArg (cmdHead : String) (args : List String) : CliM ParsedTextArg :=
   | _ => do
       let some text := joinTextArgs args | throw <| invalid ()
       pure { text, source := "argv" }
+
+/-- Consume the optional profiling selector before a text input selector. -/
+def parseProfileArg (args : List String) : CliM (Bool × List String) := do
+  match args with
+  | "--profile" :: "--profile" :: _ =>
+      throw <| CliFailure.usage "duplicate --profile" none
+  | "--profile" :: rest => pure (true, rest)
+  | _ => pure (false, args)
 
 def parseJsonText (label text : String) : CliM Json := do
   match Json.parse text with

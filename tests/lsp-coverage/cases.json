@@ -85,6 +85,24 @@
       "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/BasicTest.lean#checkRunAtTacticPositions"
     },
     {
+      "id": "runAt.profiled-proof-and-failure",
+      "method": "$/lean/runAt",
+      "coverage": ["profiling", "isolation", "proof-context"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/ProfileTest.lean#checkProofs"
+    },
+    {
+      "id": "runAt.profiled-command-and-async-failure",
+      "method": "$/lean/runAt",
+      "coverage": ["profiling", "isolation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/ProfileTest.lean#checkCommands"
+    },
+    {
+      "id": "runWith.profiled-continuations",
+      "method": "$/lean/runWith",
+      "coverage": ["profiling", "handle-continuation"],
+      "pointer": "tests/lean/BeamTest/LSP/Requests/RunAt/ProfileTest.lean#checkProofs"
+    },
+    {
       "id": "runAt.proof-isolation",
       "method": "$/lean/runAt",
       "coverage": ["isolation"],
