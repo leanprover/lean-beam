@@ -1087,11 +1087,15 @@ class ClientDoctorTest(unittest.TestCase):
                      ("codex", "--config"), ("codex", "--config", "--json"),
                      ("codex", "--config", "--verbose"), ("codex", "--config", "")]:
             result = self.run_doctor(*args, expected=2, as_json=False)
+            if "--json" not in args:
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr.count("usage: lean-beam"), 1, result.stderr)
+                result = self.run_doctor(*args, "--json", expected=2, as_json=False)
             failure = json.loads(result.stdout)
             self.assertFalse(failure["ok"])
             self.assertEqual(failure["error"]["code"], "invalidParams")
             self.assertNotIn("kind", failure)
-            self.assertEqual(result.stderr.count("usage: lean-beam"), 1, result.stderr)
+            self.assertEqual(result.stderr, "")
             self.assertNotIn("usage:", failure["error"]["message"])
             if args[:2] == ("codex", "--config"):
                 self.assertEqual(failure["error"]["message"], "--config requires a file path.")
@@ -1121,7 +1125,7 @@ class ClientDoctorTest(unittest.TestCase):
                                  json.loads(pretty.stdout, object_pairs_hook=list))
 
     def test_pretty_errors_remain_separate_from_completed_inspections(self):
-        for args in [("codex", "--json", "--verbose"), ("--pretty",)]:
+        for args in [("codex", "--json", "--verbose"), ("--pretty", "--json")]:
             with self.subTest(args=args):
                 compact = self.run_doctor(*args, expected=2, as_json=False)
                 pretty = self.run_doctor(*args, expected=2, as_json=False,

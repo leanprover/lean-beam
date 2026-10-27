@@ -33,7 +33,7 @@ def daemonFailureIncidentDoctorLines
         (incidents.toList.map fun path => s!"daemon incident: {path}")
 
 def doctor (home : System.FilePath) (inspect : System.FilePath → CliM (List String))
-    (opts : CliOptions) : CliM Unit := do
+    (opts : CliOptions) (json := false) : CliM Unit := do
   let root ← inspectionRoot opts
   let registry ← Beam.Daemon.registryPathFor root opts.explicitControlDir?
   let mut lines := [s!"beam home: {home}", s!"project root: {root}", s!"registry: {registry}"]
@@ -57,12 +57,13 @@ def doctor (home : System.FilePath) (inspect : System.FilePath → CliM (List St
   lines := lines ++ (← daemonFailureIncidentDoctorLines root opts.explicitControlDir?)
   try
     let inspection ← inspect root
-    for line in lines ++ inspection do IO.println line
+    if json then
+      printResponse (.success <| Json.mkObj [("diagnostics", toJson (lines ++ inspection))])
+        none opts.jsonOutputFormat
+    else
+      for line in lines ++ inspection do IO.println (escapeDiagnosticText line)
+      (← IO.getStdout).flush
   catch failure =>
-    -- Current inspection failures carry object data or none. mergeObj replaces non-objects;
-    -- doctor owns the diagnostics key while preserving the other object fields.
-    let data := (failure.failure.error.data?.getD (Json.mkObj [])).mergeObj
-      (Json.mkObj [("diagnostics", toJson lines)])
-    throw { failure with failure.error.data? := some data }
+    throw { failure with contextLines := lines ++ failure.contextLines }
 
 end Beam.Cli

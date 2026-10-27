@@ -103,7 +103,7 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
     selector.write_text("build/release/stage1\n")
     selector_bytes = selector.read_bytes()
     for arguments, cwd in [((), source_root), (("--root", str(source_root)), directory)]:
-        diagnosis = run(cli_g, *arguments, "doctor", env=admission_env, cwd=cwd, ok=False)
+        diagnosis = run(cli_g, *arguments, "doctor", "--json", env=admission_env, cwd=cwd, ok=False)
         assert diagnosis.returncode == 1
         error = json.loads(diagnosis.stdout)["error"]
         assert error["code"] == "setupError", error
@@ -113,7 +113,7 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
         assert "docs/CUSTOM_TOOLCHAINS.md" in error["message"], error
         assert f"project root: {source_root}" in error["data"]["diagnostics"], error
         assert "daemon status: absent" in error["data"]["diagnostics"], error
-        assert "compiler was found" in diagnosis.stderr, diagnosis.stderr
+        assert not diagnosis.stderr, diagnosis.stderr
         assert not (source_root / ".beam").exists(), "doctor created session state"
         assert selector.read_bytes() == selector_bytes, "doctor changed project selection"
     source_compiler.unlink()

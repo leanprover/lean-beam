@@ -65,8 +65,10 @@ pruning; stop their owners and clients before removing them.
 
 Run `lean-beam doctor` from the project. A present target reports its installation root, recorded
 target, Lean executable, daemon, plugin, and generation. An unavailable target fails with setup
-guidance without executing Elan or the candidate compiler. If installation inspection fails,
-session and recovery information remains in the error response's `error.data.diagnostics` field.
+guidance without executing Elan or the candidate compiler. Doctor prints text by default, including
+session context on stderr when inspection fails. Use `lean-beam doctor --json` for one JSON response
+on stdout: successful checks use `result.diagnostics`, and failures use `error.data.diagnostics`.
+The global `--pretty` option formats JSON when placed before `doctor`.
 
 A Lean source checkout may select a relative SDK path such as `build/release/stage1`. If doctor
 reports that the compiler was found but this Beam installation has no runtime for it, the SDK exists

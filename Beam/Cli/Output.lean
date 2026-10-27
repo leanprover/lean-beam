@@ -335,32 +335,42 @@ def syncFileProgressSuffix (progress? : Option SyncFileProgress) : String :=
       s!", fp {SyncFileProgress.displayDetails progress (includeDoneTrue := false)}"
 
 /-- Preserve a prepared operation error; only local/control failures still need presentation. -/
-def prepareFailureResponse (failure : CliFailure) : PreparedResponse := {
-  json := responseJson (.error <| match failure.publicError? with
+def prepareFailureResponse (failure : CliFailure) : PreparedResponse := Id.run do
+  let error := match failure.publicError? with
     | some error => error
-    | none => Beam.Output.OutputError.fromControlFailure failure.failure) failure.clientRequestId?
-  observed := .errorResult failure.failure
-  clientRequestId? := failure.clientRequestId?
-}
+    | none => Beam.Output.OutputError.fromControlFailure failure.failure
+  let error := if failure.contextLines.isEmpty then error else
+    let data := (error.data?.getD (Json.mkObj [])).mergeObj
+      (Json.mkObj [("diagnostics", toJson failure.contextLines)])
+    { error with data? := some data }
+  return {
+    json := responseJson (.error error) failure.clientRequestId?
+    observed := .errorResult failure.failure
+    clientRequestId? := failure.clientRequestId?
+  }
 
-def renderFailure (failure : CliFailure) : IO UInt32 := do
-  unless failure.responseStarted do
+def renderFailure (failure : CliFailure)
+    (output : FailureOutput := .jsonAndDiagnostic) : IO UInt32 := do
+  if output != .text && !failure.responseStarted then
     if let .error error ←
         (writeResponse (prepareFailureResponse failure) failure.jsonOutputFormat).toBaseIO then
       IO.eprintln <| escapeDiagnosticText <| annotateRequestMessage failure.clientRequestId?
         s!"beam: could not write the final JSON response: {error}"
-  let diagnostic := failure.diagnostic?.getD failure.failure.error.message
-  let diagnostic := if diagnostic.startsWith "beam:" then diagnostic else "beam: " ++ diagnostic
-  IO.eprintln <| escapeDiagnosticText <| annotateRequestMessage failure.clientRequestId? diagnostic
-  if let some command := failure.remedyCommand? then
-    let display := escapeDiagnosticText command
-    if display == command then IO.eprintln command
-    else IO.eprintln s!"remedy (escaped display; exact command in error.data.remedy_command): {display}"
-  if let some usage := failure.usage? then IO.eprintln <| escapeDiagnosticText usage
+  -- A report-write failure still needs a stderr diagnostic: its JSON may be incomplete.
+  if output != .json || failure.responseStarted then
+    let diagnostic := failure.diagnostic?.getD failure.failure.error.message
+    let diagnostic := if diagnostic.startsWith "beam:" then diagnostic else "beam: " ++ diagnostic
+    IO.eprintln <| escapeDiagnosticText <| annotateRequestMessage failure.clientRequestId? diagnostic
+    for line in failure.contextLines do IO.eprintln (escapeDiagnosticText line)
+    if let some command := failure.remedyCommand? then
+      let display := escapeDiagnosticText command
+      if display == command then IO.eprintln command
+      else IO.eprintln s!"remedy (escaped display; exact command in error.data.remedy_command): {display}"
+    if let some usage := failure.usage? then IO.eprintln <| escapeDiagnosticText usage
   return failure.exitCode
 
 /-- Catch unexpected IO faults once; they are never reclassified as user input errors. -/
-def run (action : CliM UInt32) : IO UInt32 := do
+def run (action : CliM UInt32) (output : FailureOutput := .jsonAndDiagnostic) : IO UInt32 := do
   let outcome ← action.run.toBaseIO
   let failure ← match outcome with
     | .ok (.ok code) => return code
@@ -368,7 +378,7 @@ def run (action : CliM UInt32) : IO UInt32 := do
     | .error error => pure (CliFailure.internal error)
   -- Rendering gets one attempt. A broken stdout/stderr must not enter a fallback
   -- that appends another JSON response or erases the original exit status.
-  match ← (renderFailure failure).toBaseIO with
+  match ← (renderFailure failure output).toBaseIO with
   | .ok code => pure code
   | .error _ => pure failure.exitCode
 

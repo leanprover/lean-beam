@@ -429,6 +429,10 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
           (leanSaveWaitSpec path (closeAfter := true) (action? := some action)) opts.jsonOutputFormat
   | "doctor" :: [] =>
       doctor home installation.doctorLines opts
+  | "doctor" :: ["--json"] =>
+      doctor home installation.doctorLines opts (json := true)
+  | "doctor" :: ["--help"] =>
+      IO.println ((commandUsage? "doctor").getD "lean-beam doctor [--json]")
   | "open-files" :: [] =>
       let root ← inspectionRoot opts
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>

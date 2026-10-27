@@ -32,7 +32,7 @@ def commandUsages : List (String × String) := [
   ("close", "lean-beam [--pretty] [--root PATH] close <path>"),
   ("close-save", "lean-beam [--pretty] [--root PATH] close-save <path> [+all-diagnostics]"),
   ("feedback-report", "lean-beam [--pretty] [--root PATH] feedback-report --stdin|--input <path> [--bundle none|dir|zip] [--output-dir <path>] [--no-redact]"),
-  ("doctor", "lean-beam [--pretty] [--root PATH] doctor"),
+  ("doctor", "lean-beam [--pretty] [--root PATH] doctor [--json]"),
   ("doctor clients", "lean-beam [--pretty] [--root PATH] doctor clients [codex|claude|pi|opencode|vibe] [--config PATH] [--json | --verbose]"),
   ("open-files", "lean-beam [--pretty] [--root PATH] open-files"),
   ("cancel", "lean-beam [--pretty] [--root PATH] cancel <request-id>"),
@@ -41,6 +41,15 @@ def commandUsages : List (String × String) := [
   ("stop", "lean-beam --root PATH [--session-dir DIR] stop"),
   ("recover", "lean-beam --root PATH [--session-dir DIR] recover --generation ID")
 ]
+
+/-- Inspect only the global-selector syntax to choose failure output before filesystem validation.
+Command arguments such as Lean probe text remain opaque. -/
+def failureOutputForArgs : List String → FailureOutput
+  | "--pretty" :: rest => failureOutputForArgs rest
+  | "--root" :: _ :: rest | "--session-dir" :: _ :: rest => failureOutputForArgs rest
+  | "doctor" :: rest => if rest.contains "--json" then .json else .text
+  | "--version" :: _ | "version" :: _ | "--help" :: _ | "help" :: _ | "prune" :: _ => .text
+  | _ => .jsonAndDiagnostic
 
 def commandUsage? (command : String) : Option String :=
   ((commandUsages.find? (fun entry => entry.1 == command)).map ("usage: " ++ ·.2)) <|>

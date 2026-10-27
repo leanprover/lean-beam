@@ -1346,9 +1346,7 @@ private def checkUnconfirmedShutdown : IO Unit := do
         (fun _ => throw <| Beam.Cli.CliFailure.setup "fixture inspection unavailable")
         { explicitRoot? := some root }).run
       | throw <| IO.userError "doctor fixture inspection unexpectedly succeeded"
-    let some doctorData := doctorFailure.failure.error.data?
-      | throw <| IO.userError "doctor dropped session diagnostics"
-    let diagnostics ← IO.ofExcept <| doctorData.getObjValAs? (List String) "diagnostics"
+    let diagnostics := doctorFailure.contextLines
     require "doctor reports unconfirmed shutdown without prescribing recovery"
       (diagnostics.contains "daemon status: shutdown completion unconfirmed")
     require "doctor retains the exact shutdown generation"
@@ -1882,7 +1880,8 @@ def blockedOutput (stream : String) (port : UInt16) : Beam.Cli.CliM Unit := do
   | _ => throw <| Beam.Cli.CliFailure.usage s!"unknown blocked output stream: {stream}"
 
 /-- Exercise physical writes and flushes while counting every final response attempt. -/
-def withFailedStdout (stream : String) (action : Beam.Cli.CliM Unit) : IO UInt32 := do
+def withFailedStdout (stream : String) (action : Beam.Cli.CliM Unit)
+    (output : Beam.Cli.FailureOutput := .jsonAndDiagnostic) : IO UInt32 := do
   let stdout ← IO.getStdout
   let attempts ← IO.mkRef 0
   let failing := if stream == "stdout-fails" then
@@ -1898,7 +1897,7 @@ def withFailedStdout (stream : String) (action : Beam.Cli.CliM Unit) : IO UInt32
         stdout.flush
         throw <| IO.userError "fixture stdout flush failed"
       }
-  let code ← IO.withStdout failing <| Beam.Cli.run (action *> pure 0)
+  let code ← IO.withStdout failing <| Beam.Cli.run (action *> pure 0) output
   IO.eprintln s!"fixture response write attempts: {← attempts.get}"
   pure code
 
@@ -2015,6 +2014,11 @@ def main (args : List String) : IO UInt32 :=
             -- owner finalizer can. The enclosing output scope must retain the guard.
             let cleanup : IO Unit := throw <| IO.userError "fixture owner cleanup failed"
             cleanup
+  | ["--doctor-report-output", mode, stream] =>
+      BeamTest.Broker.CliDaemonTest.withFailedStdout stream
+        (Beam.Cli.doctor "." (fun _ => pure ["fixture inspection complete"])
+          { explicitRoot? := some "." } (json := mode == "json"))
+        (output := if mode == "json" then .json else .text)
   | ["--client-report-output", severity, stream, format] => do
       let format ← match format with
         | "compact" => pure Beam.Cli.JsonOutputFormat.compact

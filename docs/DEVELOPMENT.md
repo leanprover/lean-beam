@@ -935,6 +935,12 @@ Install manifests name fixed companions and complete targets through the shared 
 artifact inventory. The current formats and rejection of earlier incomplete records are documented
 in [COMPATIBILITY.md](COMPATIBILITY.md).
 
+CLI failure presentation is selected at the process boundary. Typed operations retain JSON on
+stdout plus a stderr diagnostic; human-facing commands use text errors, and doctor selects JSON
+explicitly with `--json`. `CliFailure.contextLines` retains diagnostic context as typed lines until
+presentation, so rendering does not decode a previously serialized error to recover that context.
+Output selection inspects only global-selector syntax and leaves probe text opaque.
+
 Client configuration inspection lives in [Beam/Cli/ClientDoctor](../Beam/Cli/ClientDoctor.lean):
 `Types` defines findings and independent MCP/skill states, `Locations` describes candidate files,
 `Parse` handles in-process JSON/JSONC/TOML, and `Inspect` performs bounded reads and static checks.

@@ -14,6 +14,11 @@ inductive JsonOutputFormat where
   | pretty
   deriving BEq, Repr
 
+/-- Failure presentation is selected by the CLI surface, independently of the typed failure. -/
+inductive FailureOutput where
+  | text | json | jsonAndDiagnostic
+  deriving BEq
+
 /-- A terminal CLI failure. Broker errors remain intact until presentation. -/
 structure CliFailure where
   failure : Beam.Broker.ResponseFailure
@@ -22,6 +27,8 @@ structure CliFailure where
   exitCode : UInt32 := 1
   clientRequestId? : Option String := none
   diagnostic? : Option String := none
+  /-- Typed context for human reports and JSON diagnostics, prepared only at the output edge. -/
+  contextLines : List String := []
   usage? : Option String := none
   remedyCommand? : Option String := none
   jsonOutputFormat : JsonOutputFormat := .compact

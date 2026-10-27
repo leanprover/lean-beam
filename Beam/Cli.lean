@@ -16,7 +16,7 @@ def execute (args : List String) : CliM UInt32 := do
   let opts ← parseCliOptions {} args
   runCommand installation opts
 
-def main (args : List String) : IO UInt32 := run (execute args)
+def main (args : List String) : IO UInt32 := run (execute args) (failureOutputForArgs args)
 
 end Beam.Cli
 

@@ -71,6 +71,28 @@ class CliErrorsTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(result.stdout)
 
+    def test_human_command_errors_do_not_emit_json(self):
+        for args in [("prune", "--unknown"), ("help", "--unknown"), ("version", "--unknown")]:
+            with self.subTest(args=args):
+                result = self.invoke(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("beam:", result.stderr)
+        record = self.installation / "manifest.json"
+        contents = record.read_bytes()
+        try:
+            record.write_text("invalid installation record")
+            result = self.invoke("--version")
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("beam:", result.stderr)
+        finally:
+            record.write_bytes(contents)
+
+    def test_probe_text_does_not_select_failure_output(self):
+        result = self.invoke("run-at", "Main.lean", "invalid-version", "0", "0", "--", "doctor", "--json")
+        self.failure(result, "invalidParams", 2)
+
     def test_json_output_is_compact_by_default_and_pretty_on_request(self):
         compact = self.invoke("--root", self.root, "status")
         pretty = self.invoke("--pretty", "--root", self.root, "status")

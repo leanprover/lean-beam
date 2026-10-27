@@ -247,9 +247,10 @@ to use its before-state. See [Position Semantics](../skills/lean-beam/references
 for the argument order and a before/after example.
 
 `lean-beam doctor` inspects session state, recovery details, and recent daemon incident paths before
-inspecting Lean setup. A successful inspection prints a human-readable report. If setup inspection
-fails, stdout contains one error JSON response with the partial session report in
-`error.data.diagnostics`; stderr contains a concise diagnostic. Pass `--root PATH` to inspect a
+inspecting Lean setup. The default is a text report: success goes to stdout; a failure and its
+partial session context go to stderr. Use `lean-beam doctor --json` for one JSON response on stdout,
+with successful checks in `result.diagnostics` or failure context in `error.data.diagnostics`.
+JSON mode does not repeat inspection failures on stderr. Pass `--root PATH` to inspect a
 known directory after its Lean project markers disappear, and `--session-dir PATH` when the session
 uses a separate control directory. Inspection preserves the session descriptor and incident files
 and does not start a session or build a bundle.
@@ -314,7 +315,7 @@ For alternate session directories, status details, and abnormal-exit recovery, s
 [Sessions And Recovery](#sessions-and-recovery).
 
 Machine clients should pass an explicit `--root` and invoke the typed wrapper operations. Ordinary
-CLI failures print one `{ "ok": false, "error": { "code": "...", "message": "..." } }` response on
+operation failures print one `{ "ok": false, "error": { "code": "...", "message": "..." } }` response on
 stdout and a concise diagnostic on stderr. Broker error codes, typed error details, and
 `document_progress` are presented in the shared CLI/MCP output shape.
 Local CLI codes include `setupError`, `brokerUnavailable`, `noLiveSession`,
@@ -398,9 +399,10 @@ to the later broker-request phase.
 
 A returned broker success remains success even if a signal arrives afterward. Once foreground
 `serve` has printed readiness, cooperative owner shutdown exits successfully; a later owner fault
-reports on stderr and exits nonzero without replacing that readiness response. Help, successful
-`doctor`, and `prune` use human-readable output. Check both the exit status and the command's output
-contract. Use MCP for structured live progress and diagnostics; Beam does not expose its raw port,
+reports on stderr and exits nonzero without replacing that readiness response. Help, version,
+`doctor` without `--json`, and `prune` use text, including errors on stderr. Check both the exit
+status and the command's output contract. Use MCP for structured live progress and diagnostics;
+Beam does not expose its raw port,
 session capability, or generic broker request record as an installed client interface.
 
 The `python3` line extracts `result.version` for shell examples. You can also copy that version
@@ -557,9 +559,10 @@ inspected paths. Completed `--json` inspections emit one report with `kind: "cli
 `workspace`, `scope`, and `clients`. Each client has separate `mcp` and `skill` states plus typed
 `findings` with `code`, `status`, and an optional `remediation`. Exit status is `0` for completed
 checks without errors or unknowns, `1` for known errors, and `2` for incomplete checks; errors take
-precedence. Missing optional integrations alone return `0`. Usage/setup failures use the usual CLI error envelope
-(`ok: false` with `error`) instead of an inspection report, so an incomplete report and invalid
-arguments remain distinguishable even when both exit `2`.
+precedence. Missing optional integrations alone return `0`. With `--json`, usage/setup failures use
+the usual CLI error envelope (`ok: false` with `error`) instead of an inspection report, so an
+incomplete report and invalid arguments remain distinguishable even when both exit `2`. Without
+`--json`, usage/setup failures are text on stderr.
 
 The global `--pretty` option indents JSON reports; place it before `doctor`. It does not select JSON
 or change text and verbose reports.

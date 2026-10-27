@@ -46,9 +46,10 @@ class PartialSetupDoctorTest(unittest.TestCase):
         )
         self.env.pop("BEAM_SESSION_ROOT", None)
 
-    def doctor(self, *selectors, stdout=subprocess.PIPE):
+    def doctor(self, *selectors, stdout=subprocess.PIPE, json_output=False, pretty=False, args=()):
         return subprocess.run(
-            [str(self.cli), "--root", str(self.project), *selectors, "doctor"],
+            [str(self.cli), *(["--pretty"] if pretty else []), "--root", str(self.project),
+             *selectors, "doctor", *args, *(["--json"] if json_output else [])],
             env=self.env,
             text=True,
             stdout=stdout,
@@ -63,10 +64,11 @@ class PartialSetupDoctorTest(unittest.TestCase):
         (self.project / "lean-toolchain").write_text(toolchain)
         output_path = self.root / "doctor.stdout"
         with output_path.open("w") as output:
-            result = self.doctor(stdout=output)
+            result = self.doctor(stdout=output, json_output=True)
         report = "\n".join(json.loads(output_path.read_text())["error"]["data"]["diagnostics"])
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unavailable locally", result.stderr)
+        self.assertIn("unavailable locally", json.loads(output_path.read_text())["error"]["message"])
+        self.assertEqual(result.stderr, "")
         self.assertIn("daemon status: absent", report)
         self.assertIn("daemon incidents: none", report)
         self.assertFalse(self.elan_log.exists(), "doctor must never invoke elan")
@@ -80,9 +82,10 @@ class PartialSetupDoctorTest(unittest.TestCase):
         contents = json.dumps({"schemaVersion": 999})
         descriptor.write_text(contents)
         descriptor.chmod(0o600)
-        result = self.doctor()
+        result = self.doctor(json_output=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("could not resolve Lean project", result.stderr)
+        self.assertIn("could not resolve Lean project", json.loads(result.stdout)["error"]["message"])
+        self.assertEqual(result.stderr, "")
         report = "\n".join(json.loads(result.stdout)["error"]["data"]["diagnostics"])
         self.assertIn("daemon status: recovery required", report)
         self.assertIn("unsupported session descriptor schemaVersion 999", report)
@@ -107,9 +110,10 @@ class PartialSetupDoctorTest(unittest.TestCase):
             for path in control.rglob("*") if path.is_file()
         }
         before_paths = {path.relative_to(control) for path in control.rglob("*")}
-        result = self.doctor("--session-dir", str(control))
+        result = self.doctor("--session-dir", str(control), json_output=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("could not resolve Lean project", result.stderr)
+        self.assertIn("could not resolve Lean project", json.loads(result.stdout)["error"]["message"])
+        self.assertEqual(result.stderr, "")
         report = "\n".join(json.loads(result.stdout)["error"]["data"]["diagnostics"])
         self.assertIn(f"registry: {descriptor}", report)
         report = "\n".join(json.loads(result.stdout)["error"]["data"]["diagnostics"])
@@ -123,6 +127,76 @@ class PartialSetupDoctorTest(unittest.TestCase):
         self.assertEqual(before_paths, {path.relative_to(control) for path in control.rglob("*")})
         self.assertFalse((self.project / ".beam").exists())
         self.assertFalse(self.elan_log.exists())
+
+    def test_default_failure_is_one_text_report(self):
+        (self.project / "lean-toolchain").write_text("missing-doctor-compiler\n")
+        result = self.doctor()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr.count("unavailable locally"), 1)
+        self.assertIn("daemon status: absent", result.stderr)
+        self.assertIn("daemon incidents: none", result.stderr)
+        self.assertNotIn('"ok"', result.stderr)
+        self.assertFalse((self.project / ".beam").exists())
+        self.assertFalse(self.elan_log.exists())
+
+    def test_success_text_and_json_have_the_same_diagnostics(self):
+        record = json.loads((self.cli.parent.parent / "manifest.json").read_text())
+        compiler = Path(record["components"]["targets"][0]["lean"]).parent.parent
+        (self.project / "lean-toolchain").write_text(str(compiler) + "\n")
+        text = self.doctor()
+        self.assertEqual(text.returncode, 0, text.stderr)
+        self.assertEqual(text.stderr, "")
+        self.assertIn("target membership: present", text.stdout)
+        for pretty in [False, True]:
+            result = self.doctor(json_output=True, pretty=pretty)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            value = json.loads(result.stdout)
+            self.assertTrue(value["ok"])
+            self.assertEqual(value["result"]["diagnostics"], text.stdout.splitlines())
+            self.assertEqual(result.stdout.count("\n") > 1, pretty)
+        self.assertEqual(self.doctor(pretty=True).stdout, text.stdout)
+        self.assertFalse((self.project / ".beam").exists())
+        self.assertFalse(self.elan_log.exists())
+
+    def test_argument_errors_respect_the_selected_format(self):
+        for pretty in [False, True]:
+            result = self.doctor(args=("--unknown",), pretty=pretty)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("doctor [--json]", result.stderr)
+            result = self.doctor(args=("--unknown",), json_output=True, pretty=pretty)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stderr, "")
+            self.assertEqual(json.loads(result.stdout)["error"]["code"], "invalidParams")
+            self.assertEqual(result.stdout.count("\n") > 1, pretty)
+        for json_output in [False, True]:
+            args = [str(self.cli), "--root", str(self.project / "missing"), "doctor"]
+            if json_output: args.append("--json")
+            result = subprocess.run(args, env=self.env, text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 2)
+            if json_output:
+                self.assertEqual(result.stderr, "")
+                self.assertEqual(json.loads(result.stdout)["error"]["code"], "invalidParams")
+            else:
+                self.assertEqual(result.stdout, "")
+                self.assertIn("beam:", result.stderr)
+
+    def test_failed_output_never_appends_json(self):
+        fixture = REPO_ROOT / ".lake/build/bin/beam-cli-daemon-test"
+        for mode in ["text", "json"]:
+            for stream in ["stdout-fails", "stdout-flush-fails"]:
+                with self.subTest(mode=mode, stream=stream):
+                    result = subprocess.run([str(fixture), "--doctor-report-output", mode, stream],
+                                            cwd=self.project, env=self.env, text=True,
+                                            capture_output=True, timeout=15)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("fixture response write attempts: 1", result.stderr)
+                    self.assertNotIn('"ok":false', result.stdout)
+                    self.assertNotIn('"ok": false', result.stdout)
+                    if mode == "json" and stream == "stdout-flush-fails":
+                        self.assertTrue(json.loads(result.stdout)["ok"])
 
 
 if __name__ == "__main__":
