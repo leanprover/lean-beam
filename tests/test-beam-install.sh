@@ -956,7 +956,7 @@ assert_file "$VIBE_HOME/config.toml"
 assert_contains_literal "$VIBE_HOME/config.toml" '[[mcp_servers]]'
 assert_contains_literal "$VIBE_HOME/config.toml" 'name = "lean-beam"'
 assert_contains_literal "$VIBE_HOME/config.toml" 'transport = "stdio"'
-assert_contains_literal "$VIBE_HOME/config.toml" "command = \"$installed_mcp\""
+assert_contains_literal "$VIBE_HOME/config.toml" "command = [\"$installed_mcp\"]"
 assert_contains_literal "$VIBE_HOME/config.toml" 'args = []'
 assert_contains_literal "$VIBE_HOME/config.toml" 'tool_timeout_sec = 600'
 
@@ -1054,7 +1054,7 @@ run_step "re-register Mistral Vibe MCP without duplicating the entry" \
 assert_contains_literal "$custom_vibe_home/config.toml" 'model = "devstral-medium-latest"'
 assert_contains_literal "$custom_vibe_home/config.toml" 'name = "other-server"'
 assert_contains_literal "$custom_vibe_home/config.toml" 'name = "lean-beam"'
-assert_contains_literal "$custom_vibe_home/config.toml" "command = \"$installed_mcp\""
+assert_contains_literal "$custom_vibe_home/config.toml" "command = [\"$installed_mcp\"]"
 if [ "$(grep -c 'name = "lean-beam"' "$custom_vibe_home/config.toml")" -ne 1 ]; then
   echo "expected exactly one lean-beam entry in the Mistral Vibe config" >&2
   cat "$custom_vibe_home/config.toml" >&2

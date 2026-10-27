@@ -102,8 +102,9 @@ private structure Entry where
 
 private def command? (client : Client) (value : Json) : Option String := do
   let command ← field? value "command"
-  if client == .opencode then
-    ((command.getArr?).toOption.bind (·[0]?)).bind (·.getStr?.toOption)
+  if client == .opencode || client == .vibe then
+    (((command.getArr?).toOption.bind (·[0]?)).bind (·.getStr?.toOption)).orElse fun _ =>
+      if client == .vibe then command.getStr?.toOption else none
   else command.getStr?.toOption
 
 private def isMcpExecutable (path : System.FilePath) : Bool :=
@@ -112,7 +113,8 @@ private def isMcpExecutable (path : System.FilePath) : Bool :=
 
 private def isBeam (client : Client) (name : String) (value : Json) : Bool :=
   name == "lean-beam" || ((command? client value).any fun command =>
-    isMcpExecutable (System.FilePath.mk command))
+    isMcpExecutable (System.FilePath.mk command) ||
+      (client == .vibe && command.contains "lean-beam-mcp"))
 
 private def namedEntries (client : Client) (source : ConfigSource)
     (keyPrefix : String) (value : Json) (localScope := false) : Except Unit (Array Entry) := do
@@ -182,16 +184,44 @@ private partial def mentionsBeam : Json → Bool
       key.contains "lean-beam" || mentionsBeam value
   | _ => false
 
+private structure ToolPolicy where
+  source : String
+  key : String
+  value : Json
+
+private def collectPolicies (client : Client) (source : ConfigSource) (value : Json) : Array ToolPolicy :=
+  #["permissions", "permission", "tools", "enabled_tools", "disabled_tools", "skills"].filterMap fun key => do
+    if client == .pi && key == "skills" then none else do
+      let setting ← field? value key
+      return { source := source.path.toString, key, value := setting }
+
+/-- Recognize potentially relevant rules, without evaluating wildcards or policy precedence. -/
+private partial def mentionsPolicy (names : Array String) : Json → Bool
+  | .str text => text.contains "*" || text.contains "?" || names.any (fun name => text.contains name)
+  | .arr values => values.any (mentionsPolicy names)
+  | .obj values => values.toArray.any fun (key, value) =>
+      mentionsPolicy names (.str key) ||
+        (["allow", "deny", "ask"].contains key && mentionsPolicy names value)
+  | _ => false
+
+private def inspectPolicies (policies : Array ToolPolicy) (entries : Array Entry)
+    (report : ClientReport) : ClientReport := Id.run do
+  let mut report := report
+  for policy in policies do
+    let names := if policy.key == "skills" then #["lean-beam"]
+      else #["lean-beam"] ++ entries.map (·.name)
+    let relevant := policy.key == "skills" || !entries.isEmpty || mentionsBeam policy.value
+    if relevant && (policy.value.getStr?.isOk || mentionsPolicy names policy.value) then
+      report := add report (if policy.key == "skills" then .skill else .mcp)
+        "policy.notEvaluated" .unknown
+        "Tool or skill policy may affect Beam; effective permissions were not evaluated."
+        policy.source policy.key
+  return report
+
 private def inspectSettings (context : Context) (client : Client) (source : ConfigSource)
     (value : Json) (report : ClientReport) : ClientReport := Id.run do
   let mut report := report
   let path := source.path.toString
-  for key in ["permissions", "permission", "tools", "enabled_tools", "disabled_tools", "skills"] do
-    if client == .pi && key == "skills" then continue
-    if let some setting := field? value key then
-      if mentionsBeam setting then
-        report := add report (if key == "skills" then .skill else .mcp) "policy.notEvaluated" .unknown
-          "Beam-specific tool or skill policy is present; its effective permissions are not evaluated." path key
   if client == .codex then
     if (field? value "profile").isSome || ((field? value "profiles").any mentionsBeam) then
       report := add report .mcp "config.profile" .unknown
@@ -352,7 +382,8 @@ private def inspectEntry (client : Client) (entry : Entry)
     let _ ← object value
     if let some enabled := field? value disabledKey then
       let _ ← enabled.getBool? |>.mapError (fun _ => ())
-    let (command, args) ← if client == .opencode then do
+    let (command, commandArgs) ← if client == .opencode ||
+        (client == .vibe && (field? value "command").any (·.getArr?.isOk)) then do
       let some raw := field? value "command" | throw ()
       let values ← strings raw
       let some command := values[0]? | throw ()
@@ -360,10 +391,12 @@ private def inspectEntry (client : Client) (entry : Entry)
     else do
       let some raw := field? value "command" | throw ()
       let command ← string raw
+      pure (command, #[])
+    let args ← if client == .opencode then pure commandArgs else do
       let args ← match field? value "args" with
         | none => pure #[]
         | some args => strings args
-      pure (command, args)
+      pure (commandArgs ++ args)
     for key in ["env", "environment"] do
       if let some env := field? value key then
         for (_, setting) in ← object env do
@@ -387,7 +420,7 @@ private def inspectEntry (client : Client) (entry : Entry)
         "Beam's local MCP entry has missing or incorrectly typed launch fields, or a non-stdio transport."
         entry.source entry.key
         (if client == .opencode then "Use type = local and a non-empty command array of strings."
-         else if client == .vibe then "Provide name, transport = stdio, and a command string; args must be an array of strings."
+         else if client == .vibe then "Provide name, transport = stdio, and a command string or non-empty string array; args must be a string array."
          else "Provide a command string for stdio; args must be an array of strings.")
   | .ok (command, args) =>
       report := add report .mcp "mcp.entry" .ok "Beam's local MCP launch fields have valid types." entry.source entry.key
@@ -403,6 +436,15 @@ private def inspectEntry (client : Client) (entry : Entry)
       if !args.isEmpty then
         report := add report .mcp "launch.arguments" .unknown
           "Additional launch arguments are configured; their behavior is not verified." entry.source entry.key
+      -- Vibe splits string commands (POSIX shlex; Windows preserves backslashes).
+      -- https://github.com/mistralai/mistral-vibe/blob/v3.0.3/vibe/core/config/models.py#L440-L470
+      if client == .vibe && (field? value "command").any (·.getStr?.isOk) &&
+          (command.any Char.isWhitespace || command.contains "\"" || command.contains "'" ||
+            (!System.Platform.isWindows && command.contains "\\")) then
+        return add report .mcp "launch.commandSyntax" .unknown
+          "Vibe's command string requires argument splitting; its executable was not verified."
+          entry.source entry.key
+          "Use a command array with the executable path as its first element."
       inspectExecutable { entry with source := entry.commandSource?.getD entry.source } command report
 
 private def inspectSkill (path : System.FilePath) (report : ClientReport) : IO ClientReport := do
@@ -525,6 +567,11 @@ private def mcpSetupRemediation? (client : Client) (explicitConfig : Bool) : Opt
 def inspectClient (context : Context) (client : Client) (dirs : Array System.FilePath)
     (configOverride? : Option System.FilePath := none) : IO ClientReport := do
   let mut plan := locations context client dirs
+  if client == .vibe && configOverride?.isNone && (clientHome context .vibe).isAbsolute then
+    if let some path ← vibeProjectConfig? context then
+      if !plan.configs.any (·.path == path) then
+        plan := { plan with configs := plan.configs.push {
+          path, format := .toml, role := .projectConfig, conditional := true } }
   if let some path := configOverride? then
     let source : ConfigSource := {
       path
@@ -550,6 +597,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
       "CLAUDE_CONFIG_DIR selects a client home outside the installer's location conventions. Use --config to inspect its MCP config explicitly."
   let mut found : Array Entry := #[]
   let mut policies : Array ClaudePolicy := #[]
+  let mut toolPolicies : Array ToolPolicy := #[]
   let mut conditional := false
   let mut opencodeProjects := 0
   let mut opencodeDirectories := 0
@@ -568,6 +616,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
             report := add report configArea "config.syntax" .error
               "Configuration is not valid JSON/TOML for this client; source text is omitted." source.path.toString
         | .ok value =>
+            toolPolicies := toolPolicies ++ collectPolicies client source value
             report := inspectSettings context client source value report
             if client == .claude then
               let (updated, collected) := claudePolicies context source value report
@@ -598,7 +647,9 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
           if let .missing := other then
             report := add report configArea "config.missing" .error
               "The explicitly selected config file does not exist." source.path.toString
-  if client == .opencode && (context.env? "OPENCODE_CONFIG_CONTENT").isSome then
+  let inlineOverride := client == .opencode && configOverride?.isNone &&
+    (context.env? "OPENCODE_CONFIG_CONTENT").isSome
+  if inlineOverride then
     report := { report with discovered := true }
     report := add report .mcp "config.inlineOverride" .unknown
       "OPENCODE_CONFIG_CONTENT is set; its value and effects are not inspected."
@@ -611,11 +662,12 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
     found := mergeOpenCode found
     conditional := !found.isEmpty && (opencodeProjects > 1 || opencodeDirectories > 1)
   let selected := if client == .claude then selectClaude found else found
+  report := inspectPolicies toolPolicies selected report
   let selectionConditional := if client == .claude then
       selected.any fun entry => entry.conditional || (selected.filter (·.name == entry.name)).size > 1
     else conditional
   let checkLaunch := (selected.size == 1 || client == .opencode) && !selectionConditional &&
-    !(client == .opencode && (context.env? "OPENCODE_CONFIG_CONTENT").isSome)
+    !inlineOverride
   if (selected.size > 1 && client != .opencode && client != .claude) || selectionConditional then
     report := add report .mcp "config.layers" .unknown
       "Multiple Beam definitions or trust/approval-dependent project settings are present. Effective selection/merging is not verified."

@@ -497,6 +497,9 @@ are outside an explicit-file inspection; Pi package manifests are outside this s
 Otherwise, discovery follows the installer home overrides and standard workspace locations.
 Known Claude local/project/user registrations and OpenCode local-file merges retain source paths;
 ambiguous selection, trust/approval state, custom launchers, and unresolved overrides are unverified.
+Checked means the supported static checks passed within the reported scope. Relevant policy that
+cannot be interpreted keeps the result unverified. For Vibe, use a command array to preserve paths
+containing spaces; command strings that require argument splitting remain unverified.
 Running clients, managed/cloud configuration, launch flags, and loaded tools are not inspected.
 
 The default output summarizes actionable findings; `--verbose` includes individual checks and
@@ -708,7 +711,7 @@ To register with Mistral Vibe manually, remove any `mcp_servers = []` line from
 [[mcp_servers]]
 name = "lean-beam"
 transport = "stdio"
-command = "/absolute/path/to/lean-beam-mcp"
+command = ["/absolute/path/to/lean-beam-mcp"]
 args = []
 tool_timeout_sec = 600
 ```

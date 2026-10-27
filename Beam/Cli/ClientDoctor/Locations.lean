@@ -40,6 +40,24 @@ def workspaceDirectories (context : Context) : IO (Array System.FilePath) := do
     dir := parent
   return dirs.reverse
 
+/-- Vibe searches nearest-first, stopping before VIBE_HOME's parent, independently of Git.
+    https://github.com/mistralai/mistral-vibe/blob/v3.0.3/vibe/core/config/layers/project.py -/
+def vibeProjectConfig? (context : Context) : IO (Option System.FilePath) := do
+  let stop := (clientHome context .vibe).parent.getD context.userHome
+  let mut dir := context.workspace
+  for _ in [:context.workspace.components.length + 1] do
+    if dir == stop then return none
+    let candidate := dir / ".vibe" / "config.toml"
+    try
+      if (← candidate.metadata).type == .file then return some candidate
+    catch
+    | .noFileOrDirectory .. | .inappropriateType .. => pure ()
+    | _ => return some candidate -- Let inspection retain uncertainty about an unreadable candidate.
+    let parent := dir.parent.getD dir
+    if parent == dir then break
+    dir := parent
+  return none
+
 private def config (path : System.FilePath) (format : Format)
     (role : SourceRole := .userConfig) (conditional : Bool := false)
     (settingsOnly : Bool := false) : ConfigSource :=
@@ -85,7 +103,7 @@ def locations (context : Context) (client : Client)
   | .opencode =>
       -- OPENCODE_CONFIG_DIR is an additional client directory, rather than a replacement for XDG.
       let globalHome := context.location "XDG_CONFIG_HOME" (context.userHome / ".config") / "opencode"
-      for suffix in ["opencode.json", "opencode.jsonc"] do
+      for suffix in ["config.json", "opencode.json", "opencode.jsonc"] do
         result := { result with configs := result.configs.push (config (globalHome / suffix) .jsonc) }
       if let some path := context.env? "OPENCODE_CONFIG" then
         result := { result with configs := result.configs.push (
@@ -100,15 +118,18 @@ def locations (context : Context) (client : Client)
             config (dir / ".opencode" / suffix) .jsonc .projectDirectory) }
         result := { result with skills := result.skills.push (
           dir / ".opencode" / "skills" / "lean-beam" / "SKILL.md") }
+      -- The home directory is searched independently, after project .opencode directories.
+      -- https://github.com/anomalyco/opencode/blob/v1.19.4/packages/opencode/src/config/paths.ts
+      for suffix in ["opencode.json", "opencode.jsonc"] do
+        result := { result with configs := result.configs.push (
+          config (context.userHome / ".opencode" / suffix) .jsonc .homeDirectory) }
       if home != globalHome then
         for suffix in ["opencode.json", "opencode.jsonc"] do
           result := { result with configs := result.configs.push (
             config (home / suffix) .jsonc .directoryOverride) }
       result := { result with skills := result.skills.push (globalHome / "skills" / "lean-beam" / "SKILL.md") }
   | .vibe =>
-      result := { result with configs := #[
-        config (home / "config.toml") .toml,
-        config (context.workspace / ".vibe" / "config.toml") .toml .projectConfig true] }
+      result := { result with configs := #[config (home / "config.toml") .toml] }
       result := { result with skills := result.skills.push (
         context.workspace / ".vibe" / "skills" / "lean-beam" / "SKILL.md") }
   -- The same file can be both a home and workspace candidate. Inspect it only once.

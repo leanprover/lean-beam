@@ -263,6 +263,110 @@ class ClientDoctorTest(unittest.TestCase):
         self.assertEqual(report["clients"][0]["mcp"], "unverified")
         self.assertNotIn("mcp.notConfigured", {f["code"] for f in self.findings(report)})
 
+    def test_explicit_opencode_file_ignores_inline_configuration(self):
+        selected = self.root / "selected.json"
+        self.env["OPENCODE_CONFIG_CONTENT"] = '{"secret":"DOCTOR_SECRET_SENTINEL"}'
+        for executable, expected in [(self.executable, 0), (self.root / "missing/lean-beam-mcp", 1)]:
+            with self.subTest(executable=executable):
+                self.json_file(selected, {"mcp": {"lean-beam": {
+                    "type": "local", "command": [str(executable)]}}})
+                report = self.run_doctor("opencode", "--config", str(selected), expected=expected)
+                self.has_code(report, "launch.file" if expected == 0 else "launch.missing",
+                              "ok" if expected == 0 else "error")
+                self.assertNotIn("config.inlineOverride", {f["code"] for f in self.findings(report)})
+                self.assertEqual([s["path"] for s in report["clients"][0]["sources"]], [str(selected)])
+                self.assertEqual(report["clients"][0]["skill"], "outOfScope")
+                self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+
+    def test_opencode_home_directory_overrides_global_registration(self):
+        self.json_file(self.home / ".config/opencode/opencode.json", {"mcp": {
+            "lean-beam": {"type": "local", "command": [str(self.executable)]}}})
+        override = self.home / ".opencode/opencode.json"
+        self.json_file(override, {"mcp": {"lean-beam": {"enabled": False}}})
+        report = self.run_doctor("opencode", expected=1)
+        self.has_code(report, "mcp.disabled", "error")
+        self.assertIn(str(override), [s["path"] for s in report["clients"][0]["sources"]])
+        self.assertEqual(report["clients"][0]["mcp"], "error")
+
+    def test_opencode_config_json_precedes_standard_global_files(self):
+        global_home = self.home / ".config/opencode"
+        self.json_file(global_home / "config.json", {"mcp": {
+            "lean-beam": {"type": "local", "command": [str(self.executable)]}}})
+        self.has_code(self.run_doctor("opencode"), "launch.file", "ok")
+        self.json_file(global_home / "opencode.json", {"mcp": {"lean-beam": {"enabled": False}}})
+        self.has_code(self.run_doctor("opencode", expected=1), "mcp.disabled", "error")
+
+    def test_global_and_alias_tool_policies_remain_unverified(self):
+        global_config = self.home / ".config/opencode/opencode.json"
+        self.json_file(self.workspace / "opencode.json", {"mcp": {
+            "proofs": {"type": "local", "command": [str(self.executable)]}}})
+        for policy in [{"permission": "deny"}, {"permission": {"*": "deny"}},
+                       {"permission": {"proofs_*": "deny"}},
+                       {"tools": {"proofs_*": False}}, {"disabled_tools": ["proofs_run"]}]:
+            with self.subTest(policy=policy):
+                self.json_file(global_config, policy)
+                report = self.run_doctor("opencode", expected=2)
+                self.has_code(report, "policy.notEvaluated", "unknown")
+                self.assertEqual(report["clients"][0]["mcp"], "unverified")
+        self.json_file(global_config, {"permission": {"bash": "deny"}})
+        self.assertEqual(self.run_doctor("opencode")["clients"][0]["mcp"], "checked")
+        self.json_file(global_config, {"permission": {"bash": {"*": "deny"}}})
+        self.assertEqual(self.run_doctor("opencode")["clients"][0]["mcp"], "checked")
+
+    def test_vibe_arrays_and_tokenized_strings(self):
+        config = self.home / ".vibe/config.toml"
+        def write_command(command, args=()):
+            self.write(config, "[[mcp_servers]]\nname='proofs'\ntransport='stdio'\n"
+                       f"command={json.dumps(command)}\nargs={json.dumps(list(args))}\n")
+        write_command([str(self.executable)])
+        self.assertEqual(self.run_doctor("vibe")["clients"][0]["mcp"], "checked")
+        write_command([str(self.executable), "DOCTOR_SECRET_SENTINEL"], ["--extra"])
+        report = self.run_doctor("vibe", expected=2)
+        self.has_code(report, "launch.arguments", "unknown")
+        self.has_code(report, "launch.file", "ok")
+        self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+        for command in [str(self.executable), '"' + str(self.executable) + '"',
+                        str(self.executable) + " --extra"]:
+            with self.subTest(command=command):
+                write_command(command)
+                report = self.run_doctor("vibe", expected=2)
+                self.has_code(report, "launch.commandSyntax", "unknown")
+                self.assertNotIn("launch.file", {f["code"] for f in self.findings(report)})
+        plain = self.root / "lean-beam-mcp"
+        self.write(plain, "must not execute\n")
+        plain.chmod(0o700)
+        write_command(str(plain))
+        self.has_code(self.run_doctor("vibe"), "launch.file", "ok")
+
+    def test_vibe_discovers_nearest_parent_config_across_git_boundary(self):
+        self.write(self.home / ".vibe/config.toml", "[[mcp_servers]]\nname='lean-beam'\n"
+                   f"transport='stdio'\ncommand=[{json.dumps(str(self.executable))}]\n")
+        parent_config = self.workspace / ".vibe/config.toml"
+        self.write(parent_config, "[[mcp_servers]]\nname='lean-beam'\ndisabled=true\n")
+        child = self.workspace / "src"
+        (child / ".git").mkdir(parents=True)
+        report = self.run_doctor("vibe", global_args=("--root", str(child)), expected=2)
+        self.has_code(report, "config.layers", "unknown")
+        self.assertEqual(report["clients"][0]["mcp"], "unverified")
+        self.assertIn(str(parent_config), [s["path"] for s in report["clients"][0]["sources"]])
+        nearest = child / ".vibe/config.toml"
+        self.write(nearest, "mcp_servers=[]\n")
+        report = self.run_doctor("vibe", global_args=("--root", str(child)), expected=2)
+        paths = [s["path"] for s in report["clients"][0]["sources"]]
+        self.assertIn(str(nearest), paths)
+        self.assertNotIn(str(parent_config), paths)
+
+    def test_vibe_project_discovery_stops_before_user_home(self):
+        self.write(self.home / ".vibe/config.toml", "[[mcp_servers]]\nname='lean-beam'\n"
+                   f"transport='stdio'\ncommand=[{json.dumps(str(self.executable))}]\n")
+        outside = self.root / ".vibe/config.toml"
+        self.write(outside, "[[mcp_servers]]\nname='lean-beam'\ndisabled=true\n")
+        project = self.home / "project/src"
+        project.mkdir(parents=True)
+        report = self.run_doctor("vibe", global_args=("--root", str(project)))
+        self.assertEqual(report["clients"][0]["mcp"], "checked")
+        self.assertNotIn(str(outside), [s["path"] for s in report["clients"][0]["sources"]])
+
     def test_successful_checks_do_not_erase_unverified_selection(self):
         self.codex_config()
         config = self.home / ".codex/config.toml"
@@ -285,7 +389,7 @@ class ClientDoctorTest(unittest.TestCase):
         })
         self.write(self.home / ".vibe" / "config.toml", (
             "[[mcp_servers]]\nname = 'lean-beam'\ntransport = 'stdio'\n"
-            f"command = {json.dumps(str(self.executable))}\nargs = []\ntool_timeout_sec = 600\n"
+            f"command = [{json.dumps(str(self.executable))}]\nargs = []\ntool_timeout_sec = 600\n"
         ))
         self.write(self.home / ".config" / "opencode" / "opencode.jsonc", (
             "// OpenCode accepts comments and trailing commas.\n"
@@ -795,21 +899,21 @@ class ClientDoctorTest(unittest.TestCase):
 
     def test_duplicate_vibe_entries_are_errors(self):
         entry = ("[[mcp_servers]]\nname = 'lean-beam'\ntransport = 'stdio'\n"
-                 f"command = {json.dumps(str(self.executable))}\n")
+                 f"command = [{json.dumps(str(self.executable))}]\n")
         self.write(self.home / ".vibe/config.toml", entry + entry)
         self.has_code(self.run_doctor("vibe", expected=1), "mcp.duplicate", "error")
 
     def test_vibe_requires_a_server_name(self):
         self.write(self.home / ".vibe/config.toml", (
             "[[mcp_servers]]\ntransport = 'stdio'\n"
-            f"command = {json.dumps(str(self.executable))}\n"
+            f"command = [{json.dumps(str(self.executable))}]\n"
         ))
         self.has_code(self.run_doctor("vibe", expected=1), "mcp.invalidEntry", "error")
 
     def test_vibe_disabled_registration_is_not_checked_as_healthy(self):
         config = self.home / ".vibe/config.toml"
         entry = ("[[mcp_servers]]\nname = 'lean-beam'\ntransport = 'stdio'\n"
-                 f"command = {json.dumps(str(self.executable))}\n")
+                 f"command = [{json.dumps(str(self.executable))}]\n")
         self.write(config, entry + "disabled = true\n")
         report = self.run_doctor("vibe", expected=1)
         self.has_code(report, "mcp.disabled", "error")
@@ -822,7 +926,7 @@ class ClientDoctorTest(unittest.TestCase):
     def test_vibe_distinct_aliases_are_not_duplicate_names(self):
         self.write(self.home / ".vibe/config.toml", "\n".join(
             f"[[mcp_servers]]\nname={json.dumps(name)}\ntransport='stdio'\n"
-            f"command={json.dumps(str(self.executable))}\n"
+            f"command=[{json.dumps(str(self.executable))}]\n"
             for name in ["lean-beam", "another-beam"]
         ))
         report = self.run_doctor("vibe", expected=2)
@@ -835,7 +939,7 @@ class ClientDoctorTest(unittest.TestCase):
     def test_vibe_empty_project_collection_leaves_selection_unknown(self):
         self.write(self.home / ".vibe/config.toml", (
             "[[mcp_servers]]\nname = 'lean-beam'\ntransport = 'stdio'\n"
-            f"command = {json.dumps(str(self.executable))}\n"
+            f"command = [{json.dumps(str(self.executable))}]\n"
         ))
         self.write(self.workspace / ".vibe/config.toml", "mcp_servers = []\n")
         self.has_code(self.run_doctor("vibe", expected=2), "config.layers", "unknown")
@@ -846,8 +950,8 @@ class ClientDoctorTest(unittest.TestCase):
         self.has_code(report, "config.syntax", "error")
         self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
         self.write(self.home / ".vibe/config.toml", (
-            "mcp_servers = [{name='lean-beam', transport='stdio', command="
-            + json.dumps(str(self.executable)) + "}]\n"
+            "mcp_servers = [{name='lean-beam', transport='stdio', command=["
+            + json.dumps(str(self.executable)) + "]}]\n"
         ))
         self.has_code(self.run_doctor("vibe"), "launch.file", "ok")
 

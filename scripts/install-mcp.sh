@@ -255,7 +255,7 @@ register_vibe_mcp_server() {
     printf '[[mcp_servers]]\n'
     printf 'name = "lean-beam"\n'
     printf 'transport = "stdio"\n'
-    printf 'command = "%s"\n' "$mcp_command"
+    printf 'command = ["%s"]\n' "$mcp_command"
     printf 'args = []\n'
     printf 'tool_timeout_sec = 600\n'
   } >>"$tmp_config"

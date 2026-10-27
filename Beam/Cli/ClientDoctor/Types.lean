@@ -43,7 +43,7 @@ instance : ToJson Status := ⟨fun status => toJson status.name⟩
 /-- Configuration selection uses roles, independently of their display labels. -/
 inductive SourceRole where
   | userConfig | userSettings | projectConfig | projectSettings | localSettings
-  | projectDirectory | pathOverride | directoryOverride | explicitConfig | leanSkill | packageManifest
+  | projectDirectory | homeDirectory | pathOverride | directoryOverride | explicitConfig | leanSkill | packageManifest
   deriving BEq, Repr, Inhabited
 
 def SourceRole.description : SourceRole → String
@@ -53,6 +53,7 @@ def SourceRole.description : SourceRole → String
   | .projectSettings => "project settings"
   | .localSettings => "local settings"
   | .projectDirectory => "project .opencode configuration"
+  | .homeDirectory => "home .opencode configuration"
   | .pathOverride => "OPENCODE_CONFIG override"
   | .directoryOverride => "OPENCODE_CONFIG_DIR configuration"
   | .explicitConfig => "explicit config file"
