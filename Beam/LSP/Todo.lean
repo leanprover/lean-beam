@@ -895,7 +895,7 @@ private def runAtTacticGoalsAt (position : Lsp.Position) :
 /--
 An item whose proof state tactics left keeps its `runAtPosition?` only when `runAt` there starts from
 the same goals. Goals that no source position selects, such as those left after a branch bullet,
-keep their proof state without a position. `sorry` and hole items need no check: their goal comes
+keep their proof state without a position. A `sorry` or hole term needs no check: its goal comes
 from the placeholder lookup `runAt` uses.
 -/
 private partial def keepSelectableRunAtPositions (entries : List TodoEntry) (acc : Array TodoItem) :
