@@ -363,8 +363,9 @@ client protocol.
 - MCP `notifications/cancelled` cooperatively cancels active broker work. Lazy runtime creation and
   workspace eviction remain serialized. Once admitted, `lean_drop_workspace` ignores client
   cancellation and returns its terminal result because partial eviction cannot be rolled back
-  safely. Previously admitted calls drain first; later calls wait for eviction to finish and may
-  recreate the same descriptor.
+  safely. Previously admitted, uncancelled calls drain first; a cancelled call that has not settled
+  does not delay the drop, whose backend shutdown can stop it. Later workspace-bound calls wait for
+  eviction to finish and may recreate the same descriptor; `beam_version` and `beam_stats` do not.
 - MCP JSON-RPC envelopes, `tools/call` parameters, and broker operation fields are closed at their
   current protocol boundaries; undeclared or operation-irrelevant fields are rejected rather than
   ignored. MCP `_meta` remains open for protocol-defined metadata.

@@ -572,7 +572,7 @@ atomically before the owner terminates and reaps the helper. Cancellation also a
 and final collection before returning a typed broker failure; cleanup failures remain visible as
 described below. Owner loss terminates the helper even during an unbounded server-environment wait. A cold load still holds the broker state
 mutex; removing its deadline does not provide concurrent workspace loading. MCP workspace drop
-remains a global execution fence: cancel an earlier stalled request before awaiting drop.
+remains a global execution fence: cancel an earlier stalled request so the drop can evict its backend.
 The typed operation wrappers use this cancellation policy without a caller deadline override.
 The test harness supplies its own external watchdog.
 

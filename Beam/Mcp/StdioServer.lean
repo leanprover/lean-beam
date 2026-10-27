@@ -70,6 +70,8 @@ private structure InFlightRequest where
   cancellationPolicy : ClientCancellationPolicy
   state : Std.Mutex InFlightState
   executionDone : IO.Promise Unit
+  -- Resolved once the client cancels; the request may still be settling its execution.
+  clientCancelled : IO.Promise Unit
   output : Beam.Mcp.StdioOutput.Slot
 
 private structure RoutingState where
@@ -133,6 +135,7 @@ private def Coordinator.registerRequest
     output
     state := ← Std.Mutex.new {}
     executionDone := ← IO.Promise.new
+    clientCancelled := ← IO.Promise.new
   }
   let result ← coordinator.routing.atomically do
     let routing ← get
@@ -200,6 +203,16 @@ private def InFlightRequest.awaitExecution (request : InFlightRequest) : IO Unit
 
 private def awaitExecutions (requests : Array InFlightRequest) : IO Unit := do
   for request in requests do request.awaitExecution
+
+/--
+A workspace drop waits for earlier execution unless the client has cancelled it. Cancellation is
+soft: an abandoned producer may never settle cooperatively, and the drop's backend shutdown may be
+what stops it. The abandoned request keeps its execution admission until it settles.
+-/
+private def InFlightRequest.awaitDropFence (request : InFlightRequest) : IO Unit := do
+  let some _ ← IO.waitAny [request.executionDone.result?, request.clientCancelled.result?]
+    | throw <| IO.userError s!"in-flight execution {request.id.label} promise was dropped"
+  pure ()
 
 private def Coordinator.currentControlBarrier?
     (coordinator : Coordinator) : IO (Option InFlightRequest) := do
@@ -401,6 +414,7 @@ private def InFlightRequest.markClientCancelled
 private def InFlightRequest.cancel (request : InFlightRequest) : IO Unit := do
   let (cancelled, brokerRequest?) ← request.markClientCancelled
   if cancelled then
+    request.clientCancelled.resolve ()
     request.output.cancel
     match brokerRequest? with
     | none => pure ()
@@ -512,6 +526,11 @@ private def finishReporterSafely
   catch e =>
     traceMcpSafely s!"request reporter finish failed id={req.id.label}: {e.toString}"
 
+/-- Process utilities never touch a workspace runtime, so workspace control does not fence them. -/
+private def isProcessLocal : Except String CallToolParams → Bool
+  | .ok params => params.name == .beamVersion || params.name == .beamStats
+  | .error _ => false
+
 private def Coordinator.spawnToolRequest
     (coordinator : Coordinator)
     (opts : Options)
@@ -533,7 +552,7 @@ private def Coordinator.spawnToolRequest
         return
   let barrier? ←
     try
-      coordinator.currentControlBarrier?
+      if isProcessLocal parsedParams then pure none else coordinator.currentControlBarrier?
     catch e =>
       coordinator.failOwnedRequest req request e
       return
@@ -573,9 +592,9 @@ private def Coordinator.handleControlToolRequest
                 coordinator.state req.id admitted params notifications
           | .error _ => pure none
         let run (initialProgress : Nat) : IO Json := do
-          -- Only unfinished execution and cleanup fence a drop. Output cannot delay later work.
-          -- startExecution atomically rejects queued work after EOF or cancellation.
-          awaitExecutions priorRequests
+          -- Only unfinished, uncancelled execution and cleanup fence a drop. Output cannot delay
+          -- later work. startExecution atomically rejects queued work after EOF or cancellation.
+          for prior in priorRequests do prior.awaitDropFence
           coordinator.toolRequestResponse opts req admitted parsedParams request none
             initialProgress
         match reporter? with

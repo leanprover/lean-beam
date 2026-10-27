@@ -4,6 +4,14 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ## Unreleased
 
+### Fixed
+
+- A client-cancelled MCP call no longer blocks `lean_drop_workspace`. Before, if the cancelled
+  call never observed cancellation (for example a looping `#eval` probe), the drop never ran and
+  every later tool call queued behind it. Now the drop evicts the workspace and its backend
+  shutdown stops the abandoned call. `beam_version` and `beam_stats` no longer wait behind a
+  workspace drop. Uncancelled earlier calls still finish before the drop runs.
+
 ## 0.2.0 - 2026-10-27
 
 Beam remains experimental beta software. This release targets Linux and macOS; Windows remains

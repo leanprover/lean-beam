@@ -33,8 +33,11 @@ becomes visible. Late producers and completions refer to the private admission, 
 alter another request that reuses the same external ID. A write attempt is not client acknowledgement.
 
 Workspace eviction uses one global execution fence: a drop waits for execution and cleanup of
-previously admitted calls across workspaces; later broker work waits for that drop's execution and
-cleanup. Pending responses do not hold either fence. There is no additional response-order guarantee
+previously admitted calls across workspaces; later workspace-bound calls wait for that drop's
+execution and cleanup. A client-cancelled call stops fencing the drop before it settles, since a
+producer that ignores cancellation may only stop when the drop shuts its backend down; it retains
+its execution admission until it settles. Process utilities (`beam_version`, `beam_stats`) never
+wait for the fence. Pending responses do not hold either fence. There is no additional response-order guarantee
 for workspace control operations.
 
 Busy means the request did not execute. An output-limit error can follow a completed operation.

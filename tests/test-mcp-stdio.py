@@ -2086,8 +2086,90 @@ def run_concurrent_dispatch(repo_root, fixture_root, timeout, server_trace=False
             )
             slow_params["arguments"]["version"] = version
 
+            # A cancelled producer that never observes cancellation must not fence a later drop.
+            # The drop's backend shutdown is what stops it.
             started_path.unlink()
             release_path.unlink()
+            unresponsive_params = {
+                "name": "lean_run_at",
+                "arguments": dict(slow_params["arguments"], text="mcp_unresponsive_gate"),
+            }
+            unresponsive_id = "unresponsive-run-at"
+            client.send_request("tools/call", unresponsive_params, request_id=unresponsive_id)
+            wait_for_file(started_path, timeout, "unresponsive runAt gate sentinel")
+            unresponsive_drop_id = client.send_request(
+                "tools/call",
+                {
+                    "name": "lean_drop_workspace",
+                    "arguments": {"workspace": workspace_descriptor(project_root)},
+                },
+                request_id="unresponsive-drop",
+            )
+            fenced_update_id = client.send_request(
+                "tools/call",
+                {
+                    "name": "lean_update",
+                    "arguments": {"path": "McpConcurrency.lean"},
+                },
+                request_id="unresponsive-post-drop-update",
+            )
+            fenced_version_id = client.send_request(
+                "tools/call",
+                {"name": "beam_version", "arguments": {}},
+                request_id="version-during-drop-fence",
+            )
+            fenced_version = expect_result(
+                client.read_response(fenced_version_id, timeout=overlap_timeout)
+            )
+            require(
+                fenced_version.get("isError") is not True,
+                f"beam_version failed while a workspace drop was fenced: {fenced_version}",
+            )
+            fenced_stats_id = client.send_request(
+                "tools/call",
+                {"name": "beam_stats", "arguments": {}},
+                request_id="stats-during-drop-fence",
+            )
+            fenced_stats = expect_result(
+                client.read_response(fenced_stats_id, timeout=overlap_timeout)
+            )
+            require(
+                fenced_stats.get("isError") is not True,
+                f"beam_stats failed while a workspace drop was fenced: {fenced_stats}",
+            )
+            require(
+                not client.response_ready(unresponsive_drop_id),
+                "workspace drop completed before uncancelled earlier work drained",
+            )
+            client.notify(
+                "notifications/cancelled",
+                {"requestId": unresponsive_id, "reason": "drop the stuck workspace"},
+            )
+            unresponsive_drop = expect_result(client.read_response(unresponsive_drop_id))
+            require(
+                unresponsive_drop.get("isError") is not True,
+                f"workspace drop after cancelling unresponsive work failed: {unresponsive_drop}",
+            )
+            require(
+                unresponsive_drop.get("structuredContent", {}).get("dropped") is True,
+                f"workspace drop after cancelling unresponsive work did not evict: {unresponsive_drop}",
+            )
+            fenced_update = expect_result(client.read_response(fenced_update_id))
+            require(
+                fenced_update.get("isError") is not True,
+                f"work admitted after the unresponsive drop failed: {fenced_update}",
+            )
+            version = fenced_update.get("structuredContent", {}).get("version")
+            require(isinstance(version, int), f"post-drop update missing version: {fenced_update}")
+            slow_params["arguments"]["version"] = version
+            require(
+                not client.response_ready(unresponsive_id),
+                "cancelled unresponsive runAt produced a terminal response",
+            )
+            client.forget_request(unresponsive_id)
+
+            started_path.unlink()
+            release_path.unlink(missing_ok=True)
             eof_request_id = "eof-inflight"
             client.send_request("tools/call", slow_params, request_id=eof_request_id)
             wait_for_file(started_path, timeout, "EOF runAt gate sentinel")

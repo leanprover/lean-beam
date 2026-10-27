@@ -185,7 +185,7 @@ A slow or hung load can therefore block broker-backed tool calls, workspace admi
 for other workspaces in the same MCP process. This loading step has no fixed response deadline.
 Send `notifications/cancelled` to request [soft cancellation](STATUS.md#soft-cancellation).
 Active loading may need to settle before its resources can be released. `lean_drop_workspace`
-waits for earlier requests and does not itself interrupt a stalled load. If loading never settles,
+waits for earlier uncancelled requests and does not itself interrupt a stalled load. If loading never settles,
 stop the MCP server through its client or process supervisor and restart it after its owned processes
 have stopped. Cooperative shutdown can also wait on the load; if it cannot finish, use the supervisor's
 process-termination facilities and verify that old worker/helper processes have stopped before
@@ -196,7 +196,7 @@ Reuse admission observes the selected installation outside the server-wide runti
 server checks the retained workspace instance again before dispatch and when binding the broker
 handle, so a concurrent drop/recreate cannot apply an old admission to a new workspace. Stdio
 workspace control operations use one global execution fence: they await execution and cleanup of
-earlier admitted requests across workspaces before dropping a workspace. Installation admission
+earlier admitted, uncancelled requests across workspaces before dropping a workspace. Installation admission
 reads local metadata and paths, without launching selector or compiler probes. Cancellation is checked around admission; rejected or cancelled reuse
 does not replace the retained runtime.
 
@@ -504,8 +504,12 @@ terminal race, no final response is emitted for that request. `lean_drop_workspa
 cancellable while queued. After it acquires execution ownership, it is protected from client
 cancellation because partial cache eviction cannot be rolled back safely. Cache
 eviction uses a global execution fence: previously admitted calls across workspaces finish execution
-and cleanup before the drop runs; later broker work waits for the drop's execution and cleanup and
-may then recreate the same descriptor. These fences never wait for stdout. Responses may arrive out
+and cleanup before the drop runs; later workspace-bound calls wait for the drop's execution and
+cleanup and may then recreate the same descriptor. A call the client has cancelled stops fencing
+the drop, even if it has not settled: it keeps its execution admission until it does, and the
+drop's backend shutdown can be what stops it. To evict a workspace whose earlier call is stuck,
+cancel that call; this also releases a drop that is already waiting. `beam_version` and
+`beam_stats` never wait for the fence. These fences never wait for stdout. Responses may arrive out
 of execution order, including responses to workspace control operations.
 Registration or a progress notification alone does not grant execution ownership.
 
@@ -734,7 +738,7 @@ tool arguments, but only on the tools listed below. Log delivery is session-wide
 | `lean_hover`, `lean_signature_help`, `lean_definition`, `lean_references`, `lean_document_symbols`, `lean_goals`, `lean_todo`, `lean_code_action_resolve` | Preparation and file progress when Lean publishes it. | One `beam.status` after two seconds. | None | Operation-specific structured result. |
 | `lean_workspace_symbols` | Preparation phase only. | One pathless `beam.status` after two seconds. | None | Workspace-symbol result. |
 | `lean_release`, `lean_close` | Preparation, plus file progress for release when Lean publishes it. | One `beam.status` after two seconds if the normally short call is delayed. | None | Release/close result. |
-| `lean_drop_workspace` | Preparation phase, emitted before waiting behind earlier requests. | One pathless `beam.status` after two seconds while the drop waits for earlier requests or eviction. | None | Drop and handle-invalidation result. |
+| `lean_drop_workspace` | Preparation phase, emitted before waiting behind earlier requests. | One pathless `beam.status` after two seconds while the drop waits for earlier uncancelled requests or eviction. | None | Drop and handle-invalidation result. |
 | `beam_feedback_report` | Collection phase only. | One `beam.status` after two seconds while collection remains pending. | None | Rendered report and optional collected evidence. |
 | `beam_stats` | Quiet; a supplied token is not used. | Quiet. | None | Process statistics. |
 | `beam_version` | Quiet; a supplied token is not used. | Quiet. | None | Server identity. |
