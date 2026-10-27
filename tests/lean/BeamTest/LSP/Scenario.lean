@@ -62,7 +62,6 @@ structure TodoSpec where
   endLine : Nat
   endCharacter : Nat
   kinds? : Option (Array Beam.LSP.Todo.TodoKind) := none
-  suggest? : Option Beam.LSP.Todo.TodoSuggestMode := none
   deriving Inhabited, Repr, ToJson
 
 structure SaveArtifactsSpec where
@@ -468,7 +467,6 @@ def sendTodo (doc : DocHandle) (spec : TodoSpec) : ScenarioM ReqHandle := do
       «end» := { line := spec.endLine, character := spec.endCharacter }
     }
     kinds? := spec.kinds?
-    suggest? := spec.suggest?
   }
   let requestID ← sendRequest Beam.LSP.Todo.method (toJson params)
   registerRequest requestID (toJson params)

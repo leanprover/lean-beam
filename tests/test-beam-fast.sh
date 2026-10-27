@@ -436,7 +436,6 @@ todo = request({
             "end_line": 14,
             "end_character": 0,
             "kinds": ["sorry"],
-            "suggest": "none",
             "workspace": workspace,
         },
     },
@@ -527,11 +526,6 @@ if len(todo_items) != 1 or todo_items[0].get("kind") != "sorry":
 
 if todo_items[0].get("run_at_position") != {"line": 13, "character": 2}:
     print(f"unexpected MCP todo run_at_position: {todo}", file=sys.stderr)
-    proc.kill()
-    sys.exit(1)
-
-if "run_at_text" in todo_items[0]:
-    print(f"expected MCP todo suggest=none to omit run_at_text: {todo}", file=sys.stderr)
     proc.kill()
     sys.exit(1)
 

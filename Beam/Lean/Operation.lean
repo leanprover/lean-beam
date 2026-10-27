@@ -170,10 +170,6 @@ private def kindsField : String × Json :=
   ("kinds", Beam.JsonSchema.enumStringArray "Todo kinds to include. Omit or pass [] for all kinds."
     Beam.LSP.Todo.TodoKind.allKeys)
 
-private def suggestField : String × Json :=
-  ("suggest", Beam.JsonSchema.enumString "Suggestion mode for optional run_at_text hints."
-    Beam.LSP.Todo.TodoSuggestMode.allKeys)
-
 private def includeDeclarationField : String × Json :=
   ("include_declaration", Beam.JsonSchema.bool
     "When true, include the declaration location in reference results. Defaults to true.")
@@ -234,7 +230,7 @@ def Operation.inputSchema : Operation → Json
   | .goals =>
       inputObject (positionFields ++ [goalsModeField]) #["path", "version", "line", "character", "mode"]
   | .todo =>
-      inputObject (rangeFields ++ [kindsField, suggestField])
+      inputObject (rangeFields ++ [kindsField])
         #["path", "version"]
   | .codeActionResolve =>
       inputObject (documentFields ++ [codeActionField]) #["path", "version", "code_action"]
@@ -416,7 +412,6 @@ structure TodoInput where
   /-- The whole document when omitted. -/
   range? : Option Lean.Lsp.Range := none
   kinds? : Option (Array Beam.LSP.Todo.TodoKind) := none
-  suggest? : Option Beam.LSP.Todo.TodoSuggestMode := none
 
 instance : ToJson TodoInput where
   toJson input :=
@@ -434,9 +429,6 @@ instance : ToJson TodoInput where
       | none => []) ++
       (match input.kinds? with
       | some kinds => [("kinds", toJson kinds)]
-      | none => []) ++
-      (match input.suggest? with
-      | some suggest => [("suggest", toJson suggest)]
       | none => [])
 
 instance : FromJson TodoInput where
@@ -459,8 +451,7 @@ instance : FromJson TodoInput where
           «end» := ← position "end_line" "end_character"
         }
     let kinds? ← optionalField? (α := Array Beam.LSP.Todo.TodoKind) j "kinds"
-    let suggest? ← optionalField? (α := Beam.LSP.Todo.TodoSuggestMode) j "suggest"
-    pure { path, version, range?, kinds?, suggest? }
+    pure { path, version, range?, kinds? }
 
 /-- Input for resolving a Lean code action returned by the todo operation. -/
 structure CodeActionResolveInput where
@@ -657,7 +648,6 @@ def TodoInput.toBrokerRequest (input : TodoInput) : Beam.Broker.Request := {
     version := input.version
     range? := input.range?
     kinds? := input.kinds?
-    suggest? := input.suggest?
   }
 }
 

@@ -607,9 +607,6 @@ private def todoItemJson (item : Beam.LSP.Todo.TodoItem) : Json := Json.mkObj <|
   (match item.runAtPosition? with
   | some position => [("run_at_position", toJson position)]
   | none => []) ++
-  (match item.runAtText? with
-  | some text => [("run_at_text", toJson text)]
-  | none => []) ++
   (match item.message? with
   | some message => [("message", toJson message)]
   | none => []) ++

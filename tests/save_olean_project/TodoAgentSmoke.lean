@@ -76,3 +76,30 @@ theorem bulletProgress (n : Nat) (h : n = 0) : n + 0 = 0 ∧ True := by
   constructor
   · rw [Nat.add_zero]
   · trivial
+
+theorem allGoalsSkip (p q : Prop) (hp : p) (hq : q) : p ∧ q := by
+  constructor
+  all_goals skip
+
+theorem allGoalsPartial (p q : Prop) (hp : p) : p ∧ q := by
+  constructor
+  all_goals try exact hp
+
+theorem nestedAllGoals (p q r : Prop) (hr : r) : (p ∧ q) ∧ r := by
+  constructor
+  all_goals
+    try constructor
+    all_goals skip
+
+theorem focusSkip (p q : Prop) : p ∧ q := by
+  constructor
+  focus skip
+
+theorem seqSorry (p q : Prop) : p ∧ q := by
+  constructor <;> sorry
+
+theorem firstBacktracks : True ∧ True := by
+  first
+  | constructor
+    fail
+  | exact ⟨True.intro, True.intro⟩

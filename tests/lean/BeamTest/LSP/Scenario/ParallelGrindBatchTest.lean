@@ -64,7 +64,6 @@ private def requestSorryTodos (doc : DocHandle) (endLine : Nat) : ScenarioM Beam
     endLine
     endCharacter := 0
     kinds? := some #[.sorry]
-    suggest? := some .none
   }
   awaitResponseAs req
 
@@ -82,8 +81,6 @@ private def extractTodoPlans
     let item := result.items[i]
     if item.kind != .sorry then
       throw <| IO.userError s!"expected todo item {i} to be a sorry, got {(toJson item).compress}"
-    if item.runAtText?.isSome then
-      throw <| IO.userError s!"expected suggest=none to omit runAtText, got {(toJson item).compress}"
     plans := plans.push {
       item
       change := {

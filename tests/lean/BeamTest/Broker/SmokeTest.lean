@@ -277,7 +277,6 @@ private def runTodoThenSyncDiagnosticSummarySmoke
         «end» := { line := 22, character := 0 }
       }
       kinds? := some #[.diagnostic]
-      suggest? := some .none
     }
   }
   let todoResult : Beam.LSP.Todo.TodoResult ← IO.ofExcept <| fromJson? (← expectOk todoResp)

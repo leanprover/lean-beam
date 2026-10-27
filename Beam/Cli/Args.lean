@@ -170,41 +170,21 @@ private def parseTodoKindArg (value : String) : CliM Beam.LSP.Todo.TodoKind := d
       throw <| CliFailure.argument "todo kind" value (fun preview =>
         s!"invalid todo kind '{preview}' (expected one of: {allowed}): {(argumentPreview "kind error" err).preview}")
 
-private def parseTodoSuggestArg (value : String) : CliM Beam.LSP.Todo.TodoSuggestMode := do
-  match fromJson? (α := Beam.LSP.Todo.TodoSuggestMode) (Json.str value) with
-  | .ok mode => pure mode
-  | .error err =>
-      let allowed := String.intercalate ", " Beam.LSP.Todo.TodoSuggestMode.allKeys.toList
-      throw <| CliFailure.argument "todo suggest mode" value (fun preview =>
-        s!"invalid todo suggest mode '{preview}' (expected one of: {allowed}): {(argumentPreview "suggest error" err).preview}")
-
 def leanTodoUsage : String :=
-  "usage: lean-beam [--pretty] [--root PATH] todo <path> <version> [<startLine> <startCharacter> <endLine> <endCharacter>] [--kind <kind> ...] [--suggest none|basic]"
+  "usage: lean-beam [--pretty] [--root PATH] todo <path> <version> [<startLine> <startCharacter> <endLine> <endCharacter>] [--kind <kind> ...]"
 
-def parseLeanTodoArgs (args : List String) :
-    CliM (Option (Array Beam.LSP.Todo.TodoKind) × Option Beam.LSP.Todo.TodoSuggestMode) := do
-  let rec loop
-      (args : List String)
-      (kinds : Array Beam.LSP.Todo.TodoKind)
-      (suggest? : Option Beam.LSP.Todo.TodoSuggestMode) :
-      CliM (Option (Array Beam.LSP.Todo.TodoKind) × Option Beam.LSP.Todo.TodoSuggestMode) := do
+def parseLeanTodoArgs (args : List String) : CliM (Option (Array Beam.LSP.Todo.TodoKind)) := do
+  let rec loop (args : List String) (kinds : Array Beam.LSP.Todo.TodoKind) :
+      CliM (Option (Array Beam.LSP.Todo.TodoKind)) := do
     match args with
     | [] =>
-        pure (if kinds.isEmpty then none else some kinds, suggest?)
+        pure (if kinds.isEmpty then none else some kinds)
     | "--kind" :: kind :: rest =>
-        loop rest (kinds.push (← parseTodoKindArg kind)) suggest?
-    | "--kind" :: _ =>
-        throw <| CliFailure.argument "todo arguments" (String.intercalate " " args)
-          (fun preview => s!"invalid todo arguments: {preview}") (some leanTodoUsage)
-    | "--suggest" :: mode :: rest =>
-        loop rest kinds (some (← parseTodoSuggestArg mode))
-    | "--suggest" :: _ =>
-        throw <| CliFailure.argument "todo arguments" (String.intercalate " " args)
-          (fun preview => s!"invalid todo arguments: {preview}") (some leanTodoUsage)
+        loop rest (kinds.push (← parseTodoKindArg kind))
     | _ =>
         throw <| CliFailure.argument "todo arguments" (String.intercalate " " args)
           (fun preview => s!"invalid todo arguments: {preview}") (some leanTodoUsage)
-  loop args #[] none
+  loop args #[]
 
 def shellQuote (text : String) : String :=
   "'" ++ text.replace "'" "'\\''" ++ "'"

@@ -83,14 +83,12 @@ def leanTodoRequest
     (path : String)
     (version : Nat)
     (range? : Option Lean.Lsp.Range)
-    (kinds? : Option (Array Beam.LSP.Todo.TodoKind))
-    (suggest? : Option Beam.LSP.Todo.TodoSuggestMode) : Request :=
+    (kinds? : Option (Array Beam.LSP.Todo.TodoKind)) : Request :=
   ({
     path
     version
     range?
     kinds?
-    suggest?
   } : Beam.Lean.TodoInput).toBrokerRequest
 
 def leanCloseRequest (path : String) : Request :=

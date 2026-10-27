@@ -255,7 +255,6 @@ structure TodoRequest extends RequestVersionedFile where
   /-- The whole document when omitted. -/
   range? : Option Lsp.Range := none
   kinds? : Option (Array Beam.LSP.Todo.TodoKind) := none
-  suggest? : Option Beam.LSP.Todo.TodoSuggestMode := none
 
 structure RunWithRequest where
   path : String
@@ -434,9 +433,7 @@ private def Op.requestFields (op : Op) : Array String :=
   | .saveOlean => #["path", "diagnosticScope"]
   | .goals => #["path", "version", "line", "character", "mode"]
   | .todo =>
-      #[
-        "path", "version", "range", "kinds", "suggest"
-      ]
+      #["path", "version", "range", "kinds"]
   | .runWith =>
       #["path", "text", "storeHandle", "linear", "handle"]
   | .release => #["path", "handle"]
@@ -498,8 +495,7 @@ private def RequestPayload.jsonFields : RequestPayload → List (String × Json)
   | .todo request =>
       request.toRequestVersionedFile.jsonFields ++
       optionalJsonField "range" request.range? ++
-      optionalJsonField "kinds" request.kinds? ++
-      optionalJsonField "suggest" request.suggest?
+      optionalJsonField "kinds" request.kinds?
   | .runWith request =>
       [("path", toJson request.path), ("text", toJson request.text)] ++
       optionalJsonField "storeHandle" request.storeHandle? ++
@@ -649,7 +645,6 @@ instance : FromJson Request where
             toRequestVersionedFile := target
             range? := ← optionalField? (α := Lsp.Range) j "range"
             kinds? := ← optionalField? (α := Array Beam.LSP.Todo.TodoKind) j "kinds"
-            suggest? := ← optionalField? (α := Beam.LSP.Todo.TodoSuggestMode) j "suggest"
           }
       | .runWith => do
           let handle ← requiredField j "handle"

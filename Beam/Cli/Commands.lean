@@ -371,12 +371,12 @@ private def dispatchCommand (installation : Installation) (opts : CliOptions) : 
             else
               pure (none, rest)
         | _ => pure (none, rest)
-      let (kinds?, suggest?) ← parseLeanTodoArgs extra
+      let kinds? ← parseLeanTodoArgs extra
       let root ← projectRoot opts
       let action := "todo"
       withProjectDaemon runtime.attachment root (explicitControlDir? := opts.explicitControlDir?) fun client =>
         callBrokerWithProgress root client
-          (leanTodoRequest path version range? kinds? suggest?)
+          (leanTodoRequest path version range? kinds?)
           (leanTodoWaitSpec path range? action)
           opts.jsonOutputFormat
   | "run-with" :: path :: args =>

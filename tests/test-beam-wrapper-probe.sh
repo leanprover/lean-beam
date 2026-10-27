@@ -397,13 +397,12 @@ fi
     exit 1
   fi
 
-  todo_out="$("$beam_script" todo TodoSmoke.lean "$todo_version" 13 0 14 0 --kind sorry --suggest none)"
+  todo_out="$("$beam_script" todo TodoSmoke.lean "$todo_version" 13 0 14 0 --kind sorry)"
   assert_json_field_equals "wrapper todo" "$todo_out" ok true
   assert_json_array_len_equals "wrapper todo" "$todo_out" result.items 1
   assert_json_field_equals "wrapper todo" "$todo_out" result.items.0.kind sorry
   assert_json_field_equals "wrapper todo" "$todo_out" result.items.0.run_at_position.line 13
   assert_json_field_equals "wrapper todo" "$todo_out" result.items.0.run_at_position.character 2
-  assert_json_field_absent "wrapper todo" "$todo_out" result.items.0.run_at_text
 
   stats_out="$("$beam_script" stats)"
   hover_count="$(BEAM_JSON_PAYLOAD="$stats_out" read_json_text_field result.metrics.ops.hover.count)"

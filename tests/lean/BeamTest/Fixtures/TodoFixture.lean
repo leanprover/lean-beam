@@ -132,7 +132,23 @@ def agentItems : Array AgentItem := #[
   -- The bullet's own goal, which Lean admits after the bullet stops early, is not reported again;
   -- `rw` records its closing `rfl` attempt at `]`, the narrowest tactic ending where `rw` ends.
   { kind := .incompleteProof, start := ⟨76, 20⟩, runAt := ⟨76, 21⟩, goals := #["n = 0"],
-    solution? := some "exact h" }
+    solution? := some "exact h" },
+  -- `all_goals` runs `skip` once per goal, as `<;>` does.
+  { kind := .incompleteProof, start := ⟨81, 12⟩, runAt := ⟨81, 16⟩, selectable := false,
+    goals := #["p", "q"] },
+  -- `try` recovered from `exact hp` on `q`; the narrowest tactic ending there left it open.
+  { kind := .incompleteProof, start := ⟨85, 16⟩, runAt := ⟨85, 24⟩, selectable := false,
+    goals := #["q"] },
+  -- The inner `skip` ran once per goal of every outer run: one item for all three goals.
+  { kind := .incompleteProof, start := ⟨91, 14⟩, runAt := ⟨91, 18⟩, selectable := false,
+    goals := #["p", "q", "r"] },
+  -- `focus` restores the unfocused `q` after its body left `p`: two tactics, one goal each.
+  { kind := .incompleteProof, start := ⟨95, 2⟩, runAt := ⟨95, 12⟩, selectable := false,
+    goals := #["q"] },
+  { kind := .incompleteProof, start := ⟨95, 8⟩, runAt := ⟨95, 12⟩, goals := #["p"] },
+  -- `sorry` ran once per goal: one item with both goals, like `seqSkip`.
+  { kind := .sorry, start := ⟨98, 18⟩, runAt := ⟨98, 18⟩, selectable := false, goals := #["p", "q"] }
+  -- `firstBacktracks` is complete: the goals of its abandoned `constructor` branch are not reported.
 ]
 
 end BeamTest.Fixtures.TodoFixture

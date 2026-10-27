@@ -410,7 +410,6 @@ private def checkBrokerRequestAdapters : IO Unit := do
     version := 14
     range? := some { start := { line := 1, character := 0 }, «end» := { line := 8, character := 3 } }
     kinds? := some #[.sorry, .incompleteProof]
-    suggest? := some .basic
   }
   let todoReq ← expectOk "todo tool request" <|
     Beam.Mcp.leanOperationToBrokerRequest .todo workspaceId (inWorkspace <| toJson todoInput)
@@ -421,7 +420,6 @@ private def checkBrokerRequestAdapters : IO Unit := do
   require "todo version" (todo.version == 14)
   require "todo range" (todo.range? == todoInput.range?)
   require "todo kinds" (todo.kinds? == some #[.sorry, .incompleteProof])
-  require "todo suggest" (todo.suggest? == some .basic)
   let todoJson := toJson todoInput
   requireJsonString "todo input json" "path" "Demo.lean" todoJson
   requireFieldAbsent "todo input json" "startLine" todoJson
@@ -1728,7 +1726,6 @@ private def checkTodoNormalization : IO Unit := do
         ("kind", toJson Beam.LSP.Todo.TodoKind.incompleteProof),
         ("range", toJson ({ start := { line := 1, character := 2 }, «end» := { line := 1, character := 7 } } : Lean.Lsp.Range)),
         ("runAtPosition", toJson ({ line := 1, character := 7 } : Lean.Lsp.Position)),
-        ("runAtText", toJson ("exact ?_" : String)),
         ("proofState", toJson ({ goals := #[] } : Beam.LSP.Lib.ProofState))
       ],
       Json.mkObj [
@@ -1739,6 +1736,12 @@ private def checkTodoNormalization : IO Unit := do
           ("title", toJson ("Replace fixture hole with zero" : String)),
           ("kind", toJson ("quickfix" : String))
         ])
+      ],
+      -- Goals that no source position selects, such as those left after a branch bullet.
+      Json.mkObj [
+        ("kind", toJson Beam.LSP.Todo.TodoKind.incompleteProof),
+        ("range", toJson ({ start := { line := 2, character := 4 }, «end» := { line := 2, character := 9 } } : Lean.Lsp.Range)),
+        ("proofState", toJson ({ goals := #[] } : Beam.LSP.Lib.ProofState))
       ]
     ])
   ]
@@ -1754,10 +1757,8 @@ private def checkTodoNormalization : IO Unit := do
         | none => throw <| IO.userError "todo result: expected first item"
     | _ => throw <| IO.userError s!"todo result: expected items array, got {items.compress}"
   discard <| requireObjVal "todo item" "run_at_position" item
-  requireJsonString "todo item" "run_at_text" "exact ?_" item
   discard <| requireObjVal "todo item" "proof_state" item
   requireFieldAbsent "todo item" "runAtPosition" item
-  requireFieldAbsent "todo item" "runAtText" item
   requireFieldAbsent "todo item" "proofState" item
   let codeActionItem ←
     match items with
@@ -1768,6 +1769,16 @@ private def checkTodoNormalization : IO Unit := do
     | _ => throw <| IO.userError s!"todo result: expected items array, got {items.compress}"
   discard <| requireObjVal "todo code action item" "code_action" codeActionItem
   requireFieldAbsent "todo code action item" "codeAction" codeActionItem
+  let unselectableItem ←
+    match items with
+    | Json.arr items =>
+        match items[2]? with
+        | some item => pure item
+        | none => throw <| IO.userError "todo result: expected third item"
+    | _ => throw <| IO.userError s!"todo result: expected items array, got {items.compress}"
+  requireFieldAbsent "todo item without a position" "run_at_position" unselectableItem
+  requireFieldAbsent "todo item without a position" "runAtPosition" unselectableItem
+  discard <| requireObjVal "todo item without a position" "proof_state" unselectableItem
 
 private def checkCodeActionResolveNormalization : IO Unit := do
   let rawResult := Json.mkObj [

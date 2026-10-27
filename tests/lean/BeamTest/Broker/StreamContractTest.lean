@@ -353,7 +353,6 @@ def main : IO Unit := do
           «end» := { line := BeamTest.Fixtures.TodoFixture.endLine, character := BeamTest.Fixtures.TodoFixture.endCharacter }
         }
         kinds? := some #[.sorry]
-        suggest? := some .none
       }
     }
     let todoResp ← requireFinalStreamResponse "todo" todoMessages

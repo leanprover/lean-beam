@@ -2845,9 +2845,6 @@ private def handleTodoOp
         | none => []) ++
         (match request.kinds? with
         | some kinds => [("kinds", toJson kinds)]
-        | none => []) ++
-        (match request.suggest? with
-        | some suggest => [("suggest", toJson suggest)]
         | none => []))
       (expectedVersion? := some request.version)
       (emitProgress? := emitProgress?)
