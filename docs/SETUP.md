@@ -622,6 +622,9 @@ To register either installation manually, use the absolute path to its MCP comma
 
 Replace `/absolute/path/to/lean-beam-mcp` below with that path. This lets the client launch the
 matching server independently of its working directory and `PATH`.
+To change how many unfinished tool calls the server admits at once (default 32), append
+`--max-unfinished-requests N` to the registered command; see
+[MCP transport lifetime](MCP.md#transport-lifetime).
 
 ```bash
 codex mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"

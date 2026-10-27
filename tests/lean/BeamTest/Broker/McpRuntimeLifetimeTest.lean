@@ -526,12 +526,12 @@ private def checkEvictionCleanupDuringEof : IO Unit :=
       state.closeRuntime
       IO.FS.removeDirAll root
 
-private def busyReplies (frames : IO.Ref (Array String)) : IO Nat := do
+private def repliesWithCode (frames : IO.Ref (Array String)) (code : Int) : IO Nat := do
   let responses ← (← frames.get).mapM fun frame =>
     IO.ofExcept <| (Json.parse frame).mapError IO.userError
   pure <| responses.filter (fun response =>
     match response.getObjVal? "error" with
-    | .ok error => (error.getObjValAs? Int "code").toOption == some (-32024)
+    | .ok error => (error.getObjValAs? Int "code").toOption == some code
     | .error _ => false) |>.size
 
 /-- Ordinary saturation by cancelled-but-unsettled work leaves recovery admissible, with
@@ -573,7 +573,7 @@ private def checkRecoveryCapacity (ordinary : Nat) : IO Unit :=
       (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator request (.str "eof")
     (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
     require "EOF releases every pool exactly once" ((← admissionLedger coordinator) == {})
-    require "each exhausted pool replied busy without executing" ((← busyReplies frames) == 3)
+    require "each exhausted pool replied busy without executing" ((← repliesWithCode frames (-32024)) == 3)
 
 /-- An ordinary pool with room does not help when ordinary output storage is full; recovery
 admission then uses the reserve pool together with its own output budget. -/
@@ -658,13 +658,8 @@ private def checkReserveReleaseOnFailure : IO Unit :=
     (stdioPrivate% Beam.Mcp.Server.Coordinator.finishRequest) coordinator stuck (.str "eof")
     (stdioPrivate% Beam.Mcp.Server.Coordinator.closeTransport) coordinator
     require "failures and EOF release every pool" ((← admissionLedger coordinator) == {})
-    let responses ← (← frames.get).mapM fun frame =>
-      IO.ofExcept <| (Json.parse frame).mapError IO.userError
     require "each failed start has an internal-error reply"
-      ((responses.filter fun response =>
-        match response.getObjVal? "error" with
-        | .ok error => (error.getObjValAs? Int "code").toOption == some (-32603)
-        | .error _ => false).size == 3)
+      ((← repliesWithCode frames (-32603)) == 3)
 
 def run : IO Unit := do
   checkPermanentClosure

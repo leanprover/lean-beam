@@ -96,8 +96,6 @@ def Ledger.release (ledger : Ledger) (pool : Pool) : Ledger :=
 def parseOrdinaryLimit (text : String) : Except String Nat := do
   let invalid := s!"--max-unfinished-requests expects an integer from 1 to {maxOrdinaryLimit}, got '{text}'"
   if text.isEmpty || !text.all Char.isDigit then throw invalid
-  -- Digit strings are arbitrary precision; bound the length before the value.
-  if text.length > (toString maxOrdinaryLimit).length + 8 then throw invalid
   let some value := text.toNat? | throw invalid
   if value == 0 || value > maxOrdinaryLimit then throw invalid
   pure value
