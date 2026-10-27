@@ -3,6 +3,7 @@
 # Released under Apache 2.0 license as described in the file LICENSE.
 """Local target lookup never executes candidate compilers, providers, or construction tools."""
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -114,3 +115,21 @@ with tempfile.TemporaryDirectory(prefix="beam installation lookup-") as temporar
         else:
             unreadable.parent.chmod(0o700)
     assert not calls.exists(), "lookup invoked a candidate compiler before rejecting it"
+
+    # Execute only a fake source installer: verify the emitted POSIX quoting and complete target set.
+    recipe = subprocess.run(
+        [ROOT / ".lake/build/bin" / ("beam-installation-lookup-test" + suffix), directory, "remedy"],
+        env=environment, check=True, capture_output=True, text=True, timeout=30)
+    remedy = json.loads(recipe.stdout)
+    checkout = directory / "Beam checkout's"
+    (checkout / "scripts").mkdir(parents=True)
+    installer = checkout / "scripts/install-beam.sh"
+    installer.write_text("#!/bin/sh\nexec python3 -c 'import json,os,sys; "
+                         "print(json.dumps([os.environ[\"BEAM_INSTALL_ROOT\"], *sys.argv[1:]]))' \"$@\"\n")
+    installer.chmod(0o755)
+    executed = subprocess.run(["bash", "-c", remedy["command"]], cwd=checkout,
+                              env=environment, capture_output=True, text=True, check=True, timeout=15)
+    assert json.loads(executed.stdout) == [
+        remedy["install_root"], "--toolchain", "leanprover/lean4:v4.35.0",
+        "--custom-toolchain", "retained'alias", "--custom-toolchain", "requested'alias"]
+    assert not calls.exists(), "rendering a remedy invoked a candidate compiler"

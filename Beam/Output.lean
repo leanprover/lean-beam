@@ -501,6 +501,10 @@ private def validateBoolField (json : Json) : Except String Json := do
   let _ ← fromJson? (α := Bool) json
   pure json
 
+private def validateStringArray (json : Json) : Except String Json := do
+  let _ ← fromJson? (α := Array String) json
+  pure json
+
 /-- CLI-owned codes with structured recovery metadata. Contract tests require representative
 producer coverage for every entry; backend-only codes are not inferred from payload keys. -/
 def controlErrorDataCodes : Array String := #[
@@ -522,6 +526,7 @@ private def controlCodeOwns (code field : String) : Bool :=
   | "installationRoot" =>
       ["setupError", "sessionShutdownUnconfirmed", "sessionInstallationMismatch"].contains code
   | "currentInstallationRoot" => code == "sessionInstallationMismatch"
+  | "selectorPath" | "selectorText" | "leanCommand" | "retainedTargets" => code == "setupError"
   | "operationMayHaveCompleted" | "operationResponse" =>
       ["requestCancelled", "brokerUnavailable", "internalError"].contains code
   | "recordedConfigHash" | "requestedConfigHash" =>
@@ -554,6 +559,14 @@ private def projectControlErrorDataImpl (code : String) (data : Json) : Except S
           (validateStringField value).map (fun projected => ("installation_root", projected, true))
       | "currentInstallationRoot" =>
           (validateStringField value).map (fun projected => ("current_installation_root", projected, true))
+      | "selectorPath" =>
+          (validateStringField value).map (fun projected => ("selector_path", projected, true))
+      | "selectorText" =>
+          (validateStringField value).map (fun projected => ("selector_text", projected, true))
+      | "leanCommand" =>
+          (validateStringField value).map (fun projected => ("lean_command", projected, true))
+      | "retainedTargets" =>
+          (validateStringArray value).map (fun projected => ("retained_targets", projected, true))
       | "operationMayHaveCompleted" =>
           (validateBoolField value).map (fun projected => ("operation_may_have_completed", projected, true))
       | "operationResponse" => pure ("operation_response", value, true)
