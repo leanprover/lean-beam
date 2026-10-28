@@ -155,10 +155,10 @@ private def rangeEndCharacterField : String × Json :=
   ("end_character", Beam.JsonSchema.natural "Zero-based UTF-16 LSP end character.")
 
 private def runAtTextField : String × Json :=
-  ("text", Beam.JsonSchema.string "One Lean command or tactic block to run at the selected position. Top-level command sequences are not accepted by one runAt call.")
+  ("text", Beam.JsonSchema.string "One Lean command or tactic block (optionally wrapped in by) to run at the selected position. Top-level command sequences are not accepted by one runAt call.")
 
 private def continuationTextField : String × Json :=
-  ("text", Beam.JsonSchema.string "One Lean continuation command or tactic block to run from the stored handle.")
+  ("text", Beam.JsonSchema.string "One Lean continuation command or tactic block (optionally wrapped in by) to run from the stored handle. Proof text is parsed standalone; a handle has no cursor column.")
 
 private def handleField : String × Json :=
   ("handle", Beam.JsonSchema.object "Opaque broker-wrapped Lean handle from a previous tool result.")

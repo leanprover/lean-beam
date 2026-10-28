@@ -121,7 +121,7 @@ Request-level failures stay at the transport layer. Semantic Lean outcomes stay 
 response payload.
 
 Proof probes through `$/lean/runAt` and `$/lean/runWith` do not support newly introduced local
-`let rec` declarations. They return a semantic failure with the original proof state and no successor
+`let rec` declarations. They return a semantic failure with no successor
 handle, including when the recursion is valid in ordinary Lean. Lean checks these definitions and
 their termination when finalizing the enclosing declaration; a tactic fragment has no such step.
 Add valid recursive definitions to the document and sync before probing their use. Command probes

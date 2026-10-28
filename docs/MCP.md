@@ -328,7 +328,7 @@ code-action resolution. Raw LSP methods and generic broker escape hatches are in
 
 The [proof-probe limitations](STATUS.md#operational-notes) also apply to `lean_run_at`,
 `lean_run_at_handle`, `lean_run_with`, and `lean_run_with_linear`: introducing a local `let rec` in a
-tactic returns `success=false`, the original proof state, and no successor handle, even when the
+tactic returns `success=false` and no successor handle, even when the
 recursion is valid. Save the complete enclosing declaration and call `lean_sync` to validate it;
 use the returned version and fresh handles after the edit. Complete command probes use Lean's
 normal termination checks. The skill's
