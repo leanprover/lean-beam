@@ -12,7 +12,7 @@ namespace BeamModel.BackendProtocol
 structure Key where
   incarnation : Nat
   request : Nat
-  deriving BEq, DecidableEq, Repr
+  deriving BEq, ReflBEq, LawfulBEq, DecidableEq, Repr
 
 inductive Outcome where
   | response | channelFailure

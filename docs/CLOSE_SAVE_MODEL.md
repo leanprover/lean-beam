@@ -223,6 +223,7 @@ means the named regression is wired into that suite, not that its I/O behavior i
 | Final owner/basis/cancellation validation claims publication before filesystem effects; affected owner changes wait | Abstract `Publication.stale_owner_cannot_publish` covers stale authority only; waiting is unmodeled | `withDocumentPublication`, `withPublicationAvailable`, release/signalling in `finally` | CI Fast: `PublicationClaimTest` real-rename gate, cancellation, teardown, and failure schedules | All affected mutations join the claim; no mutex/wait/liveness theorem. |
 | Canonical failure attempts recovery; successful rollback restores beforeimages; committed cleanup retains success | Filesystem behavior is unmodeled | `Publication.promote` backup transaction, exact hash invalidation, trace-last install, rollback/retention | CI Fast/native: `beam-publication-test`; CI Slow: installed checkpoint hash/replay tests | Filesystem rename/hard-link behavior, continued process execution, and no independent Beam/Lake writers. |
 | Known commit survives later finalization failure | Abstract `Closing.run_preserves_commit`, `finish_requires_ownership` | `SaveOleanCompleted` after promotion; `finalizeSavedResponse` preserves `saved` | CI Fast: `ClosingTest`; save finalization uncertain-close/receipt cases | A commit must first become known; the model does not recover receipts after process or delivery failure. |
+| Detached pending requests retain settlement responsibility; resolved outcomes remain stable | Abstract `RequestSettlement.unresolved_has_custodian`, `run_preserves_result`, `run_preserves_first_failure`; partial abstract correspondence in `SettlementCorrespondence` | `PendingRequestStore.remove`/`close`, reader resolution, retained send-failure reference, `IO.Promise.resolve` | CI Fast: `PendingTest.checkDetachedPendingSettlement`, closed-admission/close-race cases; `ProtocolTest.checkLateWriteFailure`; model settlement schedules | First-wins promise contract and handler-reference retention. No full runtime refinement, eventual resolution, or dispatch-result theorem. |
 | Execution cleanup, accepted output, and physical delivery are distinct | Not modeled; [stdio coordinator](../Beam/Mcp/StdioServer.lean), [output writer](../Beam/Mcp/StdioOutput.lean) | `finishExecution` → `finishRequest`/`Slot.respond` → `deliveryTask`/`finishDelivery` | CI Fast: [McpRuntimeLifetimeTest](../tests/lean/BeamTest/Broker/McpRuntimeLifetimeTest.lean), `McpOutputTest`; CI Slow: [blocked-stdout close-save/drop/reopen](../tests/test-mcp-stdio.py) (`run_blocked_stdout_eof_cleanup`, live drop) | Bounded frame acceptance is not delivery; writer completion is not proof the client read the receipt. No model refinement or universal delivery guarantee. |
 
 
@@ -374,23 +375,68 @@ writing; `Server.sessionReaderLoop` removes a correlated entry before resolving 
 records a terminal failure and drains entries before resolving their promises outside the mutex.
 
 The critical interval is **after removal, before promise resolution**. An empty pending map is not
-proof that all callers have settled. The adapter that removed an entry owns the remaining settlement
-obligation. A useful extracted core must return that obligation as an explicit effect, with the
-runtime adapter executing it exactly once or retaining responsibility on failure. It must also retain
-the first typed channel failure and reproduce existing registration rejection semantics. The initial
-abstract model deliberately leaves these implementation obligations unproved.
+proof that all callers have settled. Map removal transfers responsibility to a handler, but it does
+not revoke every other reference to the promise. In particular, the send-failure path retains the
+original `PendingRequest`, discards the result of map removal, and can resolve that promise after
+another handler has taken it. Lean's `IO.Promise.resolve` contract says only the first call has an
+effect. Exactly one call to `resolve` is therefore **not** the current implementation invariant.
+
+[RequestSettlement](../model/BeamModel/RequestSettlement.lean) now models one allocated request's
+local lifecycle, including the detached interval and competing reader/writer resolution attempts.
+Its [laws](../model/BeamModel/RequestSettlementLaws.lean) prove that reachable unresolved registrations
+retain a custodian, established results cannot change, and the first channel failure remains retained.
+A custodian is the pending map, the writer's active send/failure continuation, or a handler with a
+settlement claim. This is abstract proof bookkeeping, not a proposed runtime ownership registry.
+The model does not promise that a custodian runs, finishes, or survives a broker crash.
+
+Response removal and channel closure may race for the pending entry. The winner transfers that
+entry to its own handler; a later close cannot steal a detached response. Independently, a send
+failure can leave the writer responsible for the same promise. The writer's removal and subsequent
+read of the retained channel failure are separate transitions: closure between them changes the
+selected failure; closure after selection does not retroactively change that selection. Either
+reader or writer may resolve first. Once one succeeds, a later attempt cannot replace the result.
+A channel can thus retain a failure while an already-detached request still resolves successfully.
+
+The production [PendingTest](../tests/lean/BeamTest/Broker/PendingTest.lean)
+`checkDetachedPendingSettlement` exercises both resolution orders with actual store operations and
+promises, without sleeps or timing-dependent scheduling. It also checks that closing the store settles
+unrelated pending work while leaving the detached promise unresolved. Existing
+`checkPendingStoreClosedAdmission` and `checkPendingStoreCloseRace` cover retained failure and
+registration/closure; `ProtocolTest.checkLateWriteFailure` covers the actual send-failure adapter.
+These are integration evidence, not proofs that all adapter schedules follow the model.
+
+[SettlementCorrespondence](../model/BeamModel/SettlementCorrespondence.lean) proves a **partial
+abstract correspondence** with the earlier `BackendProtocol` model: response removal and closure
+have the same projected state, and their emitted settlement effects match the corresponding handler
+claims; promise resolution and writer failure selection leave that projected state unchanged. Writer
+detachment has no matching event in the earlier model, so these laws do not constitute a complete
+simulation. Registration before send still differs from LSP receipt. This
+explicit gap is preferable to claiming the models already compose end to end.
+
+The settlement model uses the following boundaries:
+
+| Boundary | Treatment and remaining obligation |
+| --- | --- |
+| `IO.Promise.resolve` | First-wins is encoded in the abstract transition, based on `Init/System/Promise.lean` in the inspected Lean 4.36.0-rc1 SDK. It is a runtime assumption, not proved by this model. |
+| Map operations | Register, remove, and drain are modeled as atomic local transitions. The production mutex supplies their serialization; resolution occurs afterward. |
+| Local continuation lifetime | An unresolved registration retains a custodian in every modeled finite trace. The runtime must retain the corresponding reference and execute or transfer its responsibility; scheduling fairness and eventual completion are not assumed. |
+| Send failure | Writer detachment and failure selection are separate, with the first observed channel cause preferred at selection time. The model makes no claim about whether bytes reached Lean. |
+| Result versus presentation | `result` is the raw promise outcome. Caller cancellation can affect error presentation without changing that stored result; `PendingTest.checkPendingOutcomeCancellationPrecedence` and `checkPendingRawWorkerError` cover this separate production boundary. The send-failure adapter can also throw instead of returning the pending outcome; this model does not equate raw resolution with the caller-visible dispatch result. |
+| Identity and scope | One allocated request in one fixed backend incarnation. Payloads and typed failure records are represented by distinct abstract atoms. Multi-request identity allocation, owner replacement, and global store refinement remain outside this model. |
+| Peer failure | An unobserved peer crash does not settle local callers or stop admission. Observed local closure is a separate event. No event here proves that remote producers stopped. |
 
 A production refinement milestone should contain:
 
 - A pure pending-store transition used by the actual runtime, rather than a second implementation
   maintained solely for proofs. Parameterize request payloads, typed failures, and promise handles.
 - An invariant over both pending entries and outstanding settlement obligations. Prove unique
-  ownership and no duplicate settlement authorization, including response/close races.
+  removal from the pending map, retention of unresolved responsibility, and preservation of a
+  resolved result. Account for the writer's retained reference and harmless repeated resolution.
 - A relation from runtime state to the abstract state, and an event mapping for each adapter call.
   Internal bookkeeping may correspond to no abstract step. Effectful intervals need explicit states.
 - Named adapter assumptions: mutex serialization, request-ID freshness within an owner, correct
-  framing/correlation, and execution of returned settlement effects. Promise semantics alone do not
-  prove that Beam invokes resolution on every path.
+  framing/correlation, the first-wins promise primitive, and execution of returned settlement effects.
+  Promise semantics alone do not prove that Beam invokes resolution on every path.
 - Deterministic schedules for register/close, response/close, cancellation/reply, partial send,
   worker silence, and buffered replies after exit. Existing pending-store and backend-lifetime
   fixtures should be reused before adding fixtures. Source review identifies call order; regression

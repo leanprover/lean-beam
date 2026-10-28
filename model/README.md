@@ -11,6 +11,14 @@ they do not import the runtime or its test fixtures. Production code does not im
 - [BackendProtocol](BeamModel/BackendProtocol.lean) specifies pending-request observations,
   distinguishing unobserved crashes, soft cancellation, and local channel closure. Its laws are
   abstract; settlement effects are obligations, not evidence of completed runtime IO.
+- [RequestSettlement](BeamModel/RequestSettlement.lean) tracks one local request after map
+  removal, including competing reader/writer promise resolutions. Its
+  [laws](BeamModel/RequestSettlementLaws.lean) prove retained responsibility, stable results, and
+  retention of the first channel failure. These are abstract laws under the first-wins promise
+  contract, not a new production ownership registry or a progress guarantee.
+- [SettlementCorrespondence](BeamModel/SettlementCorrespondence.lean) connects selected settlement
+  transitions to the earlier backend-observation model. This partial abstract correspondence
+  explicitly leaves writer detachment and the LSP delivery bridge unproved.
 - [Closing](BeamModel/Closing.lean) describes the exclusive close-save transitions.
 - [ClosingLaws](BeamModel/ClosingLaws.lean) proves safety and ownership properties.
 - [Publication](BeamModel/Publication.lean) models one private preparation attempt and broker

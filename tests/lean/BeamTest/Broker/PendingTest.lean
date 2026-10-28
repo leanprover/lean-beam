@@ -215,6 +215,47 @@ private def checkPendingStoreResolve : IO Unit := do
   require "pending store is empty after remove"
     ((← PendingRequestStore.snapshot store).isEmpty)
 
+/-- A response removed from the map is still unresolved until its handler finishes. The writer
+retains a separate reference, so competing resolution attempts must preserve the first result. -/
+private def checkDetachedPendingSettlement : IO Unit := do
+  for writerFirst in [false, true] do
+    let store ← PendingRequestStore.create
+    let original ← mkPending
+    let unrelated ← mkPending
+    require "detached fixture registers response" (← PendingRequestStore.register store 31 original)
+    require "detached fixture registers unrelated work" (← PendingRequestStore.register store 32 unrelated)
+    let some readerOwned ← PendingRequestStore.remove store 31
+      | throw <| IO.userError "detached fixture lost response ownership"
+    require "removed request has not resolved" (!(← original.promise.isResolved))
+    let channelFailure := responseFailureFor .workerExited "channel closed after response removal"
+    PendingRequestStore.close store channelFailure
+    require "closed map is empty" ((← PendingRequestStore.snapshot store).isEmpty)
+    require "closure settled the unrelated request" (← unrelated.promise.isResolved)
+    require "closure cannot resolve an already detached request" (!(← original.promise.isResolved))
+    let some writerFailure ← PendingRequestStore.failure? store
+      | throw <| IO.userError "detached writer lost the retained channel failure"
+    let response := Json.mkObj [("value", toJson (17 : Nat))]
+    if writerFirst then
+      original.resolveFailure writerFailure
+      readerOwned.resolveResponse response
+    else
+      readerOwned.resolveResponse response
+      original.resolveFailure writerFailure
+    require "the responsible handlers settled the detached promise" (← original.promise.isResolved)
+    match ← original.awaitRawOutcome with
+    | .ok value =>
+        require "reader won the scheduled race" (!writerFirst)
+        require "late writer did not replace response" (value.result == response)
+    | .error failure =>
+        require "writer won the scheduled race" writerFirst
+        require "late reader did not replace write failure"
+          (toJson failure.error == toJson writerFailure.error)
+    match ← unrelated.awaitRawOutcome with
+    | .error failure =>
+        require "unrelated request retains channel failure"
+          (toJson failure.error == toJson channelFailure.error)
+    | .ok _ => throw <| IO.userError "closed unrelated request became successful"
+
 private def checkPendingStoreClose : IO Unit := do
   let store ← PendingRequestStore.create
   let firstProgress : SyncFileProgress := { updates := 5, done := false }
@@ -593,6 +634,7 @@ def main : IO Unit := do
   checkActiveRegistryCloseDrain
   checkPendingCancellationIdentity
   checkPendingStoreResolve
+  checkDetachedPendingSettlement
   checkPendingStoreClose
   checkPendingStoreClosedAdmission
   checkPendingStoreCloseRace

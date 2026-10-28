@@ -10,3 +10,4 @@ import BeamModel.PublicationLaws
 
 import BeamModel.BackendProtocol
 import BeamModel.LspRequests
+import BeamModel.SettlementCorrespondence
