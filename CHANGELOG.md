@@ -6,6 +6,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Added
 
+- Proof probes accept an outer `by` block, including comments and parentheses. At a file position,
+  multiline text that fails to parse on its own can retry copied indentation; existing successful
+  parses keep their interpretation. Proof-handle continuations accept the same grammar without
+  a cursor-column retry.
 - `lean-beam-mcp --max-unfinished-requests N` sets the MCP ordinary execution-admission limit
   (default 32, range 1–1024). Invalid values are rejected at startup
   ([#396](https://github.com/leanprover/lean-beam/pull/396), @ejgallego).

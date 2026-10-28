@@ -66,7 +66,9 @@ Current request semantics:
 - `textDocument.version` is required and must match the current open document version
 - callers do not choose command vs tactic mode
 - command-mode `text` is one Lean command, not a top-level command sequence
-- proof-mode `text` is one tactic block
+- proof-mode `text` is a tactic sequence or a parenthesized/unparenthesized `by` block
+- text is parsed standalone first; only a parse failure permits the bounded cursor-column retry
+- this parsing fallback is not source-edit equivalence and never retries an elaboration failure
 - at an unfilled placeholder (a `sorry`, `_`, or `?x` term that the command left open), proof-mode
   `text` runs against a goal with the placeholder's expected type and local context, like the
   tactics of a `by ...` block there
@@ -347,6 +349,69 @@ private def parseTacticSeqText (env : Environment) (text : String) : Except Stri
   else
     .error ((s.mkError "end of input").toErrorMsg ictx)
 
+/-- Unwrap only a syntactic `by` term, with optional parentheses, retaining its original syntax. -/
+private partial def outerByTactics? (stx : Syntax) : Option Syntax :=
+  if stx.isOfKind ``Parser.Term.byTactic then
+    some stx[1]
+  else if stx.isOfKind ``Parser.Term.paren then
+    outerByTactics? stx[1]
+  else
+    none
+
+/-- Keep every successful tactic-sequence parse; otherwise recognize an outer `by` with Lean's grammar. -/
+private def parseTacticForm (env : Environment) (text : String) : Except String Syntax :=
+  match parseTacticSeqText env text with
+  | .ok stx => .ok stx
+  | .error err =>
+      match Parser.runParserCategory env `term text "<runAt>" with
+      | .ok term =>
+          match outerByTactics? term with
+          | some body =>
+              -- Lean's term grammar accepts an empty `by`. Keep blank tactic input an error.
+              if body.getPos?.isSome then .ok body else .error "expected tactic after 'by'"
+          | none => .error err
+      | .error _ => .error err
+
+/-- A bounded retry for copied file indentation; it never overrides a successful standalone parse. -/
+private def pastedAtColumn? (column : Nat) (text : String) : Option String :=
+  let indent (line : String) : Nat := (line.toList.takeWhile (· == ' ')).length
+  let lines := text.splitOn "\n"
+  let first := lines.headD ""
+  let later := lines.tail.filter fun line => line.any fun c => !c.isWhitespace
+  if column == 0 || first.isEmpty || first.front.isWhitespace || later.isEmpty ||
+      !later.all (fun line => indent line ≥ column) then
+    none
+  else
+    some ("".pushn ' ' column ++ text)
+
+private def multiLineTacticHint (column? : Option Nat) : String :=
+  "Tactic text is parsed on its own first. Align sibling tactics; deeper indentation can " ++
+  "continue the previous tactic's arguments. " ++
+  if column?.isSome then
+    "Only after a parse failure, Beam may retry with the first line padded to the run position's " ++
+    "column and later lines unchanged. This does not simulate a source edit."
+  else
+    "A handle continuation has no run position, so there is no cursor-column retry."
+
+/-- Return the syntax together with its parser input so all source offsets use the same file map. -/
+private def parseTacticText (env : Environment) (column? : Option Nat) (text : String) :
+    Except String (Syntax × String) :=
+  match parseTacticForm env text with
+  | .ok stx => .ok (stx, text)
+  | .error err =>
+      let pasted? := do
+        let column ← column?
+        let input ← pastedAtColumn? column text
+        let .ok stx := parseTacticForm env input | none
+        pure (stx, input)
+      match pasted? with
+      | some parsed => .ok parsed
+      | none =>
+          if ((text.splitOn "\n").filter fun line => line.any fun c => !c.isWhitespace).length > 1 then
+            .error s!"{err}\n{multiLineTacticHint column?}"
+          else
+            .error err
+
 private def oneCommandOnlyResult (err : String) : Result :=
   errorResult
     s!"{runAtSupportsOneCommandOnlyCode}: command-mode runAt accepts exactly one Lean command, not a top-level command sequence. Use a stored handle continuation for explicit speculative sequencing, or write the sequence to the file and sync it. Original parse error: {err}"
@@ -484,19 +549,19 @@ private def classifyTacticException
   | _ =>
       ex.toMessageData.toString
 
-def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (text : String) :
-    RequestM (Result × Option StoredHandleState) := do
+def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (text : String)
+    (column? : Option Nat := none) : RequestM (Result × Option StoredHandleState) := do
   checkRequestCancelled
   withInnerCancelToken fun innerCancelTk => do
     let snapshot := snapshot.withCancelToken (some innerCancelTk)
+    let (stx, text) ←
+      match parseTacticText snapshot.coreState.env column? text with
+      | .ok parsed => pure parsed
+      | .error err => return (errorResult err (some initialProofState), none)
     -- InfoTree reconstruction supplies an empty map; a handle may instead retain an older probe's.
     -- Replace either with this execution's parser input before interpreting its syntax offsets.
     let snapshot := { snapshot with coreContext := {
       snapshot.coreContext with fileName := "<runAt>", fileMap := text.toFileMap } }
-    let stx ←
-      match parseTacticSeqText snapshot.coreState.env text with
-      | .ok stx => pure stx
-      | .error err => return (errorResult err (some initialProofState), none)
     let (output, (outcome, proofSnapshot')) ←
       try
         IO.FS.withIsolatedStreams do
@@ -539,18 +604,18 @@ Run tactics in place of a placeholder. The placeholder becomes a fresh goal with
 and local context, so the text works like the tactics of a `by ...` block there: `exact t` supplies
 a term, and goals the tactics leave open remain for a stored handle.
 -/
-def runPlaceholderText (placeholder : Placeholder) (text : String) (levelNames : List Name) :
-    RequestM (Result × Option StoredHandleState) := do
+def runPlaceholderText (placeholder : Placeholder) (text : String) (levelNames : List Name)
+    (column? : Option Nat := none) : RequestM (Result × Option StoredHandleState) := do
   let proofSnapshot ← ProofSnapshot.createWith placeholder.ctx
     (do pure [← placeholder.mkGoal]) (levelNames := levelNames)
-  runTacticText proofSnapshot (← proofStateOfSnapshot proofSnapshot) text
+  runTacticText proofSnapshot (← proofStateOfSnapshot proofSnapshot) text column?
 
-def runTacticAtBasis (basis : GoalsAtResult) (text : String) (levelNames : List Name) :
-    RequestM (Result × Option StoredHandleState) := do
+def runTacticAtBasis (basis : GoalsAtResult) (text : String) (levelNames : List Name)
+    (column? : Option Nat := none) : RequestM (Result × Option StoredHandleState) := do
   let ctxInfo := mkBasisCtxInfo basis
   let initialProofState ← basisProofState basis
   let proofSnapshot ← ProofSnapshot.create ctxInfo (basisGoals basis) (levelNames := levelNames)
-  runTacticText proofSnapshot initialProofState text
+  runTacticText proofSnapshot initialProofState text column?
 
 def handleRunAt (p : Params) : RequestM (RequestTask Result) := do
   requireDocumentVersion p.textDocument
@@ -558,13 +623,16 @@ def handleRunAt (p : Params) : RequestM (RequestTask Result) := do
   validatePosition p.position
   checkRequestCancelled
   let storeHandle := p.storeHandle?.getD false
+  -- Lean parser columns count codepoints, whereas LSP characters count UTF-16 units.
+  let fileText := (← RequestM.readDoc).meta.text
+  let column := (fileText.toPosition (fileText.lspPosToUtf8Pos p.position)).column
   -- A placeholder is more specific than the tactic that contains it.
   let placeholderTask ← findPlaceholderAt p.position
   RequestM.bindRequestTaskCostly placeholderTask <| fun
     | some placeholder =>
         withProofScopeAtPos p.position fun levelNames => do
           checkRequestCancelled
-          let (result, state?) ← runPlaceholderText placeholder p.text levelNames
+          let (result, state?) ← runPlaceholderText placeholder p.text levelNames (some column)
           maybeAttachHandle result storeHandle state?
     | none => do
       let proofTask ← findProofBasisAt p.position
@@ -572,7 +640,7 @@ def handleRunAt (p : Params) : RequestM (RequestTask Result) := do
         | some basis =>
             withProofScopeAtPos p.position fun levelNames => do
               checkRequestCancelled
-              let (result, state?) ← runTacticAtBasis basis p.text levelNames
+              let (result, state?) ← runTacticAtBasis basis p.text levelNames (some column)
               maybeAttachHandle result storeHandle state?
         | none =>
             withRunAtSnapAtPos p.position fun snap => do

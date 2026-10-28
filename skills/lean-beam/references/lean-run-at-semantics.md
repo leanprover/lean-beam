@@ -143,16 +143,25 @@ lean-beam run-at "Foo.lean" <version-from-update> 18 0 $'  first | exact h1\n  |
 Do not expect the wrapper to turn `"first | exact h1 | exact h2"` into a properly line-broken block,
 or to add missing `\n` separators around the text.
 
-At a tactic position, do not start the text with `by`: the probe already runs inside the proof.
-`by` inside the text (for example `have h : p := by simp`) works as usual. Beam parses the text with
-Lean's tactic-sequence grammar
-([`Lean.Parser.Tactic.tacticSeq`](https://github.com/leanprover/lean4/blob/master/src/Lean/Parser/Term/Basic.lean)),
-counting columns within the text you send:
+At a tactic position or term placeholder, send a tactic sequence or an outer `by` block, optionally
+parenthesized. Comments around the `by` are parsed by Lean. The same grammar applies to proof-handle
+continuations. Command-mode input still accepts exactly one command.
 
-- sibling tactics of the sequence share the first tactic's column, or are separated by `;`
-- a more indented line continues the previous tactic
-- nested `have ... := by` proofs, bullets, and other blocks keep their normal Lean layout
-- the sequence runs as one probe: if any tactic fails, the result reports the original proof state
+Beam tries the text on its own first, using Lean's tactic-sequence grammar:
+
+- sibling tactics share the first tactic's column, or are separated by `;`
+- a more indented line can continue the previous tactic's arguments
+- nested `have ... := by` proofs, bullets, and other blocks keep normal Lean layout
+
+Only if parsing fails, `run-at` may retry copied file indentation: the first line must start without
+whitespace, and every later nonblank line must have at least the run position's column in leading
+spaces. Beam pads the first line to that column and leaves the other lines unchanged. A successful
+standalone parse is never reinterpreted, even if its indentation expresses something unintended;
+elaboration errors do not trigger a retry. This fallback does not simulate a source edit.
+
+A handle continuation has no run position, so it has no cursor-column retry. Align its standalone
+tactics or supply a `by` block. Empty `by` input is rejected. An unfinished nested block can still
+fail without creating a handle; an error result's displayed goals are not accepted partial progress.
 
 ```bash
 printf 'intro a b\nomega\n' | lean-beam run-at "Foo.lean" <version-from-update> 18 2 --stdin
