@@ -276,3 +276,114 @@ or Lake writers, dependency freshness, backend delivery, global-lock freedom, cr
 fairness, or liveness. It models one document slot; runtime isolation across slots still requires
 integration tests. No scheduler, public token, protocol downgrade, or publication-lock redesign
 is implied by the Closing proofs.
+
+## Connecting the model to the backend protocol
+
+The next verification boundary is the broker's interaction with an abstract Lean peer. It does
+not require a model of elaboration, the watchdog implementation, or Lean's internal task scheduler.
+Treat semantic results as opaque payloads. Prove when Beam may accept them and which effects they
+authorize, rather than assuming that a successful response proves the underlying Lean theorem.
+
+### Events, observations, and effects
+
+Keep three accounts separate:
+
+1. **Peer events:** reception of a complete request, worker failure, backend failure, and completion
+   of private work. These can happen without the broker learning about them.
+2. **Broker observations:** a correlated response, a typed completion acknowledgement, EOF, a write
+   failure, or confirmed process termination. Each provides different evidence.
+3. **Broker decisions and effects:** reject admission, remove a pending entry, authorize promise
+   settlement, revoke publication authority, or request backend cleanup.
+
+A backend crash is not an immediate `failAll` event. Buffered replies can remain readable after
+process exit; descendants can retain pipes; a file-worker crash can leave the backend alive and
+requests unanswered. An explicit local channel closure stops admission and transfers responsibility
+for settling outstanding callers. It does not prove that remote work or descendant writes stopped.
+Cancellation is a request for cooperation, not a channel closure or evidence of producer settlement.
+
+[BackendProtocol](../model/BeamModel/BackendProtocol.lean) is an initial executable specification of
+this **observation boundary**, not a model of all LSP behavior. It separates an unobserved crash from
+local closure and proves that cancellation does not settle pending work, local closure rejects later
+registration, repeated closure emits no additional settlement effects, and replies from a different
+incarnation are ignored. Its settlement effects express responsibility, not completed IO. It does
+not yet preserve the first typed failure, represent send uncertainty, prove all reachable-state
+uniqueness properties, or establish correspondence with the implementation.
+
+### The abstract Lean peer
+
+An eventual executable peer should expose nondeterministic choices through explicit events supplied
+by a scheduler. The same event vocabulary can drive small Lean traces and a controlled fake backend.
+Start with these distinctions:
+
+| Boundary | Permitted behavior and required limit |
+| --- | --- |
+| Input framing | Complete messages are received in serialized stream order. Partial writes can leave delivery uncertain; successful writing alone does not prove processing. |
+| Execution | Requests may overlap and finish out of order. Input order alone does not imply elaboration or reference-index readiness. |
+| Document updates | Accepted document revisions and backend incarnations are distinct. Only a documented Beam/Lean barrier justifies readiness for a specific operation. |
+| Responses | Correlate by request ID within the owning backend incarnation. A different incarnation can reuse a numeric ID without owning the old request. |
+| Notifications | Progress and diagnostics may arrive late and interleave with responses. Their URI/version association is weaker than a universal request-completion acknowledgement. |
+| Worker failure | One document worker may fail while other documents continue. A response to every affected request is not assumed. |
+| Backend failure | Further execution may stop without immediate EOF. Already-buffered messages can still be observed. Descendant settlement requires separate evidence. |
+| Cancellation | May be delayed, ignored, or race with completion. A cancellation error alone does not certify the end of private writes. |
+| Restart | Creates a fresh owner incarnation. Old observations cannot acquire authority in that new owner. This is internal identity, not a new public token API. |
+
+FIFO reception is an assumption about the serialized transport adapter, not a global scheduler law.
+The model must distinguish ordinary LSP responses from Beam-specific terminal acknowledgements:
+only the latter's handler contract can certify that the relevant private producer has finished.
+Likewise, #399's reference-index readiness barrier must not be generalized into a claim that any
+response means all Lean subsystems are ready.
+
+### The first production connection
+
+`Beam.Broker.Pending` is a bounded starting point. Its store already serializes registration,
+removal, and closure under one mutex. `Server.startRequestJsonTrackedDetailed` registers before
+writing; `Server.sessionReaderLoop` removes a correlated entry before resolving it; store closure
+records a terminal failure and drains entries before resolving their promises outside the mutex.
+
+The critical interval is **after removal, before promise resolution**. An empty pending map is not
+proof that all callers have settled. The adapter that removed an entry owns the remaining settlement
+obligation. A useful extracted core must return that obligation as an explicit effect, with the
+runtime adapter executing it exactly once or retaining responsibility on failure. It must also retain
+the first typed channel failure and reproduce existing registration rejection semantics. The initial
+abstract model deliberately leaves these implementation obligations unproved.
+
+A production refinement milestone should contain:
+
+- A pure pending-store transition used by the actual runtime, rather than a second implementation
+  maintained solely for proofs. Parameterize request payloads, typed failures, and promise handles.
+- An invariant over both pending entries and outstanding settlement obligations. Prove unique
+  ownership and no duplicate settlement authorization, including response/close races.
+- A relation from runtime state to the abstract state, and an event mapping for each adapter call.
+  Internal bookkeeping may correspond to no abstract step. Effectful intervals need explicit states.
+- Named adapter assumptions: mutex serialization, request-ID freshness within an owner, correct
+  framing/correlation, and execution of returned settlement effects. Promise semantics alone do not
+  prove that Beam invokes resolution on every path.
+- Deterministic schedules for register/close, response/close, cancellation/reply, partial send,
+  worker silence, and buffered replies after exit. Existing pending-store and backend-lifetime
+  fixtures should be reused before adding fixtures. Source review identifies call order; regression
+  tests exercise selected schedules; neither is a refinement proof.
+
+Safety comes first: an arbitrarily delayed peer must not let stale work acquire current authority.
+Any eventual-response or eventual-cleanup theorem needs separate fairness, scheduling, communication,
+and process-settlement assumptions. No bounded cancellation or shutdown promise follows here.
+
+### Revised proof work sequence
+
+1. **#344: direct admission laws and correspondence.** Preserve its direct production proofs;
+   reconcile references with the current broker, local trace finalization, and execution/delivery
+   separation. Keep it independently reviewable and free of runtime refactoring.
+2. **Protocol observation specification.** Develop this initial boundary with send uncertainty,
+   outstanding settlement obligations, and explicit peer traces. Label all its laws abstract until
+   the implementation relation exists. Use it to decide the smallest useful production extraction.
+3. **Production pending-store core and adapter.** Extract authoritative decisions only after the
+   specification exposes a concrete obligation and the runtime change improves clarity. This is a
+   separate PR from move-only `Broker.Server` module splits; update mappings after those splits.
+4. **#359: publication authority.** Keep the saved extraction available, but reconsider its scope
+   against the current publication path. Proving token allocation and exact release is useful but
+   does not prove the owner/basis checks authorize the subsequent filesystem effects. The next
+   meaningful milestone must relate the claim interval and effect authorization to those checks.
+
+The existing publication and closing specifications remain higher-level contracts. Connect them
+through explicit owner and completion evidence; do not merge them with transport delivery into one
+large state machine. A shared vocabulary and a few composition invariants should earn their cost
+before adding a generic protocol framework or modeling more Lean internals.

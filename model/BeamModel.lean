@@ -7,3 +7,5 @@ import BeamModel.ClosingLaws
 import BeamModel.AdmissionLaws
 
 import BeamModel.PublicationLaws
+
+import BeamModel.BackendProtocol

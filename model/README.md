@@ -5,6 +5,9 @@ The abstract closing specification depends only on `Std`. Implementation laws ad
 import the broker's pure `DocumentAdmission` component, which also depends only on `Std`;
 they do not import the runtime or its test fixtures. Production code does not import this library.
 
+- [BackendProtocol](BeamModel/BackendProtocol.lean) specifies pending-request observations,
+  distinguishing unobserved crashes, soft cancellation, and local channel closure. Its laws are
+  abstract; settlement effects are obligations, not evidence of completed runtime IO.
 - [Closing](BeamModel/Closing.lean) describes the exclusive close-save transitions.
 - [ClosingLaws](BeamModel/ClosingLaws.lean) proves safety and ownership properties.
 - [Publication](BeamModel/Publication.lean) models one private preparation attempt and broker
