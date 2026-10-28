@@ -26,16 +26,21 @@ run_case() {
 }
 
 run_quiet() {
-  local output
+  local output status=0 require_silence=false
+  if [ "${1:-}" = "--silent" ]; then
+    require_silence=true
+    shift
+  fi
   output="$(mktemp)"
   if "$@" > "$output" 2>&1; then
-    rm -f "$output"
+    # Check both streams: a Lean panic can print a backtrace and still exit successfully.
+    if [ "$require_silence" = true ] && [ -s "$output" ]; then status=1; fi
   else
-    local status="$?"
-    cat "$output"
-    rm -f "$output"
-    return "$status"
+    status="$?"
   fi
+  if [ "$status" -ne 0 ]; then cat "$output"; fi
+  rm -f "$output"
+  return "$status"
 }
 
 run_scenario_case() {
@@ -146,6 +151,10 @@ run_request_surface_case() {
   echo "request-surface"
   run_quiet lake exe beam-lsp-request-surface-test
 }
+
+echo "run-at-parser"
+run_quiet --silent lake env lean -DstderrAsMessages=false \
+  tests/lean/BeamTest/LSP/Requests/RunAt/ParserTest.lean
 
 run_case asyncEditAwait
 run_case commandBasis

@@ -367,7 +367,9 @@ private def parseTacticForm (env : Environment) (text : String) : Except String 
       let p := Parser.andthenFn Parser.whitespace (Parser.categoryParserFnImpl `term)
       let term := p.run ictx { env, options := {} } (Parser.getTokenTable env)
         (Parser.mkParserState text)
-      match outerByTactics? term.stxStack.back with
+      let body? :=
+        if term.stxStack.isEmpty then none else outerByTactics? term.stxStack.back
+      match body? with
       | none => .error err
       | some body =>
           -- Select by syntax before rendering errors: a valid wrapper is not itself the error.
