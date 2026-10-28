@@ -54,6 +54,10 @@ Optional online references: the
   session by root/directory, not by port. IPC needs neither internet access nor a public bind.
 - MCP stdio creates its runtime directly and uses pipes to Lean/Lake children. It does not attach
   to the CLI daemon, so that path does not require CLI loopback TCP permissions.
+- A sandbox that gives each shell command its own network namespace (for example Claude Code's
+  Bash sandbox) hides a healthy `serve` owner: CLI commands report `sessionRecoveryRequired` and
+  `doctor` reports recovery required. Do not run `recover`; the owner is still running. Use the
+  Beam MCP tools instead, or run owner and clients in one namespace.
 - CLI Lean work runs in the existing owner's workers with that owner's launch permissions, not
   the attaching command's sandbox. A sandboxed client can therefore reach a more privileged owner.
 - Both run Lean IO with their actual process permissions. A sandbox on agent shell commands does
