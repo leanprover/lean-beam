@@ -86,7 +86,8 @@ def UnavailableTarget.message (target : UnavailableTarget) : String :=
     s!"bound Beam installation: {target.installationRoot}. "
   match target.remedy with
   | .install command precondition => message ++ precondition ++ "\n" ++ command
-  | .manual detail => message ++ detail
+  | .manual detail => message ++ detail ++
+      ". For custom-target setup, see https://github.com/leanprover/lean-beam/blob/main/docs/CUSTOM_TOOLCHAINS.md"
 
 inductive Failure where
   | invalid (detail : String)
