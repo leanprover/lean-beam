@@ -387,3 +387,50 @@ The existing publication and closing specifications remain higher-level contract
 through explicit owner and completion evidence; do not merge them with transport delivery into one
 large state machine. A shared vocabulary and a few composition invariants should earn their cost
 before adding a generic protocol framework or modeling more Lean internals.
+
+### LSP clause provenance
+
+`BeamModel.LspRequests` is our formalization of a **subset** of LSP 3.17, not an official standard
+model or a complete conformance checker. The source is pinned to the Microsoft specification
+repository at commit `112d978951f2223a962bf19516637862f587bf55`, file
+[`_specifications/lsp/3.17/specification.md`](https://github.com/microsoft/language-server-protocol/blob/112d978951f2223a962bf19516637862f587bf55/_specifications/lsp/3.17/specification.md).
+Pinning this specification does not assert that every supported Lean version implements every
+LSP 3.17 feature. The initial slice applies to one request direction on one initialized connection;
+server-to-client requests need their own ledger, even when they reuse client-to-server IDs.
+
+| Source clause | Formalization | Classification and remaining obligation |
+| --- | --- | --- |
+| `requestMessage`, `responseMessage` | Request creates an outstanding ID; matching response consumes it | Safety projection of correlation. A response may be success, null success, or error; these payloads are erased. Eventual response is not proved by finite-prefix safety. |
+| `responseMessage`: response identifies the request | Unknown or duplicate response rejects the trace | Interpretation for well-formed, correlated exchanges. Parse-error responses with null ID and malformed input are outside this subset; rejection is a specification verdict, not prescribed Beam error handling. |
+| Request-ID correlation | Simultaneously outstanding IDs are unique | Explicit modeling discipline needed for unambiguous correlation. IDs are interned atoms; integer/string wire encoding must be injective. Lifetime freshness is not assumed: reuse after completion is allowed here. |
+| `notificationMessage` | Ordinary notification leaves the response ledger unchanged | Does not imply that notifications have no document or server effects. Those effects are abstracted away. |
+| `dollarRequests`, `cancelRequest` | Cancellation leaves the response obligation unchanged | Cancellation can be ignored. The specification still requires a response to a cancelled request; it does not promise immediate interruption or stopped producers. |
+| `messageOrdering` | Responses can consume any outstanding ID | Overapproximation for correlation safety. Method-specific correctness constrains permissible reordering; the ledger does not establish it. |
+
+The normative response obligation is intentionally separate from the failure model. A finite trace
+ending with outstanding work can be a prefix of a valid execution. An infinite healthy execution
+that never responds would violate the response obligation; our finite-prefix laws do not certify
+it. A crashed or hung peer must nevertheless remain a permitted environment for Beam's safety
+proofs. Do not assume eventual replies to prove failure containment.
+
+The two current models have different observation points. `LspRequests.request` records a complete
+request in the protocol history; `BackendProtocol.register` is local registration **before** send.
+They cannot be equated: a write can fail or remain partial after registration. Likewise,
+`LspRequests.response` records a protocol response, whereas `BackendProtocol.closeChannel` emits
+local settlement obligations without inventing any response from Lean. A transport model must
+bridge these histories through buffering, delivery, and failure events. That bridge is not yet
+implemented or proved.
+
+A future Lean peer contract should provide named hypotheses for the applicable LSP clauses and
+separate hypotheses for Lean/Beam extensions. In particular, document-basis readiness, reference
+index readiness, and private-producer completion require their own contracts. A generic successful
+LSP response cannot supply these facts. Beam-specific completion ordering belongs to the handler
+implementation, not to an axiom about LSP or promises.
+
+The checked laws in `LspRequests` establish cancellation/notification preservation, response
+consumption, duplicate rejection, and preservation of unique outstanding IDs over accepted finite traces. The existing
+`beam-closing-model-test` runner now also runs ten protocol-boundary checks, including out-of-order
+responses, late cancellation, ID reuse, and the distinction between unobserved crash and local
+closure. This runner is already in the fast suite. These checks do not establish Lean conformance,
+transport refinement, or runtime settlement. Initialization, shutdown, document synchronization,
+capability negotiation, and method semantics remain explicitly outside this first slice.

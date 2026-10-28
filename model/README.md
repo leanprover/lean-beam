@@ -5,6 +5,9 @@ The abstract closing specification depends only on `Std`. Implementation laws ad
 import the broker's pure `DocumentAdmission` component, which also depends only on `Std`;
 they do not import the runtime or its test fixtures. Production code does not import this library.
 
+- [LspRequests](BeamModel/LspRequests.lean) formalizes a safety projection of the LSP 3.17
+  request/response/cancellation contract. It is not a complete LSP conformance model; see
+  [clause provenance](../docs/CLOSE_SAVE_MODEL.md#lsp-clause-provenance) for its sources and limits.
 - [BackendProtocol](BeamModel/BackendProtocol.lean) specifies pending-request observations,
   distinguishing unobserved crashes, soft cancellation, and local channel closure. Its laws are
   abstract; settlement effects are obligations, not evidence of completed runtime IO.
