@@ -184,6 +184,15 @@ def checkRunAtTacticSequences : ScenarioM Unit := do
           s!"runWith tactic sequence should solve the goal, got {(toJson continued).compress}"
   closeDoc doc
 
+def checkRunAtUnicodeSourceColumn : ScenarioM Unit := do
+  let doc ← openDoc "tests/scenario/docs/RunAtUnicodeColumn.lean"
+  syncDoc doc
+  -- The astral character before sorry makes its UTF-16 position 27 but Lean column 26.
+  -- The fallback must compare the next line's spaces with 26, not with the LSP character.
+  requireRunAtSolvesProof "copied indentation after an astral source character" doc
+    { line := 0, character := 27 } ("skip\n" ++ "".pushn ' ' 26 ++ "exact True.intro")
+  closeDoc doc
+
 def checkRunAtOneCommandOnly : ScenarioM Unit := do
   let doc ← openDoc "tests/lean/BeamTest/Fixtures/Deps/DepA.lean"
   syncDoc doc
@@ -628,6 +637,7 @@ def checkRunAtWithStandardLspInterference : ScenarioM Unit := do
 def run : ScenarioM Unit := do
   checkRunAtTacticPositions
   checkRunAtTacticSequences
+  checkRunAtUnicodeSourceColumn
   checkRunAtPlaceholders
   checkRunAtPlaceholderContexts
   checkRunAtElaborationAborts
