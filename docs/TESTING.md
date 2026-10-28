@@ -35,6 +35,24 @@ to Lake as the `BeamTest` library. The rest of [tests](../tests) contains shell 
 entrypoints, scenario scripts, interactive golden inputs, fixture projects, and shared test helper
 scripts.
 
+### Agent plugin packaging
+
+With Codex CLI `0.165.0` and Claude Code `2.1.312` installed, run
+`python3 tests/test-agent-plugins.py` on Linux or macOS. Use `--clients codex` or `--clients claude`
+to test one client. This opt-in check is separate from CI because it requires those third-party
+client executables.
+
+The test relocates the plugin into a temporary package and installs it in private client homes.
+It verifies skill discovery and resource preservation, one MCP registration, and actual server
+startup in two project directories. Its mock MCP executable comes first on a private `PATH`;
+it never launches Beam or Lean and sends no model requests. This checks packaging and launch
+context, not Lean proof execution or native Windows client behavior.
+
+The manifests use the Claude-compatible MCP format, supported by both validated clients, with
+`cwd` unset. Codex's portable Agent Plugins format currently defaults `cwd` to the plugin cache and
+restricts it to plugin-owned directories, so it does not preserve project-based Elan selection.
+When changing manifest formats, repeat the launch test rather than relying only on JSON validation.
+
 When a test copies `tests/save_olean_project`, it excludes the fixture's untracked `.beam`
 directory. That directory may contain large machine-local runtime bundles from an earlier run; it
 is cache state, not fixture input, and copying it can hide cold-start behavior or exhaust disk

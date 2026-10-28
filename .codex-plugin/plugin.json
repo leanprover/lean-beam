@@ -1,0 +1,12 @@
+{
+  "name": "lean-beam",
+  "version": "0.1.0",
+  "description": "Check Lean proofs and inspect live proof states through Beam.",
+  "skills": "./skills/",
+  "mcpServers": {
+    "lean-beam": {
+      "command": "lean-beam-mcp",
+      "supports_parallel_tool_calls": true
+    }
+  }
+}

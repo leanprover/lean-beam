@@ -607,6 +607,58 @@ presence and readability; the client establishes whether it loaded the skill.
 Use this section only when your editor or agent client speaks MCP. The ordinary `lean-beam` CLI
 workflow does not require MCP.
 
+### Codex and Claude Code plugin
+
+The Beam plugin provides the existing Lean skill, including its reference files, and one local MCP
+server named `lean-beam`. It runs `lean-beam-mcp` from the client's `PATH`; it does not install
+Lean, download toolchains, build Beam, or run installation hooks.
+
+First use [bundled Beam](#use-beam-bundled-with-lean) or the
+[checkout installer](#install-beam-from-this-checkout). From the Lean project,
+check `lean-beam-mcp --version` in the environment used to start your client. A standalone install
+must have its wrapper directory on that `PATH`. For bundled Beam, use a toolchain that contains
+Beam; until Elan installs the Beam command proxies, add that toolchain's `bin` directory to `PATH`
+explicitly or keep the [manual MCP registration](#mcp-setup) below.
+
+Add the repository marketplace once in Codex:
+
+```bash
+codex plugin marketplace add leanprover/lean-beam
+codex plugin add lean-beam@lean-beam
+```
+
+Or use `/plugin` to select Beam from the added marketplace. In Claude Code:
+
+```text
+/plugin marketplace add leanprover/lean-beam
+/plugin install lean-beam@lean-beam
+```
+
+Open a new session from the Lean project and check the client's MCP status, then follow
+[Verify the MCP server](#verify-the-mcp-server). Plugin skills are namespaced by the client;
+Claude exposes this skill as `/lean-beam:lean-beam`. Adding this repository marketplace makes Beam
+available there; it does not list Beam in either client's default public plugin directory.
+
+Disable or remove an existing manual Beam MCP registration before enabling the plugin, and remove
+any separately installed copy of the Lean skill if you want to avoid duplicate skill listings.
+Uninstalling the plugin leaves the Beam binaries and your Lean projects in place.
+
+In-session MCP connections start the server from the project's directory in the validated clients,
+Codex CLI 0.165.0 and Claude Code 2.1.312. Client-wide connection previews can use another directory;
+check the connected `beam_version` result in the project session. Normal `PATH` precedence determines
+which command runs. When that command is an Elan proxy, Elan selects the SDK at startup using `ELAN_TOOLCHAIN`, directory
+overrides, `lean-toolchain`, or its default. A local install earlier on `PATH` takes precedence.
+Keep each session on its selected SDK and restart from the other project to change SDKs; changing
+the workspace argument on a tool call does not switch the running executable.
+
+`doctor clients` inspects manual client configuration and skill locations; it does not inventory
+installed plugins. Use the client's plugin and MCP views to inspect this integration. The Codex
+manifest adds `supports_parallel_tool_calls = true`, matching the manual installer's concurrency
+setting without passing a Codex-specific field to Claude.
+
+See the [Codex plugin guide](https://developers.openai.com/plugins/build/plugins) and
+[Claude plugin guide](https://code.claude.com/docs/en/plugin-marketplaces) for marketplace management.
+
 Both installation paths provide the experimental stdio MCP server as `lean-beam-mcp`.
 The checkout installer can register its server automatically for Codex, Claude Code, or Mistral Vibe.
 For Mistral Vibe, the installer edits `~/.vibe/config.toml` directly: it replaces any existing `lean-beam` entry in
