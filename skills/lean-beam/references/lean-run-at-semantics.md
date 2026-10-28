@@ -162,6 +162,8 @@ elaboration errors do not trigger a retry. This fallback does not simulate a sou
 A handle continuation has no run position, so it has no cursor-column retry. Align its standalone
 tactics or supply a `by` block. Empty `by` input is rejected. An unfinished nested block can still
 fail without creating a handle; an error result's displayed goals are not accepted partial progress.
+Parse failures keep Lean's diagnostics; general layout guidance is kept here rather than appended
+to unknown-tactic, tab, or other syntax errors.
 
 ```bash
 printf 'intro a b\nomega\n' | lean-beam run-at "Foo.lean" <version-from-update> 18 2 --stdin
@@ -182,7 +184,7 @@ perform that work. Beam rejects the fragment rather than reporting an unchecked 
 as successful.
 
 The request completes with `success=false`, a message beginning
-`Local recursive declarations are not supported in runAt tactics`, the original proof state, and no
+`Local recursive declarations are not supported in runAt tactics` and no
 successor handle. A non-linear parent handle remains usable; `run-with-linear` consumes its input
 handle on failure as usual. Recursion discarded by tactic backtracking does not trigger the
 restriction if no pending recursive definitions remain.

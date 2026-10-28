@@ -25,8 +25,8 @@ This module owns the public `$/lean/runAt` method plus the related handle contin
 
 Execution invariants (a probe is the Lean text supplied by the current request):
 
-- The document position selects a semantic starting state. Newly parsed syntax uses positions
-  relative to the probe, interpreted with that exact text and the parser's `<runAt>` file name.
+- The document position selects a semantic starting state. Syntax offsets and the `<runAt>`
+  file map share the parser input: standalone probe text or its bounded cursor-column retry.
   A speculative command's `cmdPos` comes from its own syntax, not the document command.
 - Every execution installs fresh source context and cancellation, including `runWith` from a
   handle created with different text. These are updates to derived state; elaboration must not
@@ -363,14 +363,23 @@ private def parseTacticForm (env : Environment) (text : String) : Except String 
   match parseTacticSeqText env text with
   | .ok stx => .ok stx
   | .error err =>
-      match Parser.runParserCategory env `term text "<runAt>" with
-      | .ok term =>
-          match outerByTactics? term with
-          | some body =>
-              -- Lean's term grammar accepts an empty `by`. Keep blank tactic input an error.
-              if body.getPos?.isSome then .ok body else .error "expected tactic after 'by'"
-          | none => .error err
-      | .error _ => .error err
+      let ictx := Parser.mkInputContext text "<runAt>"
+      let p := Parser.andthenFn Parser.whitespace (Parser.categoryParserFnImpl `term)
+      let term := p.run ictx { env, options := {} } (Parser.getTokenTable env)
+        (Parser.mkParserState text)
+      match outerByTactics? term.stxStack.back with
+      | none => .error err
+      | some body =>
+          -- Select by syntax before rendering errors: a valid wrapper is not itself the error.
+          if !term.allErrors.isEmpty then
+            .error (term.toErrorMsg ictx)
+          else if !ictx.atEnd term.pos then
+            .error ((term.mkError "end of input").toErrorMsg ictx)
+          else if body.getPos?.isSome then
+            .ok body
+          else
+            -- Lean accepts an empty `by`; blank tactic input must remain an error.
+            .error ((term.mkEOIError ["tactic"]).toErrorMsg ictx)
 
 /-- A bounded retry for copied file indentation; it never overrides a successful standalone parse. -/
 private def pastedAtColumn? (column : Nat) (text : String) : Option String :=
@@ -383,15 +392,6 @@ private def pastedAtColumn? (column : Nat) (text : String) : Option String :=
     none
   else
     some ("".pushn ' ' column ++ text)
-
-private def multiLineTacticHint (column? : Option Nat) : String :=
-  "Tactic text is parsed on its own first. Align sibling tactics; deeper indentation can " ++
-  "continue the previous tactic's arguments. " ++
-  if column?.isSome then
-    "Only after a parse failure, Beam may retry with the first line padded to the run position's " ++
-    "column and later lines unchanged. This does not simulate a source edit."
-  else
-    "A handle continuation has no run position, so there is no cursor-column retry."
 
 /-- Return the syntax together with its parser input so all source offsets use the same file map. -/
 private def parseTacticText (env : Environment) (column? : Option Nat) (text : String) :
@@ -406,11 +406,7 @@ private def parseTacticText (env : Environment) (column? : Option Nat) (text : S
         pure (stx, input)
       match pasted? with
       | some parsed => .ok parsed
-      | none =>
-          if ((text.splitOn "\n").filter fun line => line.any fun c => !c.isWhitespace).length > 1 then
-            .error s!"{err}\n{multiLineTacticHint column?}"
-          else
-            .error err
+      | none => .error err
 
 private def oneCommandOnlyResult (err : String) : Result :=
   errorResult

@@ -105,10 +105,10 @@ Code actions need a range: Lean runs them on the one command at the range end, s
 - Each probe is isolated and starts from the version it names, so independent probes can run in
   parallel. This isolates elaboration state, not external effects: Lean code may perform IO.
 - Command positions accept one command; for several, use handles or edit the file and `sync`.
-- Pass the exact text Lean should parse, including indentation and newlines; prefer `--stdin` for
-  multiline text. Beam does not re-indent.
-- At a tactic position, the text may be a tactic sequence: start each tactic at the same column, or
-  separate them with `;`. Do not start it with `by`; the probe already runs inside the proof.
+- Pass indentation and newlines explicitly; prefer `--stdin` for multiline text. Proof input accepts
+  tactic sequences or an outer `by` block. Standalone parsing wins; only `run-at` can retry copied
+  indentation after a parse failure. Handles have no cursor-column retry. See
+  [tactic layout](references/lean-run-at-semantics.md).
 - At an unfilled `sorry`, `_`, or `?x` term, run-at starts from its goal; text is still tactics.
   At a `todo` item's `run_at_position`, it starts from the item's `proof_state`; without one, edit.
 - `run-at` returns no file diagnostics; use `sync` after a real edit for those.

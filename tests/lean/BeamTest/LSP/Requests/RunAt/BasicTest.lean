@@ -81,11 +81,33 @@ def checkRunAtTacticSequences : ScenarioM Unit := do
   requireRunAtSolvesProof "copied nested indentation" doc simpStart
     "have h2 : 1 = 1 ∧ 2 = 2 := by\n    constructor\n    · rfl\n    · rfl\n  simp\n  exact h"
   requireRunAtFailureMessage "line left of source column" doc simpStart "simp\n exact h"
-    "does not simulate a source edit"
+    "<runAt>:2:"
+  requireRunAtSolvesProof "CRLF sequence" doc simpStart "simp\r\nexact h"
+  requireRunAtSolvesProof "CRLF copied indentation" doc simpStart "simp\r\n  exact h"
+  for (text, diagnostic) in [("skip\nmade_up_tactic", "unknown tactic"),
+      ("skip\nswap", "unknown tactic"), ("skip\n\texact h", "tabs are not allowed")] do
+    let rejected : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← sendRunAt doc {
+      line := 1, character := 2, text, storeHandle := true
+    }
+    unless !rejected.success && rejected.handle?.isNone &&
+        rejected.messages.any (·.text.contains diagnostic) &&
+        !rejected.messages.any (fun m => m.text.contains "Align sibling" ||
+          m.text.contains "cursor-column retry" || m.text.contains "pasted at") do
+      throw <| IO.userError "a non-layout parser failure acquired layout advice"
+  for text in ["by\n  @@@@", "by\n  on_goal 1 => skip", "(by\n  @@@@)",
+      "((by/- éα😀 -/\n  exact))"] do
+    requireRunAtFailureMessage "outer by keeps its body parse error" doc simpStart text "<runAt>:2:"
+  for text in ["simp\nexact h\n@@@@", "(by simp; exact h) @@@@", "by simp; exact h\n#check Nat"] do
+    let rejected : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← sendRunAt doc {
+      line := 1, character := 2, text, storeHandle := true
+    }
+    unless !rejected.success && rejected.handle?.isNone do
+      throw <| IO.userError "tactic input silently discarded trailing syntax"
   for text in [
       "by simp; exact h", "by\n  simp\n  exact h",
       "by/- comment -/ simp; exact h", "-- note\n/- outer /- inner -/ -/ by\n  simp\n  exact h",
       "(by simp; exact h)", "((by\n  simp\n  exact h))",
+      "by\n  have h2 : True ∧ True := by\n    constructor\n    · trivial\n    · trivial\n  simp\n  exact h",
       "by_cases hab : a = b\nall_goals simp\nall_goals exact h"] do
     requireRunAtSolvesProof "Lean-grammar tactic input" doc simpStart text
   for text in ["by", "by -- note", "(by)", "((by\n  -- note))"] do
@@ -134,9 +156,14 @@ def checkRunAtTacticSequences : ScenarioM Unit := do
     text := "intro a\n @@@@", storeHandle := true
   }
   unless !malformed.success && malformed.handle?.isNone &&
-      malformed.messages.any (·.text.contains "no run position") &&
-      !malformed.messages.any (·.text.contains "run position's column") do
-    throw <| IO.userError "handle parse advice incorrectly describes a cursor retry"
+      !malformed.messages.any (fun m => m.text.contains "pasted at" ||
+        m.text.contains "run position's column" || m.text.contains "cursor-column retry") do
+    throw <| IO.userError "handle parse error incorrectly describes a cursor retry"
+  let copiedContinuation : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← runWithHandle doc handle {
+    text := "skip\n  intro a", storeHandle := true
+  }
+  unless !copiedContinuation.success && copiedContinuation.handle?.isNone do
+    throw <| IO.userError "handle continuation applied a source-column fallback"
   -- A failure after an advancing tactic rolls back the whole sequence and mints no successor.
   let requireRolledBack (label : String) (result : Beam.LSP.RunAt.Result) : ScenarioM Unit := do
     unless !result.success && result.handle?.isNone && targets result == targets minted do
