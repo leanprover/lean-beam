@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 validation = Path(tempfile.mkdtemp(prefix="beam-construction-native-")).resolve()
@@ -34,16 +35,21 @@ env = dict(os.environ, ELAN_HOME=str(fixture_elan), LAKE_CACHE_DIR="", HOME=str(
            CODEX_HOME=str(home / ".codex"), CLAUDE_HOME=str(home / ".claude"))
 
 
-def install(*options, ok=True):
-    result = subprocess.run(["bash", "scripts/install-beam.sh", "--dont-ask", *options],
-                            cwd=ROOT, env=env, capture_output=True, text=True, timeout=900)
+def install(label, *options, ok=True):
+    print(f"[install-construction] {label}", flush=True)
+    start = time.perf_counter()
+    try:
+        result = subprocess.run(["bash", "scripts/install-beam.sh", "--dont-ask", *options],
+                                cwd=ROOT, env=env, capture_output=True, text=True, timeout=900)
+    finally:
+        print(f"[install-construction] {label} finished in {time.perf_counter() - start:.3f}s", flush=True)
     if ok and result.returncode:
         raise AssertionError(result.stdout + result.stderr)
     return result
 
 
 options = [option for target in targets for option in ["--toolchain", target]]
-install(*options)
+install("first independent construction (cache disabled)", *options)
 install_root = Path(env["HOME"]) / ".local/share/beam"
 generation = (install_root / "current").resolve()
 record_path = generation / "manifest.json"
@@ -67,7 +73,7 @@ assert not (generation / "libexec/beam-daemon").exists()
 assert not (generation / "libexec/beam-install-runtime").exists()
 print("real two-target construction and installed artifact hashes passed", flush=True)
 
-install(*options)
+install("second independent construction (cache disabled)", *options)
 reinstalled = (install_root / "current").resolve()
 if reinstalled != generation:
     # Name the artifacts whose bytes differ, so a non-reproducible build is diagnosable.
@@ -98,14 +104,15 @@ legacy = install_root / "state/install-bundles/linux-x86_64/legacy-entry"
 legacy.mkdir(parents=True)
 (legacy / "sentinel").write_text("earlier construction cache")
 legacy_before = sorted(str(path.relative_to(install_root)) for path in (install_root / "state").rglob("*"))
-install(*options)
+install("populate fixture cache", *options)
 assert any(path.is_file() for path in fixture_cache.rglob("*")), "fixture cache was not populated"
 assert (install_root / "current").resolve() == generation
 assert (legacy / "sentinel").read_text() == "earlier construction cache"
 assert sorted(str(path.relative_to(install_root)) for path in (install_root / "state").rglob("*")) == legacy_before
 print("reinstall left an earlier construction cache untouched and wrote nothing new", flush=True)
 
-failed = install("--toolchain", targets[0], "--custom-toolchain", "construction-missing", ok=False)
+failed = install("reject missing later target (fixture cache)",
+                 "--toolchain", targets[0], "--custom-toolchain", "construction-missing", ok=False)
 assert failed.returncode != 0
 assert (install_root / "current").resolve() == generation
 assert record_path.read_bytes() == record_bytes
@@ -145,7 +152,8 @@ qualification_failing_sdk((host_elan / "toolchains" / targets[1].replace("/", "-
                           failing_sdk)
 subprocess.run(["elan", "toolchain", "link", failing_name, failing_sdk], env=env, check=True,
                capture_output=True)
-failed = install("--toolchain", targets[0], "--custom-toolchain", failing_name, ok=False)
+failed = install("reject later plugin qualification (fixture cache)",
+                 "--toolchain", targets[0], "--custom-toolchain", failing_name, ok=False)
 assert failed.returncode != 0, failed.stdout + failed.stderr
 assert f"failed to qualify the Beam runtime for target {failing_name}" in failed.stderr, failed.stderr
 assert "fixture SDK refuses plugin loads" in failed.stderr, failed.stderr

@@ -2032,6 +2032,28 @@ private def readRequestSyncSnapshot
   -- The scoped admission is captured before this read, and checked again before acceptance.
   readFileSyncSnapshot root document.path req.workspaceGeneration readSeq server.readSource
 
+/-- Read the request's source, sync it, and run one version-checked document request to completion. -/
+private def runSyncedDocumentRequest
+    (server : ServerRuntime)
+    (req : WorkspaceRequest)
+    (method : String)
+    (mkParams : DocumentUri → Json)
+    (version : Nat)
+    (position? : Option Lsp.Position := none)
+    (emitProgress? : Option (SyncFileProgress → IO Unit) := none) :
+    HandlerM PendingResult := do
+  liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
+  let snapshot ← liftFailureIO <| readRequestSyncSnapshot server req
+  let started ← liftFailureIO <| server.withRequestSessionState req do
+    startSyncedWorkspaceRequest server req snapshot method mkParams
+      (expectedVersion? := some version)
+      (position? := position?)
+      (emitProgress? := emitProgress?)
+  awaitSyncedDocumentRequest started
+
+private def pendingResponse (pending : PendingResult) : Response :=
+  Response.withOptionalFileProgress (Response.success pending.result) pending.progress?
+
 private structure StartedTrackedBarrier where
   document : DocumentRef
   leanConfig? : Option LeanBackendConfig
@@ -2654,17 +2676,11 @@ private def handlePositionLspOp
     (extraFields : List (String × Json) := [])
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none) :
     HandlerM Response := do
-  liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
-  let snapshot ← liftFailureIO <|
-    readRequestSyncSnapshot server req
-  let started ← liftFailureIO <| server.withRequestSessionState req do
-    startSyncedWorkspaceRequest server req snapshot method
-      (fun uri => positionLspParams request uri extraFields)
-      (expectedVersion? := some request.version)
-      (position? := some { line := request.line, character := request.character })
-      (emitProgress? := emitProgress?)
-  let pending ← awaitSyncedDocumentRequest started
-  pure <| Response.withOptionalFileProgress (Response.success pending.result) pending.progress?
+  let pending ← runSyncedDocumentRequest server req method
+    (fun uri => positionLspParams request uri extraFields) request.version
+    (position? := some { line := request.line, character := request.character })
+    (emitProgress? := emitProgress?)
+  pure <| pendingResponse pending
 
 private def handleHoverOp
     (server : ServerRuntime)
@@ -2702,6 +2718,16 @@ private def handleReferencesOp
     (request : ReferencesRequest)
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none) :
     HandlerM Response := do
+  -- Lean's watchdog answers references from an index that the file worker finalizes only after
+  -- it reports the file done, so done progress alone is not enough. Wait for this version's index,
+  -- or a fresh document answers `[]` and an edited one answers from its previous text. The
+  -- watchdog ignores cancellation of this wait; it ends once the version or a newer one finishes,
+  -- or the worker closes.
+  discard <| runSyncedDocumentRequest server req waitForILeansMethod
+    (fun uri => Json.mkObj [("uri", toJson uri), ("version", toJson request.version)])
+    request.version
+    (position? := some { line := request.line, character := request.character })
+    (emitProgress? := emitProgress?)
   let method := referencesMethod
   handlePositionLspOp server req request.toRequestPosition method
     [("context", Json.mkObj [
@@ -2716,18 +2742,13 @@ private def handleDocumentSymbolsOp
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none) :
     HandlerM Response := do
   let method := documentSymbolsMethod
-  liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
-  let snapshot ← liftFailureIO <|
-    readRequestSyncSnapshot server req
-  let started ← liftFailureIO <| server.withRequestSessionState req do
-    startSyncedWorkspaceRequest server req snapshot method
-      (fun uri => Json.mkObj [
-        ("textDocument", toJson ({ uri := uri : TextDocumentIdentifier }))
-      ])
-      (expectedVersion? := some request.version)
-      (emitProgress? := emitProgress?)
-  let pending ← awaitSyncedDocumentRequest started
-  pure <| Response.withOptionalFileProgress (Response.success pending.result) pending.progress?
+  let pending ← runSyncedDocumentRequest server req method
+    (fun uri => Json.mkObj [
+      ("textDocument", toJson ({ uri := uri : TextDocumentIdentifier }))
+    ])
+    request.version
+    (emitProgress? := emitProgress?)
+  pure <| pendingResponse pending
 
 private def handleWorkspaceSymbolsOp
     (server : ServerRuntime)
@@ -2810,20 +2831,15 @@ private def handleGoalsOp
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none) :
     HandlerM Response := do
   let method := goalsMethod request.mode?
-  liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
-  let snapshot ← liftFailureIO <|
-    readRequestSyncSnapshot server req
-  let started ← liftFailureIO <| server.withRequestSessionState req do
-    let position : Lsp.Position := { line := request.line, character := request.character }
-    startSyncedWorkspaceRequest server req snapshot method
-      (fun uri => Json.mkObj [
-        ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier })),
-        ("position", toJson position)
-      ])
-      (expectedVersion? := some request.version)
-      (emitProgress? := emitProgress?)
-  let pending ← awaitSyncedDocumentRequest started
-  pure <| Response.withOptionalFileProgress (Response.success pending.result) pending.progress?
+  let position : Lsp.Position := { line := request.line, character := request.character }
+  let pending ← runSyncedDocumentRequest server req method
+    (fun uri => Json.mkObj [
+      ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier })),
+      ("position", toJson position)
+    ])
+    request.version
+    (emitProgress? := emitProgress?)
+  pure <| pendingResponse pending
 
 private def handleTodoOp
     (server : ServerRuntime)
@@ -2832,24 +2848,19 @@ private def handleTodoOp
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none) :
     HandlerM Response := do
   let method := todoMethod
-  liftFailureIO <| ensureRequestNotCancelled req.cancelRef?
-  let snapshot ← liftFailureIO <|
-    readRequestSyncSnapshot server req
-  let started ← liftFailureIO <| server.withRequestSessionState req do
-    startSyncedWorkspaceRequest server req snapshot method
-      (fun uri => Json.mkObj <|
-        [ ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier }))
-        ] ++
-        (match request.range? with
-        | some range => [("range", toJson range)]
-        | none => []) ++
-        (match request.kinds? with
-        | some kinds => [("kinds", toJson kinds)]
-        | none => []))
-      (expectedVersion? := some request.version)
-      (emitProgress? := emitProgress?)
-  let pending ← awaitSyncedDocumentRequest started
-  pure <| Response.withOptionalFileProgress (Response.success pending.result) pending.progress?
+  let pending ← runSyncedDocumentRequest server req method
+    (fun uri => Json.mkObj <|
+      [ ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier }))
+      ] ++
+      (match request.range? with
+      | some range => [("range", toJson range)]
+      | none => []) ++
+      (match request.kinds? with
+      | some kinds => [("kinds", toJson kinds)]
+      | none => []))
+    request.version
+    (emitProgress? := emitProgress?)
+  pure <| pendingResponse pending
 
 private def handleRunWithOp
     (server : ServerRuntime)
@@ -2910,7 +2921,7 @@ private def handleReleaseOp
           (cancelRef? := req.cancelRef?)
         pure startedResult
   let pending ← awaitSyncedDocumentRequest started
-  pure <| Response.withOptionalFileProgress (Response.success pending.result) pending.progress?
+  pure <| pendingResponse pending
 
 private def initWorkspaceConfigFromRequest
     (server : ServerRuntime)

@@ -801,6 +801,23 @@ validation commands also run shell lint once before their product suites.
 sets both to one only for the verified macOS PR platform profile. Both counts must be positive;
 zero or negative values fail before any scenario starts. Timeouts and scenario assertions are unchanged.
 
+Fast prints labeled elapsed times for its preflight commands, runtime/fixture build, individual
+test commands, and installed CLI/MCP contract checks. `run_quiet_step` in
+[ci-steps.sh](../tests/lib/ci-steps.sh) keeps successful command output compact while leaving its
+timing visible. A failed command prints its captured output and preserves its exit status;
+[test-ci-steps.py](../tests/test-ci-steps.py) checks failure propagation and caller cleanup.
+The straight-line installed-contract and installer-admission blocks print a start marker and a
+completion time on success; their existing immediate failure behavior is preserved.
+Shell timings use the wall clock at one-second resolution, so `0s` can represent a short command.
+The Python construction timings use a monotonic clock and report seconds to three decimal places. Treat these as
+phase-level observations rather than precision benchmarks.
+
+The installer also labels each real two-target installation attempt: two independent cache-disabled
+constructions, fixture-cache population, and the later build/qualification failure cases. These
+times cover the installer invocation, including source builds and qualification. They are nested
+inside the outer construction-test timing, so do not add both levels when calculating suite totals.
+Use these phase boundaries to investigate repeated setup before changing cache or isolation policy.
+
 Linux retains the separate parallel jobs and the exact toolchain compatibility matrix in both
 modes. The combined macOS job runs toolchain qualification once at the repository-pinned Lean
 version. Full mode runs the complete per-version macOS compatibility matrix.

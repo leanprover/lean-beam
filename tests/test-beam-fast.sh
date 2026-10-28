@@ -7,6 +7,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# shellcheck source=tests/lib/ci-steps.sh
+. tests/lib/ci-steps.sh
+BEAM_TEST_SUITE="${BEAM_TEST_SUITE:-beam-fast}"
 
 beam_fast_state_root="$(mktemp -d "${TMPDIR:-/tmp}/beam-fast-state-XXXXXX")"
 # Match the physical paths reported by installed launchers, including macOS /private/var aliases.
@@ -17,54 +20,29 @@ beam_fast_cleanup() {
 trap beam_fast_cleanup EXIT
 export BEAM_SESSION_ROOT="$beam_fast_state_root/sessions"
 
-bash scripts/check-daemon-safety.sh
-bash scripts/check-task-priority.sh
-python3 tests/test-runtime-boundary.py
-bash scripts/check-markdown-links.sh
-python3 tests/test-skill-budget.py
-python3 scripts/ci-toolchains.py > /dev/null
-python3 tests/test-toolchain-ci-matrix.py
-python3 tests/test-ci-macos.py
-python3 tests/test-macos-platform-driver.py
-python3 tests/test-toolchain-registry.py
-python3 tests/test-toolchain-compat-owner.py
-python3 tests/test-installed-mcp-smoke.py
-python3 tests/test-mcp-http-reader.py
-python3 tests/test-pipe-lines.py
-python3 tests/test-project-sdk.py
-python3 tests/test-fixture-workspace.py
-python3 tests/test-extended-ci.py
-python3 tests/test-process-watchdog.py
+run_step "daemon safety checks" bash scripts/check-daemon-safety.sh
+run_step "task priority checks" bash scripts/check-task-priority.sh
+run_step "runtime boundary" python3 tests/test-runtime-boundary.py
+run_step "Markdown links" bash scripts/check-markdown-links.sh
+run_step "skill budget" python3 tests/test-skill-budget.py
+run_quiet_step "toolchain registry validation" python3 scripts/ci-toolchains.py
+run_step "toolchain CI matrix" python3 tests/test-toolchain-ci-matrix.py
+run_step "macOS profile selection" python3 tests/test-ci-macos.py
+run_step "macOS platform driver" python3 tests/test-macos-platform-driver.py
+run_step "toolchain registry" python3 tests/test-toolchain-registry.py
+run_step "toolchain compatibility owner" python3 tests/test-toolchain-compat-owner.py
+run_step "installed MCP smoke harness" python3 tests/test-installed-mcp-smoke.py
+run_step "HTTP bridge reader" python3 tests/test-mcp-http-reader.py
+run_step "pipe line framing" python3 tests/test-pipe-lines.py
+run_step "project SDK binding" python3 tests/test-project-sdk.py
+run_step "fixture workspace evidence" python3 tests/test-fixture-workspace.py
+run_step "extended CI helper" python3 tests/test-extended-ci.py
+run_step "process watchdog" python3 tests/test-process-watchdog.py
+run_step "CI step logging" python3 tests/test-ci-steps.py
 
-run_quiet_lake_build() {
-  local log
-  log="$(mktemp /tmp/beam-fast-build-log-XXXXXX)"
-  # Keep successful CI logs compact, but print the full Lake output when the build fails.
-  if ! lake build "$@" > "$log" 2>&1; then
-    cat "$log" >&2
-    rm -f "$log"
-    return 1
-  fi
-  rm -f "$log"
-}
+run_quiet_step "defensive validation Git isolation" bash tests/test-validate-defensive.sh
 
-run_quiet_test() {
-  local label="$1"
-  shift
-  local log
-  log="$(mktemp /tmp/beam-fast-test-log-XXXXXX)"
-  if ! "$@" > "$log" 2>&1; then
-    echo "beam-fast test failed: $label" >&2
-    cat "$log" >&2
-    rm -f "$log"
-    return 1
-  fi
-  rm -f "$log"
-}
-
-run_quiet_test "defensive validation Git isolation" bash tests/test-validate-defensive.sh
-
-run_quiet_lake_build \
+run_quiet_step "build runtime and fixtures" lake build \
   Beam.LSP:shared \
   BeamPrivateSaveGate:shared \
   beam-cli \
@@ -103,7 +81,7 @@ run_quiet_lake_build \
 
 export BEAM_TEST_INSTALLATION="$beam_fast_state_root/installation"
 export BEAM_TEST_PROJECT="$beam_fast_state_root/project"
-run_quiet_test "stage installed test runtime" python3 tests/installation_fixture.py \
+run_quiet_step "stage installed test runtime" python3 tests/installation_fixture.py \
   "$BEAM_TEST_INSTALLATION" --project "$BEAM_TEST_PROJECT"
 beam_test_cli="$BEAM_TEST_INSTALLATION/bin/lean-beam"
 beam_test_mcp="$BEAM_TEST_INSTALLATION/bin/lean-beam-mcp"
@@ -134,53 +112,53 @@ else:
 print("Filesystem-root project discovery terminated with the expected result")
 PY
 
-run_quiet_test "CLI error boundary" python3 tests/test-cli-errors.py
-run_quiet_test "partial-setup doctor" python3 tests/test-beam-doctor.py
-run_quiet_test "client configuration doctor" python3 tests/test-client-doctor.py
-run_quiet_test "native client configuration doctor" python3 tests/test-client-doctor-native.py
-run_quiet_test system-contracts python3 tests/test-system-contracts.py
-run_quiet_test transaction python3 tests/lib/process_watchdog.py \
+run_quiet_step "CLI error boundary" python3 tests/test-cli-errors.py
+run_quiet_step "partial-setup doctor" python3 tests/test-beam-doctor.py
+run_quiet_step "client configuration doctor" python3 tests/test-client-doctor.py
+run_quiet_step "native client configuration doctor" python3 tests/test-client-doctor-native.py
+run_quiet_step system-contracts python3 tests/test-system-contracts.py
+run_quiet_step transaction python3 tests/lib/process_watchdog.py \
   --timeout 30 -- .lake/build/bin/beam-transaction-test
-run_quiet_test prune-lock python3 tests/lib/process_watchdog.py \
+run_quiet_step prune-lock python3 tests/lib/process_watchdog.py \
   --timeout 30 -- .lake/build/bin/beam-prune-lock-test
-run_quiet_test backend-process .lake/build/bin/beam-backend-process-test
-run_quiet_test broker-transport python3 tests/lib/process_watchdog.py \
+run_quiet_step backend-process .lake/build/bin/beam-backend-process-test
+run_quiet_step broker-transport python3 tests/lib/process_watchdog.py \
   --timeout 30 -- .lake/build/bin/beam-transport-test
-run_quiet_test broker-protocol .lake/build/bin/beam-broker-protocol-test
-run_quiet_test broker-pending .lake/build/bin/beam-broker-pending-test
-run_quiet_test broker-document-state .lake/build/bin/beam-broker-document-state-test
-run_quiet_test closing-model .lake/build/bin/beam-closing-model-test
-run_quiet_test publication-ownership .lake/build/bin/beam-publication-test
-run_quiet_test broker-open-docs .lake/build/bin/beam-broker-open-docs-test
-run_quiet_test worker-recovery python3 tests/test-worker-recovery.py
-run_quiet_test cli-daemon python3 tests/lib/process_watchdog.py \
+run_quiet_step broker-protocol .lake/build/bin/beam-broker-protocol-test
+run_quiet_step broker-pending .lake/build/bin/beam-broker-pending-test
+run_quiet_step broker-document-state .lake/build/bin/beam-broker-document-state-test
+run_quiet_step closing-model .lake/build/bin/beam-closing-model-test
+run_quiet_step publication-ownership .lake/build/bin/beam-publication-test
+run_quiet_step broker-open-docs .lake/build/bin/beam-broker-open-docs-test
+run_quiet_step worker-recovery python3 tests/test-worker-recovery.py
+run_quiet_step cli-daemon python3 tests/lib/process_watchdog.py \
   --timeout 90 -- .lake/build/bin/beam-cli-daemon-test
-run_quiet_test interrupt-watcher python3 tests/test-interrupt-watcher.py
-run_quiet_test feedback .lake/build/bin/beam-feedback-test
-run_quiet_test mcp-projection .lake/build/bin/beam-mcp-projection-test
-run_quiet_test installation-manifest python3 tests/test-installation-manifest.py
-run_quiet_test installation-construction python3 tests/test-installation-construction.py
-run_quiet_test nonstandard-toolchain python3 tests/lib/process_watchdog.py \
+run_quiet_step interrupt-watcher python3 tests/test-interrupt-watcher.py
+run_quiet_step feedback .lake/build/bin/beam-feedback-test
+run_quiet_step mcp-projection .lake/build/bin/beam-mcp-projection-test
+run_quiet_step installation-manifest python3 tests/test-installation-manifest.py
+run_quiet_step installation-construction python3 tests/test-installation-construction.py
+run_quiet_step nonstandard-toolchain python3 tests/lib/process_watchdog.py \
   --timeout 180 -- python3 tests/test-nonstandard-toolchain.py
-run_quiet_test installation-lookup python3 tests/test-installation-lookup.py
-run_quiet_test installation-entrypoints python3 tests/test-installation-entrypoints.py
-run_quiet_test lake-helper-lifetime python3 tests/lib/process_watchdog.py \
+run_quiet_step installation-lookup python3 tests/test-installation-lookup.py
+run_quiet_step installation-entrypoints python3 tests/test-installation-entrypoints.py
+run_quiet_step lake-helper-lifetime python3 tests/lib/process_watchdog.py \
   --timeout 180 -- python3 tests/test-lake-helper-lifetime.py
-run_quiet_test lake-save-preflight python3 tests/test-lake-save-preflight.py
-run_quiet_test save-trace-format python3 tests/test-save-trace-format.py
+run_quiet_step lake-save-preflight python3 tests/test-lake-save-preflight.py
+run_quiet_step save-trace-format python3 tests/test-save-trace-format.py
 # Additional gated cancellation schedules need aggregate headroom under load; case deadlines stay bounded.
-run_quiet_test save-finalization python3 tests/lib/process_watchdog.py \
+run_quiet_step save-finalization python3 tests/lib/process_watchdog.py \
   --timeout 240 -- python3 tests/test-save-finalization.py
-run_quiet_test mcp-protocol python3 tests/lib/process_watchdog.py \
+run_quiet_step mcp-protocol python3 tests/lib/process_watchdog.py \
   --timeout "${BEAM_MCP_PROTOCOL_TEST_WATCHDOG_SECONDS:-240}" -- \
   .lake/build/bin/beam-mcp-protocol-test
-run_quiet_test mcp-application python3 tests/test-mcp-application.py
-run_quiet_test daemon-smoke .lake/build/bin/beam-daemon-smoke-test
-run_quiet_test sync-concurrency .lake/build/bin/beam-sync-concurrency-test
-run_quiet_test daemon-save-stream .lake/build/bin/beam-daemon-save-stream-test
-run_quiet_test daemon-stream-contract .lake/build/bin/beam-daemon-stream-contract-test
-run_quiet_test sync-result .lake/build/bin/beam-sync-result-test
-run_quiet_test daemon-backend-startup .lake/build/bin/beam-daemon-backend-startup-test
+run_quiet_step mcp-application python3 tests/test-mcp-application.py
+run_quiet_step daemon-smoke .lake/build/bin/beam-daemon-smoke-test
+run_quiet_step sync-concurrency .lake/build/bin/beam-sync-concurrency-test
+run_quiet_step daemon-save-stream .lake/build/bin/beam-daemon-save-stream-test
+run_quiet_step daemon-stream-contract .lake/build/bin/beam-daemon-stream-contract-test
+run_quiet_step sync-result .lake/build/bin/beam-sync-result-test
+run_quiet_step daemon-backend-startup .lake/build/bin/beam-daemon-backend-startup-test
 
 assert_output_contains() {
   local label="$1"
@@ -221,6 +199,8 @@ feedback_failure_output() {
   printf '%s\n' "$output"
 }
 
+beam_fast_smoke_start="$(date +%s)"
+printf '[%s] installed CLI and MCP contracts\n' "$BEAM_TEST_SUITE"
 source_tree_commit="$(git rev-parse HEAD)"
 lean_beam_version="$("$beam_test_cli" --version)"
 if [ "${lean_beam_version%%$'\n'*}" != "lean-beam 0.2.0" ]; then
@@ -602,3 +582,6 @@ if code != 0:
     print(f"expected MCP smoke server to exit cleanly, got {code}\nstderr:\n{stderr}", file=sys.stderr)
     sys.exit(1)
 PY
+
+printf '[%s] installed CLI and MCP contracts finished in %ss\n' \
+  "$BEAM_TEST_SUITE" "$(( $(date +%s) - beam_fast_smoke_start ))"

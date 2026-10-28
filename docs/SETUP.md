@@ -115,6 +115,12 @@ runtime/wrapper install area, selected skill locations, and selected MCP config 
 non-interactive scripts, pass `--dont-ask`; this only skips prompts for requested Beam-owned
 install/config paths and does not allow replacing unrelated user files.
 
+The final **Agent Setup This Run** summary reports only actions performed by that invocation.
+“Not registered this run” also covers skipped or unrequested registration; it does not mean that
+an existing MCP registration is absent. The installer does not inspect existing client configuration
+for this summary, and its setup hints are optional. Retain any client-home overrides when rerunning
+a hint. For a read-only inspection of client setup, use `lean-beam doctor clients`.
+
 Select the supported Lean toolchains used by your projects. Accepting the default selects Beam's
 repo-pinned toolchain; it does not discover and install every project's target. Each installer run
 selects the complete set, so include all targets you want the new installation to retain.

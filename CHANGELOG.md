@@ -12,6 +12,15 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- Clarify that installer skill and MCP setup summaries describe only actions performed during
+  the current run, so skipped registration does not imply that existing client setup is absent
+  ([#394](https://github.com/leanprover/lean-beam/pull/394), @ejgallego).
+- `references` now waits for Lean to finish the requested document version, so a query right after
+  `update` reports that version's references instead of `[]` or locations from the previous text
+  ([#399](https://github.com/leanprover/lean-beam/pull/399), @ejgallego).
+- Tactic probes that hit `maxRecDepth` or `maxHeartbeats` now return `success: false` with the
+  original proof state and the limit diagnostic, instead of an `internalError` transport failure
+  ([#393](https://github.com/leanprover/lean-beam/pull/393), @ejgallego).
 - Cancelled MCP calls that never settle can no longer lock out recovery. `lean_drop_workspace`
   and `beam_version`, `beam_stats`, and `ping` fall back to small fixed admission and output
   reserves when the ordinary pool is full, with separate reserves so queued drops cannot starve
@@ -79,6 +88,12 @@ does not retarget a running owner. See [setup and recovery](docs/SETUP.md#before
 
 ### Changed
 
+- CLI JSON and MCP structured results now share snake_case names for Beam-owned result and
+  error-data fields, including `proof_state`, `run_at_position`, `blocking_error_count`, and
+  `recovery_plan`. Opaque continuation handles, standard Lean/LSP objects, and evidence payloads
+  retain their original field names. Evidence wrappers use snake_case, including `original_data`,
+  `observed_response`, and `operation_response`. Error codes and reason values are unchanged
+  ([#373](https://github.com/leanprover/lean-beam/pull/373)).
 - Retire Lean 4.33 support and raise the supported window to 4.34–4.36. Lean 4.33 can miss
   module-generation write failures before Beam copies the output; the validated minimum 4.34.1
   checks stream failure after close. Compatible release-line admission starts at 4.34; the oldest
@@ -108,9 +123,9 @@ does not retarget a running owner. See [setup and recovery](docs/SETUP.md#before
   A refused close-save reports `contentModified` with reason `savedDocumentChanged`, the
   committed checkpoint in `error.data.saved`, and `closed: false`; any replacement is left intact.
   Other failures after checkpoint commit preserve their error code and message, but move any
-  original error data beneath `error.data.originalData` alongside `saved`. Clients reading those
-  original fields must use that nested path for these finalization failures. MCP preserves the
-  broker's error-data field names
+  original error data beneath `error.data.original_data` alongside `saved`. Clients reading those
+  original fields must use that nested path for these finalization failures. The original evidence
+  retains its field names inside `original_data`
   ([#309](https://github.com/leanprover/lean-beam/pull/309)).
 - Remove the standalone installer's persistent construction cache under
   `BEAM_INSTALL_ROOT/state/install-bundles`, which grew by roughly 300 MB per target for every
@@ -168,10 +183,11 @@ does not retarget a running owner. See [setup and recovery](docs/SETUP.md#before
   boolean diagnostic arguments and CLI `+full` flag have been removed, with `+all-diagnostics` as
   the explicit wrapper spelling.
 - Sync results now report one canonical path/version with `diagnostics.counts`, optional
-  `diagnostics.items`, and readiness whose `blockingErrorCount` is explicitly distinct from raw
-  diagnostic counts. Save and close-save embed that same result. MCP exposes snake_case equivalents
-  and reserves final `document_progress` for sync/refresh/save/close-save rather than attaching file
-  progress to unrelated results such as `lean_run_at`.
+  `diagnostics.items`, and readiness whose `blocking_error_count` is explicitly distinct from raw
+  diagnostic counts. Save and close-save embed that same result. CLI and MCP results can include
+  `document_progress`, including on probes, navigation, and handle operations. This metadata can
+  contain initial values, reuse earlier progress, or reflect barrier completion; it may be partial
+  and does not establish save readiness or operation success.
 - Silent Lean editor messages, including decorative `Goals accomplished!` output, are filtered at
   reception and no longer enter Beam diagnostic streams, result counts/items, todo output, or
   speculative execution messages.
