@@ -13,6 +13,7 @@ namespace BeamModel.LspRequests
 abbrev Id := Nat
 
 structure State where
+  /-- Request IDs still owed a response in this direction of the protocol connection. -/
   outstanding : List Id := []
   deriving BEq, DecidableEq, Repr
 

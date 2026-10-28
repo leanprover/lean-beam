@@ -14,11 +14,17 @@ inductive Phase where
   deriving BEq, DecidableEq, Repr
 
 structure State where
+  /-- Authority phase of this private publication attempt. -/
   phase : Phase := .preparing
+  /-- Abstract result of validating the captured owner and accepted source basis. -/
   current : Bool := true
+  /-- Successful private worker completion has been accepted. -/
   workerDone : Bool := false
+  /-- Successful trace preparation has made this attempt ready. -/
   traceDone : Bool := false
+  /-- Proof counter of isolated writes, which can continue after abandonment. -/
   privateWrites : Nat := 0
+  /-- Proof counter of atomic abstract promotions, not filesystem operation count. -/
   canonicalCommits : Nat := 0
   deriving BEq, DecidableEq, Repr
 

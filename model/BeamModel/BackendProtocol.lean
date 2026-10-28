@@ -23,8 +23,11 @@ inductive Effect where
   deriving BEq, DecidableEq, Repr
 
 structure State where
+  /-- Fixed backend lifetime against which incoming keys are checked. -/
   incarnation : Nat
+  /-- Whether local request registration is still permitted. -/
   accepting : Bool := true
+  /-- Locally registered keys not yet removed by response handling or channel closure. -/
   pending : List Key := []
   deriving BEq, DecidableEq, Repr
 

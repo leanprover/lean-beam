@@ -24,11 +24,17 @@ inductive Writer where
   deriving BEq, DecidableEq, Repr
 
 structure State where
+  /-- Whether registration was attempted, including rejection by a closed channel. -/
   registered : Bool := false
+  /-- Whether this request is still owned by the pending map. -/
   pending : Bool := false
+  /-- Custody of the original request reference during sending and failure selection. -/
   writer : Writer := .idle
+  /-- First locally retained channel failure, independent of the eventual raw result. -/
   channelFailure : Option Nat := none
+  /-- Handlers still responsible for attempting resolution with their selected outcomes. -/
   claims : List (Role × Outcome) := []
+  /-- First established raw promise outcome; presentation and delivery are not represented. -/
   result : Option Outcome := none
   deriving BEq, DecidableEq, Repr
 

@@ -1,5 +1,9 @@
 # Exclusive close-save: model and implementation
 
+For a conceptual introduction to admission, publication, protocol observations, and request
+settlement, start with the [guided Blueprint](../model/blueprint/README.md). This note is the
+detailed implementation and evidence reference.
+
 This is a small model for evaluating exclusive close-save admission, with a separate pure
 admission component used by the broker. The public contract is documented in
 [sync and diagnostics](SYNC_AND_DIAGNOSTICS.md): close-save reserves the accepted document,

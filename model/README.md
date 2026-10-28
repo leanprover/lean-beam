@@ -1,5 +1,10 @@
 # Beam semantic models
 
+Start with the [guided Blueprint](blueprint/README.md) to understand the system boundaries,
+concrete traces, and relationships between the models. Use the
+[implementation correspondence](../docs/CLOSE_SAVE_MODEL.md#mapping-to-the-broker) for exact
+proof scopes, production boundaries, tests, and remaining assumptions.
+
 `BeamModel` is a separate Lean library for executable specifications and their proofs.
 The abstract closing specification depends only on `Std`. Implementation laws additionally
 import the broker's pure `DocumentAdmission` component, which also depends only on `Std`;
