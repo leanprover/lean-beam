@@ -186,6 +186,47 @@ def checkRunAtElaborationAborts : ScenarioM Unit := do
     throw <| IO.userError "abort probes changed ordinary document elaboration"
   closeDoc doc
 
+def checkRunAtResourceLimits : ScenarioM Unit := do
+  let doc ← openDoc "tests/scenario/docs/RunAtElaborationAbort.lean"
+  syncDoc doc
+  let source ← IO.FS.readFile "tests/scenario/docs/RunAtElaborationAbort.lean"
+  let some (_, line) := source.splitOn "\n" |>.zipIdx |>.find? (fun (text, _) =>
+      text.endsWith " -- probe")
+    | throw <| IO.userError "missing resource-limit probe position"
+  let position : Lean.Lsp.Position := { line, character := 2 }
+  for (text, needle) in [
+      ("constructor\nset_option maxRecDepth 32 in iterate 100000 skip", "maximum recursion depth"),
+      ("constructor\nset_option maxHeartbeats 10 in repeat skip", "maximum number of heartbeats")] do
+    for linear in [false, true] do
+      let initial ← requireRunAtResponseSuccess "store resource-limit basis" <|
+        ← sendRunAt doc { line, character := 2, text := "skip", storeHandle := true }
+      let some handle := initial.handle?
+        | throw <| IO.userError "missing resource-limit basis handle"
+      let requireFailure (result : Beam.LSP.RunAt.Result) : ScenarioM Unit := do
+        unless !result.success && result.handle?.isNone &&
+            result.proofState?.map (·.goals.map (·.target)) ==
+              initial.proofState?.map (·.goals.map (·.target)) &&
+            result.messages.any (fun msg => msg.severity == .error && msg.text.contains needle) do
+          throw <| IO.userError s!"resource limit must preserve the original goals: {(toJson result).compress}"
+      -- A tactic advances the state before the limit is reached; failure restores the whole probe.
+      let direct : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+        ← sendRunAt doc { line, character := 2, text, storeHandle := true }
+      requireFailure direct
+      let continued : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+        ← runWithHandle doc handle { text, storeHandle := true, linear }
+      requireFailure continued
+      let retry ← runWithHandle doc handle { text := "constructor <;> trivial" }
+      if linear then
+        expectErrorContains retry invalidParamsJson
+      else
+        let solved ← requireRunAtResponseSuccess "reuse handle after resource limit" retry
+        unless solved.proofState?.map (·.goals.size) == some 0 do
+          throw <| IO.userError "resource limit changed the stored proof state"
+        releaseHandle doc handle
+    requireRunAtSolvesProof "resource limits preserve the document" doc position
+      "constructor <;> trivial"
+  closeDoc doc
+
 def checkRunAtSilentDiagnostics : ScenarioM Unit := do
   let path := "tests/scenario/docs/RunAtElaborationAbort.lean"
   let source ← IO.FS.readFile path
@@ -510,6 +551,7 @@ def run : ScenarioM Unit := do
   checkRunAtPlaceholders
   checkRunAtPlaceholderContexts
   checkRunAtElaborationAborts
+  checkRunAtResourceLimits
   checkRunAtSilentDiagnostics
   checkRunAtOneCommandOnly
   checkRunAtTheoremSuccessOmitsSilentMessages

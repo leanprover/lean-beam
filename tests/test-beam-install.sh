@@ -67,6 +67,9 @@ run_step "install prune" bash tests/test-beam-prune.sh
 run_step "install publication" bash tests/test-install-publication.sh
 run_step "install lock cleanup" bash tests/test-install-lock.sh
 
+install_admission_start="$(date +%s)"
+printf '[%s] installer admission and interactive plans\n' "$BEAM_TEST_SUITE"
+
 validated_toolchains=()
 while IFS= read -r line; do
   [ -n "$line" ] || continue
@@ -612,6 +615,9 @@ assert_not_exists "$interactive_vibe_custom_bin"
 assert_not_exists "$interactive_vibe_custom_runtime"
 assert_not_exists "$interactive_vibe_custom_home"
 remove_tmp_file "$interactive_vibe_transcript"
+
+printf '[%s] installer admission and interactive plans finished in %ss\n' \
+  "$BEAM_TEST_SUITE" "$(( $(date +%s) - install_admission_start ))"
 
 run_step "install default runtime" run_install_from_source
 expected_source_commit="$(git -C "$source_checkout" rev-parse HEAD 2>/dev/null || true)"

@@ -504,9 +504,10 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
             let saved ← Elab.Tactic.saveState
             let initialMsgCount := (← Core.getMessageLog).toList.length
             let initialTraceCount := (← getTraces).size
-            -- TacticM's ordinary catch backtracks messages too. Collect diagnostics using
-            -- Lean's non-backtracking catch, then explicitly restore the failed proof state.
-            Elab.Tactic.tryCatch
+            -- At the outer probe boundary, resource limits are semantic failures too. Lean's
+            -- runtime-aware catch retains diagnostics and propagates interrupts; explicitly
+            -- restore the failed proof state rather than backtracking its messages.
+            tryCatchRuntimeEx
               (do
                 Elab.Tactic.evalTactic stx
                 Elab.Term.synthesizeSyntheticMVarsNoPostponing

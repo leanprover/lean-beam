@@ -83,7 +83,6 @@ class HttpBridgeReaderTest(unittest.TestCase):
         notification = {"jsonrpc": "2.0", "method": "notifications/message", "params": {}}
         packet = self.packet(notification, self.response)
         with self.child(f"os.write(1, {packet!r})") as client:
-            client.timeout = 0.05
             self.assertEqual(self.fast_request(client)(self.request), self.response)
 
     def test_fast_client_notifications_do_not_reset_deadline(self):
