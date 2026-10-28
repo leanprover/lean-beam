@@ -402,10 +402,16 @@ and process-settlement assumptions. No bounded cancellation or shutdown promise 
 
 ### Revised proof work sequence
 
-1. **#344: direct admission laws and correspondence.** Preserve its direct production proofs;
+This is one proof lane. [#344](https://github.com/leanprover/lean-beam/pull/344) is the active
+review entry point for the production admission laws, correspondence, and abstract protocol models.
+[#359](https://github.com/leanprover/lean-beam/pull/359) remains a deferred draft preserving a
+publication-core experiment. Resume it only against the accepted proof foundation and current
+production code; it is not an independently evolving model or a prerequisite for this work.
+
+1. **Direct admission laws and correspondence.** Preserve its direct production proofs;
    reconcile references with the current broker, local trace finalization, and execution/delivery
    separation. Keep it independently reviewable and free of runtime refactoring.
-2. **Protocol observation specification.** Develop this initial boundary with send uncertainty,
+2. **Protocol observation specification, in the same proof-only PR.** Develop this initial boundary with send uncertainty,
    outstanding settlement obligations, and explicit peer traces. Label all its laws abstract until
    the implementation relation exists. Use it to decide the smallest useful production extraction.
 3. **Production pending-store core and adapter.** Extract authoritative decisions only after the
