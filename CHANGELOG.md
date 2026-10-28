@@ -12,6 +12,15 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- `lean-beam doctor` explains when a project's Lean compiler exists but its Beam runtime is
+  missing, including Lean source checkouts that select a local stage1 build. It prints a text
+  report by default or one structured response with `--json`, instead of mixing JSON with a
+  duplicate human explanation
+  ([#397](https://github.com/leanprover/lean-beam/pull/397), @ejgallego).
+- `lean-beam doctor clients` no longer reports disabled integrations, or definitions that become
+  valid only after merging configuration layers, as checked. Unsupported conversions, incomplete
+  layers, and unresolved policy are reported as unverified
+  ([#391](https://github.com/leanprover/lean-beam/pull/391), @ejgallego).
 - Tactic probes that hit `maxRecDepth` or `maxHeartbeats` now return `success: false` with the
   original proof state and the limit diagnostic, instead of an `internalError` transport failure
   ([#393](https://github.com/leanprover/lean-beam/pull/393), @ejgallego).

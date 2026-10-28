@@ -45,6 +45,13 @@ internet access or public network bind is needed for that communication. A writa
 directory alone does not make a daemon reachable across separate network namespaces. See
 [sessions and recovery](#sessions-and-recovery) for private-directory requirements and selectors.
 
+Some agent sandboxes run each shell command in its own network namespace; Claude Code's Bash
+sandbox is one example. A healthy `lean-beam serve` owner is then unreachable from later commands:
+they report `sessionRecoveryRequired`, and `doctor` reports that recovery is required. The owner is
+still running, so the recovery precondition is not met; do not run `recover`. Use the client's
+registered Beam MCP tools, which need no loopback TCP, or run the owner and its clients in one
+namespace.
+
 A CLI request executes Lean in the existing owner's workers, with that owner's launch permissions.
 Putting only the attaching CLI command in a sandbox does not constrain an owner launched outside
 it. A sandbox applied to an agent's shell commands does not automatically sandbox an MCP server
