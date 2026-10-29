@@ -45,8 +45,11 @@ Input JSON:
 Required fields are `title`, `summary`, `reproduction`, `expected`, and `actual`. Optional
 `kind` values are `bug`, `ux`, `perf`, `docs`, and `question`. Optional `severity` values are
 `low`, `medium`, `high`, and `critical`. Optional `bundle` values are `none`, `dir`, and `zip`; the
-default is `none`. Redaction is enabled by default and replaces the current `HOME` path with `~`;
-pass `--no-redact` or `"redact": false` only when the output can safely contain local paths.
+default is `none`. Redaction is enabled by default. When the reporting process has a nonempty
+`HOME`, it replaces that path with `~` in report text and JSON string values. It does not rewrite
+JSON object keys. Non-confidential MCP results also retain the absolute workspace descriptor
+described below. Review the whole output before sharing; pass `--no-redact` or `"redact": false`
+only when it can safely contain local paths.
 
 Set `"confidential": true` for feedback from a non-public workspace. Confidential mode:
 
@@ -108,7 +111,8 @@ default Markdown includes a short Beam runtime summary instead of the full colle
 including the full source commit, runtime payload, and stale-runtime or invalid-install identity
 when available. Pass `include_collected: true` to include the full collected Beam debug context
 inline and render the full debug-context section in Markdown. Non-confidential results echo the
-resolved `workspace` descriptor. Confidential results omit that descriptor;
+resolved `workspace` descriptor, including its absolute, unredacted root even with `redact: true`.
+Confidential results omit that descriptor;
 `include_collected: true` returns only the restricted runtime identity and cannot restore omitted
 project context.
 

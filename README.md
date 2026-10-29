@@ -8,8 +8,8 @@ Beam supports:
 
 - **Speculative execution:** try commands and tactics in a file's context without changing its
   source, using [`runAt`](docs/STATUS.md#core-lean-surface). Independent attempts can run concurrently.
-- **Multi-file work:** synchronize edited files and checkpoint modules so dependent files can use
-  their changes.
+- **Multi-file work:** [checkpoint edited dependencies and refresh their importers](docs/SETUP.md#work-across-files)
+  so later files can use their changes.
 - **Saving from the running Lean context:** [`save`](docs/SYNC_AND_DIAGNOSTICS.md#command-model)
   writes a module checkpoint from the state already checked by the Lean server, without batch
   re-elaboration.
@@ -21,6 +21,10 @@ Beam supports:
 
 We have found Beam useful for proof repair, proof search experiments, proof translation and porting,
 autoformalization experiments, and regular AI-assisted Lean editing.
+
+Before an external workspace build, stop all affected CLI owners, drop any affected MCP workspaces,
+and confirm their cleanup. The [batch-build procedure](skills/lean-beam/references/workflow-details.md#before-a-local-batch-build)
+explains how to keep builds separate from retained Beam state.
 
 Beam is implemented in Lean. CLI and MCP share broker code and typed operations, while each owns
 its transport and runtime lifetime:
@@ -75,9 +79,8 @@ Lean Beam is distributed in two ways:
 
 - **A Lean toolchain that includes Beam:** follow [bundled Beam setup](docs/SETUP.md#use-beam-bundled-with-lean).
   Use the commands provided by that toolchain for projects using the same Lean installation.
-- **A standalone installation:** on Linux or macOS, run `./scripts/install-beam.sh` from a Beam
-  checkout with `elan` on `PATH`. The installer offers toolchains, agent skills, and MCP client
-  registration.
+- **A standalone installation:** on Linux or macOS, follow [checkout installation](docs/SETUP.md#install-beam-from-this-checkout)
+  with `elan` on `PATH`. The installer offers toolchains, agent skills, and MCP client registration.
 
 Windows support is [experimental](docs/STATUS.md#distribution). Native builds and CI do not
 establish an official elan Windows distribution path; that distribution is deferred pending the
@@ -88,13 +91,17 @@ Bundled binaries do not install an agent skill. For either distribution, install
 including its `references` directory, in your client's skill directory. To use MCP, also register the installed
 `lean-beam-mcp` command with your client; see [MCP setup](docs/SETUP.md#mcp-setup).
 
-The standalone installer can do both. Run the command for your client:
+For Codex or Claude, the installer can install the skill and register MCP together. Pi uses the
+CLI skill:
 
 ```bash
 ./scripts/install-beam.sh --codex --codex-mcp
 ./scripts/install-beam.sh --claude --claude-mcp
-./scripts/install-beam.sh --pi
+./scripts/install-beam.sh --pi # CLI skill only
 ```
+
+At the toolchain prompt, select the Lean versions used by your projects. The default is Beam's
+own pinned toolchain, which may differ from your project's version.
 
 The standalone installer puts commands in `~/.local/bin`; make sure that directory is on `PATH`.
 Beam is installed once for your agent tools; you do not add it to each project's lakefile.
@@ -104,8 +111,11 @@ build missing Beam components.
 
 ### Verify the connection
 
-Restart your agent client after installation or a registration change so it loads the selected
-skills and server. From the Lean project, use `lean-beam --version` and `lean-beam doctor` to
+Restart your agent client after installation or a registration change so it reloads its server
+configuration. In a new agent session, confirm that the Lean skill is available.
+[Client configuration checks](docs/SETUP.md#inspect-client-configuration) can
+diagnose missing files but cannot prove that a running client loaded the skill.
+From the Lean project, use `lean-beam --version` and `lean-beam doctor` to
 inspect the selected installation and project setup. For bundled commands, use the same
 `elan run SELECTOR` prefix described in [bundled setup](docs/SETUP.md#use-beam-bundled-with-lean).
 

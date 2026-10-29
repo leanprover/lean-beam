@@ -10,6 +10,22 @@ a source-editing command.
 All requests follow Beam's current [soft cancellation policy](STATUS.md#soft-cancellation).
 Cancellation may wait for active work to settle and does not undo committed effects.
 
+## Reading Results And Errors
+
+The examples below use CLI field paths. MCP exposes the same operation fields in a different
+envelope:
+
+| Value | CLI | MCP tool result |
+| --- | --- | --- |
+| Successful operation fields | `result` | `structuredContent`, with `isError` absent or false |
+| Broker failure fields | `error` with `ok: false` | `structuredContent`, with `isError: true` |
+| Failure details or committed checkpoint receipt | `error.data` | `structuredContent.data` |
+
+Thus `error.data.saved` below means `structuredContent.data.saved` for an MCP tool failure.
+Check the error code and any retained receipt before retrying an operation that may have committed.
+JSON-RPC transport errors use their protocol-level `error` envelope; they are distinct from MCP
+tool failures. Neither a successful transport nor an empty goal list alone establishes proof acceptance.
+
 ## Command Model
 
 `lean-beam update` is the cheap on-disk edit observation for a Lean file. It reads the current file,
@@ -329,9 +345,9 @@ not independent proof confirmation.
 
 If no successful clean CI result is available, or if server-sensitive elaboration is suspected,
 follow the [local batch-build procedure](../skills/lean-beam/references/workflow-details.md#before-a-local-batch-build)
-once. Stop the CLI owner through its original installation and session selection, or drop the MCP
-workspace, and have its owner or supervisor confirm that all producers have stopped and cleanup
-completed. Only then discard development checkpoints and build. If cleanup is pending, failed,
+once. Stop all affected CLI owners through their original installations and session selections,
+and drop any affected MCP workspaces. Have their owners or supervisors confirm that all producers
+have stopped and cleanup completed. Only then discard development checkpoints and build. If cleanup is pending, failed,
 or unconfirmed, stop and coordinate; a shutdown acknowledgement or timeout is not confirmation.
 
 This is not a required step after every Beam checkpoint; it is the local fallback when no
@@ -439,16 +455,18 @@ file-progress observations when Lean publishes them. Without a token, eligible c
 best-effort delayed `beam.status` notice. The operation matrix, delay, and logging-policy rules are
 defined in [MCP.md](MCP.md#display-control-matrix).
 
-Broker `fileProgress` and MCP `document_progress` fields contain compact Lean processing-range observations.
+Broker `fileProgress` and public `document_progress` fields contain compact processing metadata.
 They always report `updates` and `done`; when Lean publishes range-bearing progress, they may also
-report `rangeStartLine` and/or `rangeEndLine`; MCP spells these `range_start_line` and
+report `rangeStartLine` and/or `rangeEndLine`; CLI and MCP spell these `range_start_line` and
 `range_end_line`. The range end is the upper line bound reported by
 Lean's progress ranges, not the source file's line count; diagnostics may legitimately refer to
 lines beyond it. The operation result retains the latest observed counters and ranges available when
 that response is constructed, so they may be newer than the last live broker event or throttled MCP
 notification. An operation can also reuse a previously observed value without emitting live file
-progress; `updates` is not a count of work performed by the current request. When observed,
-`document_progress` appears on both CLI and MCP operation results, including operations such as
+progress; `updates` is not a count of work performed by the current request. Tracked requests can
+also start with default values before any notification, and the diagnostics barrier can derive
+`done` from its completed snapshot. The presence of `done: true` alone is not a readiness verdict.
+`document_progress` can appear on both CLI and MCP operation results, including operations such as
 `runAt`. It may be partial and does not imply that the operation waited for the whole file to finish.
 Use these fields for coarse UI progress only. Final machine decisions should use the readiness and
 diagnostic result fields.
@@ -611,10 +629,20 @@ header snapshot. Beam combines those imports with broker sync/save history and r
 dependency when the dependency's observed source
 change or saved checkpoint is newer than the target file's last successful sync boundary. It sets
 `needs_save=true` when the latest saved checkpoint is older than the latest observed source change.
-`recovery_plan` is an ordered array of copyable command strings for Beam dependency recovery:
-save only the listed dependencies needing checkpoints, then refresh the target. Run each step only
-if the preceding step succeeded. After refresh succeeds, inspect its diagnostics and readiness
-before continuing. The plan does not include an external build.
+`recovery_plan` remains an ordered array of CLI command strings describing dependency recovery:
+save only the listed dependencies needing checkpoints, then refresh the target. Use `save_deps`
+and `target_path` for the paths, and execute the operations through the integration that owns the
+workspace:
+
+- **CLI:** use the owning installation, root, and session selection. Pass paths as safely quoted
+  arguments; do not evaluate or paste unchecked plan strings as shell code. The strings do not
+  escape arbitrary shell-sensitive path characters.
+- **MCP:** call `lean_save` for each path in `save_deps`, then `lean_refresh` for `target_path`,
+  with the same `workspace` on every call. Read these fields from `structuredContent.data` when
+  `isError: true`. A CLI command cannot repair the MCP server's separate workspace state.
+
+Run each step only if the preceding step succeeded. After refresh succeeds, inspect its diagnostics
+and readiness before continuing. The plan does not include an external build.
 In the stale-import wrapper scenario, `SaveSmoke/A.lean` imports `SaveSmoke/B.lean`; the plan is
 asserted in [`test-beam-wrapper-diagnostics.sh`](../tests/test-beam-wrapper-diagnostics.sh):
 
@@ -631,9 +659,9 @@ asserted in [`test-beam-wrapper-diagnostics.sh`](../tests/test-beam-wrapper-diag
 
 If a recovery step fails, saving is unsupported, or the barrier remains incomplete, stop retries
 and inspect the upstream diagnostics and project configuration. A missing plan is not a reason to
-guess dependencies or append a build command. If an external build is required, first stop the CLI
-owner or drop the MCP workspace and confirm completed cleanup with its owner or supervisor. Build
-only after cleanup, then recreate the session/workspace; follow the
+guess dependencies or append a build command. If an external build is required, first stop all
+affected CLI owners and drop any affected MCP workspaces. Confirm cleanup with their owners or
+supervisors. Build only after cleanup, then recreate the sessions/workspaces; follow the
 [local build procedure](../skills/lean-beam/references/workflow-details.md#before-a-local-batch-build)
 when clean batch-build evidence is needed.
 

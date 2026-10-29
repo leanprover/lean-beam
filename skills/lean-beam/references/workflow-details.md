@@ -2,6 +2,9 @@
 
 Use this reference when the task needs more than the default loop in `SKILL.md`.
 
+Error paths use CLI notation (`error.data`). For an MCP tool failure with `isError: true`, read
+the same fields under `structuredContent.data`; JSON-RPC transport errors use a separate envelope.
+
 ## Position Semantics
 
 - `lean-beam run-at` and `lean-beam run-at-handle` take the broker document version before
@@ -56,8 +59,9 @@ Nested tactics and whitespace may select an enclosing or neighboring tactic. `go
 ### Todo ranges and point queries
 
 `todo FILE VERSION` queries the whole file. Supply `SL SC EL EC` to restrict the query to a range.
-When an item includes `run_at_position`, a probe there starts from its `proof_state`. The field
-is omitted when no source position selects that goal; edit the source instead in that case.
+For a goal-bearing item with both `run_at_position` and `proof_state`, a probe there selects those
+goals. Diagnostics and code actions can have a position without a proof state. When no position
+selects the item's goals, the field is omitted; edit the source instead.
 
 For sorries, holes, diagnostics, and incomplete proofs, a nonempty `todo` query uses half-open
 range overlap: its end is excluded. An empty range is a point query. It matches items containing
@@ -322,10 +326,12 @@ Interpretation:
   `error.data.completion_blocking_diagnostics`; the recovery hints are based on direct imports from
   Lean's accepted header snapshot and broker sync/save history, and entries in
   `completion_blocking_diagnostics` carry `completion_blocking=true`
-- `error.data.recovery_plan` is an ordered array of copyable command strings; follow the listed
-  steps after checking the current state, stopping if any step fails
-- follow `error.data.save_deps` only for the listed direct deps that still need checkpointing, then
-  `lean-beam refresh` the stale target before relying on downstream probes
+- `recovery_plan` is an ordered array of CLI command strings describing save/refresh operations.
+  Use `save_deps` and `target_path` for paths; do not evaluate unchecked plan text as shell code.
+  CLI calls must keep the owning installation, root, and session selection. For MCP, use
+  `lean_save` followed by `lean_refresh` with the same workspace, not a separate CLI session.
+- save only the listed dependencies that still need checkpoints, then refresh the target before
+  relying on downstream probes; stop if any step fails
 - after `lean-beam run-at`, `result.document_progress` may exist with `done = false`; that is normal
   because the request only waited for its own target snapshot
 - use `lean-beam hover` or `lean-beam signature-help` for semantic inspection and
@@ -347,8 +353,8 @@ diagnostics and configuration. If no plan is supplied, diagnose that failure rat
 save targets or appending a build command.
 
 External `lake build` is a separate fallback, not part of the Beam recovery plan. Before a required
-external build, stop the CLI owner or drop the MCP workspace and confirm completed cleanup through
-its owner or supervisor; see [the local build procedure](#before-a-local-batch-build). Create a
+external build, stop affected CLI owners and drop any affected MCP workspaces, then confirm cleanup
+through their owners or supervisors; see [the local build procedure](#before-a-local-batch-build). Create a
 fresh session/workspace afterward. This targeted recovery is not a full dependency scheduler.
 
 ## Cost Model
@@ -389,37 +395,38 @@ Write the on-disk document as `prefix ++ E ++ suffix`.
   not rebuild reverse dependencies and they do not turn workspace freshness into an `O(C)` problem
 - runtime lookup never builds missing components; an unavailable project target requires explicit
   installer work before normal execution can resume
-- if imported targets are stale or broken, `lean-beam sync` / `lean-beam save` fail instead of silently
-  paying dependency-cone rebuild cost
+- initial Lake setup may build missing or stale imports. A retained worker can instead report
+  stale direct dependencies; follow its recovery plan before relying on downstream probes
 
 ## Dependency Edits And Rebuild Boundary
 
-If you edit `A.lean` and `B.lean` imports `A.lean`, a successful probe in `B.lean` is not enough by
-itself to prove the dependency cone is fresh.
+If `B.lean` imports `A.lean`, checkpoint the edited dependency before refreshing the importer.
+Run these through the same CLI installation, root, and session selection:
 
 ```bash
-# with `lean-beam serve` running in another process
-# make a real edit in A.lean and save the source file to disk
 lean-beam sync "A.lean"
-b_update="$(lean-beam update "B.lean")"
-b_version="$(printf '%s\n' "$b_update" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["version"])')"
-lean-beam run-at "B.lean" "$b_version" 12 2 "#check someNameFromA"
 ```
 
-Rules:
+Inspect the sync result. Stop if it failed or `readiness.save_ready` is false. Only then checkpoint
+the dependency and refresh the importer:
 
-- the downstream probe in `B.lean` may still be a bad basis for trust after editing `A.lean`
-- after dependency edits, prefer a rebuild or checkpoint before trusting downstream results
-- once the task is “refresh a dependency cone” rather than “probe one edited file”, stop and run
-  `lake build`
+```bash
+lean-beam save "A.lean" &&
+  lean-beam refresh "B.lean"
+```
 
-Use `lake build` when:
+Stop on any failure. After refresh succeeds, inspect `B.lean`'s diagnostics and readiness and use
+its returned version for later probes. Refresh reads saved source, so save any edits to `B.lean`
+first. A checkpoint alone does not reload an already-open importer.
 
-- you edited a dependency and now need trustworthy downstream results
-- repeated probing is no longer clarifying the situation
-- stale-state or rebuild trouble keeps appearing
-- CI is validating the project from a clean checkout or clean Lake build directory
-- no successful clean CI result is available, or server-sensitive elaboration is suspected
+For MCP, use `lean_sync` and `lean_save` for `A.lean`, then `lean_refresh` for `B.lean`, passing
+that server's same `workspace` on every call. Inspect each result before continuing. CLI commands
+operate on a different runtime and cannot update the MCP workspace's retained state.
+
+This checks the chosen importer, not the whole dependency cone. Repeat in dependency order for
+other affected files you intend to use. For full project evidence, prefer a clean CI `lake build`;
+if a local batch check is needed, follow the cleanup procedure below. Do not start an external
+build while Beam retains the affected workspace.
 
 ### Before a local batch build
 
@@ -435,6 +442,9 @@ the shutdown request; it does not establish completed cleanup. Before continuing
 `serve` owner or its supervisor confirm that the owner, daemon, and all backend/helper producers
 have stopped and cleanup completed successfully. For MCP, drop the workspace and establish cleanup
 completion through the owning server or its supervisor instead.
+
+Repeat this for every affected CLI owner and MCP workspace. They have separate runtimes;
+completion in one does not establish cleanup of the others.
 
 If cleanup is pending, failed, or cannot be confirmed, stop and coordinate with the owner. Do not
 clean or rebuild. A stop acknowledgement, cancellation, or elapsed time is not evidence of
