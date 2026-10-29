@@ -768,6 +768,51 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   requireFieldAbsent "semantic failure" "proof_state" cliFailure
   requireFieldAbsent "semantic failure" "next_handle" cliFailure
 
+  requireFieldAbsent "unrequested profile" "profile" cliFailure
+  let profiledResult : Beam.LSP.RunAt.Result := {
+    success := false
+    profile? := some {
+      elapsedMs := 3.5
+      spans := #[
+        { thread := 7, category := "elaborate", tag := "root", startMs := 0, durationMs := 3 },
+        { parent? := some 0, thread := 7, category := "tactic", tag := "simp",
+          startMs := 1, durationMs := 2, range? := some {
+            start := { line := 0, character := 0 }, «end» := { line := 0, character := 4 } } }
+      ]
+    }
+  }
+  let profiledResponse := Beam.Broker.Response.success <| toJson profiledResult
+  let mcpProfile ← expectToolOk "MCP profiled failure" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) profiledResponse
+  let cliProfileEnvelope ← expectToolOk "CLI profiled failure" <|
+    (Beam.Cli.prepareOperationResponse (.broker .runAt) profiledResponse).map (·.json)
+  let cliProfile ← requireObjVal "CLI profiled envelope" "result" cliProfileEnvelope
+  require "CLI/MCP profile parity" (cliProfile == mcpProfile)
+  requireJsonBool "profiled semantic failure" "success" false cliProfile
+  let profile ← requireObjVal "profiled result" "profile" cliProfile
+  requireFieldAbsent "public profile" "elapsedMs" profile
+  requireFieldAbsent "public profile" "thresholdMs" profile
+  requireFieldAbsent "public profile" "initialThresholdMs" profile
+  requireFieldAbsent "no legacy threshold alias" "threshold_ms" profile
+  require "elapsed wall clock preserved" ((← requireObjVal "profile" "elapsed_ms" profile) == toJson (3.5 : Float))
+  requireJsonInt "initial profiling threshold" "initial_threshold_ms" 1 profile
+  requireJsonBool "profile boundedness" "truncated" false profile
+  let spans ← IO.ofExcept <| profile.getObjValAs? (Array Json) "spans"
+  require "profile spans preserved" (spans.size == 2)
+  requireFieldAbsent "root span" "parent" spans[0]!
+  requireFieldAbsent "root span" "range" spans[0]!
+  requireFieldAbsent "public span" "startMs" spans[1]!
+  requireFieldAbsent "public span" "durationMs" spans[1]!
+  requireJsonInt "child span" "parent" 0 spans[1]!
+  require "span duration preserved" ((← requireObjVal "span" "duration_ms" spans[1]!) == toJson (2 : Float))
+  let emptyProfile := Beam.Broker.Response.success <| toJson ({
+    profile? := some { elapsedMs := 0 }
+  } : Beam.LSP.RunAt.Result)
+  let projectedEmpty ← expectToolOk "empty profiling evidence" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) emptyProfile
+  let emptyEvidence ← requireObjVal "empty profile" "profile" projectedEmpty
+  require "known empty spans retained" ((← requireObjVal "empty profile" "spans" emptyEvidence) == Json.arr #[])
+
   let emptySync := Beam.Broker.Response.success <| toJson ({
     path := "Clean.lean",
     version := 1

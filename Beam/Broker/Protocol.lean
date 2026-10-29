@@ -235,6 +235,7 @@ structure CloseRequest extends RequestFile where
 structure RunAtRequest extends RequestPosition where
   text : String
   storeHandle? : Option Bool := none
+  profile? : Option Bool := none
 
 structure ReferencesRequest extends RequestPosition where
   includeDeclaration? : Option Bool := none
@@ -261,6 +262,7 @@ structure RunWithRequest where
   text : String
   storeHandle? : Option Bool := none
   linear? : Option Bool := none
+  profile? : Option Bool := none
   handle : Handle
 
 structure ReleaseRequest where
@@ -422,7 +424,7 @@ private def Op.requestFields (op : Op) : Array String :=
       #["path", "diagnosticScope", "diagnosticsInResult"]
   | .close => #["path", "diagnosticScope", "saveArtifacts"]
   | .runAt =>
-      #["path", "version", "line", "character", "text", "storeHandle"]
+      #["path", "version", "line", "character", "text", "storeHandle", "profile"]
   | .hover | .signatureHelp | .definition =>
       #["path", "version", "line", "character"]
   | .references =>
@@ -435,7 +437,7 @@ private def Op.requestFields (op : Op) : Array String :=
   | .todo =>
       #["path", "version", "range", "kinds"]
   | .runWith =>
-      #["path", "text", "storeHandle", "linear", "handle"]
+      #["path", "text", "storeHandle", "linear", "profile", "handle"]
   | .release => #["path", "handle"]
   | .initWorkspace =>
       #["workspaceMode", "root"]
@@ -475,7 +477,8 @@ private def RequestPayload.jsonFields : RequestPayload → List (String × Json)
   | .runAt request =>
       request.toRequestPosition.jsonFields ++
       [("text", toJson request.text)] ++
-      optionalJsonField "storeHandle" request.storeHandle?
+      optionalJsonField "storeHandle" request.storeHandle? ++
+      optionalJsonField "profile" request.profile?
   | .hover request | .signatureHelp request | .definition request =>
       request.jsonFields
   | .references request =>
@@ -500,6 +503,7 @@ private def RequestPayload.jsonFields : RequestPayload → List (String × Json)
       [("path", toJson request.path), ("text", toJson request.text)] ++
       optionalJsonField "storeHandle" request.storeHandle? ++
       optionalJsonField "linear" request.linear? ++
+      optionalJsonField "profile" request.profile? ++
       [("handle", toJson request.handle)]
   | .release request =>
       [("path", toJson request.path), ("handle", toJson request.handle)]
@@ -603,6 +607,7 @@ instance : FromJson Request where
             toRequestPosition := target
             text := ← requiredField j "text"
             storeHandle? := ← optionalField? (α := Bool) j "storeHandle"
+            profile? := ← optionalField? (α := Bool) j "profile"
           }
       | .hover | .signatureHelp | .definition => do
           let target ← decodeRequestPosition j
@@ -653,6 +658,7 @@ instance : FromJson Request where
             text := ← requiredField j "text"
             storeHandle? := ← optionalField? (α := Bool) j "storeHandle"
             linear? := ← optionalField? (α := Bool) j "linear"
+            profile? := ← optionalField? (α := Bool) j "profile"
             handle
           }
       | .release => do

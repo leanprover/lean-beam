@@ -23,7 +23,7 @@ import BeamTest.Broker.OutputTest
 import BeamTest.PathBoundaryTest
 
 open Lean
-open BeamTest.Broker.JsonAssert (requireJsonNull requireJsonString)
+open BeamTest.Broker.JsonAssert (requireJsonNull requireJsonString requireFieldAbsent)
 
 namespace BeamTest.Broker.CliDaemonTest
 
@@ -899,6 +899,50 @@ private def checkProjectRootSelection : IO Unit := do
     if ← root.pathExists then
       IO.FS.removeDirAll root
 
+private def checkProfileArgumentParsing : IO Unit := do
+  for (selector, args) in [
+      ("stdin", ["--stdin"]),
+      ("text-file", ["--text-file", "ProfileProof.lean"]),
+      ("raw text", ["--", "exact h"]),
+      ("argv text", ["exact", "h"])] do
+    let (enabled, remaining) ← cliValue <|
+      Beam.Cli.parseProfileArg ("--profile" :: args)
+    require s!"--profile before {selector} should enable profiling" enabled
+    require s!"--profile before {selector} should preserve the text selector" (remaining == args)
+
+  for (selector, args) in [
+      ("stdin", ["--stdin"]),
+      ("text-file", ["--text-file", "ProfileProof.lean"]),
+      ("raw text", ["--", "exact h"]),
+      ("argv text", ["exact", "h"])] do
+    let (enabled, remaining) ← cliValue <| Beam.Cli.parseProfileArg args
+    require s!"profiling should default off before {selector}" (!enabled)
+    require s!"profiling should leave {selector} unchanged when absent" (remaining == args)
+
+  for args in [["--", "ring", "--profile"], ["ring", "--profile"],
+      ["--", "--profile"], ["--stdin", "--profile"],
+      ["--text-file", "Proof.lean", "--profile"]] do
+    expectUsageContains "misplaced profiling flag should explain its position"
+      "place it before the Lean text selector" <| Beam.Cli.parseProfileArg args
+
+  for text in ["exact h --profile", "--profile\nexact h", "trace \"--profile\""] do
+    let args := ["--", text]
+    let (enabled, remaining) ← cliValue <| Beam.Cli.parseProfileArg args
+    require "profiling flag guard must not scan complete Lean text" (!enabled && remaining == args)
+    let literal ← cliValue <| Beam.Cli.parseTextArg "run-at ProfileProof.lean 1 0 0" remaining
+    require "complete Lean text must be preserved" (literal.text == text)
+
+  let (fileEnabled, fileArgs) ← cliValue <| Beam.Cli.parseProfileArg ["--text-file", "--profile"]
+  require "a profiling-looking file name must not be interpreted as a flag"
+    (!fileEnabled && fileArgs == ["--text-file", "--profile"])
+  let (enabled, literalArgs) ← cliValue <|
+    Beam.Cli.parseProfileArg ["--profile", "--", "exact h", "--profile"]
+  require "an enabled profile must leave subsequent Lean arguments unchanged"
+    (enabled && literalArgs == ["--", "exact h", "--profile"])
+
+  expectUsageContains "duplicate profiling selector should fail" "duplicate --profile" <|
+    Beam.Cli.parseProfileArg ["--profile", "--profile", "--stdin"]
+
 private def checkLeanOperationRequests : IO Unit := do
   let path := "Demo.lean"
 
@@ -912,9 +956,18 @@ private def checkLeanOperationRequests : IO Unit := do
   requireRequestJson "runAt request should share the Lean operation adapter"
     (Beam.Cli.leanRunAtRequest path 12 4 2 "exact h")
     runAtInput.toBrokerRequest
+  requireFieldAbsent "runAt should omit profiling by default" "profile"
+    (toJson <| Beam.Cli.leanRunAtRequest path 12 4 2 "exact h")
+  let profiledRunAtInput := { runAtInput with profile? := some true }
+  requireRequestJson "runAt profile selector should reach the broker request"
+    (Beam.Cli.leanRunAtRequest path 12 4 2 "exact h" (profile := true))
+    profiledRunAtInput.toBrokerRequest
   requireRequestJson "runAt handle request should share the Lean operation adapter"
     (Beam.Cli.leanRunAtRequest path 12 4 2 "exact h" (storeHandle := true))
     (runAtInput.toBrokerRequest (storeHandle := true))
+  requireRequestJson "runAt handle profile selector should reach the broker request"
+    (Beam.Cli.leanRunAtRequest path 12 4 2 "exact h" (storeHandle := true) (profile := true))
+    (profiledRunAtInput.toBrokerRequest (storeHandle := true))
   expectUsageContains "runAt missing text should fail at the CLI boundary"
     "usage: lean-beam" (Beam.Cli.parseTextArg "run-at Demo.lean 12 4 2" [])
 
@@ -968,9 +1021,18 @@ private def checkLeanOperationRequests : IO Unit := do
   requireRequestJson "runWith request should share the Lean operation adapter"
     (Beam.Cli.leanRunWithRequest path sampleBrokerHandle "simp")
     runWithInput.toBrokerRequest
+  requireFieldAbsent "runWith should omit profiling by default" "profile"
+    (toJson <| Beam.Cli.leanRunWithRequest path sampleBrokerHandle "simp")
+  let profiledRunWithInput := { runWithInput with profile? := some true }
+  requireRequestJson "runWith profile selector should reach the broker request"
+    (Beam.Cli.leanRunWithRequest path sampleBrokerHandle "simp" (profile := true))
+    profiledRunWithInput.toBrokerRequest
   requireRequestJson "runWith linear request should share the Lean operation adapter"
     (Beam.Cli.leanRunWithRequest path sampleBrokerHandle "simp" (linear := true))
     (runWithInput.toBrokerRequest (linear := true))
+  requireRequestJson "runWith linear profile selector should reach the broker request"
+    (Beam.Cli.leanRunWithRequest path sampleBrokerHandle "simp" (linear := true) (profile := true))
+    (profiledRunWithInput.toBrokerRequest (linear := true))
   expectUsageContains "runWith missing text should fail at the CLI boundary"
     "usage: lean-beam" (Beam.Cli.parseTextArg "run-with Demo.lean HANDLE" [])
 
@@ -1963,6 +2025,7 @@ def main : IO Unit := do
   checkSyncWaitSpecs
   checkCliRootParsing
   checkProjectRootSelection
+  checkProfileArgumentParsing
   checkLeanOperationRequests
   checkDiagnosticScopeArgs
   checkDaemonFailureContext

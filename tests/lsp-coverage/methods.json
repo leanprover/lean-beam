@@ -20,7 +20,8 @@
         "cancellation",
         "standard-lsp-interference",
         "mixed-concurrency",
-        "suggestion-ranges"
+        "suggestion-ranges",
+        "profiling"
       ]
     },
     {
@@ -40,7 +41,8 @@
         "document-close-invalidation",
         "standard-lsp-interference",
         "mixed-concurrency",
-        "suggestion-ranges"
+        "suggestion-ranges",
+        "profiling"
       ]
     },
     {

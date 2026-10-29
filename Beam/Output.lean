@@ -112,6 +112,7 @@ private structure RunAtBrokerResult where
   traces : Array String := #[]
   handle? : Option Beam.Broker.Handle := none
   proofState? : Option Beam.LSP.Lib.ProofState := none
+  profile? : Option Beam.LSP.RunAt.Profile.Result := none
 
 private def optionalField? [FromJson α] (json : Json) (name : String) : Except String (Option α) := do
   match json.getObjVal? name with
@@ -123,19 +124,34 @@ private def optionalField? [FromJson α] (json : Json) (name : String) : Except 
 
 private instance : FromJson RunAtBrokerResult where
   fromJson? json := do
-    requireOnlyJsonFields "runAt result" #["success", "messages", "traces", "handle", "proofState"] json
+    requireOnlyJsonFields "runAt result" #["success", "messages", "traces", "handle", "proofState", "profile"] json
     let success ← json.getObjValAs? Bool "success"
     let messages ← json.getObjValAs? (Array Beam.LSP.RunAt.Message) "messages"
     let traces ← json.getObjValAs? (Array String) "traces"
     let handle? ← optionalField? (α := Beam.Broker.Handle) json "handle"
     let proofState? ← optionalField? (α := Beam.LSP.Lib.ProofState) json "proofState"
+    let profile? ← optionalField? (α := Beam.LSP.RunAt.Profile.Result) json "profile"
     pure {
       success
       messages
       traces
       handle?
       proofState?
+      profile?
     }
+
+private def profileSpanJson (span : Beam.LSP.RunAt.Profile.Span) : Json := Json.mkObj <|
+  [("thread", toJson span.thread), ("category", toJson span.category),
+   ("tag", toJson span.tag), ("start_ms", toJson span.startMs),
+   ("duration_ms", toJson span.durationMs)] ++
+  (match span.parent? with | some parent => [("parent", toJson parent)] | none => []) ++
+  (match span.range? with | some range => [("range", toJson range)] | none => [])
+
+private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Json.mkObj [
+  ("elapsed_ms", toJson profile.elapsedMs), ("initial_threshold_ms", toJson profile.initialThresholdMs),
+  ("spans", Json.arr <| profile.spans.map profileSpanJson),
+  ("truncated", toJson profile.truncated)
+]
 
 private def runAtResultJson (result : RunAtBrokerResult) : Json := Json.mkObj <|
   [
@@ -145,6 +161,9 @@ private def runAtResultJson (result : RunAtBrokerResult) : Json := Json.mkObj <|
   ] ++
   (match result.proofState? with
   | some proofState => [("proof_state", proofStateJson proofState)]
+  | none => []) ++
+  (match result.profile? with
+  | some profile => [("profile", profileJson profile)]
   | none => []) ++
   (match result.handle? with
   | some handle => [("next_handle", toJson handle)]

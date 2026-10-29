@@ -160,6 +160,10 @@ private def runAtTextField : String × Json :=
 private def continuationTextField : String × Json :=
   ("text", Beam.JsonSchema.string "One Lean continuation command or tactic block to run from the stored handle.")
 
+private def profileField : String × Json :=
+  ("profile", Beam.JsonSchema.bool
+    "Set true to compare proof candidates and inspect elaboration costs via `elapsed_ms` and bounded `spans`. To include kernel checking and sharing, use `lean_run_at` on the complete declaration at its first doc comment, attribute, or declaration keyword. Lean failures may include a profile; parse failures do not. Source options can hide spans even when `truncated` is false; spans overlap and profiling adds overhead.")
+
 private def handleField : String × Json :=
   ("handle", Beam.JsonSchema.object "Opaque broker-wrapped Lean handle from a previous tool result.")
 
@@ -218,7 +222,7 @@ private def documentFields : List (String × Json) :=
 open Beam.JsonSchema in
 def Operation.inputSchema : Operation → Json
   | .runAt | .runAtHandle =>
-      inputObject (positionFields ++ [runAtTextField]) #["path", "version", "line", "character", "text"]
+      inputObject (positionFields ++ [runAtTextField, profileField]) #["path", "version", "line", "character", "text"]
   | .hover | .signatureHelp | .definition =>
       inputObject positionFields #["path", "version", "line", "character"]
   | .references =>
@@ -235,7 +239,7 @@ def Operation.inputSchema : Operation → Json
   | .codeActionResolve =>
       inputObject (documentFields ++ [codeActionField]) #["path", "version", "code_action"]
   | .runWith | .runWithLinear =>
-      inputObject [pathField, handleField, continuationTextField] #["path", "handle", "text"]
+      inputObject [pathField, handleField, continuationTextField, profileField] #["path", "handle", "text"]
   | .release =>
       inputObject [pathField, releaseHandleField] #["path", "handle"]
   | .update =>
@@ -266,6 +270,19 @@ private def inputHandle (j : Json) : Except String Beam.Broker.Handle := do
   let value ← inputValue j "handle" "handle returned by Beam expected"
   (fromJson? value).mapError fun reason => s!"handle: handle returned by Beam expected; {reason}"
 
+private def optionalField? [FromJson α] (j : Json) (field : String) : Except String (Option α) := do
+  match j.getObjVal? field with
+  | .ok value =>
+      match fromJson? value with
+      | .ok decoded => pure (some decoded)
+      | .error err => throw s!"invalid '{field}': {err}"
+  | .error _ =>
+      pure none
+
+private def optionalJsonField [ToJson α] (field : String) : Option α → List (String × Json)
+  | some value => [(field, toJson value)]
+  | none => []
+
 /-- Input for position-based Lean execution. Coordinates use LSP zero-based line/character units. -/
 structure RunAtInput where
   path : String
@@ -273,7 +290,17 @@ structure RunAtInput where
   line : Nat
   character : Nat
   text : String
-  deriving ToJson
+  profile? : Option Bool := none
+
+instance : ToJson RunAtInput where
+  toJson input := Json.mkObj <|
+    [
+      ("path", toJson input.path),
+      ("version", toJson input.version),
+      ("line", toJson input.line),
+      ("character", toJson input.character),
+      ("text", toJson input.text)
+    ] ++ optionalJsonField "profile" input.profile?
 
 instance : FromJson RunAtInput where
   fromJson? j := do
@@ -283,6 +310,7 @@ instance : FromJson RunAtInput where
       line := ← inputField j "line" "non-negative integer expected"
       character := ← inputField j "character" "non-negative integer expected"
       text := ← inputField j "text" "string expected"
+      profile? := ← optionalField? (α := Bool) j "profile"
     }
 
 /-- Input for position-based Lean inspection operations. -/
@@ -301,15 +329,6 @@ instance : FromJson PositionInput where
       line := ← inputField j "line" "non-negative integer expected"
       character := ← inputField j "character" "non-negative integer expected"
     }
-
-private def optionalField? [FromJson α] (j : Json) (field : String) : Except String (Option α) := do
-  match j.getObjVal? field with
-  | .ok value =>
-      match fromJson? value with
-      | .ok decoded => pure (some decoded)
-      | .error err => throw s!"invalid '{field}': {err}"
-  | .error _ =>
-      pure none
 
 /-- Input for Lean reference queries. -/
 structure ReferencesInput where
@@ -479,7 +498,15 @@ structure RunWithInput where
   path : String
   handle : Beam.Broker.Handle
   text : String
-  deriving ToJson
+  profile? : Option Bool := none
+
+instance : ToJson RunWithInput where
+  toJson input := Json.mkObj <|
+    [
+      ("path", toJson input.path),
+      ("handle", toJson input.handle),
+      ("text", toJson input.text)
+    ] ++ optionalJsonField "profile" input.profile?
 
 instance : FromJson RunWithInput where
   fromJson? j := do
@@ -487,6 +514,7 @@ instance : FromJson RunWithInput where
       path := ← inputField j "path" "string expected"
       handle := ← inputHandle j
       text := ← inputField j "text" "string expected"
+      profile? := ← optionalField? (α := Bool) j "profile"
     }
 
 /-- Input for explicit handle release. -/
@@ -566,6 +594,7 @@ def RunAtInput.toBrokerRequest
     character := input.character
     text := input.text
     storeHandle? := if storeHandle then some true else none
+    profile? := input.profile?
   }
 }
 
@@ -668,6 +697,7 @@ def RunWithInput.toBrokerRequest
     text := input.text
     storeHandle? := some true
     linear? := some linear
+    profile? := input.profile?
     handle := input.handle
   }
 }
