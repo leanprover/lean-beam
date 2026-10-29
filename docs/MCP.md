@@ -401,7 +401,10 @@ needed. Both commands read the current on-disk file; neither applies or recovers
 
 ### Speculative profiling
 
-The four speculative execution tools accept optional `profile: true`. The result includes
+Use optional `profile: true` on the four speculative execution tools to compare proof candidates
+and inspect elaboration costs. To include kernel checking and expression sharing, submit the complete
+declaration at its first doc comment or attribute, or at the declaration keyword if neither is present.
+Tactic-only probes do not measure those later declaration phases. The result includes
 `profile` when execution reaches elaboration, even if the Lean text fails; parse failures and
 unrequested profiling omit it. The object contains `elapsed_ms`, `initial_threshold_ms`, `spans`,
 and `truncated`. Known-empty `spans` is `[]`; that does not mean the execution took no time.
@@ -427,8 +430,10 @@ UTF-16 character offsets; its end is exclusive. A range is not a document coordi
 that Lean can map the span to a source occurrence. If the source snippet exceeds 8192 UTF-8 bytes,
 Beam omits span ranges.
 
-Profiling returns at most 1024 spans, visits at most 8192 trace nodes, and limits traversal depth to
-128. `truncated: true` means projection omitted trace nodes or clipped labels; it can also report
+Profiling returns at most 1024 spans, limits traversal visits to 8192 (including trace-state entries),
+and limits `MessageData` nesting to 128. Context and formatting wrappers count toward both traversal
+bounds, so the retained span tree can stop below depth 128. `truncated: true` means projection omitted
+trace nodes or clipped labels; it does not identify which bound was reached. It can also report
 clock-incompatible nodes as described above. These bounds limit response construction, not Lean's
 upstream trace allocation. Profiled results preserve ordinary warnings and errors in `messages`,
 but ordinary Lean trace text is suppressed from both `messages` and `traces`; `traces` is `[]`.

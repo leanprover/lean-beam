@@ -67,13 +67,21 @@ def parseTextArg (cmdHead : String) (args : List String) : CliM ParsedTextArg :=
       let some text := joinTextArgs args | throw <| invalid ()
       pure { text, source := "argv" }
 
-/-- Consume the optional profiling selector before a text input selector. -/
+/-- Consume the optional profiling selector before a text input selector.
+Reject a misplaced standalone argv flag rather than silently executing it as a Lean comment.
+Do not inspect complete text arguments, file contents, or stdin. -/
 def parseProfileArg (args : List String) : CliM (Bool × List String) := do
   match args with
   | "--profile" :: "--profile" :: _ =>
       throw <| CliFailure.usage "duplicate --profile" none
   | "--profile" :: rest => pure (true, rest)
-  | _ => pure (false, args)
+  | ["--text-file", _] => pure (false, args)
+  | _ =>
+      if args.contains "--profile" then
+        throw <| CliFailure.usage
+          "misplaced --profile: place it before the Lean text selector, for example --profile -- \"simp\". For a literal Lean comment, pass the complete text as one argument, via --stdin, or via --text-file."
+          none
+      pure (false, args)
 
 def parseJsonText (label text : String) : CliM Json := do
   match Json.parse text with

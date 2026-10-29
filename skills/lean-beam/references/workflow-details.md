@@ -85,9 +85,9 @@ printf '%s\n' "$HANDLE_JSON" | lean-beam run-with-linear "Foo.lean" - "exact tri
 printf '%s\n' "$HANDLE_JSON" | lean-beam release "Foo.lean" -
 ```
 
-For opt-in elaboration timing, place `--profile` immediately before the text selector. Text after
-the selector is Lean input; an appended `--profile` may be parsed as Lean text or a comment, not as
-the Beam option.
+For opt-in elaboration timing, place `--profile` immediately before the text selector. When profiling
+is off, a standalone `--profile` argument after the text selector, including `--`, is a usage error.
+Beam does not scan occurrences inside a complete Lean text argument, stdin, or file contents.
 
 ```bash
 lean-beam run-at "Foo.lean" <version> <line> <character> --profile -- "simp"
@@ -133,8 +133,9 @@ a document position or a guaranteed mapping to a source occurrence. If the sourc
 Profiled results retain ordinary warnings and errors, but suppress ordinary Lean trace text from
 both `messages` and `traces`; `traces` is `[]`. Each continuation profile measures only that call,
 not earlier work represented by its handle. Nested and parallel spans overlap, so do not sum their
-durations. The profile has at most 1024 spans, 8192 visited trace nodes, and depth 128; these limits
-do not bound Lean's trace allocation. Profiling adds overhead. For candidate comparisons, keep the
+durations. The profile has at most 1024 spans, 8192 traversal visits (including trace-state entries),
+and `MessageData` nesting depth 128. Context and formatting wrappers count, so span depth can be lower.
+These limits do not bound Lean's trace allocation. Profiling adds overhead. For candidate comparisons, keep the
 same snapshot or handle and loaded environment, repeat the comparison, and check the candidate with
 profiling disabled before treating a speed difference as an optimization.
 

@@ -79,7 +79,7 @@ def usage (maintenance : List String) : String :=
     "Separate run-at calls are independent probes on the broker document version they name.",
     "For exact speculative chaining, use run-at-handle and then run-with / run-with-linear.",
     "Optional --profile adds request-local re-elaboration timing; spans may overlap or be partial.",
-    "Place --profile before --stdin, --text-file, or --; text after a selector is Lean input.",
+    "Place --profile before --stdin, --text-file, or --; a stray standalone --profile is a usage error when profiling is off.",
     "See skills/lean-beam/references/workflow-details.md for timing scope and interpretation.",
     "For multiline text-carrying Lean probes, prefer --stdin or --text-file <path>; use -- before",
     "text that itself starts with --.",

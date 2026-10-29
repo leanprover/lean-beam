@@ -919,11 +919,26 @@ private def checkProfileArgumentParsing : IO Unit := do
     require s!"profiling should default off before {selector}" (!enabled)
     require s!"profiling should leave {selector} unchanged when absent" (remaining == args)
 
-  let (enabled, literalArgs) ← cliValue <| Beam.Cli.parseProfileArg ["--", "--profile"]
-  require "a profile-looking token after -- should remain source text" (!enabled)
-  require "the -- delimiter and its text should be preserved" (literalArgs == ["--", "--profile"])
-  let literal ← cliValue <| Beam.Cli.parseTextArg "run-at ProfileProof.lean 1 0 0" literalArgs
-  require "--profile after -- should reach the Lean text unchanged" (literal.text == "--profile")
+  for args in [["--", "ring", "--profile"], ["ring", "--profile"],
+      ["--", "--profile"], ["--stdin", "--profile"],
+      ["--text-file", "Proof.lean", "--profile"]] do
+    expectUsageContains "misplaced profiling flag should explain its position"
+      "place it before the Lean text selector" <| Beam.Cli.parseProfileArg args
+
+  for text in ["exact h --profile", "--profile\nexact h", "trace \"--profile\""] do
+    let args := ["--", text]
+    let (enabled, remaining) ← cliValue <| Beam.Cli.parseProfileArg args
+    require "profiling flag guard must not scan complete Lean text" (!enabled && remaining == args)
+    let literal ← cliValue <| Beam.Cli.parseTextArg "run-at ProfileProof.lean 1 0 0" remaining
+    require "complete Lean text must be preserved" (literal.text == text)
+
+  let (fileEnabled, fileArgs) ← cliValue <| Beam.Cli.parseProfileArg ["--text-file", "--profile"]
+  require "a profiling-looking file name must not be interpreted as a flag"
+    (!fileEnabled && fileArgs == ["--text-file", "--profile"])
+  let (enabled, literalArgs) ← cliValue <|
+    Beam.Cli.parseProfileArg ["--profile", "--", "exact h", "--profile"]
+  require "an enabled profile must leave subsequent Lean arguments unchanged"
+    (enabled && literalArgs == ["--", "exact h", "--profile"])
 
   expectUsageContains "duplicate profiling selector should fail" "duplicate --profile" <|
     Beam.Cli.parseProfileArg ["--profile", "--profile", "--stdin"]
