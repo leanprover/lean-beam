@@ -5,7 +5,7 @@
 interface:
   display_name: "Lean Beam"
   short_description: "Lean probes, sync, and exact chaining"
-  default_prompt: "Use $lean-beam on an external Lean project for isolated on-disk Lean probes through beam; start lean-beam serve and keep it running while using wrapper commands, use lean-beam sync after real edits, do not assume separate lean-beam run-at calls chain, and use pre-stable handle workflows only when exact speculative continuation matters."
+  default_prompt: "Use $lean-beam on an external Lean project for isolated on-disk Lean probes. Prefer connected Beam MCP tools; for CLI commands, start lean-beam serve and keep it running. Sync after real edits, do not assume separate probes chain, and use pre-stable handles only when exact speculative continuation matters."
 
 policy:
   allow_implicit_invocation: true
