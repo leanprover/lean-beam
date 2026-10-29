@@ -12,6 +12,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- `sync` and `refresh` now return `internalError` when a diagnostic burst exhausts pending
+  delivery capacity between complete output frames, rather than losing the terminal response.
+  Existing delivery budgets remain unchanged
+  ([#412](https://github.com/leanprover/lean-beam/pull/412), @ejgallego).
 - Clarify that installer skill and MCP setup summaries describe only actions performed during
   the current run, so skipped registration does not imply that existing client setup is absent
   ([#394](https://github.com/leanprover/lean-beam/pull/394), @ejgallego).
