@@ -248,6 +248,9 @@ jobs:
       - name: Shell Lint
         run: bash scripts/lint-shell.sh
 
+      - name: Task Harness Test
+        run: bash tests/test-codex-harness.sh
+
   lsp:
     name: lsp (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

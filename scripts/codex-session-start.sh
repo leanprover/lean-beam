@@ -57,7 +57,7 @@ main() {
   tracked_dirty="$(tracked_dirty_count)"
 
   if [[ "${BEAM_CODEX_ALLOW_PRIMARY_WORKTREE:-0}" != "1" && "${current}" == "${primary}" ]]; then
-    die "refusing to start a new Codex task from the primary checkout ${primary}; use ./scripts/codex-harness.sh session start <task-id> instead"
+    die "refusing to start a new agent task from the primary checkout ${primary}; use ./scripts/codex-harness.sh session start <task-id> instead"
   fi
 
   printf 'repo root: %s\n' "${current}"
