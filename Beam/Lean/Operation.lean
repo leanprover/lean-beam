@@ -162,7 +162,7 @@ private def continuationTextField : String × Json :=
 
 private def profileField : String × Json :=
   ("profile", Beam.JsonSchema.bool
-    "When true, collect bounded timing details for this execution. Profiling adds overhead, and wall-clock spans may overlap.")
+    "Set true to include this call's wall-clock `elapsed_ms` and bounded `spans`. Lean failures may include a profile; parse failures do not. Lean profiler options can hide spans without setting `truncated`; spans overlap and profiling adds overhead.")
 
 private def handleField : String × Json :=
   ("handle", Beam.JsonSchema.object "Opaque broker-wrapped Lean handle from a previous tool result.")

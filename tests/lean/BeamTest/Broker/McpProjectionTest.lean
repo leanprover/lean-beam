@@ -792,8 +792,10 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   let profile ← requireObjVal "profiled result" "profile" cliProfile
   requireFieldAbsent "public profile" "elapsedMs" profile
   requireFieldAbsent "public profile" "thresholdMs" profile
+  requireFieldAbsent "public profile" "initialThresholdMs" profile
+  requireFieldAbsent "no legacy threshold alias" "threshold_ms" profile
   require "elapsed wall clock preserved" ((← requireObjVal "profile" "elapsed_ms" profile) == toJson (3.5 : Float))
-  requireJsonInt "profile threshold" "threshold_ms" 1 profile
+  requireJsonInt "initial profiling threshold" "initial_threshold_ms" 1 profile
   requireJsonBool "profile boundedness" "truncated" false profile
   let spans ← IO.ofExcept <| profile.getObjValAs? (Array Json) "spans"
   require "profile spans preserved" (spans.size == 2)

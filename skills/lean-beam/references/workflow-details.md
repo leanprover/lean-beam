@@ -85,7 +85,9 @@ printf '%s\n' "$HANDLE_JSON" | lean-beam run-with-linear "Foo.lean" - "exact tri
 printf '%s\n' "$HANDLE_JSON" | lean-beam release "Foo.lean" -
 ```
 
-For opt-in elaboration timing, place `--profile` immediately before the text selector:
+For opt-in elaboration timing, place `--profile` immediately before the text selector. Text after
+the selector is Lean input; an appended `--profile` may be parsed as Lean text or a comment, not as
+the Beam option.
 
 ```bash
 lean-beam run-at "Foo.lean" <version> <line> <character> --profile -- "simp"
@@ -93,15 +95,48 @@ lean-beam run-at-handle "Foo.lean" <version> <line> <character> --profile --text
 lean-beam run-with "Foo.lean" --handle-file handle.json --profile -- "exact trivial"
 ```
 
-`run-with-linear` accepts the same flag; MCP uses `profile: true`. For a complete declaration,
-select its start and submit the declaration text. For a whole tactic proof, select the first tactic's
-before-state and submit the tactic block without `by`. Inspect `success` and the ordinary messages
-first, then `profile.elapsed_ms` and `profile.spans`. Parse failures have no profile. Timings measure
-re-elaboration in the loaded environment, not the original file or a cold build; nested and parallel
-spans overlap. `truncated` reports bounded output, and profiling suppresses rendered `traces`.
-Output is limited to 1024 spans, 8192 visited trace nodes, and depth 128; these limits do not bound
-Lean’s trace allocation. Keep profiling optional when comparing proof candidates, because
-instrumentation adds overhead.
+`run-with-linear` accepts the same flag; MCP uses `profile: true`. To profile a complete declaration,
+select its leading doc comment or first attribute, whichever comes first; if neither is present,
+select the declaration start. Submit the comment, attributes, and full declaration so their work is
+included. Selecting the theorem keyword after its attribute may be too late: Lean can report that the
+declaration “has already been declared.” For proof-only timing, select the first tactic's before-state
+and submit the tactic block without `by`.
+
+For example, select the first `/` below and submit the entire block to include its documentation,
+attribute, header, and proof:
+
+```lean
+/-- Right addition of zero. -/
+@[simp]
+theorem demo_add_zero (n : Nat) : n + 0 = n := by
+  rfl
+```
+
+Inspect `success` and ordinary warnings/errors first, then `profile.elapsed_ms` and `profile.spans`.
+Parse failures have no profile; a Lean failure after elaboration can have one. `elapsed_ms` is wall
+time for speculative re-elaboration in the loaded environment, not the original file, a cold build,
+or native CPU time. It starts after parsing and ends after request-owned elaboration settles.
+`initial_threshold_ms` is Beam's initial 1 ms trace threshold, not a guarantee of the effective
+threshold: submitted Lean code or metaprograms may change profiler options. Span data can therefore
+be partial even when `truncated` is false. `truncated: true` means projection omitted nodes or clipped
+labels, including nodes whose clock is incompatible with the request's wall clock; false does not
+prove complete trace coverage.
+
+Each span's `thread`, `category`, and `tag` are raw Lean trace identifiers, not stable source
+identifiers or proof-goal names. `start_ms` and `duration_ms` are timing fields; `start_ms` is
+relative to the profile interval. `parent`, when present, indexes the nearest retained ancestor in
+this response's `spans` array. `range`, when present, is a half-open range in the submitted text,
+using zero-based lines and zero-based UTF-16 character offsets. Its end is exclusive. A range is not
+a document position or a guaranteed mapping to a source occurrence. If the source snippet exceeds
+8192 UTF-8 bytes, ranges are omitted. Do not invent ranges for child spans that lack them.
+
+Profiled results retain ordinary warnings and errors, but suppress ordinary Lean trace text from
+both `messages` and `traces`; `traces` is `[]`. Each continuation profile measures only that call,
+not earlier work represented by its handle. Nested and parallel spans overlap, so do not sum their
+durations. The profile has at most 1024 spans, 8192 visited trace nodes, and depth 128; these limits
+do not bound Lean's trace allocation. Profiling adds overhead. For candidate comparisons, keep the
+same snapshot or handle and loaded environment, repeat the comparison, and check the candidate with
+profiling disabled before treating a speed difference as an optimization.
 
 Short search helper:
 

@@ -34,3 +34,8 @@ theorem existingProfiledDeclaration : True ∧ True := by
 
 example : Nat := by
   exact (sorry : Nat) -- profiled term placeholder
+
+/-- Profiling includes this documentation and attribute when the full command is submitted. -/
+@[simp]
+theorem profiledAnnotatedDeclaration (n : Nat) : n + 0 = n := by
+  rfl

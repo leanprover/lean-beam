@@ -20,7 +20,7 @@ private def profileOf (result : Beam.LSP.RunAt.Result) : ScenarioM Beam.LSP.RunA
     | throw <| IO.userError s!"missing profile: {(toJson result).compress}"
   require (profile.elapsedMs > 0) "profile elapsed time must be positive"
   require (!profile.truncated) "small profile unexpectedly truncated"
-  require (profile.thresholdMs == 1) "profile threshold changed"
+  require (profile.initialThresholdMs == 1) "initial profiling threshold changed"
   for i in [:profile.spans.size] do
     let span := profile.spans[i]!
     require (span.startMs >= 0 && span.durationMs >= 0) "negative span time"
@@ -67,6 +67,15 @@ def checkProjection : IO Unit := do
   let depthBounded := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := deep } }] ""
   require depthBounded.truncated "deep profile did not report truncation"
+  let longLabels : MessageData := .trace {
+    cls := Name.mkSimple ("".pushn 'c' 200), tag := "".pushn 't' 300
+    startTime := 1.1, stopTime := 1.9
+  } label #[]
+  let clipped := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
+    #[{ state with traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := longLabels } }] ""
+  require (clipped.truncated && clipped.spans.size == 1 &&
+      clipped.spans[0]!.category.length == 160 && clipped.spans[0]!.tag.length == 256)
+    "label clipping was not bounded and reported independently of the span budget"
   let old : MessageData := .trace { cls := `inherited, startTime := 0.1, stopTime := 0.2 } label #[]
   let filtered := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := old } }] ""
@@ -102,6 +111,26 @@ def checkProjection : IO Unit := do
   require (visitBounded.truncated && visitBounded.spans.isEmpty)
     "projection exceeded its visited-node budget"
   require (!(← forced.get)) "visited-node bounding evaluated a lazy trace label"
+
+  -- Heartbeat values can accidentally lie inside a wall-clock interval. Their recorded options,
+  -- not those numeric bounds, determine whether they may be presented as milliseconds.
+  let env ← mkEmptyEnvironment
+  let wallContext : MessageDataContext := { env, mctx := {}, lctx := {}, opts := {} }
+  let heartbeatContext := { wallContext with
+    opts := ({} : Options).setBool `trace.profiler.useHeartbeats true }
+  let wallChild := MessageData.withContext wallContext child
+  let heartbeatNode := MessageData.withContext heartbeatContext <|
+    .trace { cls := `heartbeat, startTime := 1.1, stopTime := 1.9 } label #[wallChild]
+  let clocks := ({} : PersistentArray TraceElem)
+    |>.push { ref := .missing, msg := heartbeatNode }
+    |>.push { ref := .missing, msg := .withContext wallContext root }
+  let clockFiltered := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
+    #[{ state with traces := clocks }] ""
+  require (clockFiltered.truncated && clockFiltered.spans.map (·.category) == #["child", "root", "child"])
+    "projection interpreted heartbeat values as seconds or lost a wall-clock descendant"
+  require (clockFiltered.spans[0]!.parent?.isNone && clockFiltered.spans[2]!.parent? == some 1)
+    "an omitted clock scope changed retained parent relationships"
+  require (!(← forced.get)) "clock filtering evaluated a lazy trace label"
 
   let original : Options := ({} : Options)
     |>.setBool `trace.profiler false
@@ -232,6 +261,39 @@ def checkProofs : ScenarioM Unit := do
   require (!parsed.success && parsed.profile?.isNone) "parse failure must not claim execution evidence"
   closeDoc doc
 
+def checkSourceOptions : ScenarioM Unit := do
+  let doc ← openDoc "tests/scenario/docs/ProfileProof.lean"
+  syncDoc doc
+  for (option, value) in [
+      ("trace.profiler.threshold", "1000"),
+      ("trace.profiler", "false"),
+      ("trace.profiler.useHeartbeats", "true")] do
+    -- Exercise actual Lean option scopes on both tactic and asynchronous command producers.
+    for command in [false, true] do
+      let body := s!"set_option {option} {value} in\n  profile_left\nprofile_right\ntrivial"
+      let text := if command then
+          s!"set_option {option} {value} in\nexample : True := by profile_left; trivial"
+        else body
+      let result ← awaitResult <| ← sendRunAt doc {
+        line := if command then 22 else 25, character := if command then 0 else 2
+        text, profile := true, storeHandle := true
+      }
+      require result.success s!"source option changed probe result: {option}"
+      let some profile := result.profile? | throw <| IO.userError "source option lost wall-clock total"
+      require (profile.elapsedMs > 0 && profile.initialThresholdMs == 1)
+        "source option changed initial settings or independent wall-clock total"
+      require (!hasCategory profile "beam.profile.left")
+        "source-suppressed or heartbeat scope was presented as wall-clock timing"
+      if !command then
+        require (hasCategory profile "beam.profile.right") "source scope leaked into later timing"
+      let some handle := result.handle? | throw <| IO.userError "missing option-scope continuation"
+      let text := if command then "profile_check_command" else "profile_check_off"
+      let continued ← awaitResult <| ← runWithHandle doc handle { text }
+      require (continued.success && continued.profile?.isNone && continued.traces.isEmpty)
+        "source profiling option or traces leaked into a continuation"
+      releaseHandle doc handle
+  closeDoc doc
+
 def checkCommands : ScenarioM Unit := do
   let doc ← openDoc "tests/scenario/docs/ProfileProof.lean"
   syncDoc doc
@@ -275,6 +337,17 @@ def checkCommands : ScenarioM Unit := do
   let failure ← awaitResult failed
   require (!failure.success && failure.handle?.isNone) "expected failed async theorem with rollback"
   require (hasCategory (← profileOf failure) "beam.profile.left") "failed theorem lost async profile"
+  let source ← IO.FS.readFile "tests/scenario/docs/ProfileProof.lean"
+  let some (_, annotatedLine) := source.splitOn "\n" |>.zipIdx |>.find? (fun (text, _) =>
+      text.startsWith "/-- Profiling includes this documentation")
+    | throw <| IO.userError "missing annotated declaration start"
+  let annotated ← awaitResult <| ← sendRunAt doc {
+    line := annotatedLine, character := 0
+    text := "/-- Profiling includes this documentation and attribute when the full command is submitted. -/\n@[simp]\ntheorem profiledAnnotatedDeclaration (n : Nat) : n + 0 = n := by\n  rfl"
+    profile := true
+  }
+  require annotated.success "profiling a documented/attributed declaration used the wrong snapshot"
+  let _ ← profileOf annotated
   closeDoc doc
 
 def checkCancellationAndStaleness : ScenarioM Unit := do
@@ -306,6 +379,7 @@ def checkCancellationAndStaleness : ScenarioM Unit := do
 def run : ScenarioM Unit := do
   checkProjection
   checkProofs
+  checkSourceOptions
   checkCommands
   checkCancellationAndStaleness
 

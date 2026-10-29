@@ -148,7 +148,7 @@ private def profileSpanJson (span : Beam.LSP.RunAt.Profile.Span) : Json := Json.
   (match span.range? with | some range => [("range", toJson range)] | none => [])
 
 private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Json.mkObj [
-  ("elapsed_ms", toJson profile.elapsedMs), ("threshold_ms", toJson profile.thresholdMs),
+  ("elapsed_ms", toJson profile.elapsedMs), ("initial_threshold_ms", toJson profile.initialThresholdMs),
   ("spans", Json.arr <| profile.spans.map profileSpanJson),
   ("truncated", toJson profile.truncated)
 ]

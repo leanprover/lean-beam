@@ -26,12 +26,13 @@ structure Span where
 Span durations overlap and must not be summed to obtain `elapsedMs`. -/
 structure Result where
   elapsedMs : Float
-  thresholdMs : Nat := 1
+  /-- The collection threshold installed at request start; nested Lean scopes can override it. -/
+  initialThresholdMs : Nat := 1
   spans : Array Span := #[]
   truncated : Bool := false
   deriving FromJson, ToJson
 
-def thresholdMs : Nat := 1
+def initialThresholdMs : Nat := 1
 def maxSpans : Nat := 1024
 def maxVisited : Nat := 8192
 def maxDepth : Nat := 128
@@ -41,7 +42,7 @@ private def maxSnippetSourceBytes : Nat := 8192
 retention switch; Beam never calls the frontend's profile file writer or HTTP server. -/
 def options (opts : Options) : Options :=
   opts.setBool `trace.profiler true
-    |>.set `trace.profiler.threshold thresholdMs
+    |>.set `trace.profiler.threshold initialThresholdMs
     |>.setBool `trace.profiler.useHeartbeats false
     |>.set `trace.profiler.output ("")
     |>.setBool `trace.profiler.serve false
@@ -132,7 +133,7 @@ private def snippetRange? (text : String) (ref : Syntax) : Option Lean.Lsp.Range
   return { start := fileMap.utf8PosToLspPos start, «end» := fileMap.utf8PosToLspPos stop }
 
 private def visit (origin stop : Float) (thread : UInt64) (fuel : Nat)
-    (parent? : Option Nat) (range? : Option Lean.Lsp.Range) (msg : MessageData) :
+    (heartbeatClock : Bool) (parent? : Option Nat) (range? : Option Lean.Lsp.Range) (msg : MessageData) :
     StateM Projection Unit := do
   let state ← get
   if state.visited >= maxVisited || state.spans.size >= maxSpans then
@@ -147,7 +148,12 @@ private def visit (origin stop : Float) (thread : UInt64) (fuel : Nat)
       let mut parent? := parent?
       -- Exclude untimed nodes and invalid intervals. The request-clock bounds also prevent traces
       -- inherited from a saved snapshot from being presented as work done by this request.
-      if data.startTime >= origin && data.stopTime >= data.startTime && data.stopTime <= stop then
+      -- TraceData has no clock tag. Lean's message context records the surrounding options;
+      -- never reinterpret a known heartbeat-clock node as seconds, even if its numbers happen
+      -- to lie in the request interval. A child's own context can restore wall-clock collection.
+      if heartbeatClock then
+        modify fun s => { s with truncated := true }
+      else if data.startTime >= origin && data.stopTime >= data.startTime && data.stopTime <= stop then
         let index := (← get).spans.size
         let (category, categoryTruncated) := boundedNameString data.cls 160
         let tag := (data.tag.take 256).toString
@@ -167,12 +173,13 @@ private def visit (origin stop : Float) (thread : UInt64) (fuel : Nat)
           break
         -- Nested MessageData does not retain a trustworthy source reference on all supported
         -- Lean versions. Do not copy an enclosing range onto a child.
-        visit origin stop thread fuel parent? none child
-    | .withContext _ msg | .withNamingContext _ msg | .nest _ msg | .group msg
-    | .tagged _ msg | .ofWidget _ msg => visit origin stop thread fuel parent? range? msg
+        visit origin stop thread fuel heartbeatClock parent? none child
+    | .withContext context msg => visit origin stop thread fuel (trace.profiler.useHeartbeats.get context.opts) parent? range? msg
+    | .withNamingContext _ msg | .nest _ msg | .group msg
+    | .tagged _ msg | .ofWidget _ msg => visit origin stop thread fuel heartbeatClock parent? range? msg
     | .compose left right =>
-      visit origin stop thread fuel parent? range? left
-      visit origin stop thread fuel parent? range? right
+      visit origin stop thread fuel heartbeatClock parent? range? left
+      visit origin stop thread fuel heartbeatClock parent? range? right
     | _ => pure ()
 
 /-- Project a bounded forest without evaluating lazy labels or pretty-printing expressions.
@@ -190,11 +197,11 @@ def collect (startNs stopNs : Nat) (states : Array TraceState) (text : String) :
         if (← get).visited >= maxVisited || (← get).spans.size >= maxSpans then
           modify fun s => { s with truncated := true }
           return
-        visit origin stop state.tid maxDepth none (snippetRange? text trace.ref) trace.msg
+        visit origin stop state.tid maxDepth false none (snippetRange? text trace.ref) trace.msg
   let (_, projection) := project.run {}
   return {
     elapsedMs := (stopNs - startNs).toFloat / 1000000
-    thresholdMs
+    initialThresholdMs
     spans := projection.spans
     truncated := projection.truncated
   }

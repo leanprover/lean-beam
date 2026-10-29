@@ -399,24 +399,43 @@ first edit and save the Lean file with the client's normal file-editing tool. Th
 before another snapshot-bound operation, or call `lean_sync` when a diagnostics/readiness barrier is
 needed. Both commands read the current on-disk file; neither applies or recovers speculative text.
 
-The four speculative execution tools accept optional `profile: true`. The result then includes
-`profile` when execution reached elaboration, even if the Lean text failed. Parse failures and
-unrequested profiling omit it. `profile` contains `elapsed_ms`, `threshold_ms` (currently 1),
-`spans`, and `truncated`. Each span has `thread`, `category`, `tag`, `start_ms`, `duration_ms`,
-optional `parent` (an earlier span index), and optional `range` relative to the submitted text.
-Known-empty spans remain `[]`. Ranges are not document coordinates.
+### Speculative profiling
 
-This measures speculative re-elaboration in the already-loaded environment. The wall-clock interval
-starts after parsing and ends after request-owned elaboration tasks settle; it excludes snapshot
-selection, import loading, response projection, and transport. It is neither the original file's
-elaboration time nor cold-build or native CPU time. Scope intervals can overlap across nesting and
-threads: do not sum them or treat them as exclusive costs. Instrumentation itself adds overhead.
+The four speculative execution tools accept optional `profile: true`. The result includes
+`profile` when execution reaches elaboration, even if the Lean text fails; parse failures and
+unrequested profiling omit it. The object contains `elapsed_ms`, `initial_threshold_ms`, `spans`,
+and `truncated`. Known-empty `spans` is `[]`; that does not mean the execution took no time.
+
+`elapsed_ms` is wall time for speculative re-elaboration in the already-loaded environment. Its
+interval starts after parsing and ends after request-owned elaboration tasks settle; it excludes
+snapshot selection, import loading, response projection, and transport. It is not the original
+file's elaboration time, cold-build time, or native CPU time. The initial trace threshold is 1 ms;
+`initial_threshold_ms` reports that starting setting, not an effective threshold guaranteed for
+every span. Submitted Lean code and metaprograms can override `trace.profiler*` options. Beam uses
+the nearest recorded options available for each trace node. It omits nodes whose recorded clock is
+incompatible with the request's wall-clock interval and marks the profile `truncated: true`; the
+independently measured wall-clock total remains valid. Other option changes, including disabling
+profiling or changing its threshold, can suppress spans without Beam detecting the change. Therefore
+`truncated: false` is not a promise that every elaboration event was recorded.
+
+Each span has `thread`, `category`, `tag`, `start_ms`, and `duration_ms`. `thread`, `category`, and
+`tag` are raw Lean trace identifiers, not stable source identifiers or proof-goal names.
+`start_ms` and `duration_ms` are timing fields; `start_ms` is relative to the profile interval.
+Optional `parent` is the index in this response's `spans` array of the nearest retained ancestor.
+Optional `range` is a half-open range in the submitted text, using zero-based lines and zero-based
+UTF-16 character offsets; its end is exclusive. A range is not a document coordinate or a promise
+that Lean can map the span to a source occurrence. If the source snippet exceeds 8192 UTF-8 bytes,
+Beam omits span ranges.
 
 Profiling returns at most 1024 spans, visits at most 8192 trace nodes, and limits traversal depth to
-128. `truncated: true` signals that projection stopped at a limit. These bounds limit response
-construction, not Lean's upstream trace allocation. Profiling preserves ordinary diagnostics but
-returns `traces: []` instead of formatting the trace tree's lazy labels. The profiler settings and
-trace state are request-local and do not persist into follow-up handles.
+128. `truncated: true` means projection omitted trace nodes or clipped labels; it can also report
+clock-incompatible nodes as described above. These bounds limit response construction, not Lean's
+upstream trace allocation. Profiled results preserve ordinary warnings and errors in `messages`,
+but ordinary Lean trace text is suppressed from both `messages` and `traces`; `traces` is `[]`.
+Nested and parallel span intervals can overlap, so do not sum them or treat them as exclusive costs.
+Profiling adds overhead. A continuation profile measures only that continuation call, not earlier
+work represented by its handle. Profiler settings and trace state are request-local and do not
+persist into follow-up handles.
 
 `lean_todo` inspects the whole file unless all four range fields are given; code actions need a
 range (see below), and a whole-file request omits them. It reports one item per
