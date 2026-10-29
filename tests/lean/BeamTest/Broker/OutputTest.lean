@@ -149,6 +149,31 @@ private def checkExistingDiagnosticAllowance : IO Unit := do
     message := String.ofList (List.replicate (1024 * 1024) 'x') }
   require "delivery narrowed the existing diagnostic frame allowance" (!(← queue.failed))
 
+private def requireCapacityError (error : IO.Error) : IO Unit :=
+  match error with
+  | .userError message =>
+      require "required diagnostic failure changed its original cause"
+        (message == "broker required diagnostic capacity exhausted")
+  | _ => throw <| IO.userError "required diagnostic capacity did not retain its typed IO error"
+
+private def checkAcceptedCapacity : IO Unit := do
+  let text ← Beam.WorkspaceOutput.Buffer.create
+  let queue ← Output.Queue.create text
+  for _ in [:64] do
+    queue.diagnostic none {
+      path := "Example.lean", uri := "file:///Example.lean", range := default, message := "required" }
+  require "exactly 64 required diagnostics exceeded capacity" (!(← queue.failed))
+  let execution ← IO.asTask (prio := Task.Priority.dedicated) <|
+    pure (Response.success Json.null)
+  let frames ← IO.mkRef (#[] : Array StreamMessage)
+  discard <| queue.run execution some none fun message => frames.modify (·.push message)
+  let messages ← frames.get
+  require "accepted diagnostic capacity did not drain completely"
+    ((messages.filter fun message => match message with | .diagnostic .. => true | _ => false).size == 64)
+  require "accepted diagnostic capacity did not end in exactly one terminal"
+    (messages.size == 65 && messages.back?.any fun message => match message with
+      | .response .. => true | _ => false)
+
 private def checkRequiredCapacity : IO Unit := do
   let text ← Beam.WorkspaceOutput.Buffer.create
   let queue ← Output.Queue.create text
@@ -156,6 +181,76 @@ private def checkRequiredCapacity : IO Unit := do
     queue.diagnostic none {
       path := "Example.lean", uri := "file:///Example.lean", range := default, message := "required" }
   require "required diagnostic exhaustion was silent" (← queue.failed)
+  let some original ← queue.failure?
+    | throw <| IO.userError "required diagnostic exhaustion lost its original error"
+  requireCapacityError original
+  let settled ← IO.Promise.new
+  let execution ← IO.asTask (prio := Task.Priority.dedicated) do
+    settled.resolve ()
+    pure (Response.success Json.null)
+  let frames ← IO.mkRef (#[] : Array StreamMessage)
+  let writer ← IO.asTask (prio := Task.Priority.dedicated) <|
+    queue.run execution some none fun message => frames.modify (·.push message)
+  match ← IO.wait writer with
+  | .error error => requireCapacityError error
+  | .ok _ => throw <| IO.userError "exhausted required diagnostics were reported as successful delivery"
+  discard <| IO.ofExcept (← IO.wait execution)
+  require "queue failure prevented producer settlement"
+    (← Beam.waitTaskWithTimeout settled.result? 2000).isSome
+  require "exhausted queue emitted an incomplete successful stream" (← frames.get).isEmpty
+
+private def checkOverflowAfterDeliveredFrame : IO Unit := do
+  let text ← Beam.WorkspaceOutput.Buffer.create
+  let queue ← Output.Queue.create text
+  let delivered ← IO.Promise.new
+  let overflow ← IO.Promise.new
+  let releaseWriter ← IO.Promise.new
+  let releaseExecution ← IO.Promise.new
+  let settled ← IO.Promise.new
+  queue.progress none { updates := 1, done := false }
+  let execution ← IO.asTask (prio := Task.Priority.dedicated) do
+    try
+      discard <| IO.wait delivered.result?
+      for _ in [:65] do
+        queue.diagnostic none {
+          path := "Example.lean", uri := "file:///Example.lean", range := default, message := "required" }
+      overflow.resolve ()
+      discard <| IO.wait releaseExecution.result?
+      pure (Response.success Json.null)
+    finally settled.resolve ()
+  let frames ← IO.mkRef (#[] : Array StreamMessage)
+  let writer ← IO.asTask (prio := Task.Priority.dedicated) <|
+    queue.run execution some none fun message => do
+      frames.modify (·.push message)
+      match message with
+      | .fileProgress .. =>
+          -- Pause the callback after accepting one whole message; no socket scheduling guess.
+          delivered.resolve ()
+          discard <| IO.wait releaseWriter.result?
+      | _ => pure ()
+  try
+    require "controlled required-diagnostic burst did not finish"
+      (← Beam.waitTaskWithTimeout overflow.result? 2000).isSome
+    require "controlled burst failed to exhaust pending capacity" (← queue.failed)
+    releaseWriter.resolve ()
+    let some result ← Beam.waitTaskWithTimeout writer 2000
+      | throw <| IO.userError "overflow writer remained blocked after release"
+    match result with
+    | .error error => requireCapacityError error
+    | .ok _ => throw <| IO.userError "overflow after a delivered frame became successful delivery"
+    require "delivery failure was mistaken for producer settlement" (!(← IO.hasFinished execution))
+  finally
+    delivered.resolve ()
+    releaseWriter.resolve ()
+    releaseExecution.resolve ()
+    discard <| IO.wait writer
+    discard <| IO.ofExcept (← IO.wait execution)
+  require "controlled producer failed to settle after release"
+    (← Beam.waitTaskWithTimeout settled.result? 2000).isSome
+  let messages ← frames.get
+  require "controlled overflow produced a terminal or extra accepted message"
+    (messages.size == 1 && messages.all fun message => match message with
+      | .fileProgress .. => true | _ => false)
 
 def check : IO Unit := do
   checkCodec
@@ -163,6 +258,8 @@ def check : IO Unit := do
   checkBlockedWriter
   checkCancelledOutput
   checkExistingDiagnosticAllowance
+  checkAcceptedCapacity
   checkRequiredCapacity
+  checkOverflowAfterDeliveredFrame
 
 end BeamTest.Broker.OutputTest

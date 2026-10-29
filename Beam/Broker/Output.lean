@@ -77,8 +77,12 @@ def Queue.progress (queue : Queue) (id? : Option String) (progress : SyncFilePro
 def Queue.diagnostic (queue : Queue) (id? : Option String) (diagnostic : StreamDiagnostic) : IO Unit :=
   queue.offer (.diagnostic id? diagnostic) false
 
-def Queue.failed (queue : Queue) : IO Bool :=
-  queue.state.atomically do pure (← get).failure?.isSome
+/-- The original delivery failure, retained for diagnostic reporting without parsing its text. -/
+def Queue.failure? (queue : Queue) : IO (Option IO.Error) :=
+  queue.state.atomically do pure (← get).failure?
+
+def Queue.failed (queue : Queue) : IO Bool := do
+  return (← queue.failure?).isSome
 
 /-- Cancellation drops optional presentation, independently of required diagnostics. -/
 def Queue.cancelOptional (queue : Queue) : IO Unit := do
