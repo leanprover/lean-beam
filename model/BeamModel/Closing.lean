@@ -35,9 +35,13 @@ inductive Lifecycle where
   deriving DecidableEq, BEq, Repr
 
 structure State where
+  /-- Abstract enclosing lifetime; replacement changes it even if local counters repeat. -/
   owner : Nat := 1
+  /-- Admission generation used to reject source reads begun before a close transition. -/
   fence : Nat := 0
+  /-- Next accepted-source basis within this owner lifetime. -/
   nextBasis : Nat := 1
+  /-- Open document slot or the exact lease currently holding exclusive closure. -/
   lifecycle : Lifecycle := .open none
   /-- External commit observations, retained independently of document lifetime. -/
   committed : List Lease := []
