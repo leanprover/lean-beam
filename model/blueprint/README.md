@@ -5,7 +5,8 @@ This Verso Blueprint is the guided introduction to the model. Start with
 admission, publication, protocol observations, settlement, and the remaining
 [implementation connections](BeamBlueprint/Chapters/Connections.lean).
 
-The generated site provides declaration previews and a dependency graph. Every
+The generated site provides declaration previews, a dependency graph, linked
+technical terms, and checked transition examples with their expected output. Every
 associated declaration comes from the actual repository sources. No model or
 production component is copied into this project. The graph is curated: its
 edges express selected mathematical dependencies, not complete runtime wiring.
@@ -69,3 +70,28 @@ and `bpref` for navigation. Keep proof-only dependencies on the proof block.
 Rebuild after changing prose, associations, or dependency edges, and inspect the
 relevant nodes. Semantic changes must also update the repository's implementation
 correspondence where needed.
+
+## Verso authoring conventions
+
+- Give chapters and durable sections explicit `tag` metadata. Use `ref` for their
+  links; do not construct URLs from rendered heading text.
+- Define model vocabulary with `deftech` and use `tech` when the distinction
+  matters. In particular, an event trace differs from a build trace, and a
+  settlement claim differs from a publication claim.
+- Use `bpref` for prose links to Blueprint nodes. These links must not introduce
+  mathematical `uses` edges.
+- Use `InlineLean.name` for compiler-checked names in prose. For executable
+  examples use `InlineLean.lean -keep` with a name and `InlineLean.leanOutput` to
+  check the result. The qualified directives distinguish examples from Blueprint's
+  labeled Lean attachments. Examples call existing transitions; do not copy them.
+- Keep example lines within Verso's default narrow-screen limit. Check the
+  rendered table, code blocks, glossary links, and graph at desktop and phone sizes.
+
+The three checked examples are finite schedules, not additional general theorems
+or integration tests. They run as part of the opt-in Blueprint build. Ordinary
+Beam CI coverage remains documented in the implementation correspondence.
+
+The pinned renderer currently omits HTML fragment targets for page-level headings
+(chapter titles and the generated graph/summary pages). Their page URLs work;
+section, glossary, and Blueprint-node targets are present. Keep native references
+rather than adding custom HTML to compensate for this renderer limitation.

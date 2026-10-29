@@ -8,6 +8,9 @@ open Verso.Genre.Manual
 open Informal
 
 #doc (Manual) "What is connected, and what remains trusted?" =>
+%%%
+tag := "guide-connections"
+%%%
 
 The most useful question for review is not “does the proof compile?” alone. Ask:
 *which definition does the theorem concern, which code executes it, and what
@@ -40,6 +43,9 @@ event in the coarse model. Nor do they connect either abstract model to every
 production handler. Adding more graph edges would not close that gap.
 
 # Three levels of evidence
+%%%
+tag := "guide-evidence"
+%%%
 
 1. *Direct production laws:* admission theorems import the component the broker
    actually uses. Call ordering, enclosing lifetime, and mutex behavior still need
@@ -51,10 +57,13 @@ production handler. Adding more graph edges would not close that gap.
    Passing those tests is not a proof of all schedules.
 
 # Trusted boundaries
+%%%
+tag := "guide-trusted-boundaries"
+%%%
 
 * Mutex operations must serialize and expose the state changes the adapter relies
   on. A pure state transition alone supplies no memory-ordering theorem.
-* `IO.Promise.resolve` has first-wins behavior. Keeping a promise reference and
+* {InlineLean.name IO.Promise.resolve}`IO.Promise.resolve` has first-wins behavior. Keeping a promise reference and
   invoking resolution on every required path are Beam's obligations, not a gift
   from that primitive.
 * Request IDs and owner incarnations must identify the intended request. A local
@@ -70,6 +79,9 @@ A future theorem parameterized by runtime laws will still depend on those laws;
 axiom inspection alone would not list all such explicit hypotheses.
 
 # The next connection should reduce duplication
+%%%
+tag := "guide-next-connection"
+%%%
 
 The bounded next step is to extract the pending store's pure registration,
 removal, and closure decisions and have the runtime execute those definitions.
@@ -78,12 +90,15 @@ there. Keep mutexes and promise resolution in a thin adapter. Preserve the write
 retained reference and first-wins behavior rather than adding a custody registry
 just to mirror this Blueprint.
 
-Publication authority is a later slice. Its meaningful proof must cover the
+{tech}[Publication authority] is a later slice. Its meaningful proof must cover the
 interval from validated identity and source through an installed claim to allowed
 filesystem effects, not merely token allocation. The current higher-level models
 remain specifications against which such production cores can be checked.
 
 # What we deliberately do not promise
+%%%
+tag := "guide-limits"
+%%%
 
 These safety proofs do not establish Lean conformance, correct elaboration,
 artifact-family atomicity, crash recovery, cross-process writer coordination,

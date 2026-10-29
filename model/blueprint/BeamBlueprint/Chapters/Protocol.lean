@@ -8,6 +8,9 @@ open Verso.Genre.Manual
 open Informal
 
 #doc (Manual) "What can Beam assume about Lean?" =>
+%%%
+tag := "guide-peer"
+%%%
 
 Lean is an abstract peer here. We do not model elaboration, the file worker's
 implementation, or its scheduler. Semantic results are opaque payloads. The
@@ -51,6 +54,9 @@ it does not yet possess.
 :::
 
 # Trace: the peer crashes
+%%%
+tag := "guide-peer-crash"
+%%%
 
 1. Beam registers a request, then sends it.
 2. Lean crashes. A reply may already be buffered; a descendant may keep stdout
@@ -59,12 +65,38 @@ it does not yet possess.
 4. A response can still be read, or a later local closure can transfer responsibility
    for settling pending callers. Neither proves all remote writers stopped.
 
+This distinction is executable. Each pair below gives the pending-entry count
+and the number of emitted settlement obligations: first after an unobserved crash,
+then after local channel closure.
+
+```InlineLean.lean -keep (name := crashObservation)
+open BeamModel.BackendProtocol in
+#eval
+  let s : State := { incarnation := 7, pending := [⟨7, 1⟩] }
+  let (afterCrash, crashEffects) := step s .peerCrash
+  let (afterClose, closeEffects) :=
+    step afterCrash .closeChannel
+  [(afterCrash.pending.length, crashEffects.length),
+   (afterClose.pending.length, closeEffects.length)]
+```
+
+```InlineLean.leanOutput crashObservation
+[(1, 0), (0, 1)]
+```
+
+An obligation still requires a handler to act. Follow that distinction into
+{ref "guide-settlement"}[request settlement]; do not read the second pair as
+proof that any promise has already resolved.
+
 FIFO applies to complete messages on a serialized stream. It does not imply FIFO
 completion, elaboration readiness, or reference-index readiness. Request execution
 may overlap where method semantics permit. Those readiness conditions require
 separate Lean/Beam contracts.
 
 # The specification is not a perfect-server assumption
+%%%
+tag := "guide-peer-assumptions"
+%%%
 
 The LSP subset is based on pinned
 [LSP 3.17 clauses](https://github.com/microsoft/language-server-protocol/blob/112d978951f2223a962bf19516637862f587bf55/_specifications/lsp/3.17/specification.md).

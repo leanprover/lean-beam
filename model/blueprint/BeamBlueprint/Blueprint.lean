@@ -16,10 +16,21 @@ open Informal
 
 #doc (Manual) "Understanding Beam's ownership models" =>
 
-Start with the example and model boundaries, then follow the chapters in order.
-The graph is a guide to selected definitions and laws, not an end-to-end broker
-verification claim. Definition and theorem previews use the repository's actual
-Lean sources; no copies of model code are maintained here.
+Beam must preserve ownership when source reads are delayed, workers fail, or
+responses arrive after a caller has cancelled. This guide explains the small
+models used to reason about those boundaries and where their proofs stop.
+
+* *First reading:* start with the {ref "guide-example"}[close-save example] and
+  {ref "guide-model-map"}[model map], then follow admission and publication.
+* *Protocol and failure handling:* read about the {ref "guide-peer-crash"}[crashed
+  peer] and {ref "guide-competing-handlers"}[competing request handlers].
+* *Reviewing a proof claim:* use the {ref "guide-evidence"}[evidence levels] and
+  {ref "guide-trusted-boundaries"}[remaining runtime obligations].
+
+The graph provides focused views and previews of existing Lean declarations.
+This is a guide to selected definitions and laws, not an end-to-end broker
+verification claim. The prose links help navigation; only mathematical
+dependencies appear as graph edges.
 
 {include 0 BeamBlueprint.Chapters.Orientation}
 {include 0 BeamBlueprint.Chapters.Admission}

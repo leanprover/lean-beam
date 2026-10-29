@@ -8,10 +8,18 @@ open Verso.Genre.Manual
 open Informal
 
 #doc (Manual) "Who may publish a checkpoint?" =>
+%%%
+tag := "guide-publication"
+%%%
 
 Private preparation and canonical publication are separate responsibilities.
+{deftech}[Publication authority] is permission for an attempt to install its
+candidates as the canonical checkpoint.
 A worker may finish late without being allowed to replace the checkpoint. This
 separation makes abandonment safe without promising immediate cancellation.
+
+A {deftech}[build trace] records metadata about checkpoint inputs and outputs.
+It differs from an {tech}[event trace], which lists modeled transitions.
 
 :::group "checkpoint-authority"
 Private preparation, publication authority, and known commits.
@@ -43,6 +51,9 @@ remaining trace lifts this one-step fact to every finite continuation.
 :::
 
 # Trace: cancellation while Lean is writing
+%%%
+tag := "guide-cancelled-preparation"
+%%%
 
 1. The worker writes only this attempt's private files.
 2. The caller requests cancellation. This is a soft signal, not evidence that
@@ -54,14 +65,39 @@ remaining trace lifts this one-step fact to every finite continuation.
 
 This is the reason that harmless late private writes need not retire a healthy
 shared backend. It is also why cancellation and safe file deletion are different
-questions. The specification proves the authority rule, not eventual cleanup.
+questions. The specification proves the authority rule, not eventual cleanup. The following
+checked example runs {InlineLean.name BeamModel.Publication.run}`run` on the
+actual model.
+Abandonment permits another private write, but late completions and a promotion
+attempt leave the canonical commit count at zero.
+
+```InlineLean.lean -keep (name := abandonedPreparation)
+open BeamModel.Publication in
+#eval
+  let s := run {} [.privateWrite, .abandon, .privateWrite,
+    .workerComplete, .traceComplete, .promote]
+  (s.phase == .abandoned, s.privateWrites,
+   s.canonicalCommits)
+```
+
+```InlineLean.leanOutput abandonedPreparation
+(true, 2, 0)
+```
+
+This executable example checks one schedule;
+{bpref "publication-abandonment"}[] proves the property for every finite
+continuation from an abandoned state.
 
 # Where the atomic abstraction stops
+%%%
+tag := "guide-publication-boundary"
+%%%
 
-The model has one atomic promotion step. Production has a publication claim,
-multiple filesystem operations, possible recovery, and release of that claim.
-The runtime must validate identity, source basis, and cancellation, install the
-claim, then perform the effects. Affected owner changes wait for the claim.
+The model has one atomic promotion step. Production records a {deftech}[publication claim]: an owned interval during
+which the attempt may perform canonical filesystem effects. Recovery and release
+finish that interval; affected owner changes wait for it.
+The runtime must validate the captured {tech}[owner], source {tech}[basis], and
+cancellation, install the claim, then perform the effects.
 The current model does not prove atomic visibility of the artifact family,
 crash recovery, or exclusion of independent Lake/Beam writers. Nor does trace
 completion prove that the worker loaded the dependency artifacts described by that

@@ -8,10 +8,15 @@ open Verso.Genre.Manual
 open Informal
 
 #doc (Manual) "Who may touch the document?" =>
+%%%
+tag := "guide-admission"
+%%%
 
 A closing flag rejects work that arrives while closure is in progress. It cannot
 reject a source read that started earlier, paused, and resumes after the flag is
 removed. That delayed read is the reason for admission capabilities and fencing.
+Beam captures a {deftech}[permit], a scoped capability to seek document admission,
+before asynchronous source work.
 
 :::group "document-admission"
 Document admission and exclusive closure.
@@ -19,10 +24,11 @@ Document admission and exclusive closure.
 
 :::definition "closing-state" (parent := "document-admission") (lean := "BeamModel.Closing.State")
 *Abstract specification.* One document slot contains an owner identity, an
-admission fence, a source basis, and either an open document or a closing lease.
-An owner identifies the enclosing lifetime. A basis identifies accepted source
-within that lifetime. A lease identifies one close attempt; even unchanged source
-does not make two attempts the same.
+admission {deftech}[fence] that invalidates older read permissions, a source basis,
+and either an open document or a closing lease.
+An {deftech}[owner] identifies the enclosing lifetime. A {deftech}[basis]
+identifies accepted source within that lifetime. A {deftech}[lease] identifies
+one close attempt; even unchanged source does not make two attempts the same.
 :::
 
 :::definition "closing-reservation" (parent := "document-admission") (lean := "BeamModel.Closing.reserve") (uses := "closing-state")
@@ -32,6 +38,9 @@ cannot occur between acceptance and reservation in this specification.
 :::
 
 # Trace: a delayed read
+%%%
+tag := "guide-delayed-read"
+%%%
 
 1. Request A captures permission to read under fence 7, then pauses.
 2. Close-save B accepts source and reserves closure, advancing the fence to 8.
@@ -79,6 +88,9 @@ establish that remote computation has stopped.
 :::
 
 # What the broker must still do
+%%%
+tag := "guide-admission-adapter"
+%%%
 
 Capture the permit before asynchronous source work. Accept source and reserve
 closure under the same state transition. Retain the captured owner across waits.
