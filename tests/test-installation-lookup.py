@@ -3,6 +3,7 @@
 # Released under Apache 2.0 license as described in the file LICENSE.
 """Local target lookup never executes candidate compilers, providers, or construction tools."""
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -114,3 +115,35 @@ with tempfile.TemporaryDirectory(prefix="beam installation lookup-") as temporar
         else:
             unreadable.parent.chmod(0o700)
     assert not calls.exists(), "lookup invoked a candidate compiler before rejecting it"
+
+    # Execute only a fake source installer: verify the emitted POSIX quoting and complete target set.
+    recipe = subprocess.run(
+        [ROOT / ".lake/build/bin" / ("beam-installation-lookup-test" + suffix), directory, "remedy"],
+        env=environment, check=True, capture_output=True, text=True, timeout=30)
+    remedy = json.loads(recipe.stdout)
+    checkout = directory / "Beam checkout's"
+    (checkout / "scripts").mkdir(parents=True)
+    installer = checkout / "scripts/install-beam.sh"
+    # Explicit LF is required for a POSIX shebang on native Windows Python. Record shell
+    # values directly, avoiding another interpreter or MSYS argument conversion boundary.
+    installer.write_text('#!/bin/sh\nprintf \'%s\\0\' "$BEAM_INSTALL_ROOT" "$@" > remedy-arguments\n',
+                         encoding="utf-8", newline="\n")
+    installer.chmod(0o755)
+    bash = shutil.which("bash")
+    if os.name == "nt":
+        # Windows' ambient bash.exe can be the WSL launcher. Use the POSIX shell
+        # belonging to the Git/MSYS installation already required by native qualification.
+        git = shutil.which("git")
+        assert git, "remedy qualification requires Git and its POSIX Bash"
+        bash = next((parent / "bin/bash.exe" for parent in Path(git).resolve().parents
+                     if (parent / "bin/bash.exe").is_file()), None)
+    assert bash, "remedy qualification requires POSIX Bash"
+    executed = subprocess.run([bash, "-c", remedy["command"]], cwd=checkout,
+                              env=environment, capture_output=True, text=True, timeout=15)
+    assert executed.returncode == 0, (executed.args, executed.stdout, executed.stderr)
+    arguments = (checkout / "remedy-arguments").read_bytes().split(b"\0")
+    assert arguments.pop() == b"", arguments
+    assert [argument.decode("utf-8") for argument in arguments] == [
+        remedy["install_root"], "--toolchain", "leanprover/lean4:v4.35.0",
+        "--custom-toolchain", "retained'alias", "--custom-toolchain", "requested'alias"]
+    assert not calls.exists(), "rendering a remedy invoked a candidate compiler"

@@ -63,11 +63,11 @@ private def checkStageOutput (directory : System.FilePath) : IO Unit := do
 private def checkCanonicalVersions : IO Unit := do
   for (toolchain, version) in [("leanprover/lean4:v4.34.0", "4.34.0"),
       ("leanprover/lean4:v4.34.0-rc2", "4.34.0-rc2"), ("leanprover/lean4:v4.34.2", "4.34.2")] do
-    require (canonicalLeanVersion? toolchain == some version) s!"canonical selector was not parsed: {toolchain}"
+    require (Beam.Installation.ToolchainPolicy.canonicalLeanVersion? toolchain == some version) s!"canonical selector was not parsed: {toolchain}"
   for invalid in ["leanprover/lean4:v4.34", "leanprover/lean4:v4.34.0-rc0",
       "leanprover/lean4:v4.34.0-rc01", "leanprover/lean4:v04.34.0", "leanprover/lean4:v4.34.0-beta1",
       "leanprover/lean4-nightly:nightly-2026-08-01", "lean4-stage0"] do
-    require (canonicalLeanVersion? invalid).isNone s!"noncanonical selector was accepted: {invalid}"
+    require (Beam.Installation.ToolchainPolicy.canonicalLeanVersion? invalid).isNone s!"noncanonical selector was accepted: {invalid}"
   require (expectedCanonicalLeanVersionPrefix? "leanprover/lean4:v4.34.0-rc2" ==
     some "Lean (version 4.34.0-rc2,") "canonical Lean version prefix should use the exact RC"
 

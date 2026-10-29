@@ -598,6 +598,8 @@ def qualify(args, lean_prefix, scratch):
     assert mismatch.returncode == 1, mismatch
     assert json.loads(mismatch.stdout)["error"]["code"] == "setupError", mismatch
     assert "has no runtime for" in mismatch.stderr and "compiler was found" in mismatch.stderr, mismatch
+    assert "native-other" in mismatch.stderr and "lean-toolchain" in mismatch.stderr, mismatch
+    assert "bundled Beam serves only its containing Lean installation" in mismatch.stderr, mismatch
 
     # An inherited elan override must neither hide a foreign project selector nor reject
     # a project that explicitly selects this installation.

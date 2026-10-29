@@ -32,6 +32,17 @@ private def _root_.Beam.Installation.admitControl (installation : Installation)
 private def installationFailure (failure : Beam.Installation.Failure) : CliFailure :=
   match failure with
   | .io error => .internal error
+  | .unavailable target =>
+      let data := [
+        ("selectorPath", toJson target.selected.path.toString),
+        ("selectorText", toJson target.selected.text),
+        ("leanCommand", toJson target.selected.command.toString),
+        ("installationRoot", toJson target.installationRoot.toString),
+        ("retainedTargets", toJson target.retainedTargets)]
+      let failure := CliFailure.setup target.message
+      match target.remedy with
+      | .install command _ => failure.withRemedy command data
+      | .manual _ => { failure with failure.error.data? := some <| Json.mkObj data }
   | _ => .setup failure.message
 
 private def runtimeFor (lookup : System.FilePath → IO (Except Beam.Installation.Failure Beam.Installation.RuntimeRef))

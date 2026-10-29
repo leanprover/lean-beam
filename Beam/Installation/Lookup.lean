@@ -7,6 +7,8 @@ Author: Emilio J. Gallego Arias
 import Beam.Installation.Manifest
 import Beam.Installation.Bundled
 import Beam.Installation.LocalTarget
+import Beam.Installation.StandaloneLayout
+import Beam.Installation.ToolchainPolicy
 import Beam.Project
 import Beam.Runtime
 import Beam.Version
@@ -19,10 +21,78 @@ inductive Role where
   | cli | mcp | daemon
   deriving BEq
 
+/-- The unavailable selected target and the complete installation it was checked against. -/
+structure UnavailableTarget where
+  selected : LocalTarget.Selection
+  installationRoot : System.FilePath
+  /-- Present only for an observed, marked standalone install root and matching payload leaf. -/
+  installRoot? : Option System.FilePath := none
+  retainedTargets : Array String
+  bundled : Bool
+  sourceCommit? : Option String
+
+inductive TargetRemedy where
+  | install (command precondition : String)
+  | manual (detail : String)
+
+private def quoteArgument (text : String) : String :=
+  "'" ++ text.replace "'" "'\\''" ++ "'"
+
+/-- Only suggest commands the existing source installer accepts; never execute a candidate. -/
+private def installerTargetArguments (toolchain : String) : Except String (List String) := do
+  if toolchain.isEmpty || toolchain.toList.any (fun c => c.isWhitespace || c.toNat < 32) then
+    throw "the installer requires a nonempty Elan toolchain name without whitespace"
+  if (System.FilePath.mk toolchain).isAbsolute ||
+      ["./", "../", ".\\", "..\\"].any (fun start => toolchain.startsWith start) then
+    throw "a filesystem selector must be registered under an Elan link name before installation"
+  if Beam.Installation.ToolchainPolicy.releaseToolchainSupported toolchain then
+    return ["--toolchain", toolchain]
+  if toolchain.startsWith "leanprover/lean4:" then
+    throw <| s!"this Beam revision does not admit official target '{toolchain}' for installation; " ++
+      s!"select a supported exact target such as {Beam.Installation.ToolchainPolicy.validatedToolchains.headD "a validated Lean toolchain"}"
+  return ["--custom-toolchain", toolchain]
+
+def UnavailableTarget.remedy (target : UnavailableTarget) : TargetRemedy := Id.run do
+  if let some requested := target.selected.installerToolchain? then
+    if let .error detail := installerTargetArguments requested then return .manual detail
+  if target.bundled then
+    return .manual <| "bundled Beam serves only its containing Lean installation; use Beam bundled " ++
+      "with the selected SDK, or construct a separate standalone Beam installation for that target"
+  let some installRoot := target.installRoot?
+    | return .manual <| "this installation has no recognized standalone installer location; " ++
+        "use a Beam source checkout to construct an installation containing the selected target and all retained targets"
+  let some requested := target.selected.installerToolchain?
+    | return .manual <| "the source installer accepts Elan toolchain names, not project-local SDK paths; " ++
+        "link this SDK with `elan toolchain link NAME SDK_ROOT`, then install it with --custom-toolchain NAME " ++
+        "alongside every retained target"
+  let mut names := target.retainedTargets.toList
+  unless names.contains requested do names := names ++ [requested]
+  let mut arguments := []
+  for name in names do
+    match installerTargetArguments name with
+    | .error detail => return .manual <| detail ++ "; no installer command was generated that would drop retained targets"
+    | .ok flags => arguments := arguments ++ flags
+  let command := "BEAM_INSTALL_ROOT=" ++ quoteArgument installRoot.toString ++
+    " ./scripts/install-beam.sh " ++ String.intercalate " " (arguments.map quoteArgument)
+  let revision := target.sourceCommit?.map (fun commit => s!" at revision {commit}") |>.getD ""
+  return .install command <| s!"From a Beam source checkout{revision}, run this POSIX-shell command. " ++
+    "It includes every retained target; the installer will qualify the selected compilers and show its write plan. " ++
+    "Restart Beam clients to use the newly installed target set."
+
+def UnavailableTarget.message (target : UnavailableTarget) : String :=
+  let selected := target.selected
+  let message := s!"This Beam installation has no runtime for {selected.command}. " ++
+    s!"The project's Lean compiler was found via selector '{selected.text}' in {selected.path}; " ++
+    s!"bound Beam installation: {target.installationRoot}. "
+  match target.remedy with
+  | .install command precondition => message ++ precondition ++ "\n" ++ command
+  | .manual detail => message ++ detail ++
+      ". For custom-target setup, see https://github.com/leanprover/lean-beam/blob/main/docs/CUSTOM_TOOLCHAINS.md"
+
 inductive Failure where
   | invalid (detail : String)
   | changed
-  | unavailable (command : System.FilePath)
+  | unavailable (target : UnavailableTarget)
   | noTarget
   | selection (error : Beam.Installation.LocalTarget.Failure)
   | io (error : IO.Error)
@@ -30,10 +100,7 @@ inductive Failure where
 def Failure.message : Failure → String
   | .invalid detail => s!"invalid Beam installation: {detail}; reinstall Beam before starting runtime work"
   | .changed => "Beam installation generation changed; restart with a complete installation"
-  | .unavailable command =>
-      s!"This Beam installation has no runtime for {command}. " ++
-        "The project's Lean compiler was found; install Beam for this exact target. " ++
-        "For a local Lean build, see https://github.com/leanprover/lean-beam/blob/main/docs/CUSTOM_TOOLCHAINS.md"
+  | .unavailable target => target.message
   | .noTarget => "missing project lean-toolchain; select an exact installed target before starting standalone Beam"
   | .selection error => error.message
   | .io error => error.toString
@@ -207,7 +274,8 @@ def Observation.lookup (observation : Observation) (root : System.FilePath) : IO
     | .error error => return .error (.selection error)
     | .ok selected => pure selected
   for (resolved, index) in observation.targets.toList.zipIdx do
-    if selected.any (Beam.sameCanonicalPath resolved.command) || (selected.isNone && observation.record.isBundled) then
+    if selected.any (fun selected => Beam.sameCanonicalPath resolved.command selected.command) ||
+        (selected.isNone && observation.record.isBundled) then
       if observation.daemonTarget?.any (· != index) then
         return .error (.invalid "this target belongs to a different installation-owned daemon")
       return .ok ⟨{
@@ -215,8 +283,20 @@ def Observation.lookup (observation : Observation) (root : System.FilePath) : IO
         plugin := resolved.plugin, daemonBin := resolved.daemon, toolchain := resolved.target.toolchain
         identity := ⟨observation.home, observation.record.generation⟩
       }⟩
+  let installRoot? ← do
+    if observation.record.isBundled then pure none else
+    match installedRuntimeLocation? observation.home with
+    | none => pure none
+    | some location =>
+        if location.payload == observation.record.generation &&
+            (← checkInstallRootMarker location.installRoot).isOk then
+          pure (some location.installRoot)
+        else pure none
   return .error <| match selected with
-    | some command => .unavailable command
+    | some selected => .unavailable {
+        selected, installationRoot := observation.home, installRoot?
+        retainedTargets := observation.record.components.targets.map (·.toolchain)
+        bundled := observation.record.isBundled, sourceCommit? := observation.record.sourceCommit? }
     | none => .noTarget
 
 /-- Exact local lookup; no compiler probe, provider search, or provisioning is possible here. -/

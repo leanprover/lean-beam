@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Lean
+import Beam.Installation.ToolchainPolicy
 import Beam.Installation.Components
 import Beam.Path
 import Beam.System
@@ -49,34 +50,9 @@ private def readRequiredToolchainCmdTrim (toolchain exe : String) (args : Array 
       s!"failed to fingerprint Lean toolchain {toolchain}: `elan run {toolchain} {exe}` returned empty stdout"
   pure text
 
-private def canonicalNat? (text : String) : Option Nat := do
-  let value ← text.toNat?
-  if s!"{value}" == text then some value else none
-
-/-- The exact version of a canonical `leanprover/lean4:vX.Y.Z[-rcN]` selector, if it is one. -/
-def canonicalLeanVersion? (toolchain : String) : Option String := do
-  let selectorPrefix := "leanprover/lean4:v"
-  unless toolchain.startsWith selectorPrefix do none
-  let version := (toolchain.drop selectorPrefix.length).toString
-  let (stable, rc?) ← match version.splitOn "-" with
-    | [stable] => some (stable, none)
-    | [stable, prerelease] => do
-        unless prerelease.startsWith "rc" do none
-        let rc ← canonicalNat? (prerelease.drop 2).toString
-        unless rc > 0 do none
-        some (stable, some rc)
-    | _ => none
-  let [major, minor, patch] := stable.splitOn "." | none
-  let parts ← [major, minor, patch].mapM canonicalNat?
-  let rendered := ".".intercalate (parts.map toString) ++
-    match rc? with
-    | some rc => s!"-rc{rc}"
-    | none => ""
-  if rendered == version then some rendered else none
-
 /-- A canonical selector must name the compiler that `lean --version` reports. -/
 def expectedCanonicalLeanVersionPrefix? (toolchain : String) : Option String := do
-  some s!"Lean (version {← canonicalLeanVersion? toolchain},"
+  some s!"Lean (version {← Beam.Installation.ToolchainPolicy.canonicalLeanVersion? toolchain},"
 
 /-- Observe one already selected SDK; every command uses this concrete installation. -/
 def fingerprintLeanInstallation (root : System.FilePath) : IO ToolchainFingerprint := do

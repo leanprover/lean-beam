@@ -87,8 +87,9 @@ def check(server, provenance, foreign_selector, *, env, matching_selectors=None)
                     if scenario == "generation":
                         assert "generation changed" in message and "restart" in message, rejected
                     elif scenario == "foreign selector":
-                        assert "has no runtime for" in message and "compiler was found" in message, rejected
-                        assert "install Beam for this exact target" in message, rejected
+                        assert "has no runtime for" in message, rejected
+                        assert "bundled Beam serves only its containing Lean installation" in message, rejected
+                        assert "lean-toolchain" in message and selector in message, rejected
                     else:
                         assert "unavailable locally" in message and "install or link" in message, rejected
                     if scenario == "generation":
