@@ -3222,21 +3222,36 @@ private def watchClientDisconnectUntil
   catch _ =>
     unless ← requestDone do disconnect
 
+private def reportClientFailure
+    (stage : String) (phase : Output.FramePhase) (op? id? : Option String)
+    (error : IO.Error) (queueFailure? : Option IO.Error := none) : IO Unit := do
+  try
+    IO.eprintln <| (Json.mkObj [
+      ("component", toJson "brokerClientFailure"), ("stage", toJson stage),
+      ("framePhase", toJson phase.key), ("operation", toJson op?),
+      ("clientRequestId", toJson id?), ("error", toJson error.toString),
+      ("queueFailure", toJson (queueFailure?.map (·.toString)))
+    ]).compress
+  catch _ => pure ()
+
 private def handleClient
     (server : ServerRuntime)
     (transport : DaemonTransport)
     (client : Transport.Connection) : IO Unit := do
   let abandoned ← IO.mkRef false
-  let outputStarted ← IO.mkRef false
+  let framePhase ← IO.mkRef Output.FramePhase.awaitingRequest
+  let deliveryFailure ← IO.mkRef (none : Option IO.Error)
+  let operation ← IO.mkRef (none : Option String)
   let clientRequestId ← IO.mkRef (none : Option String)
   let sendResponse (id? : Option String) (response : Response) : IO Unit := do
-    outputStarted.set true
-    Transport.sendMsg client (toJson (StreamMessage.response id? response)).compress
+    let message := StreamMessage.response id? response
+    Output.writeMessage framePhase message <|
+      Transport.sendMsg client (toJson message).compress
   try
     if let some identity := server.mode.wrapperIdentity? then
-      outputStarted.set true
+      framePhase.set .sendingHello
       Transport.sendMsg client (toJson (ServerHello.current identity)).compress
-      outputStarted.set false
+      framePhase.set .betweenFrames
     let deadlineNanos := (← IO.monoNanosNow) + 5000 * 1000000
     let some msg ← Transport.recvMsgUntil client deadlineNanos
       | throw <| IO.userError "Beam daemon initial request timed out after 5000 ms"
@@ -3252,6 +3267,7 @@ private def handleClient
         sendResponse id? failure.toResponse
     | .ok req =>
         clientRequestId.set req.clientRequestId?
+        operation.set (some req.op.key)
         let text ← Beam.WorkspaceOutput.Buffer.create
         let output ← Output.Queue.create text
         let disconnected ← IO.mkRef false
@@ -3277,13 +3293,22 @@ private def handleClient
             -- Pending delivery retains no active broker admission handle.
             handleRef.set none
         try
+          framePhase.set .betweenFrames
           discard <| output.run execution some req.clientRequestId? fun message => do
             let frame := (toJson message).compress
             let stop := do return (← disconnected.get) || (← output.failed) || (← transport.stop.get)
-            outputStarted.set true
-            match ← Transport.sendMsgInterruptibly client frame stop with
-            | .completed () => pure ()
-            | .interrupted => throw <| IO.userError "broker output connection interrupted"
+            Output.writeMessage framePhase message do
+              match ← Transport.sendMsgInterruptibly client frame stop with
+              | .completed () => pure ()
+              | .interrupted => throw <| IO.userError "broker output connection interrupted"
+        catch error =>
+          deliveryFailure.set (some error)
+          -- Capture the primary failure before cancellation/settlement can throw another error.
+          try
+            reportClientFailure "delivery" (← framePhase.get) (some req.op.key)
+              req.clientRequestId? error (← output.failure?)
+          catch _ => pure ()
+          throw error
         finally
           -- Stop the exact execution before joining it; display must not own cleanup.
           try cancel
@@ -3293,11 +3318,15 @@ private def handleClient
             if let some watcher ← watcherRef.get then discard <| IO.wait watcher
             if req.op == .shutdown && (← server.closeStarted) then requestStop transport
   catch error =>
-    let reported ← if ← outputStarted.get then pure false else
-      try
-        sendResponse (← clientRequestId.get) (errorResponseFor .internalError error.toString)
-        pure true
-      catch _ => pure false
+    reportClientFailure "handler" (← framePhase.get) (← operation.get)
+      (← clientRequestId.get) error
+    let primary := (← deliveryFailure.get).getD error
+    let reported ← Output.tryReportFailure framePhase do
+      -- The inner finally has already joined execution and its disconnect watcher. Keep the
+      -- primary delivery failure if cleanup raised a secondary error while settling it.
+      let message := StreamMessage.response (← clientRequestId.get)
+        (errorResponseFor .internalError primary.toString)
+      Transport.sendMsg client (toJson message).compress
     unless reported do
       -- A send may have emitted a partial frame. Never append a replacement response.
       abandoned.set true

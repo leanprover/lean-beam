@@ -12,6 +12,43 @@ open Lean
 
 namespace Beam.Broker.Output
 
+/-- Whether another complete frame can safely be appended to this connection. -/
+inductive FramePhase where
+  | awaitingRequest
+  | sendingHello
+  | betweenFrames
+  | sendingNotification
+  | sendingTerminal
+  | terminalComplete
+  deriving BEq
+
+def FramePhase.key : FramePhase → String
+  | .awaitingRequest => "awaitingRequest"
+  | .sendingHello => "sendingHello"
+  | .betweenFrames => "betweenFrames"
+  | .sendingNotification => "sendingNotification"
+  | .sendingTerminal => "sendingTerminal"
+  | .terminalComplete => "terminalComplete"
+
+private def writeFrame (phase : IO.Ref FramePhase) (terminal : Bool) (send : IO Unit) : IO Unit := do
+  phase.set (if terminal then .sendingTerminal else .sendingNotification)
+  send
+  phase.set (if terminal then .terminalComplete else .betweenFrames)
+
+/-- A failed send retains its uncertain phase, even if it emitted some complete bytes. -/
+def writeMessage (phase : IO.Ref FramePhase) (message : StreamMessage) (send : IO Unit) : IO Unit :=
+  writeFrame phase (match message with | .response .. => true | _ => false) send
+
+/-- Call only after producer settlement. Never append after an uncertain send or a terminal. -/
+def tryReportFailure (phase : IO.Ref FramePhase) (send : IO Unit) : IO Bool := do
+  match ← phase.get with
+  | .awaitingRequest | .betweenFrames =>
+      try
+        writeFrame phase true send
+        pure true
+      catch _ => pure false
+  | .sendingHello | .sendingNotification | .sendingTerminal | .terminalComplete => pure false
+
 -- Preserve the existing per-frame diagnostic allowance across bounded pending delivery.
 private def diagnosticBytes : Nat := Transport.maxFrameBytes
 private def diagnosticRecords : Nat := 64
@@ -77,8 +114,12 @@ def Queue.progress (queue : Queue) (id? : Option String) (progress : SyncFilePro
 def Queue.diagnostic (queue : Queue) (id? : Option String) (diagnostic : StreamDiagnostic) : IO Unit :=
   queue.offer (.diagnostic id? diagnostic) false
 
-def Queue.failed (queue : Queue) : IO Bool :=
-  queue.state.atomically do pure (← get).failure?.isSome
+/-- The original delivery failure, retained for diagnostic reporting without parsing its text. -/
+def Queue.failure? (queue : Queue) : IO (Option IO.Error) :=
+  queue.state.atomically do pure (← get).failure?
+
+def Queue.failed (queue : Queue) : IO Bool := do
+  return (← queue.failure?).isSome
 
 /-- Cancellation drops optional presentation, independently of required diagnostics. -/
 def Queue.cancelOptional (queue : Queue) : IO Unit := do
