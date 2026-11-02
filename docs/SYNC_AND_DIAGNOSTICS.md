@@ -81,6 +81,13 @@ document's line or character bounds return `invalidParams`; valid end-of-line an
 positions remain valid. A valid hover query with no information has the underlying LSP value
 `null`; the public CLI result is `result.value: null`, and MCP returns `structuredContent.value: null`.
 
+`references` waits until Lean has finished elaborating the whole requested version, because Lean
+publishes a file's reference index only for a finished elaboration. The result then describes that
+version, including uses later in the file, even directly after `update`. Matches in other open files
+come from their last finished elaboration. Under [soft cancellation](STATUS.md#soft-cancellation),
+a cancelled `references` call still waits for that elaboration, a newer version, or the file's
+closure before it settles.
+
 Example stale-version semantic response as printed by the wrapper on stdout:
 
 ```json

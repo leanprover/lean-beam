@@ -462,6 +462,65 @@ private def runConcurrentSmoke
     throw <| IO.userError
       s!"expected concurrent sync_file fileProgress.done = true, got {(toJson concurrentSyncTop).compress}"
 
+private def referenceLines (label : String) (result : Json) : IO (Array Nat) := do
+  let .arr locations := result
+    | throw <| IO.userError s!"{label}: expected a location array, got {result.compress}"
+  locations.mapM fun location =>
+    IO.ofExcept <| do
+      let range ← location.getObjVal? "range"
+      let start ← range.getObjVal? "start"
+      start.getObjValAs? Nat "line"
+
+/-- Lean's watchdog answers references from an index that the file worker finalizes after
+reporting the file done. A query right after `update` must still see that version's references. -/
+private def runFreshReferencesSmoke
+    (endpoint : Beam.Broker.Endpoint)
+    (root : System.FilePath) : IO Unit := do
+  let dir := root / ".tmp" / s!"beam-daemon-fresh-references-{← IO.monoNanosNow}"
+  IO.FS.createDirAll dir
+  let path := dir / "FreshReferences.lean"
+  let body := [
+    "import Lean",
+    "",
+    "open Lean Elab Command",
+    "",
+    "elab \"references_sleep_cmd\" : command => do",
+    "  IO.sleep 1500",
+    "",
+    "def freshReferenceTarget : Nat := 0",
+    "",
+    "references_sleep_cmd",
+    "",
+    "def freshReferenceUse : Nat := freshReferenceTarget + 1",
+    ""
+  ]
+  try
+    IO.FS.writeFile path (String.intercalate "\n" body)
+    let version ← updateVersion endpoint path.toString
+    let fresh ← expectOk (← runClient endpoint {
+      payload := .references {
+        path := path.toString, version, line := 7, character := 4, includeDeclaration? := some true }
+    })
+    let freshLines ← referenceLines "fresh references" fresh
+    unless freshLines.contains 7 && freshLines.contains 11 do
+      throw <| IO.userError
+        s!"references right after update missed the declaration or later use: {fresh.compress}"
+    -- Shift every line; an answer from the previous version's index would report the old lines.
+    IO.FS.writeFile path (String.intercalate "\n" ("-- shifted" :: body))
+    let shiftedVersion ← updateVersion endpoint path.toString
+    let shifted ← expectOk (← runClient endpoint {
+      payload := .references {
+        path := path.toString, version := shiftedVersion, line := 8, character := 4
+        includeDeclaration? := some true }
+    })
+    let shiftedLines ← referenceLines "shifted references" shifted
+    unless shiftedLines.contains 8 && shiftedLines.contains 12 && !shiftedLines.contains 11 do
+      throw <| IO.userError
+        s!"references after an edit did not describe the edited version: {shifted.compress}"
+    discard <| expectOk (← runClient endpoint { payload := .close { path := path.toString } })
+  finally
+    IO.FS.removeDirAll dir
+
 private def runRequestAndGoalsSmoke
     (endpoint : Beam.Broker.Endpoint) : IO Unit := do
   let commandPath := "tests/scenario/docs/CommandA.lean"
@@ -1056,6 +1115,7 @@ def smokeMain : IO Unit := do
     runReportedOnlyDiagnosticSmoke endpoint
     runPartialProgressSmoke endpoint
     runConcurrentSmoke endpoint root
+    runFreshReferencesSmoke endpoint root
     runRequestAndGoalsSmoke endpoint
     runCancelSmoke endpoint
     runWorkerExitSmoke endpoint root

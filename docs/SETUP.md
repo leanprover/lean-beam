@@ -115,6 +115,12 @@ runtime/wrapper install area, selected skill locations, and selected MCP config 
 non-interactive scripts, pass `--dont-ask`; this only skips prompts for requested Beam-owned
 install/config paths and does not allow replacing unrelated user files.
 
+The final **Agent Setup This Run** summary reports only actions performed by that invocation.
+“Not registered this run” also covers skipped or unrequested registration; it does not mean that
+an existing MCP registration is absent. The installer does not inspect existing client configuration
+for this summary, and its setup hints are optional. Retain any client-home overrides when rerunning
+a hint. For a read-only inspection of client setup, use `lean-beam doctor clients`.
+
 These forms install:
 
 - `lean-beam`, `lean-beam-search`, and `lean-beam-mcp` into `~/.local/bin`

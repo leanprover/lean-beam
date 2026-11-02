@@ -66,6 +66,7 @@ mkdir -p "$HOME" "$BEAM_INSTALL_ROOT"
 run_step "install prune" bash tests/test-beam-prune.sh
 run_step "install publication" bash tests/test-install-publication.sh
 run_step "install lock cleanup" bash tests/test-install-lock.sh
+run_step "installer setup summary" python3 tests/test-install-summary.py
 
 install_admission_start="$(date +%s)"
 printf '[%s] installer admission and interactive plans\n' "$BEAM_TEST_SUITE"

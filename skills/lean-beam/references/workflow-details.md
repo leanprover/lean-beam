@@ -169,6 +169,8 @@ What is not a valid checkpoint target:
   commands for an existing position
 - `lean-beam definition`, `lean-beam references`, and `lean-beam document-symbols` are normal
   read-only semantic navigation commands against a specific document version
+- `lean-beam references` waits for the whole document version to elaborate, so its first call after
+  an edit can take as long as `sync`
 - `lean-beam workspace-symbols` is a read-only workspace query and does not take a document version
 - `lean-beam goals before` and `lean-beam goals after` are the normal read-only proof-state
   inspection commands for an existing tactic position

@@ -1456,17 +1456,17 @@ print_prebuilt_toolchain_summary() {
 
 skill_state_for_summary() {
   if [ "$1" -eq 1 ]; then
-    printf 'lean-beam installed\n'
+    printf 'lean-beam installed this run\n'
   else
-    printf 'not installed\n'
+    printf 'not installed this run\n'
   fi
 }
 
 mcp_state_for_summary() {
   if [ "$1" -eq 1 ]; then
-    printf 'registered\n'
+    printf 'registered this run\n'
   else
-    printf 'not registered\n'
+    printf 'not registered this run\n'
   fi
 }
 
@@ -1571,17 +1571,20 @@ print_agent_setup_summary() {
     vibe_mcp_registered=1
   fi
 
-  print_section "$style_green" "Agent Setup"
+  print_section "$style_green" "Agent Setup This Run"
+  print_field "scope" "only this run; existing client setup is not checked here"
   print_field "Codex" "skills: $(skill_state_for_summary "$codex_skill_installed"); MCP: $(mcp_state_for_summary "$codex_mcp_registered")"
   print_field "Claude Code" "skills: $(skill_state_for_summary "$claude_skill_installed"); MCP: $(mcp_state_for_summary "$claude_mcp_registered")"
   print_field "Pi Agent" "skills: $(skill_state_for_summary "$pi_skill_installed"); MCP: unsupported"
   if [ "$opencode_mcp_manual" -eq 1 ]; then
-    print_field "OpenCode" "skills: $(skill_state_for_summary "$opencode_skill_installed"); MCP: opencode mcp add shown"
+    print_field "OpenCode" "skills: $(skill_state_for_summary "$opencode_skill_installed"); MCP: opencode mcp add shown this run"
   else
-    print_field "OpenCode" "skills: $(skill_state_for_summary "$opencode_skill_installed"); MCP: not registered"
+    print_field "OpenCode" "skills: $(skill_state_for_summary "$opencode_skill_installed"); MCP: not registered this run"
   fi
   print_field "Mistral Vibe" "skills: $(skill_state_for_summary "$vibe_skill_installed"); MCP: $(mcp_state_for_summary "$vibe_mcp_registered")"
   print_field "MCP restart" "restart active MCP client sessions to use this runtime"
+  print_field "setup hints" "optional; existing client setup may already be complete"
+  print_field "setup locations" "retain any client-home overrides when rerunning a hint"
   print_codex_followup_hint "$codex_skill_installed" "$codex_mcp_registered"
   print_claude_followup_hint "$claude_skill_installed" "$claude_mcp_registered"
   print_pi_followup_hint "$pi_skill_installed"
