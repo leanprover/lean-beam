@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -23,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix="beam installation lookup-") as temporar
         command.write_text(f'#!/bin/sh\nprintf invoked >> "{calls}"\nexit 99\n')
         command.chmod(0o755)
     environment = dict(os.environ, ELAN_HOME=str(directory / "elan"),
-                       BEAM_HOME=str(directory / "foreign"))
+                       BEAM_HOME=str(directory / "foreign"), BEAM_TEST_PYTHON=sys.executable)
     elan = shutil.which("elan")
     assert elan, "local link fixtures require elan"
 

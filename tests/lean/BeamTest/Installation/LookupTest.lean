@@ -148,9 +148,16 @@ private def stage (directory root : System.FilePath) (extraTarget := false) : IO
   }
 
 private def linkCurrent (home current : System.FilePath) : IO Unit := do
-  let out ← IO.Process.output <| if System.Platform.isWindows then {
-    cmd := "cmd", args := #["/d", "/c", "mklink", "/J", current.toString, home.toString] }
-  else { cmd := "ln", args := #["-s", home.toString, current.toString] }
+  let out ← if System.Platform.isWindows then do
+    let some python ← IO.getEnv "BEAM_TEST_PYTHON"
+      | throw <| IO.userError "lookup fixture requires its driver's Python interpreter"
+    -- Lean quotes every Windows argument, including cmd's builtin name. Python's
+    -- command-line encoder preserves the mklink syntax already used by this fixture's driver.
+    IO.Process.output {
+      cmd := python
+      args := #["-c", "import subprocess,sys; subprocess.run(['cmd','/d','/c','mklink','/J',*sys.argv[1:]],check=True)",
+        current.toString, home.toString] }
+  else IO.Process.output { cmd := "ln", args := #["-s", home.toString, current.toString] }
   unless out.exitCode == 0 do throw <| IO.userError s!"cannot create current fixture: {out.stderr}"
 
 private def unlinkCurrent (current : System.FilePath) : IO Unit :=
