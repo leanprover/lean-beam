@@ -15,7 +15,7 @@ private def require (message : String) (condition : Bool) : IO Unit :=
   unless condition do throw <| IO.userError message
 
 private def withOutputPeer
-    (act : Transport.Connection → Transport.Connection → IO Unit) : IO Unit := do
+    (act : Transport.Connection → Transport.Connection → IO α) : IO α := do
   let listener ← Transport.bindAndListen (.tcp 0)
   try
     let client ← Transport.connect (← Transport.listenerEndpoint listener)
@@ -272,8 +272,8 @@ private def checkOverflowAfterDeliveredFrame : IO Unit :=
       require "delivery failure was mistaken for producer settlement" (!(← IO.hasFinished execution))
       releaseExecution.resolve ()
       discard <| IO.ofExcept (← IO.wait execution)
-      let response := StreamMessage.response none (errorResponseFor .internalError failure.toString)
-      let reported ← Output.tryReportFailure phase <| Transport.sendMsg peer (toJson response).compress
+      let reported ← Output.tryReportFailure phase peer none
+        (responseFailureFor .internalError failure.toString) (pure false)
       require "completed-frame overflow could not report its terminal failure" reported
       match ← receiveMessage client with
       | .fileProgress .. => pure ()
@@ -318,11 +318,9 @@ private def checkPartialFrameFailure : IO Unit :=
     require "partial-frame fixture did not fail" failed
     require "partial-frame fixture failed before emitting its bytes" (← partialSent.get)
     require "failed notification lost its uncertain phase" ((← phase.get) == .sendingNotification)
-    let attempts ← IO.mkRef 0
-    let reported ← Output.tryReportFailure phase do
-      attempts.modify (· + 1)
-      Transport.sendMsg peer (toJson (StreamMessage.response none (Response.success Json.null))).compress
-    require "partial frame admitted a replacement terminal" (!reported && (← attempts.get) == 0)
+    let reported ← Output.tryReportFailure phase peer none
+      (responseFailureFor .internalError "must not append after a partial frame") (pure false)
+    require "partial frame admitted a replacement terminal" (!reported)
     Transport.abandonConnection peer
     requirePeerEof client
 
@@ -331,22 +329,58 @@ private def checkPostTerminalCleanupFailure : IO Unit :=
     let phase ← IO.mkRef Output.FramePhase.betweenFrames
     let message := StreamMessage.response none (Response.success (toJson "finished"))
     Output.writeMessage phase message <| Transport.sendMsg peer (toJson message).compress
-    let attempts ← IO.mkRef 0
     let reported : Bool ←
       try
         throw <| IO.userError "controlled post-terminal cleanup failure"
       catch error =>
-        Output.tryReportFailure phase do
-          attempts.modify (· + 1)
-          let response := StreamMessage.response none (errorResponseFor .internalError error.toString)
-          Transport.sendMsg peer (toJson response).compress
-    require "post-terminal cleanup admitted a duplicate response" (!reported && (← attempts.get) == 0)
+        Output.tryReportFailure phase peer none
+          (responseFailureFor .internalError error.toString) (pure false)
+    require "post-terminal cleanup admitted a duplicate response" (!reported)
     require "complete terminal lost its phase" ((← phase.get) == .terminalComplete)
     Transport.abandonConnection peer
     match ← receiveMessage client with
     | .response _ (.successResult ..) => pure ()
     | _ => throw <| IO.userError "post-terminal cleanup lost the original successful response"
     requirePeerEof client
+
+private def checkFailureBeforeOutput : IO Unit :=
+  withOutputPeer fun peer client => do
+    let phase ← IO.mkRef Output.FramePhase.awaitingRequest
+    let reported ← Output.tryReportFailure phase peer (some "early-failure")
+      (responseFailureFor .internalError "before output") (pure false)
+    require "failure before output was not reported" reported
+    match ← receiveMessage client with
+    | .response id? (.errorResult failure) =>
+        require "early failure lost request identity" (id? == some "early-failure")
+        require "early failure lost its typed outcome" (failure.error.code == "internalError")
+    | _ => throw <| IO.userError "early failure did not deliver one terminal response"
+    Transport.abandonConnection peer
+    requirePeerEof client
+
+private def checkRecoveryObservesStop : IO Unit := do
+  let stopped ← IO.mkRef false
+  let started ← IO.Promise.new
+  let phase ← IO.mkRef Output.FramePhase.betweenFrames
+  -- A legal, substantial reply keeps a non-reading peer backpressured on ordinary sockets.
+  -- Completion can still win the stop race; both outcomes must settle without closing the peer.
+  let message := String.join (List.replicate 3840 (String.ofList (List.replicate 4096 'x')))
+  let (writer, beforePeerCleanup) ← withOutputPeer fun peer _ => do
+    let writer ← IO.asTask (prio := Task.Priority.dedicated) do
+      started.resolve ()
+      Output.tryReportFailure phase peer none
+        (responseFailureFor .internalError message) stopped.get
+    discard <| IO.wait started.result?
+    stopped.set true
+    let outcome ← Beam.waitTaskWithTimeout writer 5000
+    pure (writer, outcome)
+  -- Join after closing the owned sockets even on a regression, so a failed assertion does not
+  -- leave the blocked writer behind. The earlier observation must not depend on this cleanup.
+  let some settled ← Beam.waitTaskWithTimeout writer 5000
+    | throw <| IO.userError "recovery writer did not settle after owned socket cleanup"
+  let reported ← IO.ofExcept settled
+  require "recovery send ignored shutdown until its peer was closed" beforePeerCleanup.isSome
+  require "recovery completion lost its frame phase"
+    ((← phase.get) == if reported then .terminalComplete else .sendingTerminal)
 
 def check : IO Unit := do
   checkCodec
@@ -359,5 +393,7 @@ def check : IO Unit := do
   checkOverflowAfterDeliveredFrame
   checkPartialFrameFailure
   checkPostTerminalCleanupFailure
+  checkFailureBeforeOutput
+  checkRecoveryObservesStop
 
 end BeamTest.Broker.OutputTest

@@ -35,16 +35,21 @@ private def writeFrame (phase : IO.Ref FramePhase) (terminal : Bool) (send : IO 
   send
   phase.set (if terminal then .terminalComplete else .betweenFrames)
 
-/-- A failed send retains its uncertain phase, even if it emitted some complete bytes. -/
+/-- Single writer only. A failed send retains its uncertain phase even after emitting bytes. -/
 def writeMessage (phase : IO.Ref FramePhase) (message : StreamMessage) (send : IO Unit) : IO Unit :=
   writeFrame phase (match message with | .response .. => true | _ => false) send
 
-/-- Call only after producer settlement. Never append after an uncertain send or a terminal. -/
-def tryReportFailure (phase : IO.Ref FramePhase) (send : IO Unit) : IO Bool := do
+/-- Single writer, after producer settlement. Shutdown may abandon a pending error reply. -/
+def tryReportFailure (phase : IO.Ref FramePhase) (client : Transport.Connection)
+    (id? : Option String) (failure : ResponseFailure) (stopped : IO Bool) : IO Bool := do
   match ← phase.get with
   | .awaitingRequest | .betweenFrames =>
       try
-        writeFrame phase true send
+        writeFrame phase true do
+          let message := StreamMessage.response id? failure.toResponse
+          match ← Transport.sendMsgInterruptibly client (toJson message).compress stopped with
+          | .completed () => pure ()
+          | .interrupted => throw <| IO.userError "broker error response interrupted"
         pure true
       catch _ => pure false
   | .sendingHello | .sendingNotification | .sendingTerminal | .terminalComplete => pure false

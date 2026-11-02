@@ -3321,12 +3321,10 @@ private def handleClient
     reportClientFailure "handler" (← framePhase.get) (← operation.get)
       (← clientRequestId.get) error
     let primary := (← deliveryFailure.get).getD error
-    let reported ← Output.tryReportFailure framePhase do
-      -- The inner finally has already joined execution and its disconnect watcher. Keep the
-      -- primary delivery failure if cleanup raised a secondary error while settling it.
-      let message := StreamMessage.response (← clientRequestId.get)
-        (errorResponseFor .internalError primary.toString)
-      Transport.sendMsg client (toJson message).compress
+    -- Execution and its watcher have settled. Queue failure and disconnection can already be
+    -- set by cleanup, so only daemon shutdown interrupts this final attempt to report failure.
+    let reported ← Output.tryReportFailure framePhase client (← clientRequestId.get)
+      (responseFailureFor .internalError primary.toString) transport.stop.get
     unless reported do
       -- A send may have emitted a partial frame. Never append a replacement response.
       abandoned.set true
