@@ -509,6 +509,7 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
             -- restore the failed proof state rather than backtracking its messages.
             tryCatchRuntimeEx
               (do
+                let initialGoals ← Elab.Tactic.getGoals
                 Elab.Tactic.evalTactic stx
                 Elab.Term.synthesizeSyntheticMVarsNoPostponing
                 -- Lean lifts local recursive definitions and checks their termination when
@@ -516,6 +517,19 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
                 -- finalization step, so it must not report these pending definitions as solved.
                 unless (← Elab.Term.getLetRecsToLift).isEmpty do
                   throwError "Local recursive declarations are not supported in runAt tactics. Add the declaration to the document and sync before probing."
+                -- While a declaration elaborates, Lean exposes it to its own body as an auxiliary
+                -- local, and finalization checks every use for termination. A probe has no such
+                -- step, so a use proves nothing about the edit; report it instead of success.
+                let declName? ← Elab.Term.getDeclName?
+                for goal in initialGoals do
+                  let lctx := (← goal.getDecl).lctx
+                  let value ← instantiateMVars (mkMVar goal)
+                  let selfRef? := value.find? fun e =>
+                    (e.isFVar && (lctx.find? e.fvarId!).any (·.isAuxDecl)) ||
+                      (e.isConst && declName? == some e.constName!)
+                  if let some ref := selfRef? then
+                    let name := if ref.isFVar then (lctx.get! ref.fvarId!).userName else ref.constName!
+                    throwError "This probe refers to `{name}`, the declaration it is inside. runAt cannot check termination for that reference, so its result does not show whether the edit elaborates. Make the edit and sync to check it."
                 let (messages, traces) ← collectNewTacticArtifacts initialMsgCount initialTraceCount
                 return { disposition := .keepAdvanced, error? := none, messages, traces })
               (fun ex => do

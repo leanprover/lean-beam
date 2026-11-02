@@ -126,6 +126,12 @@ handle, including when the recursion is valid in ordinary Lean. Lean checks thes
 their termination when finalizing the enclosing declaration; a tactic fragment has no such step.
 Add valid recursive definitions to the document and sync before probing their use. Command probes
 that elaborate a complete declaration use Lean's normal finalization and termination checks.
+
+For the same reason, a tactic probe whose result uses the declaration being proved, or another
+member of its `mutual` block, returns a semantic failure with the original proof state and no
+successor handle. Lean would check that reference for termination when finalizing the declaration,
+so the probe cannot tell whether the edit elaborates; this includes recursion that is valid in
+ordinary Lean. Make the edit and sync to check it.
 See the skill's [local recursion workflow](../skills/lean-beam/references/lean-run-at-semantics.md#5-introducing-local-recursion-in-a-tactic-probe)
 for saved-file validation, version updates, and handle invalidation.
 

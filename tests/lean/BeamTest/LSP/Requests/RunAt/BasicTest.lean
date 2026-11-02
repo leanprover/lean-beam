@@ -446,6 +446,67 @@ def checkRunAtPlaceholders : ScenarioM Unit := do
 
   closeDoc doc
 
+/-- The position of the first `needle` on the line that starts with `linePrefix`. -/
+private def positionAt (source linePrefix needle : String) : IO Lean.Lsp.Position := do
+  let some (text, line) := source.splitOn "\n" |>.zipIdx |>.find? (·.1.startsWith linePrefix)
+    | throw <| IO.userError s!"missing fixture line {linePrefix}"
+  let some (pre :: _ :: _) := some (text.splitOn needle)
+    | throw <| IO.userError s!"missing {needle} on fixture line {linePrefix}"
+  pure { line, character := pre.length }
+
+private def selfReferenceNeedle : String :=
+  "the declaration it is inside"
+
+def checkRunAtSelfReference : ScenarioM Unit := do
+  let path := "tests/scenario/docs/RunAtSelfReference.lean"
+  let doc ← openDoc path
+  syncDoc doc
+  let source ← IO.FS.readFile path
+  let tacticSorry ← positionAt source "theorem tacticSelf" "sorry"
+  -- The probe environment already contains the declaration being proved; using it must not
+  -- report success, at a tactic position, a term `sorry`, or a term hole.
+  for (label, linePrefix, needle, text) in [
+      ("tactic self-reference", "theorem tacticSelf", "sorry", "exact tacticSelf"),
+      ("term sorry self-reference", "theorem termSelf", "sorry", "exact termSelf"),
+      ("term hole self-reference", "def holeSelf", "_", "exact holeSelf"),
+      ("mutual block reference", "  theorem mutualLeft", "sorry", "exact mutualRight")] do
+    requireRunAtFailureMessage label doc (← positionAt source linePrefix needle) text
+      selfReferenceNeedle
+  -- Valid recursion is reported as unchecked, never as a termination failure.
+  let recursiveExact ← positionAt source "  | n + 1 => by" "exact"
+  let recursive : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← sendRunAt doc {
+    line := recursiveExact.line, character := recursiveExact.character, text := "exact countDown n" }
+  unless !recursive.success &&
+      recursive.messages.any (·.text.contains selfReferenceNeedle) &&
+      recursive.messages.all (fun msg =>
+        msg.severity != .error || msg.text.contains selfReferenceNeedle) do
+    throw <| IO.userError s!"recursive probe must be unchecked, not failed: {(toJson recursive).compress}"
+  -- Earlier declarations remain usable and later ones remain unknown.
+  let earlier ← requireRunAtSuccess "earlier declaration" doc tacticSorry
+    "have _h := earlierFact"
+  unless earlier.proofState?.map (·.goals.map (·.target)) == some #["False"] do
+    throw <| IO.userError s!"earlier declaration changed the goal: {(toJson earlier).compress}"
+  requireRunAtFailureMessage "later declaration" doc tacticSorry "have _h := laterFact"
+    "laterFact"
+  -- A handle continuation applies the same check and restores the stored state.
+  let initial ← requireRunAtResponseSuccess "self-reference basis" <|
+    ← sendRunAt doc {
+      line := tacticSorry.line, character := tacticSorry.character, text := "skip", storeHandle := true }
+  let some handle := initial.handle?
+    | throw <| IO.userError "missing self-reference basis handle"
+  let continued : Beam.LSP.RunAt.Result ← awaitResponseAs <|
+    ← runWithHandle doc handle { text := "exact tacticSelf", storeHandle := true }
+  unless !continued.success && continued.handle?.isNone &&
+      continued.proofState?.map (·.goals.map (·.target)) == some #["False"] &&
+      continued.messages.any (·.text.contains selfReferenceNeedle) do
+    throw <| IO.userError s!"continued self-reference must fail with the stored goal: {(toJson continued).compress}"
+  let retry ← requireRunAtResponseSuccess "reuse handle after self-reference" <|
+    ← runWithHandle doc handle { text := "skip" }
+  unless retry.proofState?.map (·.goals.map (·.target)) == some #["False"] do
+    throw <| IO.userError s!"self-reference changed the stored proof state: {(toJson retry).compress}"
+  releaseHandle doc handle
+  closeDoc doc
+
 private def placeholderContentModifiedJson : Json :=
   Json.mkObj [("code", toJson "contentModified")]
 
@@ -511,11 +572,12 @@ def checkRunAtPlaceholderContexts : ScenarioM Unit := do
       throw <| IO.userError s!"concurrent placeholder probe {i}: {(toJson result).compress}"
   requireRunAtGoals "placeholder after concurrent probes" doc letHole #["Nat"]
 
-  -- Known limitation, documented with runAt: probes do not run Lean's termination checking, so
-  -- text that uses the declaration being proved succeeds although the same edit fails. Update
-  -- these expectations when probes reject self-use. Later declarations stay unknown.
-  requireRunAtSolvesProof "self-reference at a term sorry" doc ⟨20, 28⟩ "exact termSelf"
-  requireRunAtSolvesProof "self-reference at a tactic sorry" doc ⟨21, 33⟩ "exact tacticSelf"
+  -- Probes do not run Lean's termination checking, so text that uses the declaration being proved
+  -- is reported as unchecked rather than solved. Later declarations stay unknown.
+  requireRunAtFailureMessage "self-reference at a term sorry" doc ⟨20, 28⟩ "exact termSelf"
+    selfReferenceNeedle
+  requireRunAtFailureMessage "self-reference at a tactic sorry" doc ⟨21, 33⟩ "exact tacticSelf"
+    selfReferenceNeedle
   requireRunAtFailureMessage "later declaration at a term sorry" doc ⟨20, 28⟩
     "exact tacticSelf" "tacticSelf"
 
@@ -549,6 +611,7 @@ def run : ScenarioM Unit := do
   checkRunAtTacticPositions
   checkRunAtTacticSequences
   checkRunAtPlaceholders
+  checkRunAtSelfReference
   checkRunAtPlaceholderContexts
   checkRunAtElaborationAborts
   checkRunAtResourceLimits

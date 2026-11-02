@@ -23,8 +23,10 @@ Use this reference when the task needs more than the default loop in `SKILL.md`.
   use `exact t` for a term. Only the placeholder's type is checked, not later parts of the
   enclosing term
 - a successful probe is not proof that the edit elaborates: probes check the text against its goal
-  only and do not run Lean's termination checking, so text that uses the declaration being proved
-  can succeed; confirm with a real edit and `sync`
+  only and do not run Lean's termination checking; confirm with a real edit and `sync`
+- text that uses the declaration being proved, or another member of its `mutual` block, returns
+  `success: false` with a message naming that declaration, even when the recursion is valid; make
+  the edit and `sync` instead
 - standalone comments, blank lines, and many declaration headers often do not have a usable basis
 - nearby whitespace/comments may still work when Lean can recover a neighboring basis, but do not
   assume that from arbitrary file positions
