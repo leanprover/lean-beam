@@ -140,8 +140,15 @@ lean_lib Beam.LSP where
   moreLinkArgs := if System.Platform.isOSX then
     #["-Wl,-install_name,@rpath/" ++ nameToSharedLib "beam_Beam_LSP"] else #[]
 
+/-- Policy included in diagnostics is a real build input, including for incremental builds. -/
+target beamInstallerPolicy (pkg) : Unit := do
+  let inputs ← (#[("validated-lean-toolchains" : FilePath), "compatible-lean-release-lines"]).mapM fun file =>
+    inputBinFile (pkg.dir / file)
+  return (Job.collectArray inputs).map fun _ => ()
+
 lean_lib Beam where
   defaultFacets := #[`shared]
+  extraDepTargets := #[`beamInstallerPolicy]
   moreLinkObjs := #[beamControlDirObj, beamProcessJobObj]
 
 lean_lib BeamTest where

@@ -538,5 +538,35 @@ class NativeQualificationReportTest(unittest.TestCase):
         self.assertEqual(report["stderr"], "compiler stderr\n")
 
 
+class ClientDoctorExecutableTest(unittest.TestCase):
+    def test_inspection_copy_preserves_cache_alias_and_cleans_up_after_failure(self):
+        spec = importlib.util.spec_from_file_location(
+            "client_doctor_native", REPO / "tests/test-client-doctor-native.py")
+        doctor = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(doctor)
+        with tempfile.TemporaryDirectory(prefix="beam-client-doctor-cache-") as temporary:
+            root = Path(temporary)
+            source, cached = root / ("beam-cli" + EXE), root / "cached-artifact"
+            source.write_bytes(b"cached executable bytes")
+            os.link(source, cached)
+            source.chmod(0o555)
+            before = source.stat()
+            with mock.patch.object(doctor, "CLI", source):
+                with self.assertRaisesRegex(RuntimeError, "inspection failed"):
+                    with doctor.inspection_cli() as executable:
+                        self.assertEqual(executable.parent, source.parent)
+                        self.assertEqual(executable.stat().st_nlink, 1)
+                        self.assertFalse(executable.samefile(cached))
+                        self.assertEqual(executable.read_bytes(), cached.read_bytes())
+                        executable.write_bytes(b"independent copy")
+                        raise RuntimeError("inspection failed")
+            self.assertFalse(executable.exists())
+            self.assertEqual(source.read_bytes(), b"cached executable bytes")
+            self.assertEqual(cached.read_bytes(), source.read_bytes())
+            after = source.stat()
+            for field in ["st_dev", "st_ino", "st_mode", "st_mtime_ns", "st_nlink", "st_size"]:
+                self.assertEqual(getattr(after, field), getattr(before, field), field)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,9 +4,11 @@
 """Portable static client checks against the already-built native CLI; no client is launched."""
 
 import hashlib
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -14,6 +16,23 @@ import tempfile
 REPO = Path(__file__).resolve().parent.parent
 EXE = ".exe" if os.name == "nt" else ""
 CLI = REPO / ".lake/build/bin" / ("beam-cli" + EXE)
+
+
+@contextmanager
+def inspection_cli():
+    # Darwin may resolve a cache hard link by its cache pathname. Keep an independent
+    # executable beside the staged libraries, without editing the build or cache entry.
+    descriptor, name = tempfile.mkstemp(prefix="beam-client-doctor-", suffix=EXE, dir=CLI.parent)
+    os.close(descriptor)
+    command = Path(name)
+    try:
+        shutil.copyfile(CLI, command)
+        assert not command.is_symlink() and command.stat().st_nlink == 1, command
+        assert not command.samefile(CLI) and command.read_bytes() == CLI.read_bytes(), command
+        command.chmod(0o700)
+        yield command
+    finally:
+        command.unlink()
 
 
 def snapshot(root):
@@ -28,7 +47,8 @@ def snapshot(root):
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix="beam client doctor Ω ") as temporary:
+    with (tempfile.TemporaryDirectory(prefix="beam client doctor Ω ") as temporary,
+          inspection_cli() as cli):
         root = Path(temporary).resolve()
         home, workspace = root / "home", root / "workspace"
         home.mkdir()
@@ -42,7 +62,7 @@ def main():
 
         def inspect(*args, expected=0, environment=None, report=True):
             before = snapshot(root)
-            result = subprocess.run([CLI, "doctor", "clients", *args, "--json"], cwd=workspace,
+            result = subprocess.run([cli, "doctor", "clients", *args, "--json"], cwd=workspace,
                                     env=env if environment is None else environment,
                                     capture_output=True, text=True, encoding="utf-8", timeout=15)
             assert result.returncode == expected, (result.returncode, result.stdout, result.stderr)
