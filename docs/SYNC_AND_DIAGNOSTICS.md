@@ -364,6 +364,15 @@ not an installed command-line interface or a supported machine protocol. Maintai
 ordering and correlation contract in the broker stream tests and
 [development guidance](DEVELOPMENT.md#internal-broker-stream-contract).
 
+Required diagnostic delivery is bounded to 64 pending notifications and 16 MiB of serialized
+pending diagnostic frames per connection. These limits apply to the waiting queue, not the total
+number of Lean messages. A burst can exhaust them even in an error-free file, particularly with
+`+all-diagnostics`. Beam waits for request cleanup and reports `internalError` when another complete
+frame can safely be sent; it does not report successful delivery after discarding diagnostics.
+An uncertain physical send still requires abandoning the connection, and a terminal response is
+never followed by a replacement response. A delivery failure does not undo work already completed;
+inspect the current document and session state before choosing recovery.
+
 The selected root chooses a workspace runtime and bounds document admission. A path used to read or
 open a document must resolve to an existing regular file inside its canonical root, with a canonical
 filename ending in `.lean`. The suffix is case-sensitive, matching Lean module-name selection.
