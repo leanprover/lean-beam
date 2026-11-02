@@ -22,7 +22,7 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 - A tactic probe that uses the declaration being proved, or another member of its `mutual` block,
   now returns `success: false` with the original proof state and a message naming that declaration,
   instead of reporting success for an edit that Lean's termination check may reject
-  ([#PR](https://github.com/leanprover/lean-beam/pull/PR), @ejgallego).
+  ([#413](https://github.com/leanprover/lean-beam/pull/413), @ejgallego).
 - `references` now waits for Lean to finish the requested document version, so a query right after
   `update` reports that version's references instead of `[]` or locations from the previous text
   ([#399](https://github.com/leanprover/lean-beam/pull/399), @ejgallego).
