@@ -144,6 +144,6 @@ with tempfile.TemporaryDirectory(prefix="beam installation lookup-") as temporar
     arguments = (checkout / "remedy-arguments").read_bytes().split(b"\0")
     assert arguments.pop() == b"", arguments
     assert [argument.decode("utf-8") for argument in arguments] == [
-        remedy["install_root"], "--toolchain", "leanprover/lean4:v4.35.0",
+        remedy["installRoot"], "--toolchain", "leanprover/lean4:v4.35.0",
         "--custom-toolchain", "retained'alias", "--custom-toolchain", "requested'alias"]
     assert not calls.exists(), "rendering a remedy invoked a candidate compiler"

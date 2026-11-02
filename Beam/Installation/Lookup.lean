@@ -21,19 +21,29 @@ inductive Role where
   | cli | mcp | daemon
   deriving BEq
 
+/-- Observed installation context, used only to decide which remedy guidance is appropriate. -/
+inductive TargetInstallContext where
+  | bundled
+  | unrecognized
+  | current (installRoot : System.FilePath)
+  | unconfirmed (installRoot : System.FilePath)
+  deriving BEq
+
 /-- The unavailable selected target and the complete installation it was checked against. -/
 structure UnavailableTarget where
   selected : LocalTarget.Selection
   installationRoot : System.FilePath
-  /-- Present only for an observed, marked standalone install root and matching payload leaf. -/
-  installRoot? : Option System.FilePath := none
+  installContext : TargetInstallContext := .unrecognized
   retainedTargets : Array String
-  bundled : Bool
   sourceCommit? : Option String
 
 inductive TargetRemedy where
   | install (command precondition : String)
   | manual (detail : String)
+
+def TargetRemedy.command? : TargetRemedy → Option String
+  | .install command _ => some command
+  | .manual _ => none
 
 private def quoteArgument (text : String) : String :=
   "'" ++ text.replace "'" "'\\''" ++ "'"
@@ -55,10 +65,14 @@ private def installerTargetArguments (toolchain : String) : Except String (List 
 def UnavailableTarget.remedy (target : UnavailableTarget) : TargetRemedy := Id.run do
   if let some requested := target.selected.installerToolchain? then
     if let .error detail := installerTargetArguments requested then return .manual detail
-  if target.bundled then
+  if let .bundled := target.installContext then
     return .manual <| "bundled Beam serves only its containing Lean installation; use Beam bundled " ++
       "with the selected SDK, or construct a separate standalone Beam installation for that target"
-  let some installRoot := target.installRoot?
+  if let .unconfirmed installRoot := target.installContext then
+    return .manual <| s!"this bound generation could not be confirmed as current for {installRoot}; " ++
+      "inspect the current installation before choosing the complete target set to retain. " ++
+      "No reinstall command was generated from this older or unconfirmed selection"
+  let .current installRoot := target.installContext
     | return .manual <| "this installation has no recognized standalone installer location; " ++
         "use a Beam source checkout to construct an installation containing the selected target and all retained targets"
   let some requested := target.selected.installerToolchain?
@@ -76,18 +90,24 @@ def UnavailableTarget.remedy (target : UnavailableTarget) : TargetRemedy := Id.r
     " ./scripts/install-beam.sh " ++ String.intercalate " " (arguments.map quoteArgument)
   let revision := target.sourceCommit?.map (fun commit => s!" at revision {commit}") |>.getD ""
   return .install command <| s!"From a Beam source checkout{revision}, run this POSIX-shell command. " ++
-    "It includes every retained target; the installer will qualify the selected compilers and show its write plan. " ++
+    "It includes the inspected generation's targets. Before running it, confirm that the current target set " ++
+    "still matches this snapshot; the installer replaces the complete selection and will show its write plan. " ++
     "Restart Beam clients to use the newly installed target set."
 
-def UnavailableTarget.message (target : UnavailableTarget) : String :=
+/-- Render the explanation without embedding the separately typed remedy command. -/
+def UnavailableTarget.explanation (target : UnavailableTarget) (remedy : TargetRemedy) : String :=
   let selected := target.selected
   let message := s!"This Beam installation has no runtime for {selected.command}. " ++
     s!"The project's Lean compiler was found via selector '{selected.text}' in {selected.path}; " ++
     s!"bound Beam installation: {target.installationRoot}. "
-  match target.remedy with
-  | .install command precondition => message ++ precondition ++ "\n" ++ command
+  match remedy with
+  | .install _ precondition => message ++ precondition
   | .manual detail => message ++ detail ++
       ". For custom-target setup, see https://github.com/leanprover/lean-beam/blob/main/docs/CUSTOM_TOOLCHAINS.md"
+
+def UnavailableTarget.message (target : UnavailableTarget) : String :=
+  let remedy := target.remedy
+  target.explanation remedy ++ (remedy.command?.map ("\n" ++ ·)).getD ""
 
 inductive Failure where
   | invalid (detail : String)
@@ -267,6 +287,17 @@ structure RuntimeRef where
   private mk ::
   description : Beam.Runtime.Description
 
+private def Observation.installContext (observation : Observation) : IO TargetInstallContext := do
+  if observation.record.isBundled then return .bundled
+  let some location := installedRuntimeLocation? observation.home | return .unrecognized
+  unless location.payload == observation.record.generation &&
+      (← checkInstallRootMarker location.installRoot).isOk do return .unrecognized
+  try
+    let current ← Beam.resolveExistingPath (location.installRoot / "current")
+    if Beam.sameCanonicalPath current observation.home then return .current location.installRoot
+  catch _ => pure ()
+  return .unconfirmed location.installRoot
+
 /-- Select from checked members; no installation member is resolved a second time. -/
 def Observation.lookup (observation : Observation) (root : System.FilePath) : IO (Except Failure RuntimeRef) := do
   let selected ← Beam.Installation.LocalTarget.resolve root (← Beam.Installation.LocalTarget.elanHome)
@@ -283,21 +314,12 @@ def Observation.lookup (observation : Observation) (root : System.FilePath) : IO
         plugin := resolved.plugin, daemonBin := resolved.daemon, toolchain := resolved.target.toolchain
         identity := ⟨observation.home, observation.record.generation⟩
       }⟩
-  let installRoot? ← do
-    if observation.record.isBundled then pure none else
-    match installedRuntimeLocation? observation.home with
-    | none => pure none
-    | some location =>
-        if location.payload == observation.record.generation &&
-            (← checkInstallRootMarker location.installRoot).isOk then
-          pure (some location.installRoot)
-        else pure none
-  return .error <| match selected with
-    | some selected => .unavailable {
-        selected, installationRoot := observation.home, installRoot?
-        retainedTargets := observation.record.components.targets.map (·.toolchain)
-        bundled := observation.record.isBundled, sourceCommit? := observation.record.sourceCommit? }
-    | none => .noTarget
+  let some selected := selected | return .error .noTarget
+  return .error <| .unavailable {
+    selected, installationRoot := observation.home
+    installContext := ← observation.installContext
+    retainedTargets := observation.record.components.targets.map (·.toolchain)
+    sourceCommit? := observation.record.sourceCommit? }
 
 /-- Exact local lookup; no compiler probe, provider search, or provisioning is possible here. -/
 def lookup (installation : Installation) (root : System.FilePath) : IO (Except Failure RuntimeRef) := do

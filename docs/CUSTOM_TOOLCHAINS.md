@@ -79,10 +79,18 @@ place.
 If a locally selected compiler is missing from the Beam target set, the CLI error identifies the
 `lean-toolchain` file, its interpreted selector, the resolved compiler, and the bound installation.
 Its JSON data includes `selector_path`, `selector_text`, `lean_command`, `installation_root`, and
-`retained_targets`. When the standalone installer can provide the target, `remedy_command` names
-the install root and includes every retained target alongside the requested one. Run it from the
-Beam source checkout named in the message; the command uses POSIX shell syntax and retains the
-installer's normal confirmation and qualification steps. Restart clients after installing.
+`retained_targets`. That list describes the inspected generation, including when a process is
+still bound to an older generation. A reinstall recipe is offered only when the inspected
+generation can also be confirmed as `current`. Its `remedy_command` names the install root and
+includes that generation's targets alongside the requested one.
+
+The recipe is a snapshot, not an atomic update. Before running it, confirm that the current target
+set still matches the inspected list: the installer replaces the complete selection. Run it from
+a Beam source checkout at the revision given in the message, when available. The command uses
+POSIX shell syntax and retains the installer's normal confirmation and qualification steps.
+Restart clients after installing. If `current` has changed or cannot be confirmed, inspect the
+current installation before choosing a target set; Beam supplies manual guidance instead of a
+recipe based on an older selection.
 
 Bundled SDKs, direct filesystem selectors, unsupported official releases, and unrecognized
 installation layouts receive manual guidance instead of an invented installer command. A raw SDK

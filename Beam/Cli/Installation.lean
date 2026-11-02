@@ -29,20 +29,30 @@ private def _root_.Beam.Installation.admitControl (installation : Installation)
         ("recoveryPrecondition", toJson ("Before manual recovery or restarting, independently verify that the original " ++
           "owner, daemon, and all other producers have stopped."))]
 
+private structure TargetFailureData where
+  selectorPath : String
+  selectorText : String
+  leanCommand : String
+  installationRoot : String
+  retainedTargets : Array String
+  remedyCommand? : Option String
+  deriving ToJson
+
 private def installationFailure (failure : Beam.Installation.Failure) : CliFailure :=
   match failure with
   | .io error => .internal error
   | .unavailable target =>
-      let data := [
-        ("selectorPath", toJson target.selected.path.toString),
-        ("selectorText", toJson target.selected.text),
-        ("leanCommand", toJson target.selected.command.toString),
-        ("installationRoot", toJson target.installationRoot.toString),
-        ("retainedTargets", toJson target.retainedTargets)]
-      let failure := CliFailure.setup target.message
-      match target.remedy with
-      | .install command _ => failure.withRemedy command data
-      | .manual _ => { failure with failure.error.data? := some <| Json.mkObj data }
+      let remedy := target.remedy
+      let data : TargetFailureData := {
+        selectorPath := target.selected.path.toString
+        selectorText := target.selected.text
+        leanCommand := target.selected.command.toString
+        installationRoot := target.installationRoot.toString
+        retainedTargets := target.retainedTargets
+        remedyCommand? := remedy.command? }
+      { (CliFailure.setup (target.explanation remedy)) with
+        remedyCommand? := data.remedyCommand?
+        failure.error.data? := some (toJson data) }
   | _ => .setup failure.message
 
 private def runtimeFor (lookup : System.FilePath → IO (Except Beam.Installation.Failure Beam.Installation.RuntimeRef))
