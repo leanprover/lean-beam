@@ -58,8 +58,9 @@ private def installerTargetArguments (toolchain : String) : Except String (List 
   if Beam.Installation.ToolchainPolicy.releaseToolchainSupported toolchain then
     return ["--toolchain", toolchain]
   if toolchain.startsWith "leanprover/lean4:" then
-    throw <| s!"this Beam revision does not admit official target '{toolchain}' for installation; " ++
-      s!"select a supported exact target such as {Beam.Installation.ToolchainPolicy.validatedToolchains.headD "a validated Lean toolchain"}"
+    throw <| s!"this Beam revision does not support official target '{toolchain}' for installation. " ++
+      "Use a Beam revision that supports the project's existing Lean toolchain; " ++
+      "leave the project's lean-toolchain and dependency pins unchanged"
   return ["--custom-toolchain", toolchain]
 
 def UnavailableTarget.remedy (target : UnavailableTarget) : TargetRemedy := Id.run do

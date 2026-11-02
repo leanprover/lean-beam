@@ -66,6 +66,15 @@ private structure RemedyFixtureOutput where
   installRoot : String
   deriving Lean.ToJson
 
+private def checkUnsupportedOfficialGuidance (detail : String) : IO Unit := do
+  require ((detail.splitOn "does not support official target").length > 1)
+    "unsupported official target lost its explanation"
+  require ((detail.splitOn "supports the project's existing Lean toolchain").length > 1 &&
+    (detail.splitOn "leave the project's lean-toolchain and dependency pins unchanged").length > 1)
+    "unsupported target guidance invited changing the project's toolchain or dependency pins"
+  require ((detail.splitOn "select a supported exact target").length == 1)
+    "unsupported target guidance suggested selecting another project toolchain"
+
 private def remedyExample (directory : System.FilePath) : IO Unit := do
   let root := directory / "install root's"
   let target : UnavailableTarget := {
@@ -84,15 +93,14 @@ private def remedyExample (directory : System.FilePath) : IO Unit := do
   for unsupported in ["leanprover/lean4:v4.33.1", "leanprover/lean4:stable", "alias with spaces"] do
     let bad := { target with selected.installerToolchain? := some unsupported }
     match bad.remedy with
-    | .manual _ => pure ()
+    | .manual detail =>
+        if unsupported.startsWith "leanprover/lean4:" then checkUnsupportedOfficialGuidance detail
     | .install .. => throw <| IO.userError "unsupported selector received an installer command"
   let unsupportedBundle := { target with
     installContext := .bundled
     selected.installerToolchain? := some "leanprover/lean4:v4.33.1" }
   match unsupportedBundle.remedy with
-  | .manual detail =>
-      require ((detail.splitOn "does not admit official target").length > 1)
-        "bundled guidance suggested provisioning an unsupported official release"
+  | .manual detail => checkUnsupportedOfficialGuidance detail
   | .install .. => throw <| IO.userError "unsupported bundled target received an installer command"
   for manual in [{ target with installContext := .bundled },
       { target with installContext := .unrecognized },
