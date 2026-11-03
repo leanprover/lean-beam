@@ -14,7 +14,7 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 - Broker results exceeding the 16 MiB frame limit now return `internalError` with
   `operation_may_have_completed: true` when the error reply fits. The shared Lean session
-  remains usable after the rejected result
+  remains usable after the rejected result, and recovery replies preserve request correlation
   ([#414](https://github.com/leanprover/lean-beam/pull/414), @ejgallego).
 - `sync` and `refresh` now return `internalError` when a diagnostic burst exhausts pending
   delivery capacity between complete output frames, rather than losing the terminal response.

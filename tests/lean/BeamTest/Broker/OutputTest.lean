@@ -6,8 +6,10 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Broker.Output
 import Beam.Broker.Errors
+import BeamTest.Broker.ClientUtil
 
 open Lean Beam.Broker
+open BeamTest.Broker.TestUtil (receiveSocketBytes requirePeerEof)
 
 namespace BeamTest.Broker.OutputTest
 
@@ -31,21 +33,6 @@ private def receiveMessage (client : Transport.Connection) : IO StreamMessage :=
     | throw <| IO.userError "output peer did not receive a frame"
   let json ← IO.ofExcept <| (Json.parse bytes).mapError IO.userError
   IO.ofExcept <| (fromJson? json).mapError IO.userError
-
-private def receiveSocketBytes (client : Transport.Connection) (size : Nat) :
-    IO (Option ByteArray) := do
-  let .tcp socket _ := client
-  let received ← Std.Internal.UV.TCP.Socket.recv? socket size.toUInt64
-  -- withOutputPeer cancels any pending receive during cleanup on timeout or failure.
-  let some (some result) ← Beam.waitTaskWithTimeout received.result? 2000
-    | throw <| IO.userError "output peer read did not complete"
-  IO.ofExcept result
-
-private def requirePeerEof (client : Transport.Connection) : IO Unit := do
-  let .tcp _ pending := client
-  require "output peer retained extra bytes before EOF"
-    (Transport.Framing.Buffer.unreadBytes (← pending.get)).isEmpty
-  require "output peer received extra bytes instead of EOF" (← receiveSocketBytes client 1).isNone
 
 private def checkCodec : IO Unit := do
   let chunk : Beam.WorkspaceOutput.Chunk := { source := .stderr, text := "α", omittedBefore := true }
@@ -332,22 +319,43 @@ private def frameAtBytes (bytes : Nat) : StreamMessage := Id.run do
     String.ofList (List.replicate (count % 4096) 'x')
   return .response (some "frame-limit") (Response.success (toJson text))
 
+private def sendFrameBefore (client : Transport.Connection) (deadline : Nat)
+    (frame : Transport.PreparedFrame) : IO Unit := do
+  match ← Transport.sendFrameInterruptibly client frame (do return (← IO.monoNanosNow) >= deadline) with
+  | .completed () => pure ()
+  | .interrupted => throw <| IO.userError "output fixture send deadline expired"
+
 private def checkFrameLimit : IO Unit := do
   let message := frameAtBytes Transport.maxFrameBytes
   let frame := (toJson message).compress
   require "frame-limit fixture has the wrong byte size" (frame.utf8ByteSize == Transport.maxFrameBytes)
   withOutputPeer fun peer client => do
     let phase ← IO.mkRef Output.FramePhase.betweenFrames
+    let deadline := (← IO.monoNanosNow) + 10000000000
     let receiver ← IO.asTask (prio := Task.Priority.dedicated) <|
-      Transport.recvMsgUntil client ((← IO.monoNanosNow) + 10000000000)
+      Transport.recvMsgUntil client deadline
     try
-      Output.writeMessage phase message (Transport.sendFrame peer)
+      Output.writeMessage phase message (sendFrameBefore peer deadline)
       let received ← IO.ofExcept (← IO.wait receiver)
       require "exact-limit frame did not arrive intact" (received == some frame)
       require "exact-limit terminal did not complete" ((← phase.get) == .terminalComplete)
     finally
       Transport.abandonConnection peer
       discard <| IO.wait receiver
+  -- Once a reader stops, the sender must settle before closing the owned peer frees it.
+  let (sender, beforeCleanup) ← withOutputPeer fun peer client => do
+    let deadline ← IO.monoNanosNow
+    require "stopped-reader fixture unexpectedly received bytes"
+      (← Transport.recvMsgUntil client deadline).isNone
+    let phase ← IO.mkRef Output.FramePhase.betweenFrames
+    let sender ← IO.asTask (prio := Task.Priority.dedicated) <|
+      Output.writeMessage phase message (sendFrameBefore peer deadline)
+    let observed ← Beam.waitTaskWithTimeout sender 2000
+    pure (sender, observed)
+  -- Join after owned socket cleanup even on a regression; send completion can win the stop race.
+  let some _ ← Beam.waitTaskWithTimeout sender 5000
+    | throw <| IO.userError "frame sender did not settle after socket cleanup"
+  require "frame sender needed peer cleanup after its reader stopped" beforeCleanup.isSome
   withOutputPeer fun peer client => do
     let phase ← IO.mkRef Output.FramePhase.betweenFrames
     let called ← IO.mkRef false

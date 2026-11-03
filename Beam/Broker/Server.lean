@@ -3261,6 +3261,7 @@ private def handleClient
     | .error failure =>
         let id? := (Json.parse msg).toOption.bind fun json =>
           (json.getObjValAs? String "clientRequestId").toOption
+        clientRequestId.set id?
         sendResponse id? failure.toResponse
     | .ok req =>
         clientRequestId.set req.clientRequestId?

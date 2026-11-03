@@ -199,6 +199,35 @@ private def checkInitialRequestErrors (endpoint : Beam.Broker.Endpoint) : IO Uni
     finally
       Beam.Broker.Transport.closeConnection connection
 
+private def checkOversizedValidationError (endpoint : Beam.Broker.Endpoint) : IO Unit := do
+  let request (field : String) := Json.mkObj [
+    ("op", toJson "stats"), ("clientRequestId", toJson "r"), (field, toJson (0 : Nat))
+  ]
+  let overhead := (request "").compress.utf8ByteSize
+  let count := Beam.Broker.Transport.maxFrameBytes - overhead
+  let block := String.ofList (List.replicate 4096 'x')
+  let field := String.join (List.replicate (count / 4096) block) ++
+    String.ofList (List.replicate (count % 4096) 'x')
+  let body := (request field).compress
+  unless body.utf8ByteSize == Beam.Broker.Transport.maxFrameBytes do
+    throw <| IO.userError "validation-error fixture did not reach the exact request limit"
+  let connection ← Beam.Broker.Transport.connect endpoint
+  try
+    let deadline := (← IO.monoNanosNow) + 10000000000
+    match ← Beam.Broker.Transport.sendMsgUntil connection body deadline with
+    | .completed () => pure ()
+    | .timedOut => throw <| IO.userError "validation-error fixture send timed out"
+    let some bytes ← Beam.Broker.Transport.recvMsgUntil connection deadline
+      | throw <| IO.userError "validation-error fixture received no recovery response"
+    let message : Beam.Broker.StreamMessage ← IO.ofExcept <| fromJson? (← IO.ofExcept <| Json.parse bytes)
+    let .response (some "r") response := message
+      | throw <| IO.userError "validation-error recovery lost its short request ID"
+    expectErrorCode "oversized validation error" "internalError" response
+    unless response.error?.all (·.data?.isNone) do
+      throw <| IO.userError "validation-error recovery claimed an unconfirmed operation"
+    requirePeerEof connection
+  finally Beam.Broker.Transport.abandonConnection connection
+
 private def backendCounters (endpoint : Beam.Broker.Endpoint) : IO (Nat × Nat × Nat × Nat) := do
   let stats ← expectOk (← runClient endpoint {
     Beam.Broker.Request.stats with workspaceId? := some testWorkspaceId
@@ -386,6 +415,7 @@ def main : IO Unit := do
   let action := fun (broker : Beam.Broker.BackendProcess) => do
     waitForBrokerReadyForRoot endpoint root
     checkInitialRequestErrors endpoint
+    checkOversizedValidationError endpoint
     match ← Beam.Daemon.standaloneDaemonGenerationStatus endpoint testWorkspaceId root identity with
     | .exact => pure ()
     | status =>
