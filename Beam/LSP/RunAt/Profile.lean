@@ -20,6 +20,8 @@ structure Span where
   startMs : Float
   durationMs : Float
   range? : Option Lean.Lsp.Range := none
+  /-- Lean-rendered header for a selected summary entry. Never retains the message context. -/
+  label? : Option String := none
   deriving FromJson, ToJson, Inhabited
 
 /-- Wall-clock evidence from one speculative execution in its already-loaded environment.
@@ -36,7 +38,30 @@ def initialThresholdMs : Nat := 1
 def maxSpans : Nat := 1024
 def maxVisited : Nat := 8192
 def maxDepth : Nat := 128
+def maxTopSpans : Nat := 10
+def maxLabelChars : Nat := 160
 private def maxSnippetSourceBytes : Nat := 8192
+
+/-- Summary views refer to retained spans. A phase entry is the largest observed span of its
+category, not a sum of overlapping work or a claim that the entire phase was recorded. -/
+structure Selection where
+  top : Array Nat := #[]
+  phases : Array Nat := #[]
+
+def select (spans : Array Span) : Selection := Id.run do
+  let ranked := (Array.range spans.size).qsort fun i j =>
+    spans[i]!.durationMs > spans[j]!.durationMs ||
+      (spans[i]!.durationMs == spans[j]!.durationMs && i < j)
+  let mut phases := #[]
+  for category in #["Kernel", "Elab.def.maxSharing", "addDecl", "Elab.definition.value", "Elab.lint"] do
+    if let some index := ranked.find? (fun i => spans[i]!.category == category) then
+      phases := phases.push index
+  return { top := ranked.extract 0 maxTopSpans, phases }
+
+/-- Render an entry shared by the two views only once. -/
+def Selection.indices (selection : Selection) : Array Nat :=
+  selection.phases.foldl (fun indices index =>
+    if indices.contains index then indices else indices.push index) selection.top
 
 /-- Retain structured trace data in memory. An explicitly present empty export path is Lean's
 retention switch; Beam never calls the frontend's profile file writer or HTTP server. -/
@@ -71,6 +96,8 @@ def restoreScopes (before after : List Elab.Command.Scope) : List Elab.Command.S
 
 private structure Projection where
   spans : Array Span := #[]
+  /-- Temporary references only, bounded with spans and dropped before publishing a result. -/
+  headers : Array MessageData := #[]
   visited : Nat := 0
   truncated : Bool := false
 
@@ -133,7 +160,8 @@ private def snippetRange? (text : String) (ref : Syntax) : Option Lean.Lsp.Range
   return { start := fileMap.utf8PosToLspPos start, «end» := fileMap.utf8PosToLspPos stop }
 
 private def visit (origin stop : Float) (thread : UInt64) (fuel : Nat)
-    (heartbeatClock : Bool) (parent? : Option Nat) (range? : Option Lean.Lsp.Range) (msg : MessageData) :
+    (heartbeatClock : Bool) (wrap : MessageData → MessageData)
+    (parent? : Option Nat) (range? : Option Lean.Lsp.Range) (msg : MessageData) :
     StateM Projection Unit := do
   let state ← get
   if state.visited >= maxVisited || state.spans.size >= maxSpans then
@@ -144,7 +172,7 @@ private def visit (origin stop : Float) (thread : UInt64) (fuel : Nat)
   | fuel + 1 =>
     modify fun s => { s with visited := s.visited + 1 }
     match msg with
-    | .trace data _ children =>
+    | .trace data header children =>
       let mut parent? := parent?
       -- Exclude untimed nodes and invalid intervals. The request-clock bounds also prevent traces
       -- inherited from a saved snapshot from being presented as work done by this request.
@@ -165,6 +193,7 @@ private def visit (origin stop : Float) (thread : UInt64) (fuel : Nat)
             durationMs := (data.stopTime - data.startTime) * 1000
             range?
           }
+          headers := s.headers.push (wrap header)
         }
         parent? := some index
       for child in children do
@@ -173,18 +202,21 @@ private def visit (origin stop : Float) (thread : UInt64) (fuel : Nat)
           break
         -- Nested MessageData does not retain a trustworthy source reference on all supported
         -- Lean versions. Do not copy an enclosing range onto a child.
-        visit origin stop thread fuel heartbeatClock parent? none child
-    | .withContext context msg => visit origin stop thread fuel (trace.profiler.useHeartbeats.get context.opts) parent? range? msg
-    | .withNamingContext _ msg | .nest _ msg | .group msg
-    | .tagged _ msg | .ofWidget _ msg => visit origin stop thread fuel heartbeatClock parent? range? msg
+        visit origin stop thread fuel heartbeatClock wrap parent? none child
+    | .withContext context msg =>
+      visit origin stop thread fuel (trace.profiler.useHeartbeats.get context.opts)
+        (fun m => wrap (.withContext context m)) parent? range? msg
+    | .withNamingContext context msg =>
+      visit origin stop thread fuel heartbeatClock
+        (fun m => wrap (.withNamingContext context m)) parent? range? msg
+    | .nest _ msg | .group msg | .tagged _ msg | .ofWidget _ msg
+    | .ofOriginatingSyntax _ msg => visit origin stop thread fuel heartbeatClock wrap parent? range? msg
     | .compose left right =>
-      visit origin stop thread fuel heartbeatClock parent? range? left
-      visit origin stop thread fuel heartbeatClock parent? range? right
+      visit origin stop thread fuel heartbeatClock wrap parent? range? left
+      visit origin stop thread fuel heartbeatClock wrap parent? range? right
     | _ => pure ()
 
-/-- Project a bounded forest without evaluating lazy labels or pretty-printing expressions.
-The limits bound this projection and its response, not Lean's upstream trace allocation. -/
-def collect (startNs stopNs : Nat) (states : Array TraceState) (text : String) : Result := Id.run do
+private def project (startNs stopNs : Nat) (states : Array TraceState) (text : String) : Projection := Id.run do
   let origin := startNs.toFloat / 1000000000
   let stop := stopNs.toFloat / 1000000000
   let project : StateM Projection Unit := do
@@ -197,13 +229,48 @@ def collect (startNs stopNs : Nat) (states : Array TraceState) (text : String) :
         if (← get).visited >= maxVisited || (← get).spans.size >= maxSpans then
           modify fun s => { s with truncated := true }
           return
-        visit origin stop state.tid maxDepth false none (snippetRange? text trace.ref) trace.msg
+        visit origin stop state.tid maxDepth false id none (snippetRange? text trace.ref) trace.msg
   let (_, projection) := project.run {}
-  return {
+  return projection
+
+private def Projection.result (projection : Projection) (startNs stopNs : Nat) : Result := {
     elapsedMs := (stopNs - startNs).toFloat / 1000000
     initialThresholdMs
     spans := projection.spans
     truncated := projection.truncated
-  }
+}
+
+/-- Project a bounded forest without evaluating lazy labels or pretty-printing expressions.
+The limits bound this projection and its response, not Lean's upstream trace allocation. -/
+def collect (startNs stopNs : Nat) (states : Array TraceState) (text : String) : Result :=
+  (project startNs stopNs states text).result startNs stopNs
+
+private def renderLabel (header : MessageData) : BaseIO (Option String × Bool) := do
+  -- Use Lean's context-aware renderer, as its profiler exporter does. A custom label can perform
+  -- IO; keep it away from the protocol streams. Clipping bounds output, not rendering work.
+  let (_, rendered) ← IO.FS.withIsolatedStreams do
+    let label ← header.toString
+    let bounded := (label.take (maxLabelChars + 1)).toString
+    if bounded.length > maxLabelChars then
+      return (some ((bounded.take (maxLabelChars - 1)).toString ++ "…"), true)
+    return (if bounded.isEmpty then none else some bounded, false)
+  return rendered
+
+/-- Add Lean-rendered headers only for summary entries, after the measured execution ends.
+Cancellation is checked between labels, never by abandoning an active formatter. Only bounded
+strings escape; trace headers and their contexts cannot be retained in results or handles. -/
+def collectWithLabels {m : Type → Type} [Monad m] [MonadLiftT BaseIO m]
+    (checkCancelled : m Unit) (startNs stopNs : Nat) (states : Array TraceState)
+    (text : String) : m Result := do
+  let projection := project startNs stopNs states text
+  let mut result := projection.result startNs stopNs
+  for index in (select result.spans).indices do
+    checkCancelled
+    let (label?, clipped) ← renderLabel projection.headers[index]!
+    result := { result with
+      spans := result.spans.modify index fun span => { span with label? }
+      truncated := result.truncated || clipped }
+  checkCancelled
+  return result
 
 end Beam.LSP.RunAt.Profile

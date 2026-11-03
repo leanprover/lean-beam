@@ -162,7 +162,7 @@ private def continuationTextField : String × Json :=
 
 private def profileField : String × Json :=
   ("profile", Beam.JsonSchema.bool
-    "Set true to compare proof candidates using `elapsed_ms` and bounded `spans`. For kernel checking and sharing, use `lean_run_at` on the complete declaration at its first doc comment, attribute, or keyword. Required on continuations of profiled handles. Profiling `#guard_msgs` is unsupported. Lean failures may include a profile; parse failures do not. Spans overlap, may be partial, and profiling adds overhead.")
+    "Set true to compare proof candidates with `elapsed_ms` and labeled inclusive costs in `summary`; retained `spans` remain available. For kernel and sharing costs, use `lean_run_at` on a complete declaration at its first doc comment, attribute, or keyword. Required on continuations of profiled handles; `#guard_msgs` unsupported. Lean failures may include profiles; parse failures do not. Spans may overlap or be partial. Profiling and label rendering add overhead.")
 
 private def handleField : String × Json :=
   ("handle", Beam.JsonSchema.object "Opaque broker-wrapped Lean handle from a previous tool result.")

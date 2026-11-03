@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import BeamTest.LSP.Requests.Support
 import BeamTest.LSP.Requests.RunAt.ProfileContractsTest
+import BeamTest.LSP.Requests.RunAt.ProfileSummaryTest
 
 open Lean
 open BeamTest.LSP.Scenario
@@ -20,7 +21,9 @@ private def profileOf (result : Beam.LSP.RunAt.Result) : ScenarioM Beam.LSP.RunA
   let some profile := result.profile?
     | throw <| IO.userError s!"missing profile: {(toJson result).compress}"
   require (profile.elapsedMs > 0) "profile elapsed time must be positive"
-  require (!profile.truncated) "small profile unexpectedly truncated"
+  require (profile.spans.size <= Beam.LSP.RunAt.Profile.maxSpans) "profile exceeded span bound"
+  require (profile.spans.all fun span => span.label?.all (·.length <= Beam.LSP.RunAt.Profile.maxLabelChars))
+    "summary label exceeded its output bound"
   require (profile.initialThresholdMs == 1) "initial profiling threshold changed"
   for i in [:profile.spans.size] do
     let span := profile.spans[i]!
@@ -159,6 +162,7 @@ def checkProofs : ScenarioM Unit := do
   let result ← awaitResult complete
   require (result.success && result.proofState?.any (·.goals.isEmpty)) "whole proof did not solve"
   let profile ← profileOf result
+  require (profile.spans.any (·.label?.isSome)) "profile summary did not render a selected header"
   require (hasCategory profile "beam.profile.left" && hasCategory profile "beam.profile.right")
     "whole proof must include both tactic phases"
   require (result.traces.isEmpty) "profile should not pretty-print the trace tree"
@@ -384,6 +388,7 @@ def checkCancellationAndStaleness : ScenarioM Unit := do
 def run : ScenarioM Unit := do
   checkProjection
   ProfileContractsTest.run
+  ProfileSummaryTest.run
   checkProofs
   checkSourceOptions
   checkCommands

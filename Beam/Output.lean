@@ -147,11 +147,24 @@ private def profileSpanJson (span : Beam.LSP.RunAt.Profile.Span) : Json := Json.
   (match span.parent? with | some parent => [("parent", toJson parent)] | none => []) ++
   (match span.range? with | some range => [("range", toJson range)] | none => [])
 
-private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Json.mkObj [
-  ("elapsed_ms", toJson profile.elapsedMs), ("initial_threshold_ms", toJson profile.initialThresholdMs),
-  ("spans", Json.arr <| profile.spans.map profileSpanJson),
-  ("truncated", toJson profile.truncated)
-]
+private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Id.run do
+  let selection := Beam.LSP.RunAt.Profile.select profile.spans
+  let entry := fun index =>
+    let span := profile.spans[index]!
+    Json.mkObj <|
+      [("span", toJson index), ("category", toJson span.category),
+       ("duration_ms", toJson span.durationMs)] ++
+      (if span.tag.isEmpty then [] else [("tag", toJson span.tag)]) ++
+      (match span.label? with | some label => [("label", toJson label)] | none => [])
+  return Json.mkObj [
+    ("elapsed_ms", toJson profile.elapsedMs), ("initial_threshold_ms", toJson profile.initialThresholdMs),
+    ("summary", Json.mkObj [
+      ("top_spans", Json.arr <| selection.top.map entry),
+      ("phase_spans", Json.arr <| selection.phases.map entry),
+      ("omitted_from_top", toJson (profile.spans.size - selection.top.size))]),
+    ("spans", Json.arr <| profile.spans.map profileSpanJson),
+    ("truncated", toJson profile.truncated)
+  ]
 
 private def runAtResultJson (result : RunAtBrokerResult) : Json := Json.mkObj <|
   [

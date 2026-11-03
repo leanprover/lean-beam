@@ -33,6 +33,14 @@ private def jsonFieldPriority : String -> Nat
   | "traces" => 14
   | "proof_state" => 15
   | "next_handle" => 16
+  | "elapsed_ms" => 17
+  | "initial_threshold_ms" => 18
+  | "summary" => 19
+  | "top_spans" => 20
+  | "phase_spans" => 21
+  | "omitted_from_top" => 22
+  | "truncated" => 23
+  | "spans" => 24
   | "save_ready" | "saveReady" => 12
   | "changed" => 14
   | "diagnostics" => 20
