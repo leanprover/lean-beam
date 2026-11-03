@@ -250,7 +250,7 @@ private def checkOverflowAfterDeliveredFrame : IO Unit :=
     let frames ← IO.mkRef (#[] : Array StreamMessage)
     let writer ← IO.asTask (prio := Task.Priority.dedicated) <|
       queue.run execution some none fun message => do
-        Output.writeMessage phase message <| Transport.sendMsg peer (toJson message).compress
+        Output.writeMessage phase message (Transport.sendFrame peer)
         frames.modify (·.push message)
         match message with
         | .fileProgress .. =>
@@ -297,6 +297,54 @@ private def checkOverflowAfterDeliveredFrame : IO Unit :=
       (messages.size == 1 && messages.all fun message => match message with
         | .fileProgress .. => true | _ => false)
 
+private def frameAtBytes (bytes : Nat) : StreamMessage := Id.run do
+  let envelope := StreamMessage.response (some "frame-limit") (Response.success (toJson ""))
+  let count := bytes - (toJson envelope).compress.utf8ByteSize
+  let block := String.ofList (List.replicate 4096 'x')
+  let text := String.join (List.replicate (count / 4096) block) ++
+    String.ofList (List.replicate (count % 4096) 'x')
+  return .response (some "frame-limit") (Response.success (toJson text))
+
+private def checkFrameLimit : IO Unit := do
+  let message := frameAtBytes Transport.maxFrameBytes
+  let frame := (toJson message).compress
+  require "frame-limit fixture has the wrong byte size" (frame.utf8ByteSize == Transport.maxFrameBytes)
+  withOutputPeer fun peer client => do
+    let phase ← IO.mkRef Output.FramePhase.betweenFrames
+    let receiver ← IO.asTask (prio := Task.Priority.dedicated) <|
+      Transport.recvMsgUntil client ((← IO.monoNanosNow) + 10000000000)
+    try
+      Output.writeMessage phase message (Transport.sendFrame peer)
+      let received ← IO.ofExcept (← IO.wait receiver)
+      require "exact-limit frame did not arrive intact" (received == some frame)
+      require "exact-limit terminal did not complete" ((← phase.get) == .terminalComplete)
+    finally
+      Transport.abandonConnection peer
+      discard <| IO.wait receiver
+  withOutputPeer fun peer client => do
+    let phase ← IO.mkRef Output.FramePhase.betweenFrames
+    let called ← IO.mkRef false
+    let message := frameAtBytes (Transport.maxFrameBytes + 1)
+    let failure? ← try
+      Output.writeMessage phase message fun frame => do
+        called.set true
+        Transport.sendFrame peer frame
+      pure none
+    catch error => pure (some error)
+    let some failure := failure? | throw <| IO.userError "oversized terminal was accepted"
+    require "oversized terminal entered the send callback" (!(← called.get))
+    require "known-unsent terminal lost its safe phase" ((← phase.get) == .betweenFrames)
+    let reported ← Output.tryReportFailure phase peer (some "frame-limit")
+      (responseFailureFor .internalError failure.toString) (pure false)
+    require "oversized terminal could not report its error" reported
+    match ← receiveMessage client with
+    | .response id? (.errorResult failure) =>
+        require "frame-limit error lost request identity" (id? == some "frame-limit")
+        require "frame-limit error lost its typed outcome" (failure.error.code == "internalError")
+    | _ => throw <| IO.userError "oversized terminal did not deliver a typed failure"
+    Transport.abandonConnection peer
+    requirePeerEof client
+
 private def checkPartialFrameFailure : IO Unit :=
   withOutputPeer fun peer client => do
     let phase ← IO.mkRef Output.FramePhase.betweenFrames
@@ -304,7 +352,7 @@ private def checkPartialFrameFailure : IO Unit :=
     let partialSent ← IO.mkRef false
     let failed ←
       try
-        Output.writeMessage phase message do
+        Output.writeMessage phase message fun _ => do
           let .tcp socket _ := peer
           -- Emit only half the declared body, then fail the send callback deterministically.
           let sent ← Std.Internal.UV.TCP.Socket.send socket #["8\n{\"ok".toUTF8]
@@ -328,7 +376,7 @@ private def checkPostTerminalCleanupFailure : IO Unit :=
   withOutputPeer fun peer client => do
     let phase ← IO.mkRef Output.FramePhase.betweenFrames
     let message := StreamMessage.response none (Response.success (toJson "finished"))
-    Output.writeMessage phase message <| Transport.sendMsg peer (toJson message).compress
+    Output.writeMessage phase message (Transport.sendFrame peer)
     let reported : Bool ←
       try
         throw <| IO.userError "controlled post-terminal cleanup failure"
@@ -391,6 +439,7 @@ def check : IO Unit := do
   checkAcceptedCapacity
   checkRequiredCapacity
   checkOverflowAfterDeliveredFrame
+  checkFrameLimit
   checkPartialFrameFailure
   checkPostTerminalCleanupFailure
   checkFailureBeforeOutput

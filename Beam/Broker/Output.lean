@@ -30,14 +30,25 @@ def FramePhase.key : FramePhase → String
   | .sendingTerminal => "sendingTerminal"
   | .terminalComplete => "terminalComplete"
 
-private def writeFrame (phase : IO.Ref FramePhase) (terminal : Bool) (send : IO Unit) : IO Unit := do
-  phase.set (if terminal then .sendingTerminal else .sendingNotification)
+private def writeFrame (phase : IO.Ref FramePhase) (sending completed : FramePhase)
+    (send : IO Unit) : IO Unit := do
+  phase.set sending
   send
-  phase.set (if terminal then .terminalComplete else .betweenFrames)
+  phase.set completed
 
-/-- Single writer only. A failed send retains its uncertain phase even after emitting bytes. -/
-def writeMessage (phase : IO.Ref FramePhase) (message : StreamMessage) (send : IO Unit) : IO Unit :=
-  writeFrame phase (match message with | .response .. => true | _ => false) send
+/-- Preparation failure leaves the phase safe; a failed send retains its uncertain phase. -/
+def writeMessage (phase : IO.Ref FramePhase) (message : StreamMessage)
+    (send : Transport.PreparedFrame → IO Unit) : IO Unit := do
+  let frame ← Transport.prepareFrame (toJson message).compress
+  let terminal := match message with | .response .. => true | _ => false
+  writeFrame phase
+    (if terminal then .sendingTerminal else .sendingNotification)
+    (if terminal then .terminalComplete else .betweenFrames) (send frame)
+
+def writeHello (phase : IO.Ref FramePhase) (hello : ServerHello)
+    (send : Transport.PreparedFrame → IO Unit) : IO Unit := do
+  let frame ← Transport.prepareFrame (toJson hello).compress
+  writeFrame phase .sendingHello .betweenFrames (send frame)
 
 /-- Single writer, after producer settlement. Shutdown may abandon a pending error reply. -/
 def tryReportFailure (phase : IO.Ref FramePhase) (client : Transport.Connection)
@@ -45,9 +56,8 @@ def tryReportFailure (phase : IO.Ref FramePhase) (client : Transport.Connection)
   match ← phase.get with
   | .awaitingRequest | .betweenFrames =>
       try
-        writeFrame phase true do
-          let message := StreamMessage.response id? failure.toResponse
-          match ← Transport.sendMsgInterruptibly client (toJson message).compress stopped with
+        writeMessage phase (.response id? failure.toResponse) fun frame => do
+          match ← Transport.sendFrameInterruptibly client frame stopped with
           | .completed () => pure ()
           | .interrupted => throw <| IO.userError "broker error response interrupted"
         pure true

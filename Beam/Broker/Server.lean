@@ -3245,13 +3245,10 @@ private def handleClient
   let clientRequestId ← IO.mkRef (none : Option String)
   let sendResponse (id? : Option String) (response : Response) : IO Unit := do
     let message := StreamMessage.response id? response
-    Output.writeMessage framePhase message <|
-      Transport.sendMsg client (toJson message).compress
+    Output.writeMessage framePhase message (Transport.sendFrame client)
   try
     if let some identity := server.mode.wrapperIdentity? then
-      framePhase.set .sendingHello
-      Transport.sendMsg client (toJson (ServerHello.current identity)).compress
-      framePhase.set .betweenFrames
+      Output.writeHello framePhase (ServerHello.current identity) (Transport.sendFrame client)
     let deadlineNanos := (← IO.monoNanosNow) + 5000 * 1000000
     let some msg ← Transport.recvMsgUntil client deadlineNanos
       | throw <| IO.userError "Beam daemon initial request timed out after 5000 ms"
@@ -3295,10 +3292,9 @@ private def handleClient
         try
           framePhase.set .betweenFrames
           discard <| output.run execution some req.clientRequestId? fun message => do
-            let frame := (toJson message).compress
             let stop := do return (← disconnected.get) || (← output.failed) || (← transport.stop.get)
-            Output.writeMessage framePhase message do
-              match ← Transport.sendMsgInterruptibly client frame stop with
+            Output.writeMessage framePhase message fun frame => do
+              match ← Transport.sendFrameInterruptibly client frame stop with
               | .completed () => pure ()
               | .interrupted => throw <| IO.userError "broker output connection interrupted"
         catch error =>
