@@ -36,7 +36,7 @@ private def writeFrame (phase : IO.Ref FramePhase) (sending completed : FramePha
   send
   phase.set completed
 
-/-- Preparation failure leaves the phase safe; a failed send retains its uncertain phase. -/
+/-- Single writer. Preparation failure leaves the phase safe; a failed send retains its uncertain phase. -/
 def writeMessage (phase : IO.Ref FramePhase) (message : StreamMessage)
     (send : Transport.PreparedFrame → IO Unit) : IO Unit := do
   let frame ← Transport.prepareFrame (toJson message).compress

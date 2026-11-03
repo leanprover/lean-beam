@@ -58,6 +58,11 @@ structure BrokerFailure where
   data? : Option Json := none
   deriving Inhabited
 
+/-- A delivery failure leaves the operation's effects unconfirmed, without authorizing replay. -/
+structure UnconfirmedOperationData where
+  operationMayHaveCompleted : Bool := true
+  deriving ToJson, FromJson
+
 instance : FromJson BrokerFailure where
   fromJson? json := do
     Beam.requireOnlyJsonFields "Beam broker failure" #["code", "message", "data"] json

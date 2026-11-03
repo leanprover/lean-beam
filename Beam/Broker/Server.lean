@@ -3316,11 +3316,14 @@ private def handleClient
   catch error =>
     reportClientFailure "handler" (← framePhase.get) (← operation.get)
       (← clientRequestId.get) error
-    let primary := (← deliveryFailure.get).getD error
+    let deliveryFailure? ← deliveryFailure.get
+    let primary := deliveryFailure?.getD error
+    -- Output failure can follow committed effects; initial-request errors make no such claim.
+    let data? := deliveryFailure?.map fun _ => toJson ({} : UnconfirmedOperationData)
     -- Execution and its watcher have settled. Queue failure and disconnection can already be
     -- set by cleanup, so only daemon shutdown interrupts this final attempt to report failure.
     let reported ← Output.tryReportFailure framePhase client (← clientRequestId.get)
-      (responseFailureFor .internalError primary.toString) transport.stop.get
+      (responseFailureFor .internalError primary.toString data?) transport.stop.get
     unless reported do
       -- A send may have emitted a partial frame. Never append a replacement response.
       abandoned.set true

@@ -32,13 +32,20 @@ private def receiveMessage (client : Transport.Connection) : IO StreamMessage :=
   let json ← IO.ofExcept <| (Json.parse bytes).mapError IO.userError
   IO.ofExcept <| (fromJson? json).mapError IO.userError
 
+private def receiveSocketBytes (client : Transport.Connection) (size : Nat) :
+    IO (Option ByteArray) := do
+  let .tcp socket _ := client
+  let received ← Std.Internal.UV.TCP.Socket.recv? socket size.toUInt64
+  -- withOutputPeer cancels any pending receive during cleanup on timeout or failure.
+  let some (some result) ← Beam.waitTaskWithTimeout received.result? 2000
+    | throw <| IO.userError "output peer read did not complete"
+  IO.ofExcept result
+
 private def requirePeerEof (client : Transport.Connection) : IO Unit := do
-  let closed ←
-    try
-      discard <| Transport.recvMsgUntil client ((← IO.monoNanosNow) + 2000000000)
-      pure false
-    catch _ => pure true
-  require "output peer received extra bytes or remained open instead of EOF" closed
+  let .tcp _ pending := client
+  require "output peer retained extra bytes before EOF"
+    (Transport.Framing.Buffer.unreadBytes (← pending.get)).isEmpty
+  require "output peer received extra bytes instead of EOF" (← receiveSocketBytes client 1).isNone
 
 private def checkCodec : IO Unit := do
   let chunk : Beam.WorkspaceOutput.Chunk := { source := .stderr, text := "α", omittedBefore := true }
@@ -58,6 +65,26 @@ private def checkCodec : IO Unit := do
     let envelope := Json.mkObj [("kind", toJson "workspaceOutput"), ("payload", invalid)]
     require "workspace output accepted an invalid payload"
       (match fromJson? (α := StreamMessage) envelope with | .error _ => true | .ok _ => false)
+
+private def checkEofRejectsSuffix : IO Unit := do
+  for buffered in [false, true] do
+    withOutputPeer fun peer client => do
+      let suffix := "8\n{\"ok".toUTF8
+      if buffered then
+        let .tcp _ pending := client
+        pending.set (Transport.Framing.Buffer.ofBytes suffix)
+      else
+        let .tcp socket _ := peer
+        let sent ← Std.Internal.UV.TCP.Socket.send socket #[suffix]
+        let some result ← IO.wait sent.result?
+          | throw <| IO.userError "malformed suffix fixture lost its send result"
+        IO.ofExcept result
+      Transport.abandonConnection peer
+      let rejected ← try
+        requirePeerEof client
+        pure false
+      catch _ => pure true
+      require s!"EOF assertion accepted a malformed suffix (buffered={buffered})" rejected
 
 private def checkCompletedTail : IO Unit := do
   let text ← Beam.WorkspaceOutput.Buffer.create
@@ -370,6 +397,15 @@ private def checkPartialFrameFailure : IO Unit :=
       (responseFailureFor .internalError "must not append after a partial frame") (pure false)
     require "partial frame admitted a replacement terminal" (!reported)
     Transport.abandonConnection peer
+    -- Consume the deliberately incomplete frame; strict EOF must reject any suffix after it.
+    let expected := "8\n{\"ok".toUTF8
+    let mut received := ByteArray.empty
+    while received.size < expected.size do
+      let some bytes ← receiveSocketBytes client (expected.size - received.size)
+        | throw <| IO.userError "partial-frame fixture lost its expected prefix"
+      require "partial-frame fixture received an empty chunk" (!bytes.isEmpty)
+      received := received ++ bytes
+    require "partial-frame fixture changed its expected prefix" (received == expected)
     requirePeerEof client
 
 private def checkPostTerminalCleanupFailure : IO Unit :=
@@ -432,6 +468,7 @@ private def checkRecoveryObservesStop : IO Unit := do
 
 def check : IO Unit := do
   checkCodec
+  checkEofRejectsSuffix
   checkCompletedTail
   checkBlockedWriter
   checkCancelledOutput

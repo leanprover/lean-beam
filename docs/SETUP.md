@@ -366,7 +366,8 @@ Unexpected IO faults use `internalError`, rather than being classified as invali
 
 Broker frames have a 16 MiB encoded-body limit. A result rejected by this limit before writing
 its frame returns `internalError` when the error reply fits; the shared session remains available.
-This is a delivery failure after execution: it does not undo effects such as a committed save.
+This delivery failure carries `error.data.operation_may_have_completed: true`: it does not undo
+effects such as a committed save. Initial-request read and validation failures carry no such claim.
 Inspect the current state before retrying an operation that may have effects. Once writing a frame
 has begun, a send failure instead closes that connection because another reply could corrupt it.
 
