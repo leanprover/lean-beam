@@ -11,6 +11,14 @@ open Lean
 
 namespace Beam.Broker
 
+/--
+The order for an external Lake build. Every message that suggests one must include it: a build while
+the session is live leaves Beam's sync and save history describing artifacts that changed under it.
+-/
+def externalLakeBuildProcedure : String :=
+  "first stop the CLI owner or drop the MCP workspace and confirm cleanup; " ++
+    "rebuild only after cleanup completes, then start a fresh session or workspace"
+
 inductive BrokerFailureCode where
   | invalidParams
   | requestCancelled

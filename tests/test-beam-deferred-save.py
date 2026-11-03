@@ -73,6 +73,7 @@ def check_deferred_save(root, scoped):
                 assert failure["code"] == "saveUnsupportedSetup", failure
                 assert failure["data"]["sync"]["readiness"]["save_ready"] is False, failure
                 assert "compiler.postponeCompile" in failure["message"], failure
+                assert "rebuild only after cleanup completes" in failure["message"], failure
                 assert artifact_family(root) == before, command
             print(f"deferred compilation ({'scoped' if scoped else 'Lake option'}): rejected, prior family preserved")
         finally:

@@ -2373,7 +2373,9 @@ private def saveOleanCore
       saveReadiness.saveReadyReason == Beam.LSP.Save.saveReadinessDeferredCompilationReason then
     withFailureProgress barrierProgress? <| throwBrokerFailure {
       code := .saveUnsupportedSetup
-      message := saveReadiness.saveReadyMessage?.getD "Beam cannot save deferred compilation; use lake build instead."
+      message :=
+        saveReadiness.saveReadyMessage?.getD "Beam cannot save deferred compilation; use lake build instead." ++
+          s!" Before that build, {externalLakeBuildProcedure}."
       data? := some <| (syncResultErrorData syncResult)
         |>.setObjVal! "reason" (toJson saveReadiness.saveReadyReason)
         |>.setObjVal! "path" (toJson relPath)

@@ -12,6 +12,11 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- `save` refusals that suggest `lake build` (`saveUnsupportedSetup`, `saveTraceStale`) now say to
+  stop the CLI owner or drop the MCP workspace and confirm cleanup before building, then start a
+  fresh session. Building while the session was live left dependencies marked as needing a save,
+  so every later sync of an importer failed with a recovery plan that could not be followed
+  ([#256](https://github.com/leanprover/lean-beam/issues/256), @ejgallego).
 - `sync` and `refresh` now return `internalError` when a diagnostic burst exhausts pending
   delivery capacity between complete output frames, rather than losing the terminal response.
   Recovery replies observe daemon shutdown; existing delivery budgets remain unchanged

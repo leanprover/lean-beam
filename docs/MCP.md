@@ -445,7 +445,8 @@ when the client also needs the diagnostics/readiness barrier.
 `lean_save` and `lean_close_save` create development checkpoints from the accepted Lean server
 snapshot, including structured Lake options, dynamic libraries, and plugins already applied by the
 file worker. Modules with batch-only `moreLeanArgs` fail with `saveUnsupportedSetup`; move shared
-`-D` settings to `leanOptions`, or use `lake build` when the arguments are intentionally batch-only.
+`-D` settings to `leanOptions`, or use `lake build` when the arguments are intentionally batch-only,
+after dropping the workspace and confirming cleanup.
 If an import changed on disk after the file worker loaded it, saving fails with `saveImportsChanged`;
 call `lean_refresh` so the worker reloads its imports, then save again.
 Successful checkpoints are normally sufficient for the local development loop, but MCP clients

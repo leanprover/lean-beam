@@ -674,6 +674,13 @@ PY
     cat "$unsupported_save_err" >&2
     exit 1
   fi
+  if ! assert_cli_error_json "$unsupported_save_out" saveUnsupportedSetup \
+      "rebuild only after cleanup completes"; then
+    echo "expected unsupported setup failure to order lake build after session cleanup" >&2
+    cat "$unsupported_save_out" >&2
+    cat "$unsupported_save_err" >&2
+    exit 1
+  fi
   BEAM_BATCH_ONLY_SYNC="$batch_only_sync" python3 - "$unsupported_save_out" <<'PYRECEIPT'
 import json, os, pathlib, sys
 
@@ -817,8 +824,9 @@ beam_start_owner "$tmp6"
     cat "$stale_trace_save_err" >&2
     exit 1
   fi
-  if ! assert_cli_error_json "$stale_trace_save_out" saveTraceStale; then
-    echo "expected stale trace save to report saveTraceStale" >&2
+  if ! assert_cli_error_json "$stale_trace_save_out" saveTraceStale \
+      "rebuild only after cleanup completes"; then
+    echo "expected stale trace save to report saveTraceStale and order lake build after cleanup" >&2
     cat "$stale_trace_save_out" >&2
     cat "$stale_trace_save_err" >&2
     exit 1
