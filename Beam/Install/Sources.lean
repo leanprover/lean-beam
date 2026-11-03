@@ -10,7 +10,8 @@ namespace Beam.Install
 
 /-- Source-checkout files that a target build needs, relative to the checkout root. -/
 def sourceRootFiles : List String :=
-  ["LICENSE", "Beam.lean", "lakefile.lean", "lake-manifest.json", "lean-toolchain"]
+  ["LICENSE", "Beam.lean", "lakefile.lean", "lake-manifest.json", "lean-toolchain",
+    "validated-lean-toolchains", "compatible-lean-release-lines"]
 
 def sourceDirs : List String :=
   ["Beam"]

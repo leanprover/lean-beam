@@ -1176,6 +1176,8 @@ private def checkControlProjectionCatalog : IO Unit := do
     ("setupError", #[("remedyCommand", "remedy_command"),
       ("installationRoot", "installation_root"), ("sessionDir", "session_dir"),
       ("descriptorPath", "descriptor_path"),
+      ("selectorPath", "selector_path"), ("selectorText", "selector_text"),
+      ("leanCommand", "lean_command"), ("retainedTargets", "retained_targets"),
       ("recoveryPrecondition", "recovery_precondition"),
       ("recordedConfigHash", "recorded_config_hash"),
       ("requestedConfigHash", "requested_config_hash")]),
@@ -1224,6 +1226,10 @@ private def checkControlProjectionCatalog : IO Unit := do
         | "recoveryPrecondition" => toJson "confirm the original worker has stopped"
         | "recordedConfigHash" => toJson "recorded-config"
         | "requestedConfigHash" => toJson "requested-config"
+        | "selectorPath" => toJson "/repo/lean-toolchain"
+        | "selectorText" => toJson "leanprover/lean4:v4.35.0"
+        | "leanCommand" => toJson "/sdk/bin/lean"
+        | "retainedTargets" => toJson (#["kept-alias", "leanprover/lean4:v4.34.1"] : Array String)
         | "root" => toJson "/repo"
         | "path" => toJson "Demo.lean"
         | "generation" => toJson "generation-7"
@@ -1252,6 +1258,10 @@ private def checkControlProjectionCatalog : IO Unit := do
         | "recordedConfigHash" => toJson "recorded-config"
         | "requestedConfigHash" => toJson "requested-config"
         | "root" => toJson "/repo"
+        | "selectorPath" => toJson "/repo/lean-toolchain"
+        | "selectorText" => toJson "leanprover/lean4:v4.35.0"
+        | "leanCommand" => toJson "/sdk/bin/lean"
+        | "retainedTargets" => toJson (#["kept-alias", "leanprover/lean4:v4.34.1"] : Array String)
         | "path" => toJson "Demo.lean"
         | "generation" => toJson "generation-7"
         | "detail" => toJson "control fixture"

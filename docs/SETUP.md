@@ -45,12 +45,36 @@ internet access or public network bind is needed for that communication. A writa
 directory alone does not make a daemon reachable across separate network namespaces. See
 [sessions and recovery](#sessions-and-recovery) for private-directory requirements and selectors.
 
-Some agent sandboxes run each shell command in its own network namespace; Claude Code's Bash
-sandbox is one example. A healthy `lean-beam serve` owner is then unreachable from later commands:
-they report `sessionRecoveryRequired`, and `doctor` reports that recovery is required. The owner is
-still running, so the recovery precondition is not met; do not run `recover`. Use the client's
-registered Beam MCP tools, which need no loopback TCP, or run the owner and its clients in one
-namespace.
+**Use the registered Beam MCP tools when each shell command runs in a separate network namespace.**
+For CLI use, the owner and every attaching command must share a network namespace.
+
+Claude Code's Bash sandbox on Linux and WSL2 is one such environment. A healthy `lean-beam serve`
+owner is then unreachable from later commands: they report `sessionRecoveryRequired`, and `doctor`
+reports that recovery is required.
+
+**Do not run `recover` until you have independently confirmed that the matching owner, daemon,
+and every other producer have stopped.** Connection refusal, `sessionRecoveryRequired`, and a
+returned `error.data.remedy_command` do not establish this. If you cannot confirm shutdown, stop
+and coordinate with the operator.
+
+To move an existing session out of the sandbox, stop its foreground owner and confirm cleanup
+before starting a replacement. In Claude Code, request an unsandboxed Bash retry with the Bash tool
+parameter `dangerouslyDisableSandbox: true`. For repeated direct `lean-beam` calls, merge this into
+your `.claude/settings.local.json`:
+
+```json
+{
+  "sandbox": {
+    "excludedCommands": ["lean-beam *"]
+  }
+}
+```
+
+The pattern matches direct `lean-beam` calls with arguments. Absolute paths and `elan run` need
+matching patterns; a `cd` or redirect keeps the call sandboxed. Excluded commands have host
+filesystem and network access and still follow Claude Code's permission policy. If that policy
+disallows unsandboxed calls, use the registered MCP tools. See
+[Claude Code's sandbox guidance](https://code.claude.com/docs/en/sandboxing#run-commands-outside-the-sandbox-with-excludedcommands).
 
 A CLI request executes Lean in the existing owner's workers, with that owner's launch permissions.
 Putting only the attaching CLI command in a sandbox does not constrain an owner launched outside

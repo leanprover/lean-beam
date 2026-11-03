@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Install.Construction
 import Beam.Cli.Installation
+import Beam.Cli.Output
 
 open Beam Beam.Cli Beam.Installation
 
@@ -27,6 +28,92 @@ private def rejected (installation : Installation) (project : System.FilePath) :
   | .error _ => pure ()
   | .ok _ => throw <| IO.userError "unavailable or invalid installation unexpectedly admitted a runtime"
 
+private def checkUnavailableContext (installation : Installation) (project : System.FilePath)
+    (context : TargetInstallContext := .unrecognized) : IO Unit := do
+  IO.FS.writeFile (project / "lean-toolchain") "foreign-alias\n"
+  let .error (.unavailable target) ← installation.lookup project
+    | throw <| IO.userError "expected a typed unavailable target"
+  require (target.selected.path == project / "lean-toolchain" && target.selected.text == "foreign-alias")
+    "lookup lost its selected file or text"
+  require (target.retainedTargets == #["fixture-0", "fixture-1"])
+    "lookup lost part of the installation's target set"
+  require (target.installContext == context) "lookup guessed or lost its installation context"
+  let .error failure ← (installation.runtime.resolve project).run
+    | throw <| IO.userError "CLI admitted an unavailable target"
+  require (failure.failure.error.code == "setupError") "target failure changed its CLI code"
+  let publicJson := (prepareFailureResponse failure).json
+  let data ← IO.ofExcept <| publicJson.getObjVal? "error" >>= (·.getObjVal? "data")
+  require ((data.getObjValAs? String "selector_path").toOption == some (project / "lean-toolchain").toString)
+    "public failure omitted the selecting path"
+  require ((data.getObjValAs? String "selector_text").toOption == some "foreign-alias")
+    "public failure omitted the requested selector"
+  require ((data.getObjValAs? (Array String) "retained_targets").toOption == some target.retainedTargets)
+    "public failure lost retained targets"
+  require ((data.getObjVal? "projection_error").toOption.isNone) "target data failed its public schema"
+  match target.remedy with
+  | .install command _ =>
+      require (failure.remedyCommand? == some command &&
+        (data.getObjValAs? String "remedy_command").toOption == some command)
+        "CLI lost the copyable installer command"
+      require (!failure.failure.error.message.endsWith ("\n" ++ command))
+        "CLI embedded the separately rendered remedy in its explanation"
+  | .manual _ =>
+      require (failure.remedyCommand?.isNone && (data.getObjVal? "remedy_command").toOption.isNone)
+        "CLI invented an installer command without a supported context"
+
+private structure RemedyFixtureOutput where
+  command : String
+  installRoot : String
+  deriving Lean.ToJson
+
+private def checkUnsupportedOfficialGuidance (detail : String) : IO Unit := do
+  require ((detail.splitOn "does not support official target").length > 1)
+    "unsupported official target lost its explanation"
+  require ((detail.splitOn "supports the project's existing Lean toolchain").length > 1 &&
+    (detail.splitOn "leave the project's lean-toolchain and dependency pins unchanged").length > 1)
+    "unsupported target guidance invited changing the project's toolchain or dependency pins"
+  require ((detail.splitOn "select a supported exact target").length == 1)
+    "unsupported target guidance suggested selecting another project toolchain"
+
+private def remedyExample (directory : System.FilePath) : IO Unit := do
+  let root := directory / "install root's"
+  let target : UnavailableTarget := {
+    selected := {
+      path := directory / "project's/lean-toolchain"
+      text := "requested'alias"
+      command := directory / "sdk/bin/lean"
+      installerToolchain? := some "requested'alias" }
+    installationRoot := root / "versions" / String.ofList (List.replicate 64 'a')
+    installContext := .current root
+    retainedTargets := #["leanprover/lean4:v4.35.0", "retained'alias"]
+    sourceCommit? := some (String.ofList (List.replicate 40 'b')) }
+  let .install command precondition := target.remedy
+    | throw <| IO.userError "named targets did not produce an installer remedy"
+  require ((precondition.splitOn "source checkout").length > 1) "remedy omitted its checkout precondition"
+  for unsupported in ["leanprover/lean4:v4.33.1", "leanprover/lean4:stable", "alias with spaces"] do
+    let bad := { target with selected.installerToolchain? := some unsupported }
+    match bad.remedy with
+    | .manual detail =>
+        if unsupported.startsWith "leanprover/lean4:" then checkUnsupportedOfficialGuidance detail
+    | .install .. => throw <| IO.userError "unsupported selector received an installer command"
+  let unsupportedBundle := { target with
+    installContext := .bundled
+    selected.installerToolchain? := some "leanprover/lean4:v4.33.1" }
+  match unsupportedBundle.remedy with
+  | .manual detail => checkUnsupportedOfficialGuidance detail
+  | .install .. => throw <| IO.userError "unsupported bundled target received an installer command"
+  for manual in [{ target with installContext := .bundled },
+      { target with installContext := .unrecognized },
+      { target with installContext := .unconfirmed root },
+      { target with selected.installerToolchain? := none },
+      { target with retainedTargets := #["/unregistered-sdk"] },
+      { target with retainedTargets := #["leanprover/lean4:v4.33.1"] }] do
+    match manual.remedy with
+    | .manual _ => pure ()
+    | .install .. => throw <| IO.userError "unestablished installer context received a command"
+  let output : RemedyFixtureOutput := { command, installRoot := root.toString }
+  IO.println (Lean.toJson output).compress
+
 private def admitsControl (installation : Installation) (owner daemon : System.FilePath) : IO Bool := do
   let entry : Beam.Daemon.SessionDescriptor := {
     schemaVersion := Beam.Daemon.registrySchemaVersion
@@ -46,16 +133,17 @@ private def admitsControl (installation : Installation) (owner daemon : System.F
         "ownership admission must preserve the typed installation mismatch"
       pure false
 
-private def stage (directory root : System.FilePath) : IO InstallManifest := do
+private def stage (directory root : System.FilePath) (extraTarget := false) : IO InstallManifest := do
   let suffix := if System.Platform.isWindows then ".exe" else ""
   let mut targets := #[]
-  for i in [:2] do
+  for i in [:if extraTarget then 3 else 2] do
     let daemon := s!"runtimes/{i}/bin/daemon{suffix}"
     let plugin := s!"runtimes/{i}/plugin"
     write root daemon "fixture daemon must never be invoked during lookup"
     write root plugin "fixture plugin must never be loaded during lookup"
+    let sdk := if i < 2 then s!"sdk-{i}" else "foreign"
     targets := targets.push {
-      lean := (← Beam.resolveExistingPath (directory / s!"sdk-{i}" / "bin" / ("lean" ++ suffix))).toString
+      lean := (← Beam.resolveExistingPath (directory / sdk / "bin" / ("lean" ++ suffix))).toString
       daemon, plugin, toolchain := s!"fixture-{i}"
       compilerRevision := Lean.githash, leanVersion := "Lean fixture", lakeVersion := "Lake fixture"
     }
@@ -66,6 +154,22 @@ private def stage (directory root : System.FilePath) : IO InstallManifest := do
     frontends := { cli, mcp, compilerRevision := Lean.githash }
     license := "LICENSE", targets
   }
+
+private def linkCurrent (home current : System.FilePath) : IO Unit := do
+  let out ← if System.Platform.isWindows then do
+    let some python ← IO.getEnv "BEAM_TEST_PYTHON"
+      | throw <| IO.userError "lookup fixture requires its driver's Python interpreter"
+    -- Lean quotes every Windows argument, including cmd's builtin name. Python's
+    -- command-line encoder preserves the mklink syntax already used by this fixture's driver.
+    IO.Process.output {
+      cmd := python
+      args := #["-c", "import subprocess,sys; subprocess.run(['cmd','/d','/c','mklink','/J',*sys.argv[1:]],check=True)",
+        current.toString, home.toString] }
+  else IO.Process.output { cmd := "ln", args := #["-s", home.toString, current.toString] }
+  unless out.exitCode == 0 do throw <| IO.userError s!"cannot create current fixture: {out.stderr}"
+
+private def unlinkCurrent (current : System.FilePath) : IO Unit :=
+  if System.Platform.isWindows then IO.FS.removeDir current else IO.FS.removeFile current
 
 private def checkShadowedAlias (directory : System.FilePath) (phase : String) : IO Unit := do
   let suffix := if System.Platform.isWindows then ".exe" else ""
@@ -79,9 +183,13 @@ private def checkShadowedAlias (directory : System.FilePath) (phase : String) : 
       let exact ← Beam.resolveExistingPath (directory / "sdk-0/bin" / ("lean" ++ suffix))
       require (Beam.sameCanonicalPath exact reference.description.command)
         "removing the alias did not restore the exact installed release"
-  | "healthy", .error (.unavailable command) =>
+  | "healthy", .error (.unavailable target) =>
       let foreign ← Beam.resolveExistingPath (directory / "foreign/bin" / ("lean" ++ suffix))
-      require (Beam.sameCanonicalPath command foreign) "healthy alias did not shadow the exact release"
+      require (Beam.sameCanonicalPath target.selected.command foreign) "healthy alias did not shadow the exact release"
+      require (target.selected.path == project / "lean-toolchain" &&
+        target.selected.text == "leanprover/lean4:v4.34.1" &&
+        target.selected.installerToolchain? == some "v4.34.1")
+        "unavailable shadowing alias lost the selecting file, text, or local link"
   | "missing-compiler", .error (.selection (.io _))
     | "nonfile-compiler", .error (.selection (.io _))
     | "dangling", .error (.selection (.io _)) => pure ()
@@ -106,6 +214,45 @@ private def runFullFixture (directory : System.FilePath) : IO Unit := do
   require (record.payloadHash == foreignRecord.payloadHash) "fixture installations must have identical versions and bytes"
   let installation ← Beam.Installation.openExecutable (g / ("libexec/beam-cli" ++ suffix)) .cli false
   let other ← Beam.Installation.openExecutable (h / ("libexec/beam-cli" ++ suffix)) .cli false
+  checkUnavailableContext installation project
+  let installRoot := directory / "owned install's"
+  let ownedHome := installRoot / "versions" / record.payloadHash
+  let ownedRecord ← stage directory ownedHome
+  require (ownedRecord.payloadHash == record.payloadHash) "fixture payload changed with its installation root"
+  write installRoot ".lean-beam-install-root"
+    s!"schema=1\nowner=lean-beam\nroot={installRoot}\n"
+  let owned ← Beam.Installation.openExecutable (ownedHome / ("libexec/beam-cli" ++ suffix)) .cli false
+  let current := installRoot / "current"
+  checkUnavailableContext owned project (.unconfirmed installRoot)
+  linkCurrent ownedHome current
+  checkUnavailableContext owned project (.current installRoot)
+  -- A valid successor adds a third target. An older bound process must not publish a
+  -- recipe based on its two-target snapshot that would remove the successor's addition.
+  let staging := directory / "successor staging"
+  let successorRecord ← stage directory staging true
+  let successor := installRoot / "versions" / successorRecord.payloadHash
+  IO.FS.rename staging successor
+  unlinkCurrent current
+  linkCurrent successor current
+  let successorBytes ← IO.FS.readFile (successor / "manifest.json")
+  checkUnavailableContext owned project (.unconfirmed installRoot)
+  let fresh ← Beam.Installation.openExecutable (successor / ("libexec/beam-cli" ++ suffix)) .cli false
+  discard <| accepted fresh project
+  require (Beam.sameCanonicalPath (← Beam.resolveExistingPath current) successor)
+    "diagnosing the older generation changed current"
+  require ((← IO.FS.readFile (successor / "manifest.json")) == successorBytes)
+    "diagnosing the older generation changed its successor"
+  unlinkCurrent current
+  let missing := installRoot / "missing generation"
+  IO.FS.createDirAll missing
+  linkCurrent missing current
+  IO.FS.removeDir missing
+  checkUnavailableContext owned project (.unconfirmed installRoot)
+  unlinkCurrent current
+  IO.FS.writeFile current "not an installation directory"
+  checkUnavailableContext owned project (.unconfirmed installRoot)
+  IO.FS.removeFile current
+  IO.println "current-generation recipes and superseded, missing, broken, and invalid current checks passed"
   let selector := fun text => IO.FS.writeFile (project / "lean-toolchain") (text ++ "\n")
   let selectors := ["absent", "valid-link", "dangling-link", "unreadable"] ++
     if System.Platform.isWindows then [] else ["fifo", "fifo-link"]
@@ -114,8 +261,8 @@ private def runFullFixture (directory : System.FilePath) : IO Unit := do
       (some (directory / "elan"))
     match name, selected with
     | "absent", .ok none => pure ()
-    | "valid-link", .ok (some command) =>
-        require (command.toString == first.lean) "selector symlink chose the wrong target"
+    | "valid-link", .ok (some selected) =>
+        require (selected.command.toString == first.lean) "selector symlink chose the wrong target"
     | "dangling-link", .error (.io _) | "unreadable", .error (.io _)
       | "fifo", .error (.io _) | "fifo-link", .error (.io _) => pure ()
     | _, _ => throw <| IO.userError s!"selector absence/error distinction failed: {name}"
@@ -190,6 +337,7 @@ private def runFullFixture (directory : System.FilePath) : IO Unit := do
 def main (args : List String) : IO Unit := do
   match args with
   | [directory] => runFullFixture directory
+  | [directory, "remedy"] => remedyExample directory
   | [directory, "shadowed-alias", phase] =>
       checkShadowedAlias (← Beam.resolveExistingPath directory) phase
   | _ => throw <| IO.userError "expected owned fixture directory and optional shadowing-alias phase"

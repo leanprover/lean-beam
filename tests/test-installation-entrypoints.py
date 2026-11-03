@@ -84,6 +84,11 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
             refused = run(cli_g, *arguments, "serve", env=admission_env,
                           cwd=rejected_project, ok=False)
             assert "has no runtime for" in refused.stderr, refused.stderr
+            error = json.loads(refused.stdout)["error"]
+            assert error["code"] == "setupError", error
+            assert error["data"]["selector_path"] == str(rejected_project / "lean-toolchain"), error
+            assert error["data"]["selector_text"] == str(foreign), error
+            assert "remedy_command" not in error["data"], error
             if existing:
                 assert [path.name for path in control.iterdir()] == ["retained-owner-state"]
                 assert (control / "retained-owner-state").read_bytes() == b"must not change\n"

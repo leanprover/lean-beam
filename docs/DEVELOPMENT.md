@@ -379,10 +379,14 @@ result is always closed.
 
 ### Internal Broker Stream Contract
 
-The daemon transport is a private implementation boundary. One request may emit any number of
-`fileProgress`, `diagnostic`, and `workspaceOutput` messages followed by exactly one terminal `response`; nothing after
-that response belongs to the request. Every variant uses the same `kind`, `payload`, and optional
-`clientRequestId` envelope, while the semantic response payload never owns transport correlation.
+The daemon transport is a private implementation boundary. A completed delivery consists of zero or
+more `fileProgress`, `diagnostic`, and `workspaceOutput` messages followed by one terminal `response`.
+At most one terminal response is sent per request, and no request messages follow it. An uncertain
+partial write requires abandoning the connection, and daemon shutdown can interrupt a pending reply.
+Either case may leave the caller without a response; connection closure does not establish operation
+completion. Every variant uses the same
+`kind`, `payload`, and optional `clientRequestId` envelope, while the semantic response payload never
+owns transport correlation.
 The terminal response carries the latest progress observation available when it was constructed,
 which may be newer than the last live progress event. Keep these invariants exhaustive in
 `Beam.Broker.StreamMessage` and encode their exact wire behavior in `StreamContractTest`; do not
