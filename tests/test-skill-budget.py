@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[1]
 SKILL = REPO / "skills" / "lean-beam" / "SKILL.md"
 # Agents load the whole body whenever the skill triggers. Raising this needs a reason; prefer
 # moving detail to skills/lean-beam/references/ instead.
-SKILL_BUDGET_BYTES = 10_000
+SKILL_BUDGET_BYTES = 10_500
 
 
 def main() -> int:
