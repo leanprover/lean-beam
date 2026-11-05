@@ -523,8 +523,9 @@ options, plugins, or dynamic libraries, run `lean-beam --root ROOT stop`, then s
 includes structured Lake options, dynamic libraries, and plugins already applied by the file worker
 and avoids repeated module builds. Modules with batch-only `moreLeanArgs` fail with
 `saveUnsupportedSetup`; move shared `-D` settings to `leanOptions`, or use `lake build` when the
-arguments are intentionally batch-only. A successful checkpoint is normally sufficient for local
-development, so do not run a clean build after every Beam loop. At the end of the development loop,
+arguments are intentionally batch-only, after stopping the session and confirming cleanup. A
+successful checkpoint is normally sufficient for local development, so do not run a clean build
+after every Beam loop. At the end of the development loop,
 use a successful CI `lake build` from a clean checkout or clean Lake build directory as
 batch-build evidence.
 

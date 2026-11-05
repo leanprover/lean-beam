@@ -196,6 +196,9 @@ def check_recovery(case, installation, surface, scenario):
             else:
                 assert refusal["code"] == "saveUnsupportedSetup", refusal
                 assert refusal["data"]["reason"] == "Lake module uses batch-only moreLeanArgs", refusal
+                # Building while this session is live would leave its sync history stale (#256).
+                assert "drop the MCP workspace and confirm cleanup" in refusal["message"], refusal
+                assert "rebuild only after cleanup completes" in refusal["message"], refusal
                 assert "sync" in refusal["data"], refusal
     if scenario == "unsupported_save":
         # Session cleanup above has completed successfully; only now build externally.

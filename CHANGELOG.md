@@ -16,6 +16,11 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   and aggregate tactic runs by checking a small set of adjacent positions. Item ranges stay
   unchanged, and a missing position no longer claims that every source position was checked
   ([#417](https://github.com/leanprover/lean-beam/pull/417), @ejgallego).
+- `save` refusals that suggest `lake build` (`saveUnsupportedSetup`, `saveTraceStale`) and the
+  deferred-compilation readiness message in `sync` now say to stop the CLI owner or drop the MCP
+  workspace and confirm cleanup before building, then start a fresh session. Building while the session was live left dependencies marked as needing a save,
+  so every later sync of an importer failed with a recovery plan that could not be followed
+  ([#415](https://github.com/leanprover/lean-beam/pull/415), @ejgallego).
 - Broker results exceeding the 16 MiB frame limit now return `internalError` with
   `operation_may_have_completed: true` when the error reply fits. The shared Lean session
   remains usable after the rejected result, and recovery replies preserve request correlation
