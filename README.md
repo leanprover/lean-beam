@@ -83,7 +83,11 @@ Windows support is [experimental](docs/STATUS.md#distribution). Native builds an
 establish an official elan Windows distribution path; that distribution is deferred pending the
 libuv investigation and fixes.
 
-Bundled binaries do not install an agent skill. For either distribution, install the
+For Codex and Claude Code, the [agent plugin](docs/SETUP.md#codex-and-claude-code-plugin)
+packages the Lean skill and MCP registration together. Beam must already be installed and available
+on the client's `PATH`.
+
+Bundled binaries do not install an agent skill. For manual setup with either distribution, install the
 [Lean agent skill](docs/SETUP.md#install-the-lean-skill-manually) from the matching Beam release,
 including its `references` directory, in your client's skill directory. To use MCP, also register the installed
 `lean-beam-mcp` command with your client; see [MCP setup](docs/SETUP.md#mcp-setup).

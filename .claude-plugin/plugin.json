@@ -1,0 +1,9 @@
+{
+  "name": "lean-beam",
+  "version": "0.1.0",
+  "description": "Check Lean proofs and inspect live proof states through Beam.",
+  "author": { "name": "Lean FRO" },
+  "homepage": "https://github.com/leanprover/lean-beam",
+  "repository": "https://github.com/leanprover/lean-beam",
+  "license": "Apache-2.0"
+}

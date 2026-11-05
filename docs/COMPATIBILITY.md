@@ -80,6 +80,10 @@ A Lean release line is the canonical `major.minor` family recorded in
   `mcp_servers.lean-beam.supports_parallel_tool_calls = true` adapter owned by
   `scripts/install-mcp.sh`. Remove the adapter once the supported Codex client infers safe
   concurrency from MCP tool annotations or otherwise no longer requires the setting.
+- Agent plugin packaging is validated with Codex CLI `0.165.0` and Claude Code `2.1.312`.
+  The Codex plugin manifest owns the same concurrency setting described above. Both use the
+  Claude-compatible MCP declaration with no `cwd`, preserving project-based SDK selection.
+  Reconsider the manifest format when portable Agent Plugins can launch from the session directory.
 - Documented real client requirements, when they name an owner and removal condition.
 
 ## Change Rule

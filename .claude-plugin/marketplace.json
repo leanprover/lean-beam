@@ -1,0 +1,12 @@
+{
+  "name": "lean-beam",
+  "description": "Lean proof tools and agent guidance from the Beam project.",
+  "owner": { "name": "Lean FRO" },
+  "plugins": [
+    {
+      "name": "lean-beam",
+      "source": "./",
+      "description": "Check Lean proofs and inspect live proof states through Beam."
+    }
+  ]
+}
