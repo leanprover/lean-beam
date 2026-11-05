@@ -197,12 +197,17 @@ def checkRunAtResourceLimits : ScenarioM Unit := do
   for (text, needle) in [
       ("constructor\nset_option maxRecDepth 32 in iterate 100000 skip", "maximum recursion depth"),
       ("constructor\nset_option maxHeartbeats 10 in repeat skip", "maximum number of heartbeats")] do
-    for linear in [false, true] do
+    for (profile, linear) in [(false, false), (false, true), (true, false), (true, true)] do
       let initial ← requireRunAtResponseSuccess "store resource-limit basis" <|
         ← sendRunAt doc { line, character := 2, text := "skip", storeHandle := true }
       let some handle := initial.handle?
         | throw <| IO.userError "missing resource-limit basis handle"
       let requireFailure (result : Beam.LSP.RunAt.Result) : ScenarioM Unit := do
+        unless result.profile?.isSome == profile do
+          throw <| IO.userError "resource-limit failure lost profiling opt-in state"
+        if let some evidence := result.profile? then
+          unless evidence.elapsedMs > 0 && evidence.initialThresholdMs == 1 do
+            throw <| IO.userError "resource-limit failure lost wall-clock evidence"
         unless !result.success && result.handle?.isNone &&
             result.proofState?.map (·.goals.map (·.target)) ==
               initial.proofState?.map (·.goals.map (·.target)) &&
@@ -210,10 +215,10 @@ def checkRunAtResourceLimits : ScenarioM Unit := do
           throw <| IO.userError s!"resource limit must preserve the original goals: {(toJson result).compress}"
       -- A tactic advances the state before the limit is reached; failure restores the whole probe.
       let direct : Beam.LSP.RunAt.Result ← awaitResponseAs <|
-        ← sendRunAt doc { line, character := 2, text, storeHandle := true }
+        ← sendRunAt doc { line, character := 2, text, storeHandle := true, profile }
       requireFailure direct
       let continued : Beam.LSP.RunAt.Result ← awaitResponseAs <|
-        ← runWithHandle doc handle { text, storeHandle := true, linear }
+        ← runWithHandle doc handle { text, storeHandle := true, linear, profile }
       requireFailure continued
       let retry ← runWithHandle doc handle { text := "constructor <;> trivial" }
       if linear then

@@ -79,6 +79,7 @@ lean-beam save MyPkg/Sub/Module.lean
 |---|---|
 | Proof state at a tactic | `goals before FILE VERSION LINE CHAR` (or `goals after`) |
 | Try Lean text without editing | `run-at FILE VERSION LINE CHAR TEXT` (or `--stdin`, `--text-file`) |
+| Profiling | `--profile` on run-at/run-with probes (including handle variants; see [details](references/workflow-details.md)) |
 | Continue from an exact speculative state | `run-at-handle`, then `run-with` / `run-with-linear`, `release` |
 | Type and docs at a position | `hover`, `signature-help` |
 | Navigation and symbols | `definition`, `references`, `document-symbols FILE VERSION`, `workspace-symbols QUERY` |
@@ -157,8 +158,7 @@ challenge and external checkers. Do not add it to every inner-loop operation.
 
 Open as needed:
 
-- [Workflow details](references/workflow-details.md): positions, handles, text inputs, save eligibility,
-  diagnostics, request IDs, progress, dependency edits
+- [Workflow details](references/workflow-details.md): positions, profiling, handles, text, diagnostics, progress
 - [Run-at examples](references/lean-run-at-semantics.md): common mistakes, including local recursion
 - [Commit a probe](references/commit-speculative.md): turning a good probe into a saved edit
 - [Handle search](references/mcts-search.md): branching, linear playouts, release patterns

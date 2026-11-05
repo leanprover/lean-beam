@@ -40,12 +40,14 @@ structure SendRunAtSpec where
   character : Nat
   text : String
   storeHandle : Bool := false
+  profile : Bool := false
   deriving Inhabited, Repr, ToJson
 
 structure RunWithSpec where
   text : String
   storeHandle : Bool := false
   linear : Bool := false
+  profile : Bool := false
   deriving Inhabited, Repr, ToJson
 
 structure GoalsSpec where
@@ -118,7 +120,11 @@ instance : FromJson SendRunAtSpec where
       match j.getObjValAs? Bool "storeHandle" with
       | .ok b => b
       | .error _ => false
-    pure { version?, line, character, text, storeHandle }
+    let profile :=
+      match j.getObjValAs? Bool "profile" with
+      | .ok b => b
+      | .error _ => false
+    pure { version?, line, character, text, storeHandle, profile }
 
 instance : FromJson RunWithSpec where
   fromJson? j := do
@@ -131,7 +137,11 @@ instance : FromJson RunWithSpec where
       match j.getObjValAs? Bool "linear" with
       | .ok b => b
       | .error _ => false
-    pure { text, storeHandle, linear }
+    let profile :=
+      match j.getObjValAs? Bool "profile" with
+      | .ok b => b
+      | .error _ => false
+    pure { text, storeHandle, linear, profile }
 
 structure DocHandle where
   id : Nat
@@ -426,6 +436,7 @@ def sendRunAt (doc : DocHandle) (spec : SendRunAtSpec) : ScenarioM ReqHandle := 
     position := { line := spec.line, character := spec.character }
     text := spec.text
     storeHandle? := if spec.storeHandle then some true else none
+    profile? := if spec.profile then some true else none
   }
   let requestID ← sendRequest Beam.LSP.RunAt.method (toJson params)
   registerRequest requestID (toJson params)
@@ -438,6 +449,7 @@ def runWithHandle (doc : DocHandle) (handle : Beam.LSP.RunAt.Handle) (spec : Run
     text := spec.text
     storeHandle? := if spec.storeHandle then some true else none
     linear? := if spec.linear then some true else none
+    profile? := if spec.profile then some true else none
   }
   let requestID ← sendRequest Beam.LSP.RunAt.runWithMethod (toJson params)
   registerRequest requestID (toJson params)

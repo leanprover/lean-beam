@@ -32,6 +32,8 @@ structure StoredHandle where
   uri : Lean.Lsp.DocumentUri
   version : Nat
   state : StoredHandleState
+  /-- Lean may capture profiler options in deferred declaration contexts in this state. -/
+  profiled : Bool
 
 structure HandleStore where
   nextId : Nat := 0
@@ -106,7 +108,7 @@ def validateHandleForCurrentDoc (handle : Handle) : RequestM Unit := do
   if ← isKnownStaleHandle handle then
     throw RequestError.fileChanged
 
-def mintHandle (state : StoredHandleState) : RequestM Handle := do
+def mintHandle (state : StoredHandleState) (profiled : Bool) : RequestM Handle := do
   syncHandleStoreForCurrentDoc
   let doc ← RequestM.readDoc
   handleStoreRef.modifyGet fun store =>
@@ -115,6 +117,7 @@ def mintHandle (state : StoredHandleState) : RequestM Handle := do
       uri := doc.meta.uri
       version := doc.meta.version
       state
+      profiled
     }
     (handle, {
       nextId := store.nextId + 1
@@ -130,14 +133,16 @@ def releaseStoredHandle (handle : Handle) : RequestM Unit := do
   if !removed then
     throw <| RequestError.invalidParams s!"unknown handle '{handle.value}'"
 
-def withStoredHandle (handle : Handle) (linear : Bool)
+def withStoredHandle (handle : Handle) (linear profile : Bool)
     (k : StoredHandle → RequestM α) : RequestM α := do
   validateHandleForCurrentDoc handle
   let doc ← RequestM.readDoc
   let stored ← handleStoreRef.modifyGet fun store =>
     let stored? := store.handles.get? handle.value
     let handles :=
-      if linear then
+      -- Reject an incompatible continuation without consuming even a linear handle. Keep the
+      -- lookup, compatibility decision, and optional consumption in one store operation.
+      if linear && stored?.all (fun stored => !stored.profiled || profile) then
         store.handles.erase handle.value
       else
         store.handles
@@ -150,6 +155,9 @@ def withStoredHandle (handle : Handle) (linear : Bool)
   if stored.version != doc.meta.version then
     markStoredHandleStale handle
     throw RequestError.fileChanged
+  if stored.profiled && !profile then
+    throw <| RequestError.invalidParams
+      "This handle was created with profiling enabled; continuations require profile: true (CLI: --profile). For an unprofiled probe, start a new runAt from the document. The handle has not been consumed."
   k stored
 
 end Beam.LSP.RunAt

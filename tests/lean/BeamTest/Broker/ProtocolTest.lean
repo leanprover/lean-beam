@@ -860,6 +860,122 @@ private def checkRequestBoundary : IO Unit := do
     ("version", toJson 7)
   ]
 
+private def checkRunAtProfileInput : IO Unit := do
+  for op in #[Beam.Lean.Operation.runAt, .runAtHandle, .runWith, .runWithLinear] do
+    let schema := op.inputSchema
+    let properties ← requireObjVal s!"{op.key} input schema" "properties" schema
+    let profileSchema ← requireObjVal s!"{op.key} profile property" "profile" properties
+    requireJsonString s!"{op.key} profile schema type" "type" "boolean" profileSchema
+    let requiredJson ← requireObjVal s!"{op.key} required fields" "required" schema
+    let required ← expectOk s!"{op.key} required fields" (fromJson? (α := Array String) requiredJson)
+    require s!"{op.key} profile should remain optional" (!required.contains "profile")
+    requireJsonBool s!"{op.key} input should reject undeclared fields" "additionalProperties" false schema
+
+  let runAtInput := Json.mkObj [
+    ("path", toJson ("Demo.lean" : String)),
+    ("version", toJson (7 : Nat)),
+    ("line", toJson (1 : Nat)),
+    ("character", toJson (2 : Nat)),
+    ("text", toJson ("exact trivial" : String))
+  ]
+  let defaultRunAt ← expectOk "runAt input without profiling" <|
+    Beam.Lean.Operation.runAt.toBrokerRequest runAtInput
+  match defaultRunAt.payload with
+  | .runAt request =>
+      require "runAt input should default profile to absent" request.profile?.isNone
+      requireFieldAbsent "runAt request should omit absent profile" "profile" (toJson defaultRunAt)
+  | _ => throw <| IO.userError "runAt input decoded to a different broker operation"
+
+  let profiledRunAt ← expectOk "runAt input with profiling" <|
+    Beam.Lean.Operation.runAt.toBrokerRequest (runAtInput.setObjVal! "profile" (toJson true))
+  match profiledRunAt.payload with
+  | .runAt request =>
+      require "runAt input profile should reach the broker request" (request.profile? == some true)
+  | _ => throw <| IO.userError "profiled runAt input decoded to a different broker operation"
+
+  match Beam.Lean.Operation.runAt.toBrokerRequest
+      (runAtInput.setObjVal! "profile" (toJson "true")) with
+  | .error _ => pure ()
+  | .ok request =>
+      throw <| IO.userError s!"runAt should reject a non-boolean profile: {(toJson request).compress}"
+  match Beam.Lean.Operation.runAt.toBrokerRequest
+      (runAtInput.setObjVal! "unexpected" (toJson true)) with
+  | .error _ => pure ()
+  | .ok request =>
+      throw <| IO.userError s!"runAt should reject undeclared input fields: {(toJson request).compress}"
+
+  let runWithInput := Json.mkObj [
+    ("path", toJson ("Demo.lean" : String)),
+    ("handle", toJson sampleHandle),
+    ("text", toJson ("exact trivial" : String))
+  ]
+  let defaultRunWith ← expectOk "runWith input without profiling" <|
+    Beam.Lean.Operation.runWith.toBrokerRequest runWithInput
+  match defaultRunWith.payload with
+  | .runWith request =>
+      require "runWith input should default profile to absent" request.profile?.isNone
+      requireFieldAbsent "runWith request should omit absent profile" "profile" (toJson defaultRunWith)
+  | _ => throw <| IO.userError "runWith input decoded to a different broker operation"
+
+  let profiledRunWith ← expectOk "runWith input with profiling" <|
+    Beam.Lean.Operation.runWithLinear.toBrokerRequest
+      (runWithInput.setObjVal! "profile" (toJson true))
+  match profiledRunWith.payload with
+  | .runWith request =>
+      require "linear runWith profile should reach the broker request" (request.profile? == some true)
+      require "linear runWith should retain linear consumption" (request.linear? == some true)
+  | _ => throw <| IO.userError "profiled runWith input decoded to a different broker operation"
+
+  match Beam.Lean.Operation.runWith.toBrokerRequest
+      (runWithInput.setObjVal! "profile" (toJson "true")) with
+  | .error _ => pure ()
+  | .ok request =>
+      throw <| IO.userError s!"runWith should reject a non-boolean profile: {(toJson request).compress}"
+
+  let rawRunAt := Json.mkObj [
+    ("op", toJson ("run_at" : String)),
+    ("path", toJson ("Demo.lean" : String)),
+    ("version", toJson (7 : Nat)),
+    ("line", toJson (1 : Nat)),
+    ("character", toJson (2 : Nat)),
+    ("text", toJson ("exact trivial" : String))
+  ]
+  let absentProfileRunAt ← expectOk "broker run_at defaults absent profile" <|
+    fromJson? (α := Request) rawRunAt
+  match absentProfileRunAt.payload with
+  | .runAt request =>
+      require "broker run_at profile should default to absent" request.profile?.isNone
+  | _ => throw <| IO.userError "broker run_at decoded to a different operation"
+  let decodedRunAt ← expectOk "broker run_at accepts profile" <|
+    fromJson? (α := Request) (rawRunAt.setObjVal! "profile" (toJson true))
+  match decodedRunAt.payload with
+  | .runAt request =>
+      require "broker run_at decoder should retain profile" (request.profile? == some true)
+  | _ => throw <| IO.userError "broker run_at decoded to a different operation"
+  expectDecodeFailure Request "broker run_at rejects non-boolean profile" <|
+    rawRunAt.setObjVal! "profile" (toJson "true")
+
+  let rawRunWith := Json.mkObj [
+    ("op", toJson ("run_with" : String)),
+    ("path", toJson ("Demo.lean" : String)),
+    ("text", toJson ("exact trivial" : String)),
+    ("handle", toJson sampleHandle)
+  ]
+  let absentProfileRunWith ← expectOk "broker run_with defaults absent profile" <|
+    fromJson? (α := Request) rawRunWith
+  match absentProfileRunWith.payload with
+  | .runWith request =>
+      require "broker run_with profile should default to absent" request.profile?.isNone
+  | _ => throw <| IO.userError "broker run_with decoded to a different operation"
+  let decodedRunWith ← expectOk "broker run_with accepts profile" <|
+    fromJson? (α := Request) (rawRunWith.setObjVal! "profile" (toJson true))
+  match decodedRunWith.payload with
+  | .runWith request =>
+      require "broker run_with decoder should retain profile" (request.profile? == some true)
+  | _ => throw <| IO.userError "broker run_with decoded to a different operation"
+  expectDecodeFailure Request "broker run_with rejects non-boolean profile" <|
+    rawRunWith.setObjVal! "profile" (toJson "true")
+
 private def checkWorkspaceRoutingFields : IO Unit := do
   let processWideOps := #[Op.listWorkspaces, .shutdown]
   let optionallyScopedOps := #[Op.openDocs, .stats]
@@ -3350,6 +3466,7 @@ def main : IO Unit := do
   checkReadinessBoundary
   checkStaleDirectDepHints
   checkRequestBoundary
+  checkRunAtProfileInput
   checkWorkspaceRoutingFields
   checkWorkspaceLifecycleProtocol
   PublicationClaimTest.run
