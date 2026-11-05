@@ -8,7 +8,9 @@ thin layer on top of Lean LSP plus Beam-specific extensions: the Lean plugin pro
 facts, and the local Beam layer turns those facts into practical CLI, broker, MCP, and skill
 workflows.
 
-Pre-stable compatibility policy lives in [Compatibility Policy](COMPATIBILITY.md).
+This page summarizes current capabilities and limitations. Pre-stable compatibility policy lives
+in [Compatibility Policy](COMPATIBILITY.md). Exact tool and checkpoint contracts live in
+[MCP](MCP.md) and [Sync and diagnostics](SYNC_AND_DIAGNOSTICS.md).
 
 ## Current Scope
 

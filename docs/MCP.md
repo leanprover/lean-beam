@@ -1,7 +1,8 @@
 # MCP
 
-This is maintainer documentation for the experimental `lean-beam-mcp` server. User setup lives in
-the [setup guide](SETUP.md#mcp-setup).
+This is the protocol reference for the experimental `lean-beam-mcp` server. For installation and
+client registration, use the [setup guide](SETUP.md#mcp-setup). For editing and checkpoint workflows,
+start with the [agent workflow](../skills/lean-beam/SKILL.md).
 
 ## Protocol And State Model
 

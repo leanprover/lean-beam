@@ -3,6 +3,8 @@
 This is the canonical contract for Beam sync, refresh, save, progress, diagnostics, and readiness
 reporting across the wrapper, internal broker transport, and MCP server.
 
+For editing and checkpoint workflows, start with the [agent workflow](../skills/lean-beam/SKILL.md).
+
 Beam never applies source edits to `.lean` files on disk; the client applies source edits. The
 commands below read saved source into Beam's LSP mirror or write Lean/Lake build artifacts; none is
 a source-editing command.

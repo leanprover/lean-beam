@@ -22,10 +22,6 @@ Beam supports:
 We have found Beam useful for proof repair, proof search experiments, proof translation and porting,
 autoformalization experiments, and regular AI-assisted Lean editing.
 
-Before an external workspace build, stop all affected CLI owners, drop any affected MCP workspaces,
-and confirm their cleanup. The [batch-build procedure](skills/lean-beam/references/workflow-details.md#before-a-local-batch-build)
-explains how to keep builds separate from retained Beam state.
-
 Beam is implemented in Lean. CLI and MCP share broker code and typed operations, while each owns
 its transport and runtime lifetime:
 
@@ -86,6 +82,8 @@ Windows support is [experimental](docs/STATUS.md#distribution). Native builds an
 establish an official elan Windows distribution path; that distribution is deferred pending the
 libuv investigation and fixes.
 
+Before updating an existing installation, follow [the upgrade guide](docs/SETUP.md#before-an-upgrade).
+
 Bundled binaries do not install an agent skill. For bundled Beam, install the
 [Lean agent skill](docs/SETUP.md#install-the-lean-skill-manually) from the matching Beam release,
 including its `references` directory, in your client's skill directory. To use MCP, register that
@@ -125,28 +123,31 @@ checks the client-to-Lean request path. See [MCP verification](docs/SETUP.md#ver
 for details. A running server retains its original installation even after a launcher is updated;
 checking a newly launched command does not establish which version an existing client is using.
 
-Before upgrading, stop existing sessions through their original installation and wait for cleanup.
-Follow [the upgrade guide](docs/SETUP.md#before-an-upgrade), then restart clients against the new
-installation.
-
 ## Documentation
 
-For users and agents:
+Setup and workflows:
 
-- [Setup](docs/SETUP.md): installation, agent skills, MCP registration, verification, and recovery.
-- [Agent workflow](skills/lean-beam/SKILL.md): commands, positions, versions, and outcomes.
+- [Setup](docs/SETUP.md): install Beam, connect an agent, and verify the connection.
+- [Agent workflow](skills/lean-beam/SKILL.md): editing, speculative checks, and module checkpoints;
+  [workflow details](skills/lean-beam/references/workflow-details.md) cover the detailed procedures.
+- [Maintenance and recovery](docs/SETUP.md#before-an-upgrade): upgrades, toolchain changes,
+  sessions, and pruning.
 - [Trust and proof confirmation](skills/lean-beam/references/trust-and-validation.md): checkpoints,
   batch builds, and independent proof confirmation.
+
+Reference:
+
+- [MCP](docs/MCP.md) and [Sync and diagnostics](docs/SYNC_AND_DIAGNOSTICS.md): exact behavior,
+  result fields, errors, and guarantees.
 - [Status](docs/STATUS.md), [Compatibility](docs/COMPATIBILITY.md), and
   [custom toolchains](docs/CUSTOM_TOOLCHAINS.md): capabilities, limitations, and supported targets.
 - [Changelog](CHANGELOG.md): release changes.
 
-For contributors and integrators:
+Contributing:
 
 - [Contributing](CONTRIBUTING.md) and [agent instructions](AGENTS.md): repository workflow.
 - [Development](docs/DEVELOPMENT.md): architecture and maintainer guidance.
 - [Toolchain bundling](docs/TOOLCHAIN_BUNDLING.md): native runtime construction and distribution.
-- [MCP](docs/MCP.md) and [Sync and diagnostics](docs/SYNC_AND_DIAGNOSTICS.md): protocol contracts.
 - [Testing](docs/TESTING.md): suites and coverage.
 
 Beam is for non-adversarial development. Speculative requests isolate Lean elaboration state;

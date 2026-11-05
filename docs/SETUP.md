@@ -10,23 +10,32 @@ The checkout installer targets Linux and macOS. Windows native builds are experi
 elan Windows distribution is deferred pending the libuv investigation and fixes. See
 [distribution status](STATUS.md#distribution).
 
-Use this document to set up and run Beam through either installation path.
-It covers installation, validated and compatible Lean toolchains, first CLI use, MCP registration,
-installer locations, and offline setup notes.
+Start here to install Beam, connect your agent, and verify the connection. The later sections cover
+direct CLI use and maintaining an installation. For editing and checkpoint workflows, use the
+[agent workflow](../skills/lean-beam/SKILL.md). Exact tool and checkpoint behavior lives in
+[MCP](MCP.md) and [Sync and diagnostics](SYNC_AND_DIAGNOSTICS.md).
 
 You do not add Beam to the target project's `lakefile` or install a copy into each project.
 Beam detects the project root from the current directory or `--root`.
 
-Choose the next step for your setup:
+Connect and verify:
 
 | Task | Guide |
 | --- | --- |
 | Install agent skills or register MCP | [Manual skill setup](#install-the-lean-skill-manually) and [MCP setup](#mcp-setup) |
+| Verify the connection | [MCP verification](#verify-the-mcp-server) or [CLI setup](#use-beam-from-a-lean-project) |
 | Inspect local client configuration | [Client configuration checks](#inspect-client-configuration) |
-| Check the connected MCP path | [Verify the MCP server](#verify-the-mcp-server) |
+
+Operating and maintenance tasks:
+
+| Task | Guide |
+| --- | --- |
 | Use commands directly | [CLI workflow](#use-beam-from-a-lean-project) |
+| Checkpoint dependencies and refresh importers | [Work across files](#work-across-files) |
+| Run a batch build | [Batch builds and proof confirmation](#batch-builds-and-proof-confirmation) |
 | Replace an installation or project toolchain | [Before an upgrade](#before-an-upgrade) and [toolchain changes](#changing-the-project-toolchain) |
 | Diagnose a blocked session | [Sessions and recovery](#sessions-and-recovery) |
+| Remove unused installed runtimes | [Prune old installed state](#prune-old-installed-state) |
 | Configure sandbox or network permissions | [Sandbox and network permissions](#sandbox-and-network-permissions) |
 
 ## Sandbox and network permissions
