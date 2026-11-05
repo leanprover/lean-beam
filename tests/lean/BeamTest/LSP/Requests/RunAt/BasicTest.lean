@@ -76,6 +76,60 @@ def checkRunAtTacticSequences : ScenarioM Unit := do
   -- A more indented line still continues the previous tactic's arguments, as in a `by` block.
   requireRunAtSolvesProof "indented argument continuation" doc simpStart
     "revert a b\n  h\nintro a b\nsimp"
+  -- Retry only a failed parse whose later lines retain the source column.
+  requireRunAtSolvesProof "copied indentation" doc simpStart "simp\n  exact h"
+  requireRunAtSolvesProof "copied nested indentation" doc simpStart
+    "have h2 : 1 = 1 ∧ 2 = 2 := by\n    constructor\n    · rfl\n    · rfl\n  simp\n  exact h"
+  requireRunAtFailureMessage "line left of source column" doc simpStart "simp\n exact h"
+    "<runAt>:2:"
+  requireRunAtSolvesProof "CRLF sequence" doc simpStart "simp\r\nexact h"
+  requireRunAtSolvesProof "CRLF copied indentation" doc simpStart "simp\r\n  exact h"
+  for (text, diagnostic) in [("skip\nmade_up_tactic", "unknown tactic"),
+      ("skip\nswap", "unknown tactic"), ("skip\n\texact h", "tabs are not allowed")] do
+    let rejected : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← sendRunAt doc {
+      line := 1, character := 2, text, storeHandle := true
+    }
+    unless !rejected.success && rejected.handle?.isNone &&
+        rejected.messages.any (·.text.contains diagnostic) &&
+        !rejected.messages.any (fun m => m.text.contains "Align sibling" ||
+          m.text.contains "cursor-column retry" || m.text.contains "pasted at") do
+      throw <| IO.userError "a non-layout parser failure acquired layout advice"
+  for text in ["by\n  @@@@", "by\n  on_goal 1 => skip", "(by\n  @@@@)",
+      "((by/- éα😀 -/\n  exact))"] do
+    requireRunAtFailureMessage "outer by keeps its body parse error" doc simpStart text "<runAt>:2:"
+  for text in ["simp\nexact h\n@@@@", "(by simp; exact h) @@@@", "by simp; exact h\n#check Nat"] do
+    let rejected : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← sendRunAt doc {
+      line := 1, character := 2, text, storeHandle := true
+    }
+    unless !rejected.success && rejected.handle?.isNone do
+      throw <| IO.userError "tactic input silently discarded trailing syntax"
+  for text in [
+      "by simp; exact h", "by\n  simp\n  exact h",
+      "by/- comment -/ simp; exact h", "-- note\n/- outer /- inner -/ -/ by\n  simp\n  exact h",
+      "(by simp; exact h)", "((by\n  simp\n  exact h))",
+      "by\n  have h2 : True ∧ True := by\n    constructor\n    · trivial\n    · trivial\n  simp\n  exact h",
+      "by_cases hab : a = b\nall_goals simp\nall_goals exact h"] do
+    requireRunAtSolvesProof "Lean-grammar tactic input" doc simpStart text
+  for text in ["by", "by -- note", "(by)", "((by\n  -- note))"] do
+    let empty : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← sendRunAt doc {
+      line := 1, character := 2, text, storeHandle := true
+    }
+    unless !empty.success && empty.handle?.isNone do
+      throw <| IO.userError s!"empty by must not create a no-op continuation: {(toJson empty).compress}"
+  -- A successfully parsed input keeps its reading, even if the indentation was unintended.
+  let ambiguous ← requireRunAtSuccess "standalone parse takes precedence" doc
+    { line := 4, character := 2 } "intro a\n  omega"
+  unless ambiguous.proofState?.map (·.goals.isEmpty) == some false do
+    throw <| IO.userError "cursor retry replaced a successful standalone interpretation"
+  let semanticFailure : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← sendRunAt doc {
+    line := 1, character := 2, text := "simp\nexact missingLayoutConstant"
+  }
+  unless !semanticFailure.success &&
+      !semanticFailure.messages.any (·.text.contains "Align sibling tactics") do
+    throw <| IO.userError "layout advice must not be appended to elaboration errors"
+  -- An outer by does not make unfinished nested elaboration resumable.
+  requireRunAtFailureMessage "unfinished nested by remains a failure" doc simpStart
+    "by\n  have h2 : True := by" "unsolved goals"
   -- Parsed as one tactic, `intro a⏎omega` would introduce `b` under the name `omega` and succeed
   -- without running `omega`, leaving the goal open.
   requireRunAtSolvesProof "line break ends tactic arguments" doc { line := 4, character := 2 }
@@ -86,6 +140,30 @@ def checkRunAtTacticSequences : ScenarioM Unit := do
   let some handle := minted.handle?
     | throw <| IO.userError s!"expected a handle, got {(toJson minted).compress}"
   let targets (result : Beam.LSP.RunAt.Result) := result.proofState?.map (·.goals.map (·.target))
+  -- A by-wrapped partial proof retains the same explicit handle semantics.
+  let partialResult ← requireRunAtResponseSuccess "partial outer by" <| ← sendRunAt doc {
+    line := 4, character := 2, text := "by\n  intro a", storeHandle := true
+  }
+  let some partialHandle := partialResult.handle?
+    | throw <| IO.userError "partial by did not retain its proof state"
+  for text in ["by intro b; omega", "((by\n  intro b\n  omega))"] do
+    let solved ← requireRunAtResponseSuccess "by handle continuation" <|
+      ← runWithHandle doc partialHandle { text }
+    unless targets solved == some #[] do
+      throw <| IO.userError "by continuation did not solve the retained goals"
+  releaseHandle doc partialHandle
+  let malformed : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← runWithHandle doc handle {
+    text := "intro a\n @@@@", storeHandle := true
+  }
+  unless !malformed.success && malformed.handle?.isNone &&
+      !malformed.messages.any (fun m => m.text.contains "pasted at" ||
+        m.text.contains "run position's column" || m.text.contains "cursor-column retry") do
+    throw <| IO.userError "handle parse error incorrectly describes a cursor retry"
+  let copiedContinuation : Beam.LSP.RunAt.Result ← awaitResponseAs <| ← runWithHandle doc handle {
+    text := "skip\n  intro a", storeHandle := true
+  }
+  unless !copiedContinuation.success && copiedContinuation.handle?.isNone do
+    throw <| IO.userError "handle continuation applied a source-column fallback"
   -- A failure after an advancing tactic rolls back the whole sequence and mints no successor.
   let requireRolledBack (label : String) (result : Beam.LSP.RunAt.Result) : ScenarioM Unit := do
     unless !result.success && result.handle?.isNone && targets result == targets minted do
@@ -104,6 +182,15 @@ def checkRunAtTacticSequences : ScenarioM Unit := do
       unless continued.success && targets continued == some #[] do
         throw <| IO.userError
           s!"runWith tactic sequence should solve the goal, got {(toJson continued).compress}"
+  closeDoc doc
+
+def checkRunAtUnicodeSourceColumn : ScenarioM Unit := do
+  let doc ← openDoc "tests/scenario/docs/RunAtUnicodeColumn.lean"
+  syncDoc doc
+  -- The astral character before sorry makes its UTF-16 position 27 but Lean column 26.
+  -- The fallback must compare the next line's spaces with 26, not with the LSP character.
+  requireRunAtSolvesProof "copied indentation after an astral source character" doc
+    { line := 0, character := 27 } ("skip\n" ++ "".pushn ' ' 26 ++ "exact True.intro")
   closeDoc doc
 
 def checkRunAtOneCommandOnly : ScenarioM Unit := do
@@ -403,6 +490,8 @@ def checkRunAtPlaceholders : ScenarioM Unit := do
   for character in [65, 70] do
     requireRunAtGoals "term sorry" doc { line := 0, character } #["q"]
   requireRunAtSolvesProof "exact at term sorry" doc { line := 0, character := 65 } "exact hq"
+  requireRunAtSolvesProof "outer by at term sorry" doc { line := 0, character := 65 }
+    "by\n    exact hq"
 
   -- An unsynthesized `_` or `?x` becomes a goal with its expected type and local context,
   -- including local instances.
@@ -548,6 +637,7 @@ def checkRunAtWithStandardLspInterference : ScenarioM Unit := do
 def run : ScenarioM Unit := do
   checkRunAtTacticPositions
   checkRunAtTacticSequences
+  checkRunAtUnicodeSourceColumn
   checkRunAtPlaceholders
   checkRunAtPlaceholderContexts
   checkRunAtElaborationAborts

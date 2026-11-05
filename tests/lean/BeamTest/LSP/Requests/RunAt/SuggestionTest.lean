@@ -39,7 +39,10 @@ def run : ScenarioM Unit := do
     for text in [
         "check_probe_suggestion \"check_probe\" in exact?",
         "first | check_probe_suggestion \"first | \" in exact?",
-        "-- éα😀\ncheck_probe_suggestion \"-- éα😀\" in exact?"] do
+        "-- éα😀\ncheck_probe_suggestion \"-- éα😀\" in exact?",
+        "by/- éα😀 -/ check_probe_suggestion \"by/- éα😀 -/\" in exact?",
+        "((by\n  check_probe_suggestion \"((by\" in exact?))",
+        "skip\n  check_probe_suggestion \"  skip\" in exact?"] do
       let result ← requireRunAtSuccess s!"{name}: tactic suggestion" doc { line, character := 2 } text
       requireProofSuggestion name result
     let req ← sendRunAt doc { line, character := 2, text := "skip", storeHandle := true }
@@ -52,7 +55,8 @@ def run : ScenarioM Unit := do
       throw <| IO.userError "failed suggestion branch changed its root or produced a successor"
     for text in [
         "-- longer ASCII handle input\ncheck_probe_suggestion \"-- longer ASCII\" in exact?",
-        "-- α😀\ncheck_probe_suggestion \"-- α😀\" in exact?"] do
+        "-- α😀\ncheck_probe_suggestion \"-- α😀\" in exact?",
+        "(by check_probe_suggestion \"(by\" in exact?)"] do
       let req ← runWithHandle doc handle { text }
       requireProofSuggestion "handle suggestion" (← requireRunAtResponseSuccess "handle suggestion" req)
     releaseHandle doc handle
