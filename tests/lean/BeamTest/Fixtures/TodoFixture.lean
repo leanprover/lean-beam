@@ -93,7 +93,7 @@ structure AgentItem where
   kind : Beam.LSP.Todo.TodoKind
   start : Lean.Lsp.Position
   runAt : Lean.Lsp.Position
-  /-- Whether `runAt` at `runAt` starts from the item's goals; false when no position selects them. -/
+  /-- Whether a checked candidate selects the item's goals; false does not rule out other positions. -/
   selectable : Bool := true
   /-- Goal targets of the item's proof state; empty when the item has none. -/
   goals : Array String := #[]
@@ -122,25 +122,25 @@ def agentItems : Array AgentItem := #[
   { kind := .sorry, start := ⟨52, 2⟩, runAt := ⟨52, 2⟩, goals := #["k = 4"], solution? := some "omega" },
   -- The failed `exact` left its goal open; the hole that made it fail is the one item.
   { kind := .hole, start := ⟨55, 13⟩, runAt := ⟨55, 13⟩, goals := #["q"], solution? := some "exact hq" },
-  -- `skip` ran once per goal: both goals are reported, but `runAt` at its end selects only one run.
-  { kind := .incompleteProof, start := ⟨58, 18⟩, runAt := ⟨58, 22⟩, selectable := false,
-    goals := #["p", "q"] },
-  -- The goal left after a bullet has no source position whose state `runAt` selects.
-  { kind := .incompleteProof, start := ⟨62, 2⟩, runAt := ⟨62, 12⟩, selectable := false,
-    goals := #["q"] },
+  -- `skip` ran once per goal; the following line selects the combined state.
+  { kind := .incompleteProof, start := ⟨58, 18⟩, runAt := ⟨59, 0⟩,
+    goals := #["p", "q"], solution? := some "all_goals assumption" },
+  -- The following line selects the sibling goal left after the completed bullet.
+  { kind := .incompleteProof, start := ⟨62, 2⟩, runAt := ⟨63, 0⟩,
+    goals := #["q"], solution? := some "exact hq" },
   -- `rwaDone`, `simpaDone`, and `refineRwa` are complete: their closing steps solve the goals.
   -- The bullet's own goal, which Lean admits after the bullet stops early, is not reported again;
   -- `rw` records its closing `rfl` attempt at `]`, the narrowest tactic ending where `rw` ends.
   { kind := .incompleteProof, start := ⟨76, 20⟩, runAt := ⟨76, 21⟩, goals := #["n = 0"],
     solution? := some "exact h" },
   -- `all_goals` runs `skip` once per goal, as `<;>` does.
-  { kind := .incompleteProof, start := ⟨81, 12⟩, runAt := ⟨81, 16⟩, selectable := false,
-    goals := #["p", "q"] },
+  { kind := .incompleteProof, start := ⟨81, 12⟩, runAt := ⟨82, 0⟩,
+    goals := #["p", "q"], solution? := some "all_goals assumption" },
   -- `try` recovered from `exact hp` on `q`; the narrowest tactic ending there left it open.
-  { kind := .incompleteProof, start := ⟨85, 16⟩, runAt := ⟨85, 24⟩, selectable := false,
+  { kind := .incompleteProof, start := ⟨85, 16⟩, runAt := ⟨86, 0⟩,
     goals := #["q"] },
   -- The inner `skip` ran once per goal of every outer run: one item for all three goals.
-  { kind := .incompleteProof, start := ⟨91, 14⟩, runAt := ⟨91, 18⟩, selectable := false,
+  { kind := .incompleteProof, start := ⟨91, 14⟩, runAt := ⟨92, 0⟩,
     goals := #["p", "q", "r"] },
   -- `focus` restores the unfocused `q` after its body left `p`: two tactics, one goal each.
   { kind := .incompleteProof, start := ⟨95, 2⟩, runAt := ⟨95, 12⟩, selectable := false,

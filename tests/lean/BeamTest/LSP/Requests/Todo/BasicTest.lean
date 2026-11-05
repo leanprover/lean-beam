@@ -7,6 +7,7 @@ Author: Emilio J. Gallego Arias
 import BeamTest.Fixtures.TodoFixture
 import BeamTest.LSP.Requests.Interference
 import BeamTest.LSP.Requests.Support
+import BeamTest.LSP.Requests.Todo.ActionPositionTest
 
 open Lean
 open BeamTest.LSP.Scenario
@@ -523,5 +524,6 @@ def run : ScenarioM Unit := do
   checkTodoProofProgress
   checkTodoInteractiveOnlyDiagnostic
   checkTodoAgentCorpus
+  ActionPositionTest.run
 
 end BeamTest.LSP.Requests.Todo.BasicTest
