@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import BeamTest.LSP.Requests.Support
+import BeamTest.LSP.Requests.RunAt.ProfileContractsTest
 
 open Lean
 open BeamTest.LSP.Scenario
@@ -242,10 +243,9 @@ def checkProofs : ScenarioM Unit := do
     "failed profiled continuation did not roll back"
   require (hasCategory (← profileOf failedResult) "beam.profile.right")
     "failed profiled continuation lost timing evidence"
-  let plain ← runWithHandle doc handle { text := "profile_check_off; trivial" }
-  let plainResult ← awaitResult plain
-  require (plainResult.success && plainResult.profile?.isNone && plainResult.traces.isEmpty)
-    "profiling leaked into unprofiled continuation"
+  for linear in [false, true] do
+    ProfileContractsTest.expectProfileRequired <| ← runWithHandle doc handle {
+      text := "profile_check_off; trivial", linear }
   let next ← runWithHandle doc handle { text := "profile_right; trivial", profile := true }
   let nextProfile ← profileOf (← awaitResult next)
   require (hasCategory nextProfile "beam.profile.right" && !hasCategory nextProfile "beam.profile.left")
@@ -288,9 +288,16 @@ def checkSourceOptions : ScenarioM Unit := do
         require (hasCategory profile "beam.profile.right") "source scope leaked into later timing"
       let some handle := result.handle? | throw <| IO.userError "missing option-scope continuation"
       let text := if command then "profile_check_command" else "profile_check_off"
-      let continued ← awaitResult <| ← runWithHandle doc handle { text }
-      require (continued.success && continued.profile?.isNone && continued.traces.isEmpty)
-        "source profiling option or traces leaked into a continuation"
+      ProfileContractsTest.expectProfileRequired <| ← runWithHandle doc handle { text }
+      let continued ← awaitResult <| ← runWithHandle doc handle {
+        text := if command then "#check Nat" else "profile_right"
+        profile := true
+      }
+      require (continued.success && continued.profile?.isSome && continued.traces.isEmpty)
+        "profiled continuation was unavailable after a rejected unprofiled call"
+      if !command then
+        require (hasCategory (← profileOf continued) "beam.profile.right")
+          "source option suppressed the next request's profiling"
       releaseHandle doc handle
   closeDoc doc
 
@@ -321,9 +328,7 @@ def checkCommands : ScenarioM Unit := do
     "whole theorem omitted asynchronous proof body"
   let some handle := result.handle? | throw <| IO.userError "missing command handle"
   let check ← runWithHandle doc handle { text := "profile_check_command" }
-  let checked ← awaitResult check
-  require (checked.success && checked.profile?.isNone && checked.traces.isEmpty)
-    "command handle retained profiling options or traces"
+  ProfileContractsTest.expectProfileRequired check
   let continued ← runWithHandle doc handle {
     text := "example : True := by profile_right; trivial", profile := true
   }
@@ -378,6 +383,7 @@ def checkCancellationAndStaleness : ScenarioM Unit := do
 
 def run : ScenarioM Unit := do
   checkProjection
+  ProfileContractsTest.run
   checkProofs
   checkSourceOptions
   checkCommands

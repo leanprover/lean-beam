@@ -102,6 +102,14 @@ included. Selecting the theorem keyword after its attribute may be too late: Lea
 declaration “has already been declared.” For proof-only timing, select the first tactic's before-state
 and submit the tactic block without `by`.
 
+A handle created with `--profile` requires `--profile` on every continuation and successor.
+An unprofiled continuation returns `invalidParams` without consuming the handle, including for
+`run-with-linear`; retry with `--profile`. For an unprofiled comparison, start from the document or
+an ordinary handle. Lean retains instrumentation options in deferred declaration contexts, even
+though Beam restores visible options. Do not profile `#guard_msgs`: trace retention can change its
+verdict. Beam returns `invalidParams` for direct guards and guards recorded during command execution;
+a rejection discovered after execution does not undo external IO.
+
 For example, select the first `/` below and submit the entire block to include its documentation,
 attribute, header, and proof:
 
@@ -115,7 +123,9 @@ theorem demo_add_zero (n : Nat) : n + 0 = n := by
 Inspect `success` and ordinary warnings/errors first, then `profile.elapsed_ms` and `profile.spans`.
 Parse failures have no profile; a Lean failure after elaboration can have one. `elapsed_ms` is wall
 time for speculative re-elaboration in the loaded environment, not the original file, a cold build,
-or native CPU time. It starts after parsing and ends after request-owned elaboration settles.
+or native CPU time. It starts after parsing and ends after synchronous execution and the elaboration
+tasks still registered in the final Lean snapshot state settle. Tasks whose registrations a custom
+tactic discarded by backtracking, and unregistered tasks, are not covered and may still be running.
 `initial_threshold_ms` is Beam's initial 1 ms trace threshold, not a guarantee of the effective
 threshold: submitted Lean code or metaprograms may change profiler options. Span data can therefore
 be partial even when `truncated` is false. `truncated: true` means projection omitted nodes or clipped
@@ -136,8 +146,8 @@ not earlier work represented by its handle. Nested and parallel spans overlap, s
 durations. The profile has at most 1024 spans, 8192 traversal visits (including trace-state entries),
 and `MessageData` nesting depth 128. Context and formatting wrappers count, so span depth can be lower.
 These limits do not bound Lean's trace allocation. Profiling adds overhead. For candidate comparisons, keep the
-same snapshot or handle and loaded environment, repeat the comparison, and check the candidate with
-profiling disabled before treating a speed difference as an optimization.
+same snapshot or handle and loaded environment, repeat the comparison, and check the candidate from
+the document or an ordinary handle with profiling disabled before treating a speed difference as an optimization.
 
 Short search helper:
 

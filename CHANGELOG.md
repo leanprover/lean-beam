@@ -8,7 +8,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 - Add opt-in re-elaboration profiling to speculative Lean probes on the CLI, LSP, and MCP surfaces.
   Results include request-local wall time and bounded trace spans; spans may overlap or be partial
-  when Lean code overrides profiler options ([#258](https://github.com/leanprover/lean-beam/pull/258)).
+  when Lean code overrides profiler options. Profiled handles require profiled continuations;
+  profiling `#guard_msgs` is unsupported. Timing covers synchronous execution and the final
+  registered snapshot-task graph, not tasks discarded by custom tactic backtracking
+  ([#258](https://github.com/leanprover/lean-beam/pull/258), @ejgallego).
 - `lean-beam-mcp --max-unfinished-requests N` sets the MCP ordinary execution-admission limit
   (default 32, range 1–1024). Invalid values are rejected at startup
   ([#396](https://github.com/leanprover/lean-beam/pull/396), @ejgallego).

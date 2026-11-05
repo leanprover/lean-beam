@@ -410,9 +410,13 @@ unrequested profiling omit it. The object contains `elapsed_ms`, `initial_thresh
 and `truncated`. Known-empty `spans` is `[]`; that does not mean the execution took no time.
 
 `elapsed_ms` is wall time for speculative re-elaboration in the already-loaded environment. Its
-interval starts after parsing and ends after request-owned elaboration tasks settle; it excludes
+interval starts after parsing and ends after the synchronous execution and the elaboration tasks
+still registered in its final Lean snapshot state settle; it excludes
 snapshot selection, import loading, response projection, and transport. It is not the original
-file's elaboration time, cold-build time, or native CPU time. The initial trace threshold is 1 ms;
+file's elaboration time, cold-build time, or native CPU time. Custom tactics can spawn tasks and then
+discard their registrations by backtracking. Those tasks, and tasks never registered with Lean's
+snapshot system, are outside this interval and may still be running when the result arrives.
+`elapsed_ms` and `truncated: false` do not establish settlement of such work. The initial trace threshold is 1 ms;
 `initial_threshold_ms` reports that starting setting, not an effective threshold guaranteed for
 every span. Submitted Lean code and metaprograms can override `trace.profiler*` options. Beam uses
 the nearest recorded options available for each trace node. It omits nodes whose recorded clock is
@@ -439,8 +443,21 @@ upstream trace allocation. Profiled results preserve ordinary warnings and error
 but ordinary Lean trace text is suppressed from both `messages` and `traces`; `traces` is `[]`.
 Nested and parallel span intervals can overlap, so do not sum them or treat them as exclusive costs.
 Profiling adds overhead. A continuation profile measures only that continuation call, not earlier
-work represented by its handle. Profiler settings and trace state are request-local and do not
-persist into follow-up handles.
+work represented by its handle. Visible options and collected traces are restored, but Lean can
+capture profiler settings in deferred declaration contexts retained by a handle. A handle created
+with profiling therefore requires `profile: true` on every continuation, including linear
+continuations and successors. Omitting it or setting it to false returns `invalidParams` without
+consuming the handle. An ordinary handle can start a profiled continuation; only its new successor
+requires profiling. For an unprofiled comparison, start again from the document or an ordinary handle.
+
+`#guard_msgs` is unsupported with profiling because Lean's in-memory trace retention changes
+trace-to-message conversion and can change an assertion's verdict. Beam rejects a direct guard
+before execution, and guards recorded in Lean's command information, including normal macro
+expansion, after execution; both return `invalidParams` rather than a misleading Lean failure or
+success. A late rejection does not undo external IO. Run trace assertions without profiling.
+Custom metaprograms that inspect tracing options or suppress command information can also change
+behavior under instrumentation; profiling is not a semantic-equivalence guarantee for arbitrary
+metaprograms.
 
 `lean_todo` inspects the whole file unless all four range fields are given; code actions need a
 range (see below), and a whole-file request omits them. It reports one item per
