@@ -12,6 +12,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- Broker results exceeding the 16 MiB frame limit now return `internalError` with
+  `operation_may_have_completed: true` when the error reply fits. The shared Lean session
+  remains usable after the rejected result, and recovery replies preserve request correlation
+  ([#414](https://github.com/leanprover/lean-beam/pull/414), @ejgallego).
 - When the selected Lean compiler has no Beam runtime, setup guidance identifies the compiler
   and bound installation. Reinstall commands retain every target from the confirmed current
   standalone generation; older or unconfirmed generations get manual guidance. Unsupported

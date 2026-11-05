@@ -1620,6 +1620,25 @@ private def checkTypedErrorDataProjection : IO Unit := do
   let operationReceipt ← requireObjVal "control error" "operation_response" uncertainControlData
   require "control operation response remains opaque" (operationReceipt == toJson operationResponse)
 
+  let deliveryFailure := Beam.Broker.responseFailureFor .internalError "output frame rejected"
+    (some <| toJson ({} : Beam.Broker.UnconfirmedOperationData))
+  let preparedDelivery := Beam.Cli.prepareControlResponse deliveryFailure.toResponse (some "delivery-failure")
+  let cliDeliveryError ← requireObjVal "delivery failure CLI" "error" preparedDelivery.json
+  let cliDeliveryData ← requireObjVal "delivery failure CLI" "data" cliDeliveryError
+  requireJsonBool "delivery failure CLI" "operation_may_have_completed" true cliDeliveryData
+  let mcpDeliveryError ← expectToolError "delivery failure MCP" "internalError" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) deliveryFailure.toResponse
+  requireJsonBool "delivery failure MCP" "operation_may_have_completed" true
+    (mcpDeliveryError.data?.getD Json.null)
+  for malformed in #[
+      (toJson ({} : Beam.Broker.UnconfirmedOperationData)).setObjVal! "operationMayHaveCompleted" (toJson "true"),
+      (toJson ({} : Beam.Broker.UnconfirmedOperationData)).setObjVal! "unexpected" (toJson true)
+    ] do
+    let failure := { deliveryFailure with error := { deliveryFailure.error with data? := some malformed } }
+    let error ← expectToolError "malformed delivery outcome" "internalError" <|
+      Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) failure.toResponse
+    requireProjectionFallback "malformed delivery outcome" error.data? malformed
+
   let malformedControl := controlData.setObjVal! "argument" <| Json.mkObj [
     ("field", toJson "text"), ("preview", toJson "short"), ("omittedChars", toJson "five")
   ]

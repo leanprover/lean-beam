@@ -192,10 +192,103 @@ private def checkInitialRequestErrors (endpoint : Beam.Broker.Endpoint) : IO Uni
       expectErrorCode "initial request" "internalError" response
       let some error := response.error?
         | throw <| IO.userError "initial request probe received no error payload"
+      unless error.data?.isNone do
+        throw <| IO.userError "failure before execution claimed an unconfirmed operation"
       unless error.message.contains expected do
         throw <| IO.userError s!"expected initial request error '{expected}', got '{error.message}'"
     finally
       Beam.Broker.Transport.closeConnection connection
+
+private def checkOversizedValidationError (endpoint : Beam.Broker.Endpoint) : IO Unit := do
+  let request (field : String) := Json.mkObj [
+    ("op", toJson "stats"), ("clientRequestId", toJson "r"), (field, toJson (0 : Nat))
+  ]
+  let overhead := (request "").compress.utf8ByteSize
+  let count := Beam.Broker.Transport.maxFrameBytes - overhead
+  let block := String.ofList (List.replicate 4096 'x')
+  let field := String.join (List.replicate (count / 4096) block) ++
+    String.ofList (List.replicate (count % 4096) 'x')
+  let body := (request field).compress
+  unless body.utf8ByteSize == Beam.Broker.Transport.maxFrameBytes do
+    throw <| IO.userError "validation-error fixture did not reach the exact request limit"
+  let connection ← Beam.Broker.Transport.connect endpoint
+  try
+    let deadline := (← IO.monoNanosNow) + 10000000000
+    match ← Beam.Broker.Transport.sendMsgUntil connection body deadline with
+    | .completed () => pure ()
+    | .timedOut => throw <| IO.userError "validation-error fixture send timed out"
+    let some bytes ← Beam.Broker.Transport.recvMsgUntil connection deadline
+      | throw <| IO.userError "validation-error fixture received no recovery response"
+    let message : Beam.Broker.StreamMessage ← IO.ofExcept <| fromJson? (← IO.ofExcept <| Json.parse bytes)
+    let .response (some "r") response := message
+      | throw <| IO.userError "validation-error recovery lost its short request ID"
+    expectErrorCode "oversized validation error" "internalError" response
+    unless response.error?.all (·.data?.isNone) do
+      throw <| IO.userError "validation-error recovery claimed an unconfirmed operation"
+    requirePeerEof connection
+  finally Beam.Broker.Transport.abandonConnection connection
+
+private def backendCounters (endpoint : Beam.Broker.Endpoint) : IO (Nat × Nat × Nat × Nat) := do
+  let stats ← expectOk (← runClient endpoint {
+    Beam.Broker.Request.stats with workspaceId? := some testWorkspaceId
+  })
+  let session ← IO.ofExcept <| stats.getObjVal? "session"
+  let metrics ← IO.ofExcept <| stats.getObjVal? "metrics"
+  return (← IO.ofExcept <| session.getObjValAs? Nat "epoch",
+    ← IO.ofExcept <| metrics.getObjValAs? Nat "sessionStarts",
+    ← IO.ofExcept <| metrics.getObjValAs? Nat "sessionRestarts",
+    ← IO.ofExcept <| metrics.getObjValAs? Nat "workerExitedCount")
+
+private def requireOutputLimitError (label : String) (response : Beam.Broker.Response) : IO Unit := do
+  expectErrorCode label "internalError" response
+  let some error := response.error? | throw <| IO.userError s!"{label}: missing error"
+  unless error.message == s!"Beam daemon frame exceeds {Beam.Broker.Transport.maxFrameBytes} bytes" do
+    throw <| IO.userError s!"{label}: did not reach the output frame limit"
+  let some data := error.data? | throw <| IO.userError s!"{label}: lost its outcome warning"
+  unless (← IO.ofExcept <| data.getObjValAs? Bool "operationMayHaveCompleted") do
+    throw <| IO.userError s!"{label}: claimed that the operation did not complete"
+
+private def checkOversizedResults (endpoint : Beam.Broker.Endpoint) (root : System.FilePath) : IO Unit := do
+  let text := String.join (List.replicate 4352 (String.ofList (List.replicate 4096 'x')))
+  IO.FS.writeFile (root / "LargeHover.lean")
+    s!"/-- {text} -/\ndef largeDoc : Nat := 1\n#check largeDoc\n"
+  IO.FS.writeFile (root / "FrameLimitControl.lean") "import Lean\n\ndef control : Nat := 42\n"
+  let version ← syncVersion endpoint "LargeHover.lean"
+  let controlVersion ← syncVersion endpoint "FrameLimitControl.lean"
+  let before ← backendCounters endpoint
+  let requestId := some "oversized-hover"
+  let messages ← runBrokerStream endpoint {
+    payload := .hover { path := "LargeHover.lean", version, line := 2, character := 8 }
+    clientRequestId? := requestId
+  }
+  expectStreamClientRequestId "oversized hover" messages requestId
+  let response ← requireFinalStreamResponse "oversized hover" messages
+  requireOutputLimitError "oversized hover" response
+  let marker := root / "frame-limit-effect"
+  let effectfulMessages ← runBrokerStream endpoint {
+    payload := .runAt {
+      path := "FrameLimitControl.lean", version := controlVersion, line := 2, character := 0
+      text := "run_cmd do\n" ++
+        s!"  IO.FS.writeFile {repr marker.toString} \"committed\"\n" ++
+        "  Lean.logInfo (String.join (List.replicate 4352 (String.ofList (List.replicate 4096 'x'))))"
+    }
+    clientRequestId? := some "oversized-effectful-result"
+  }
+  expectStreamClientRequestId "oversized effectful result" effectfulMessages (some "oversized-effectful-result")
+  requireOutputLimitError "oversized effectful result"
+    (← requireFinalStreamResponse "oversized effectful result" effectfulMessages)
+  unless (← IO.FS.readFile marker) == "committed" do
+    throw <| IO.userError "output-limit fixture did not commit its effect"
+  -- A fresh elaboration after the failed delivery must still use the existing backend.
+  let control ← expectOk (← runClient endpoint {
+    payload := .runAt {
+      path := "FrameLimitControl.lean", version := controlVersion, line := 2, character := 0
+      text := "#check Nat"
+    }
+  })
+  unless (← IO.ofExcept <| control.getObjValAs? Bool "success") &&
+      (← backendCounters endpoint) == before do
+    throw <| IO.userError "oversized results disrupted the existing Lean backend"
 
 private def checkStartupFailureEvidence : IO Unit := do
   let root ← mkTempProjectRoot "beam-stream-startup-evidence"
@@ -322,6 +415,7 @@ def main : IO Unit := do
   let action := fun (broker : Beam.Broker.BackendProcess) => do
     waitForBrokerReadyForRoot endpoint root
     checkInitialRequestErrors endpoint
+    checkOversizedValidationError endpoint
     match ← Beam.Daemon.standaloneDaemonGenerationStatus endpoint testWorkspaceId root identity with
     | .exact => pure ()
     | status =>
@@ -342,6 +436,7 @@ def main : IO Unit := do
     | status =>
         throw <| IO.userError s!"daemon root mismatch was classified as {repr status}"
     discard <| expectOk (← runClient endpoint Beam.Broker.Request.ensure)
+    checkOversizedResults endpoint root
 
     let todoVersion ← syncVersion endpoint BeamTest.Fixtures.TodoFixture.brokerPath
     let todoMessages ← requireSuccessStream "todo" <| ← runBrokerStream endpoint {

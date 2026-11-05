@@ -118,7 +118,7 @@ def CliFailure.client (failure : Beam.Broker.BrokerClientFailure) (message : Str
     | .unconfirmed =>
         (base.failure.error.message ++
           "; the operation may have completed; inspect the current state before deciding whether to issue a new request",
-         some <| Lean.Json.mkObj [("operationMayHaveCompleted", Lean.toJson true)])
+         some <| Lean.toJson ({} : Beam.Broker.UnconfirmedOperationData))
     | .responseReceived response =>
         (base.failure.error.message ++ "; a broker response was received before delivery failed",
          some <| Lean.Json.mkObj [("operationResponse", Lean.toJson response)])
