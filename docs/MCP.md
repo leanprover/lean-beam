@@ -413,11 +413,15 @@ Start with `elapsed_ms` and `summary`:
 
 - `top_spans` groups maximal paths of single-child edges in the retained tree into entries, then
   lists up to ten entries by the outer span's **inclusive** duration; ties use its original index.
-  A grouped entry keeps the outer span's fields and adds `inner_span`, containing the innermost
-  span's own index, category, duration, and optional tag/label. A singleton omits `inner_span`.
-  Endpoints can have very different durations: one retained child does not establish complete
-  coverage of its parent. Grouping neither subtracts costs nor attributes the outer duration to
-  the inner label. Intermediate spans remain accessible through the raw parent links.
+  A grouped entry keeps the outer span's fields. Optional `inner_span` shows the deepest member
+  of that path whose duration is at least half the positive outer duration, with that member's
+  own index, category, duration, and optional tag/label. It is omitted when no descendant qualifies.
+  This fixed display heuristic avoids presenting a tiny leaf as the interesting inner step; it
+  does not guarantee a tactic node or a stable identity across runs. Grouping still covers the
+  entire structural path, including descendants beyond the displayed member. One retained child
+  does not establish complete coverage of its parent. Grouping neither subtracts costs nor
+  attributes the outer duration to the inner label. All members remain accessible through the
+  raw parent links.
 - `phase_spans` lists the largest retained span in each observed category among `Kernel`,
   `Elab.def.maxSharing`, `addDecl`, `Elab.definition.value` and `Elab.lint`, in that order. These are
   individual observations, not phase totals. Missing categories are omitted, never reported as zero.
@@ -425,7 +429,7 @@ Start with `elapsed_ms` and `summary`:
   Nonempty `tag` and available `label` are included. The same index can appear in both views;
   it is the same observation and its label is rendered once.
 - `collapsed_spans` counts members of the shown paths that do not get separate top-level entries,
-  including their inner endpoints. `omitted_from_top` counts retained spans in paths outside the
+  including tails beyond the displayed inner members. `omitted_from_top` counts retained spans in paths outside the
   top list. Exactly `top_spans.length + collapsed_spans + omitted_from_top == spans.length`.
   Both counts exclude the independent phase view; neither counts events Lean discarded.
 

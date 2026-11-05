@@ -30,13 +30,34 @@ private def checkChains : IO Unit := do
     span 240, span 80 (some 6), span 50 (some 7), span 1 (some 8), span 100 (some 6)]
   let selected := select spans
   require (selected.top.map (·.outer) == #[0, 3, 6, 4, 10, 7]) "chains not ranked by outer duration"
-  require (selected.top.map (·.inner) == #[2, 3, 6, 5, 10, 9]) "chains crossed a retained branch"
+  require (selected.top.map (·.inner) == #[2, 3, 6, 5, 10, 8])
+    "displayed members crossed a retained branch or fell below half the outer duration"
   require (selected.top.map (·.size) == #[3, 1, 1, 2, 1, 3]) "chain member counts are not exact"
   require (selected.represented == spans.size) "grouping lost retained spans"
   require (selected.phases == #[5, 3, 0]) "grouping lost independent phase observations"
-  require (!selected.indices.contains 1 && !selected.indices.contains 8)
-    "intermediate wrapper labels would still be rendered"
+  require (!selected.indices.contains 1 && !selected.indices.contains 9)
+    "unselected wrapper or tiny leaf labels would still be rendered"
   require (selected.indices.size == 9) "shared endpoints/phases rendered repeatedly"
+
+  -- Live Mathlib ring profiles can continue past ring1 into a tiny synthInstance leaf. Select
+  -- the useful middle span while counting the entire structural chain, including that leaf.
+  let liveRing := #[span 801.7, span 479.6 (some 0), span 479.3 (some 1), span 1.3 (some 2)]
+  let liveSelected := select liveRing
+  require (liveSelected.top == #[{ outer := 0, inner := 2, size := 4 }])
+    "a tiny leaf displaced the substantial inner span"
+  -- The threshold is relative to the outer span, not repeatedly to each preceding child.
+  let fading := select #[span 100, span 70 (some 0), span 49 (some 1), span 30 (some 2)]
+  require (fading.top == #[{ outer := 0, inner := 1, size := 4 }])
+    "pairwise threshold drift selected a small fraction of the outer duration"
+  let boundary := select #[span 100, span 50 (some 0), span 50 (some 1), span 49.9 (some 2)]
+  require (boundary.top == #[{ outer := 0, inner := 2, size := 4 }])
+    "the inclusive half-duration boundary did not select its deepest member"
+  let noInner := select #[span 100, span 49.9 (some 0) "Kernel"]
+  require (noInner.top == #[{ outer := 0, inner := 0, size := 2 }] && noInner.phases == #[1])
+    "a small child was displayed or its independent phase observation was lost"
+  let zero := select #[span 0, span 0 (some 0)]
+  require (zero.top == #[{ outer := 0, inner := 0, size := 2 }])
+    "a zero-duration path invented a useful inner member"
 
   let mut many : Array Span := #[]
   for i in [:12] do
@@ -57,13 +78,16 @@ private def checkChains : IO Unit := do
     calls.modify (·.modify i (· + 1))
     pure <| Dynamic.mk (m!"endpoint {i}")) (fun _ => false)
   let leaf := MessageData.trace { cls := `inner, startTime := 1.3, stopTime := 1.4 } (header 2) #[]
-  let mid := MessageData.trace { cls := `wrapper, startTime := 1.2, stopTime := 1.5 } (header 1) #[leaf]
+  let mid := MessageData.trace { cls := `wrapper, startTime := 1.2, stopTime := 1.7 } (header 1) #[leaf]
   let root := MessageData.trace { cls := `outer, startTime := 1.1, stopTime := 1.9 } (header 0) #[mid]
   let state : TraceState := {
     tid := 0
     traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := root } }
   let result ← collectWithLabels (pure () : IO Unit) 1000000000 2000000000 #[state] ""
-  require ((← calls.get) == #[1, 0, 1]) "collapsed intermediate header was evaluated"
+  require ((← calls.get) == #[1, 1, 0])
+    "selected middle header was not rendered exactly once or a tiny leaf header was evaluated"
+  require (result.spans[1]!.label? == some "endpoint 1" && result.spans[2]!.label?.isNone)
+    "labels did not follow the selected inner member"
   require (!result.truncated && result.spans.size == 3) "grouping altered the raw projection"
 
 def run : IO Unit := do

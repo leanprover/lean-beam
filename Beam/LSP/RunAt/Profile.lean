@@ -42,8 +42,10 @@ def maxTopSpans : Nat := 10
 def maxLabelChars : Nat := 160
 private def maxSnippetSourceBytes : Nat := 8192
 
-/-- A maximal single-child path in the retained forest. Endpoints keep their own measurements;
-one retained child does not imply equal cost or complete coverage of its parent. -/
+/-- A maximal single-child path in the retained forest. `inner` is its displayed descendant,
+not necessarily its last node: choose the deepest member with at least half the positive outer
+duration. This presentation heuristic does not attribute the outer cost to that member. `size`
+counts the full structural path, including the tail below the displayed member. -/
 structure Chain where
   outer : Nat
   inner : Nat
@@ -72,12 +74,16 @@ def select (spans : Array Span) : Selection := Id.run do
     if let some parent := spans[i]!.parent? then
       if parent < i && children[parent]!.size == 1 then continue
     let mut inner := i
+    let mut cursor := i
     let mut size := 1
+    let outerDuration := spans[i]!.durationMs
     -- Edges go forward, so a path visits at most spans.size nodes.
     for _ in [:spans.size] do
-      if children[inner]!.size != 1 then break
-      inner := children[inner]![0]!
+      if children[cursor]!.size != 1 then break
+      cursor := children[cursor]![0]!
       size := size + 1
+      if outerDuration > 0 && spans[cursor]!.durationMs >= outerDuration / 2 then
+        inner := cursor
     top := top.push { outer := i, inner, size }
   let mut phases := #[]
   for category in #["Kernel", "Elab.def.maxSharing", "addDecl", "Elab.definition.value", "Elab.lint"] do

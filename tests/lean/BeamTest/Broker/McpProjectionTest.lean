@@ -778,7 +778,9 @@ private def checkCrossSurfaceResultParity : IO Unit := do
           label? := some "typechecking declarations [demo]" },
         { parent? := some 0, thread := 7, category := "tactic", tag := "simp",
           startMs := 1, durationMs := 2, label? := some "simp", range? := some {
-            start := { line := 0, character := 0 }, «end» := { line := 0, character := 4 } } }
+            start := { line := 0, character := 0 }, «end» := { line := 0, character := 4 } } },
+        { parent? := some 1, thread := 7, category := "Meta.synthInstance", tag := "",
+          startMs := 1.5, durationMs := 0.1, label? := some "CharZero ℚ" }
       ]
     }
   }
@@ -801,7 +803,7 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   requireJsonInt "initial profiling threshold" "initial_threshold_ms" 1 profile
   requireJsonBool "profile boundedness" "truncated" false profile
   let spans ← IO.ofExcept <| profile.getObjValAs? (Array Json) "spans"
-  require "profile spans preserved" (spans.size == 2)
+  require "profile spans preserved including the small tail" (spans.size == 3)
   requireFieldAbsent "root span" "parent" spans[0]!
   requireFieldAbsent "root span" "range" spans[0]!
   requireFieldAbsent "public span" "startMs" spans[1]!
@@ -820,14 +822,14 @@ private def checkCrossSurfaceResultParity : IO Unit := do
     ((← requireObjVal "outer" "span" top[0]!) == (← requireObjVal "phase" "span" phases[0]!))
   requireFieldAbsent "empty summary tag is omitted" "tag" top[0]!
   let inner ← requireObjVal "grouped top span" "inner_span" top[0]!
-  requireJsonInt "inner endpoint index" "span" 1 inner
+  requireJsonInt "substantial inner member, not the tiny leaf" "span" 1 inner
   requireJsonString "nonempty summary tag retained" "tag" "simp" inner
   requireJsonString "inner endpoint label" "label" "simp" inner
   require "outer measurement is not attributed to the inner endpoint"
     ((← requireObjVal "outer" "duration_ms" top[0]!) == toJson (3 : Float) &&
       (← requireObjVal "inner" "duration_ms" inner) == toJson (2 : Float))
   requireFieldAbsent "phase is an individual observation" "inner_span" phases[0]!
-  requireJsonInt "one chain member collapsed into its outer entry" "collapsed_spans" 1 summary
+  requireJsonInt "all descendants collapsed, including the undisplayed tail" "collapsed_spans" 2 summary
   requireJsonInt "all retained spans shown" "omitted_from_top" 0 summary
   let emptyProfile := Beam.Broker.Response.success <| toJson ({
     profile? := some { elapsedMs := 0 }
@@ -841,6 +843,21 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   require "unobserved phases are not invented" ((← requireObjVal "empty summary" "phase_spans" emptySummary) == Json.arr #[])
   requireJsonInt "empty summary omission count" "omitted_from_top" 0 emptySummary
   requireJsonInt "empty summary collapsed count" "collapsed_spans" 0 emptySummary
+
+  let smallChild := Beam.Broker.Response.success <| toJson ({
+    profile? := some { elapsedMs := 10, spans := #[
+      { thread := 0, category := "outer", tag := "", startMs := 0, durationMs := 10 },
+      { thread := 0, parent? := some 0, category := "small", tag := "", startMs := 1, durationMs := 1 }] }
+  } : Beam.LSP.RunAt.Result)
+  let smallPublic ← expectToolOk "chain with no substantial descendant" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) smallChild
+  let smallProfile ← requireObjVal "small child profile" "profile" smallPublic
+  let smallSummary ← requireObjVal "small child profile" "summary" smallProfile
+  let smallTop ← IO.ofExcept <| smallSummary.getObjValAs? (Array Json) "top_spans"
+  require "chain stays grouped" (smallTop.size == 1)
+  requireFieldAbsent "small leaf is not presented as the inner step" "inner_span" smallTop[0]!
+  requireJsonInt "undisplayed child still counted" "collapsed_spans" 1 smallSummary
+  requireJsonInt "no retained member omitted from the group" "omitted_from_top" 0 smallSummary
 
   let manySpans : Array Beam.LSP.RunAt.Profile.Span := (Array.range 13).map fun i => {
     thread := 0, category := if i == 0 then "Kernel" else "step", tag := ""
