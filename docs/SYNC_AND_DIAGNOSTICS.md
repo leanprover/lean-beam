@@ -209,11 +209,13 @@ Beam returns `saveUnsupportedSetup` after establishing the sync verdict and reso
 before Lake dependency-trace preparation. This rejection preserves the sync verdict under
 `error.data.sync` and leaves prior artifacts and the Lake trace unchanged. A rejected `close-save`
 also leaves the document open. Move shared `-D` settings from `moreLeanArgs` to `leanOptions`, or use
-`lake build` when the arguments are intentionally batch-only. Every save refusal that suggests
-`lake build` also states the order from [Failures And Recovery](#failures-and-recovery): stop the
-CLI owner or drop the MCP workspace and confirm cleanup before building, then start a fresh session
-or workspace. A build while the session is live leaves Beam's sync and save history describing
-older artifacts.
+`lake build` when the arguments are intentionally batch-only.
+
+Every save refusal that suggests `lake build` tells the caller to stop its CLI owner or drop its
+MCP workspace, confirm cleanup, build, and start a fresh session or workspace. Before building,
+stop all affected CLI owners, drop all affected MCP workspaces, and confirm their cleanup; see
+[Failures And Recovery](#failures-and-recovery). A build while a session is live leaves Beam's
+sync and save history describing older artifacts.
 
 A checkpoint must describe the imports it was elaborated against. When a Lean file worker loads a
 document's imports, Beam records the Lake trace (dependency hash and output hashes) of every
