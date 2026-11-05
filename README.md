@@ -8,8 +8,8 @@ Beam supports:
 
 - **Speculative execution:** try commands and tactics in a file's context without changing its
   source, using [`runAt`](docs/STATUS.md#core-lean-surface). Independent attempts can run concurrently.
-- **Multi-file work:** synchronize edited files and checkpoint modules so dependent files can use
-  their changes.
+- **Multi-file work:** [checkpoint edited dependencies and refresh their importers](docs/SETUP.md#work-across-files)
+  so later files can use their changes.
 - **Saving from the running Lean context:** [`save`](docs/SYNC_AND_DIAGNOSTICS.md#command-model)
   writes a module checkpoint from the state already checked by the Lean server, without batch
   re-elaboration.
@@ -75,26 +75,31 @@ Lean Beam is distributed in two ways:
 
 - **A Lean toolchain that includes Beam:** follow [bundled Beam setup](docs/SETUP.md#use-beam-bundled-with-lean).
   Use the commands provided by that toolchain for projects using the same Lean installation.
-- **A standalone installation:** on Linux or macOS, run `./scripts/install-beam.sh` from a Beam
-  checkout with `elan` on `PATH`. The installer offers toolchains, agent skills, and MCP client
-  registration.
+- **A standalone installation:** on Linux or macOS, follow [checkout installation](docs/SETUP.md#install-beam-from-this-checkout)
+  with `elan` on `PATH`. The installer offers toolchains, agent skills, and MCP client registration.
 
 Windows support is [experimental](docs/STATUS.md#distribution). Native builds and CI do not
 establish an official elan Windows distribution path; that distribution is deferred pending the
 libuv investigation and fixes.
 
-Bundled binaries do not install an agent skill. For either distribution, install the
-[Lean agent skill](docs/SETUP.md#install-the-lean-skill-manually) from the matching Beam release,
-including its `references` directory, in your client's skill directory. To use MCP, also register the installed
-`lean-beam-mcp` command with your client; see [MCP setup](docs/SETUP.md#mcp-setup).
+Before updating an existing installation, follow [the upgrade guide](docs/SETUP.md#before-an-upgrade).
 
-The standalone installer can do both. Run the command for your client:
+Bundled binaries do not install an agent skill. For bundled Beam, install the
+[Lean agent skill](docs/SETUP.md#install-the-lean-skill-manually) from the matching Beam release,
+including its `references` directory, in your client's skill directory. To use MCP, register that
+toolchain's `bin/lean-beam-mcp` with your client; see [MCP setup](docs/SETUP.md#mcp-setup).
+
+For a standalone installation, run one of these commands from the root of a Beam checkout. The
+Codex and Claude commands install the skill and register MCP together; Pi uses the CLI skill:
 
 ```bash
 ./scripts/install-beam.sh --codex --codex-mcp
 ./scripts/install-beam.sh --claude --claude-mcp
-./scripts/install-beam.sh --pi
+./scripts/install-beam.sh --pi # CLI skill only
 ```
+
+At the toolchain prompt, select the Lean versions used by your projects. The default is Beam's
+own pinned toolchain, which may differ from your project's version.
 
 The standalone installer puts commands in `~/.local/bin`; make sure that directory is on `PATH`.
 Beam is installed once for your agent tools; you do not add it to each project's lakefile.
@@ -104,8 +109,11 @@ build missing Beam components.
 
 ### Verify the connection
 
-Restart your agent client after installation or a registration change so it loads the selected
-skills and server. From the Lean project, use `lean-beam --version` and `lean-beam doctor` to
+Restart your agent client after installation or a registration change so it reloads its server
+configuration. In a new agent session, confirm that the Lean skill is available.
+[Client configuration checks](docs/SETUP.md#inspect-client-configuration) can
+diagnose missing files but cannot prove that a running client loaded the skill.
+From the Lean project, use `lean-beam --version` and `lean-beam doctor` to
 inspect the selected installation and project setup. For bundled commands, use the same
 `elan run SELECTOR` prefix described in [bundled setup](docs/SETUP.md#use-beam-bundled-with-lean).
 
@@ -115,28 +123,31 @@ checks the client-to-Lean request path. See [MCP verification](docs/SETUP.md#ver
 for details. A running server retains its original installation even after a launcher is updated;
 checking a newly launched command does not establish which version an existing client is using.
 
-Before upgrading, stop existing sessions through their original installation and wait for cleanup.
-Follow [the upgrade guide](docs/SETUP.md#before-an-upgrade), then restart clients against the new
-installation.
-
 ## Documentation
 
-For users and agents:
+Setup and workflows:
 
-- [Setup](docs/SETUP.md): installation, agent skills, MCP registration, verification, and recovery.
-- [Agent workflow](skills/lean-beam/SKILL.md): commands, positions, versions, and outcomes.
+- [Setup](docs/SETUP.md): install Beam, connect an agent, and verify the connection.
+- [Agent workflow](skills/lean-beam/SKILL.md): editing, speculative checks, and module checkpoints;
+  [workflow details](skills/lean-beam/references/workflow-details.md) cover the detailed procedures.
+- [Maintenance and recovery](docs/SETUP.md#before-an-upgrade): upgrades, toolchain changes,
+  sessions, and pruning.
 - [Trust and proof confirmation](skills/lean-beam/references/trust-and-validation.md): checkpoints,
   batch builds, and independent proof confirmation.
+
+Reference:
+
+- [MCP](docs/MCP.md) and [Sync and diagnostics](docs/SYNC_AND_DIAGNOSTICS.md): exact behavior,
+  result fields, errors, and guarantees.
 - [Status](docs/STATUS.md), [Compatibility](docs/COMPATIBILITY.md), and
   [custom toolchains](docs/CUSTOM_TOOLCHAINS.md): capabilities, limitations, and supported targets.
 - [Changelog](CHANGELOG.md): release changes.
 
-For contributors and integrators:
+Contributing:
 
 - [Contributing](CONTRIBUTING.md) and [agent instructions](AGENTS.md): repository workflow.
 - [Development](docs/DEVELOPMENT.md): architecture and maintainer guidance.
 - [Toolchain bundling](docs/TOOLCHAIN_BUNDLING.md): native runtime construction and distribution.
-- [MCP](docs/MCP.md) and [Sync and diagnostics](docs/SYNC_AND_DIAGNOSTICS.md): protocol contracts.
 - [Testing](docs/TESTING.md): suites and coverage.
 
 Beam is for non-adversarial development. Speculative requests isolate Lean elaboration state;

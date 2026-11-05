@@ -8,14 +8,14 @@ description: Work on external Lean projects through the installed `lean-beam` wr
 Beam provides speculative Lean probes in the real module environment and zero-build module
 checkpoints. This skill is Lean-only.
 
-Use the `lean-beam` wrapper, not raw JSON or raw LSP. If your client exposes the `lean-beam-mcp`
-tools (`lean_run_at`, `lean_sync`, ...), the same rules apply; MCP owns its session automatically,
-so do not start `lean-beam serve` for MCP calls.
+Use the CLI or MCP tools, not raw LSP. Bundled CLI examples need `elan run SELECTOR lean-beam`
+instead of bare `lean-beam`; see [installation](references/setup-and-recovery.md#installation).
+MCP owns its sessions; do not start `lean-beam serve` for MCP calls.
 
 ## Session
 
 ```bash
-# keep one foreground owner running for the project (separate terminal or background process)
+# keep this owner running
 lean-beam serve
 # when finished: interrupt it, or
 lean-beam --root ROOT stop
@@ -24,14 +24,17 @@ lean-beam --root ROOT stop
 - Document commands attach to a live `serve` owner and never start one implicitly. `doctor`, help,
   and version inspection can run without an owner.
 - In a read-only or sandboxed tree, set `BEAM_SESSION_ROOT` to a writable directory.
-- After editing a lakefile, manifest, Lean options, plugins, or other Lake configuration, run
-  `lean-beam --root ROOT stop` and start a new `serve`; `refresh` does not restart the server.
-- If startup, toolchain selection, or session state looks wrong, run `lean-beam doctor` before
-  guessing. See [setup and recovery](references/setup-and-recovery.md).
+- After configuration changes, stop the original owner, confirm cleanup and an absent session,
+  then start a new `serve`; `refresh` does not restart the server.
+- For startup or runtime trouble, use `lean-beam doctor`; see
+  [setup and recovery](references/setup-and-recovery.md).
 
 ## The Edit Loop
 
-Beam reads only the on-disk file and never edits `.lean` sources; you edit files with your own tools.
+Error paths below use CLI `error.data`; MCP tool failures use `structuredContent.data` with
+`isError: true`.
+
+Beam reads saved `.lean` source and never edits it.
 
 1. Edit and save the file.
 2. `lean-beam update Foo.lean` and take `result.version` from its JSON.
@@ -49,7 +52,7 @@ lean-beam sync Foo.lean            # errors stream on stderr; add +all-diagnosti
 lean-beam save MyPkg/Sub/Module.lean
 ```
 
-- Every version-bound command needs the version from the latest `update` or `sync`. On
+- Every version-bound command needs the version from the latest `update`, `sync`, or `refresh`. On
   `contentModified` with `error.data.reason = "documentVersionMismatch"`, retry with
   `error.data.accepted_version` or run `update` again; never guess a version.
 - Cancellation is soft: interrupting the client does not prove backend work has stopped. Active
@@ -59,7 +62,8 @@ lean-beam save MyPkg/Sub/Module.lean
 - `save` checkpoints only that module. It does not validate importers, and it records the Lean
   server's environment, which can differ from batch elaboration. Modules with batch-only
   `moreLeanArgs` fail with `saveUnsupportedSetup`; move shared `-D` settings to `leanOptions`, or
-  stop Beam, then `lake build`, when the arguments are intentionally batch-only.
+  stop all affected CLI owners and drop affected MCP workspaces, confirm cleanup, then run
+  `lake build` when the arguments are intentionally batch-only.
 - If `close-save` fails with `error.data.reason = "savedDocumentChanged"`, `error.data.saved` is an
   already committed checkpoint of the earlier version; run `update` or `sync` and save again if
   needed.
@@ -86,7 +90,7 @@ lean-beam save MyPkg/Sub/Module.lean
 | Fresh diagnostics after a real edit | `sync` (or `refresh`) |
 | Checkpoint one synced module | `save`, `close-save` |
 | Daemon or tracked-file trouble | `open-files`, `doctor`, `stats` |
-| Shell search loops over handles | `lean-beam-search` |
+| Shell search loops over handles | `lean-beam-search` (standalone helper) |
 | Bug report card | `feedback-report` (see [feedback](references/feedback.md)) |
 
 Handles are pre-stable: use them only when exact continuation matters. They are invalidated by
@@ -110,7 +114,8 @@ Code actions need a range: Lean runs them on the one command at the range end, s
 - At a tactic position, the text may be a tactic sequence: start each tactic at the same column, or
   separate them with `;`. Do not start it with `by`; the probe already runs inside the proof.
 - At an unfilled `sorry`, `_`, or `?x` term, run-at starts from its goal; text is still tactics.
-  At a `todo` item's `run_at_position`, it starts from the item's `proof_state`; without one, edit.
+  A goal-bearing `todo` item with both `run_at_position` and `proof_state` selects those goals.
+  Without a position for those goals, edit the source.
 - `run-at` returns no file diagnostics; use `sync` after a real edit for those.
 - Tactic probes reject new local `let rec` definitions, even valid ones. Save the
   enclosing declaration and `sync` instead, or probe one complete declaration at a command position.
@@ -130,16 +135,16 @@ use them only for context-free syntax checks.
 
 ## When To Stop Probing
 
-Before `lake build`, stop the CLI owner or drop the MCP workspace and wait for cleanup;
-recreate the session afterward.
+Before `lake build`, stop affected CLI owners and drop any affected MCP workspaces;
+confirm cleanup, then recreate them afterward.
 
 - The probe result should become real source: edit, save, `update`/`sync`.
 - Probes stop clarifying the problem: change approach rather than repeating variants.
 - `save` fails with `saveImportsChanged`: `refresh`, then save.
-- On `syncBarrierIncomplete`, follow `error.data.recovery_plan` in order; stop on failure. Inspect
-  diagnostics/readiness after refresh succeeds. If blocked or save is unsupported, stop retries and
-  inspect upstream diagnostics/configuration.
-- You edited a dependency and need trustworthy importers: `save` is not enough; rebuild.
+- On `syncBarrierIncomplete`, save `save_deps`, then refresh `target_path` in the same CLI session
+  or MCP workspace. Stop on a missing plan or failed step. Inspect diagnostics and readiness after
+  refresh succeeds; see [recovery](references/workflow-details.md#file-progress-and-readiness).
+- After dependency checkpoints, refresh importers you use; a save alone does not reload them.
 - `contentModified`, stale state, or rebuild trouble keeps appearing unexpectedly: inspect
   `open-files` and `doctor`, then stop and report it rather than working around it.
 

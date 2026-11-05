@@ -6,7 +6,13 @@ recovering from an abnormal session.
 
 ## Installation
 
-From the `lean-beam` repo root:
+For Beam bundled with a Lean toolchain, use `elan run SELECTOR lean-beam` in place of every bare
+`lean-beam` command in this skill, or use that toolchain's absolute `bin/lean-beam` path. Check its
+identity and keep that choice for `serve`, attached requests, and `stop`; do not switch to a
+standalone command on `PATH`. The project must use the same Lean installation. The standalone
+`lean-beam-search` script is not included in the native bundle.
+
+For a standalone installation, run from a matching Beam source checkout:
 
 ```bash
 ./scripts/install-beam.sh --codex
@@ -102,8 +108,8 @@ evidence that preparation stopped; see the
   a request by its `BEAM_REQUEST_ID` from another process.
 - Cancellation is cooperative. `cancelled: true` means a matching request was marked, not that Lean
   execution has stopped. Non-polling `#eval` IO may continue; cancellation does not restart its worker.
-- After changing effective Lean startup configuration, stop the old session and start a new
-  `serve` owner.
+- After changing effective Lean startup configuration, stop the original owner, confirm completed
+  cleanup and that the selected session is absent, then start a new `serve` owner.
 
 ## Recovery
 
@@ -116,13 +122,22 @@ evidence that preparation stopped; see the
   Refresh resets the tracked document. An unresolved close-save still owns its file: cooperative
   cancellation does not establish settlement, and recovery may require restarting the owning
   session/runtime. See the [worker recovery contract](https://github.com/leanprover/lean-beam/blob/main/docs/SYNC_AND_DIAGNOSTICS.md#worker-errors-and-document-recovery).
-- Interrupting the owner or running `stop` performs bounded cleanup. If the owner is killed, the
-  daemon shuts down cooperatively but the session fence remains.
-- After an abnormal owner or broker exit, the session stays fenced until
-  `lean-beam --root ROOT recover --generation ID`. Recovery quarantines the metadata and never
-  signals its recorded PIDs.
-- `lean-beam prune` previews old installed runtimes. Restart active agents and MCP clients before
-  `prune --apply`.
+- Interrupting the owner or running `stop` requests shutdown. A successful `stop` acknowledges
+  that request; it does not establish completed cleanup or an overall shutdown deadline. Confirm
+  settlement with the owner or supervisor before replacement or external builds. If the owner is
+  killed, the daemon shuts down cooperatively but the session fence remains.
+- After an abnormal owner or broker exit, the session stays fenced. Independently confirm that
+  the matching owner, daemon, and every other producer have stopped before using
+  `lean-beam --root ROOT recover --generation ID` through the original installation and session
+  selection. Otherwise stop and coordinate. Recovery quarantines metadata and never signals
+  recorded PIDs.
+- `lean-beam prune` previews old installed runtimes. Before `prune --apply`, stop old owners and
+  confirm cleanup, update clients pinned to old executables, and verify the running server's
+  intended installation with `beam_version` for each MCP server in use. Preview and apply each
+  compute a fresh plan. Coordinate installers and other maintenance so no other process changes
+  the installed generations or `current` selection before apply completes. If that state changes,
+  preview again and repeat the usage checks. Do not apply while any removal candidate is in use,
+  and coordinate clients so none starts using a candidate before apply completes.
 - If a runtime's own manifest is corrupted or replaced, identity reporting fails: stop normal Beam
   work and preserve that installation for inspection. Do not try to repair it with `prune`. After
   stopping active Beam agents and MCP clients, move the invalid runtime out of

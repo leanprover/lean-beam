@@ -23,10 +23,10 @@ Elaboration and kernel checking use the selected imports, definitions, options, 
 Checkpoint freshness and Lake's reuse decisions are separate from independent proof confirmation.
 Neither refresh nor cache removal supplies the latter.
 
-Coordinate edits through `update`/`sync` before dependent Beam work. Stop the CLI owner, or drop the
-MCP workspace and wait for cleanup, before external builds or configuration changes; recreate the
-session afterward. Unreported edits/builds while affected state is retained, and uncoordinated
-writers using different session roots, are outside this workflow. Beam does not promise to discover
+Coordinate edits through `update`/`sync` before dependent Beam work. Stop all affected CLI owners
+and drop any affected MCP workspaces, confirming their cleanup, before external builds or
+configuration changes; recreate sessions afterward. Unreported edits/builds while affected state
+is retained, and uncoordinated writers using different session roots, are outside this workflow. Beam does not promise to discover
 or reconcile them automatically.
 
 ## Reading a tactic result
