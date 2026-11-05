@@ -16,10 +16,25 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
   `operation_may_have_completed: true` when the error reply fits. The shared Lean session
   remains usable after the rejected result, and recovery replies preserve request correlation
   ([#414](https://github.com/leanprover/lean-beam/pull/414), @ejgallego).
+- When the selected Lean compiler has no Beam runtime, setup guidance identifies the compiler
+  and bound installation. Reinstall commands retain every target from the confirmed current
+  standalone generation; older or unconfirmed generations get manual guidance. Unsupported
+  official targets now point to a compatible Beam revision while preserving the project's
+  `lean-toolchain` and dependency pins
+  ([#409](https://github.com/leanprover/lean-beam/pull/409), @ejgallego).
 - `sync` and `refresh` now return `internalError` when a diagnostic burst exhausts pending
   delivery capacity between complete output frames, rather than losing the terminal response.
   Recovery replies observe daemon shutdown; existing delivery budgets remain unchanged
   ([#412](https://github.com/leanprover/lean-beam/pull/412), @ejgallego).
+- `lean-beam doctor` explains when a project's Lean compiler exists but its Beam runtime is
+  missing, including Lean source checkouts that select a local stage1 build. It prints a text
+  report by default or one structured response with `--json`, instead of mixing JSON with a
+  duplicate human explanation
+  ([#397](https://github.com/leanprover/lean-beam/pull/397), @ejgallego).
+- `lean-beam doctor clients` no longer reports disabled integrations, or definitions that become
+  valid only after merging configuration layers, as checked. Unsupported conversions, incomplete
+  layers, and unresolved policy are reported as unverified
+  ([#391](https://github.com/leanprover/lean-beam/pull/391), @ejgallego).
 - Clarify that installer skill and MCP setup summaries describe only actions performed during
   the current run, so skipped registration does not imply that existing client setup is absent
   ([#394](https://github.com/leanprover/lean-beam/pull/394), @ejgallego).
