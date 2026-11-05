@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Lean
 import Beam.Broker.Protocol
+import Beam.LSP.Lib.ExternalBuild
 
 open Lean
 

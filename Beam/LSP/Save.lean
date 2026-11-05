@@ -10,6 +10,7 @@ import Lean.Server.FileWorker.RequestHandling
 import Lean.Server.Requests
 import Beam.LSP.Lib.Diagnostics
 import Beam.LSP.Lib.Request
+import Beam.LSP.Lib.ExternalBuild
 
 open Lean
 open Lean.Elab
@@ -394,10 +395,13 @@ private def hasPostponedCompilation (env : Environment) : Bool :=
 
 def saveReadinessDeferredCompilationReason : String := "deferredCompilation"
 
+def deferredCompilationMessage : String :=
+  s!"Beam cannot save deferred compilation from compiler.postponeCompile. {externalLakeBuildProcedure}"
+
 private def deferredCompilationMessage? (state : Elab.Command.State) : Option String :=
   if state.scopes.head!.opts.getBool `compiler.postponeCompile false ||
       hasPostponedCompilation state.env then
-    some "Beam cannot save deferred compilation from compiler.postponeCompile; use lake build instead."
+    some deferredCompilationMessage
   else
     none
 

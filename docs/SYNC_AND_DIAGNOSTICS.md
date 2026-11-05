@@ -191,7 +191,11 @@ Beam returns `saveUnsupportedSetup` after establishing the sync verdict and reso
 before Lake dependency-trace preparation. This rejection preserves the sync verdict under
 `error.data.sync` and leaves prior artifacts and the Lake trace unchanged. A rejected `close-save`
 also leaves the document open. Move shared `-D` settings from `moreLeanArgs` to `leanOptions`, or use
-`lake build` when the arguments are intentionally batch-only.
+`lake build` when the arguments are intentionally batch-only. Every save refusal that suggests
+`lake build` also states the order from [Failures And Recovery](#failures-and-recovery): stop the
+CLI owner or drop the MCP workspace and confirm cleanup before building, then start a fresh session
+or workspace. A build while the session is live leaves Beam's sync and save history describing
+older artifacts.
 
 A checkpoint must describe the imports it was elaborated against. When a Lean file worker loads a
 document's imports, Beam records the Lake trace (dependency hash and output hashes) of every
@@ -226,8 +230,9 @@ A snapshot with `compiler.postponeCompile` enabled, or with declarations still w
 compilation, is not a complete checkpoint. Its sync result has `readiness.save_ready: false` and
 `readiness.reason: "deferredCompilation"`, even when elaboration has no errors. `save` and
 `close-save` reject it with `saveUnsupportedSetup` before changing artifacts or the Lake trace;
-use `lake build` for this compilation pipeline. This also applies to declaration-scoped
-`set_option compiler.postponeCompile true in`, whose option resets before the end of the file.
+use `lake build` for this compilation pipeline, after stopping the session and confirming cleanup.
+This also applies to declaration-scoped `set_option compiler.postponeCompile true in`, whose option
+resets before the end of the file.
 
 ### Project Configuration Changes
 
