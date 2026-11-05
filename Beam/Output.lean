@@ -409,6 +409,16 @@ private def projectCleanupFailureData (data : Json) : Except String Json := do
         outputCapture?.toList.map (fun value => ("output_capture", toJson value)))] ++
       operationResponse?.toList.map (fun value => ("operation_response", value))
 
+private structure UnconfirmedOperationOutputData where
+  operation_may_have_completed : Bool
+  deriving ToJson
+
+private def projectUnconfirmedOperationData (data : Json) : Except String Json := do
+  requireOnlyJsonFields "unconfirmed operation data" #["operationMayHaveCompleted"] data
+  let value ← fromJson? (α := Beam.Broker.UnconfirmedOperationData) data
+  pure <| toJson ({ operation_may_have_completed := value.operationMayHaveCompleted } :
+    UnconfirmedOperationOutputData)
+
 private def projectHelperErrorData (data : Json) : Except String Json := do
   requireOnlyJsonFields "helper error wrapper" #["helperError"] data
   let helperError ← data.getObjVal? "helperError"
@@ -590,11 +600,17 @@ private def projectControlErrorData (code : String) (data : Json) : Option Json 
 /-- Present one operation failure's recognized Beam-owned data fields as the shared public shape. -/
 def OutputError.fromOperationFailure (operation : Operation)
     (failure : Beam.Broker.ResponseFailure) : OutputError :=
+  let projectData (data : Json) :=
+    if failure.error.code == "internalError" && (data.getObjVal? "operationMayHaveCompleted").isOk then
+      -- Operation errors accept this exact broker-owned schema; control errors have a broader
+      -- field inventory that already includes the same public outcome warning.
+      (attemptErrorProjection projectUnconfirmedOperationData data).getD (opaqueErrorData data)
+    else
+      (projectBrokerErrorData operation failure.error.code data).getD (opaqueErrorData data)
   {
     code := failure.error.code
     message := failure.error.message
-    data? := failure.error.data?.map fun data =>
-      (projectBrokerErrorData operation failure.error.code data).getD (opaqueErrorData data)
+    data? := failure.error.data?.map projectData
     documentProgress? := failure.fileProgress?
   }
 

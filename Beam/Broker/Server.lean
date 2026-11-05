@@ -2373,7 +2373,7 @@ private def saveOleanCore
       saveReadiness.saveReadyReason == Beam.LSP.Save.saveReadinessDeferredCompilationReason then
     withFailureProgress barrierProgress? <| throwBrokerFailure {
       code := .saveUnsupportedSetup
-      message := saveReadiness.saveReadyMessage?.getD "Beam cannot save deferred compilation; use lake build instead."
+      message := saveReadiness.saveReadyMessage?.getD Beam.LSP.Save.deferredCompilationMessage
       data? := some <| (syncResultErrorData syncResult)
         |>.setObjVal! "reason" (toJson saveReadiness.saveReadyReason)
         |>.setObjVal! "path" (toJson relPath)
@@ -3245,13 +3245,10 @@ private def handleClient
   let clientRequestId ← IO.mkRef (none : Option String)
   let sendResponse (id? : Option String) (response : Response) : IO Unit := do
     let message := StreamMessage.response id? response
-    Output.writeMessage framePhase message <|
-      Transport.sendMsg client (toJson message).compress
+    Output.writeMessage framePhase message (Transport.sendFrame client)
   try
     if let some identity := server.mode.wrapperIdentity? then
-      framePhase.set .sendingHello
-      Transport.sendMsg client (toJson (ServerHello.current identity)).compress
-      framePhase.set .betweenFrames
+      Output.writeHello framePhase (ServerHello.current identity) (Transport.sendFrame client)
     let deadlineNanos := (← IO.monoNanosNow) + 5000 * 1000000
     let some msg ← Transport.recvMsgUntil client deadlineNanos
       | throw <| IO.userError "Beam daemon initial request timed out after 5000 ms"
@@ -3264,6 +3261,7 @@ private def handleClient
     | .error failure =>
         let id? := (Json.parse msg).toOption.bind fun json =>
           (json.getObjValAs? String "clientRequestId").toOption
+        clientRequestId.set id?
         sendResponse id? failure.toResponse
     | .ok req =>
         clientRequestId.set req.clientRequestId?
@@ -3295,10 +3293,9 @@ private def handleClient
         try
           framePhase.set .betweenFrames
           discard <| output.run execution some req.clientRequestId? fun message => do
-            let frame := (toJson message).compress
             let stop := do return (← disconnected.get) || (← output.failed) || (← transport.stop.get)
-            Output.writeMessage framePhase message do
-              match ← Transport.sendMsgInterruptibly client frame stop with
+            Output.writeMessage framePhase message fun frame => do
+              match ← Transport.sendFrameInterruptibly client frame stop with
               | .completed () => pure ()
               | .interrupted => throw <| IO.userError "broker output connection interrupted"
         catch error =>
@@ -3320,11 +3317,14 @@ private def handleClient
   catch error =>
     reportClientFailure "handler" (← framePhase.get) (← operation.get)
       (← clientRequestId.get) error
-    let primary := (← deliveryFailure.get).getD error
+    let deliveryFailure? ← deliveryFailure.get
+    let primary := deliveryFailure?.getD error
+    -- Output failure can follow committed effects; initial-request errors make no such claim.
+    let data? := deliveryFailure?.map fun _ => toJson ({} : UnconfirmedOperationData)
     -- Execution and its watcher have settled. Queue failure and disconnection can already be
     -- set by cleanup, so only daemon shutdown interrupts this final attempt to report failure.
     let reported ← Output.tryReportFailure framePhase client (← clientRequestId.get)
-      (responseFailureFor .internalError primary.toString) transport.stop.get
+      (responseFailureFor .internalError primary.toString data?) transport.stop.get
     unless reported do
       -- A send may have emitted a partial frame. Never append a replacement response.
       abandoned.set true

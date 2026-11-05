@@ -449,8 +449,9 @@ repeating probes against retained state.
 includes structured Lake options, dynamic libraries, and plugins already applied by the file worker
 and avoids repeated module builds. Modules with batch-only `moreLeanArgs` fail with
 `saveUnsupportedSetup`; move shared `-D` settings to `leanOptions`, or use `lake build` when the
-arguments are intentionally batch-only. A successful checkpoint is normally sufficient for local
-development, so do not run a clean build after every Beam loop. At the end of the development loop,
+arguments are intentionally batch-only, after stopping the session and confirming cleanup. A
+successful checkpoint is normally sufficient for local development, so do not run a clean build
+after every Beam loop. At the end of the development loop,
 use a successful CI `lake build` from a clean checkout or clean Lake build directory as
 batch-build evidence.
 
@@ -549,6 +550,13 @@ owned generation. Both exit `1` and carry the same descriptor path and `recovery
 neither code authorizes archiving it before producer settlement.
 `doctor` retains structured failure data when it adds diagnostic lines.
 Unexpected IO faults use `internalError`, rather than being classified as invalid arguments.
+
+Broker frames have a 16 MiB encoded-body limit. A result rejected by this limit before writing
+its frame returns `internalError` when the error reply fits; the shared session remains available.
+This delivery failure carries `error.data.operation_may_have_completed: true`: it does not undo
+effects such as a committed save. Initial-request read and validation failures carry no such claim.
+Inspect the current state before retrying an operation that may have effects. Once writing a frame
+has begun, a send failure instead closes that connection because another reply could corrupt it.
 
 If a request send has begun and the CLI loses the reply, its existing error code is retained and
 `error.data.operation_may_have_completed` is `true`. This includes partial-send interruption; it does

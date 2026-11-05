@@ -390,7 +390,8 @@ client protocol.
   solution. Structured Lake options, dynamic libraries, and plugins are supported when the Lean file
   worker has already applied them; batch-only `moreLeanArgs` fail with `saveUnsupportedSetup`.
   Deferred compilation (`compiler.postponeCompile`, including declaration-scoped settings) also
-  rejects zero-build saves; use `lake build` for that pipeline. See
+  rejects zero-build saves; use `lake build` for that pipeline after stopping the session and
+  confirming cleanup. See
   [SYNC_AND_DIAGNOSTICS.md](SYNC_AND_DIAGNOSTICS.md#command-model) for readiness and preservation guarantees.
 - Running Lake builds on the workspace while a Beam session has documents open is unsupported.
   As a temporary safeguard ([#370](https://github.com/leanprover/lean-beam/issues/370)), `save` and

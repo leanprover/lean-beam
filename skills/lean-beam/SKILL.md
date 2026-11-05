@@ -62,7 +62,7 @@ lean-beam save MyPkg/Sub/Module.lean
 - `save` checkpoints only that module. It does not validate importers, and it records the Lean
   server's environment, which can differ from batch elaboration. Modules with batch-only
   `moreLeanArgs` fail with `saveUnsupportedSetup`; move shared `-D` settings to `leanOptions`, or
-  use `lake build` when the arguments are intentionally batch-only.
+  stop Beam, then `lake build`, when the arguments are intentionally batch-only.
 - If `close-save` fails with `error.data.reason = "savedDocumentChanged"`, `error.data.saved` is an
   already committed checkpoint of the earlier version; run `update` or `sync` and save again if
   needed.

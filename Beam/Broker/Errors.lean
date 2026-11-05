@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Lean
 import Beam.Broker.Protocol
+import Beam.LSP.Lib.ExternalBuild
 
 open Lean
 
@@ -57,6 +58,11 @@ structure BrokerFailure where
   message : String := ""
   data? : Option Json := none
   deriving Inhabited
+
+/-- A delivery failure leaves the operation's effects unconfirmed, without authorizing replay. -/
+structure UnconfirmedOperationData where
+  operationMayHaveCompleted : Bool := true
+  deriving ToJson, FromJson
 
 instance : FromJson BrokerFailure where
   fromJson? json := do

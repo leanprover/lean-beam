@@ -7,6 +7,8 @@ Author: Emilio J. Gallego Arias
 import Lean
 import Beam.Broker.Client
 import Beam.Broker.Protocol
+import Beam.Broker.Transport
+import Beam.System
 
 open Lean
 
@@ -18,6 +20,22 @@ def testWorkspaceId : Beam.Broker.WorkspaceId :=
 /-- Keep test broker requests bounded without imposing production-scale timing assumptions. -/
 def testBrokerRequestTimeoutMs : Nat :=
   120000
+
+/-- Raw reads for EOF fixtures. The caller abandons the connection on timeout or failure. -/
+def receiveSocketBytes (client : Beam.Broker.Transport.Connection) (size : Nat) :
+    IO (Option ByteArray) := do
+  let .tcp socket _ := client
+  let received ← Std.Internal.UV.TCP.Socket.recv? socket size.toUInt64
+  let some (some result) ← Beam.waitTaskWithTimeout received.result? 2000
+    | throw <| IO.userError "output peer read did not complete"
+  IO.ofExcept result
+
+def requirePeerEof (client : Beam.Broker.Transport.Connection) : IO Unit := do
+  let .tcp _ pending := client
+  unless (Beam.Broker.Transport.Framing.Buffer.unreadBytes (← pending.get)).isEmpty do
+    throw <| IO.userError "output peer retained extra bytes before EOF"
+  unless (← receiveSocketBytes client 1).isNone do
+    throw <| IO.userError "output peer received extra bytes instead of EOF"
 
 /--
 Address ordinary fixture requests to the workspace created by the broker test harness.

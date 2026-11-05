@@ -216,8 +216,7 @@ def syncBarrierIncompleteMessage
     "Follow recovery_plan in order; stop if a step fails. After refresh succeeds, inspect its " ++
     "diagnostics and save readiness before continuing. If a save is unsupported or the barrier remains " ++
     "incomplete, stop retrying and inspect upstream diagnostics and configuration. " ++
-    "If an external Lake build is required, first stop the CLI owner or drop the MCP workspace " ++
-    "and confirm cleanup; rebuild only after cleanup completes, then start a fresh session or workspace."
+    externalLakeBuildProcedure
 
 def leanSaveResult
     (spec : LeanSaveSpec)

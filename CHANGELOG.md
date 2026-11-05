@@ -12,6 +12,15 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- `save` refusals that suggest `lake build` (`saveUnsupportedSetup`, `saveTraceStale`) and the
+  deferred-compilation readiness message in `sync` now say to stop the CLI owner or drop the MCP
+  workspace and confirm cleanup before building, then start a fresh session. Building while the session was live left dependencies marked as needing a save,
+  so every later sync of an importer failed with a recovery plan that could not be followed
+  ([#415](https://github.com/leanprover/lean-beam/pull/415), @ejgallego).
+- Broker results exceeding the 16 MiB frame limit now return `internalError` with
+  `operation_may_have_completed: true` when the error reply fits. The shared Lean session
+  remains usable after the rejected result, and recovery replies preserve request correlation
+  ([#414](https://github.com/leanprover/lean-beam/pull/414), @ejgallego).
 - When the selected Lean compiler has no Beam runtime, setup guidance identifies the compiler
   and bound installation. Reinstall commands retain every target from the confirmed current
   standalone generation; older or unconfirmed generations get manual guidance. Unsupported
