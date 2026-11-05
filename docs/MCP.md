@@ -411,26 +411,35 @@ unrequested profiling omit it. The object contains `elapsed_ms`, `initial_thresh
 
 Start with `elapsed_ms` and `summary`:
 
-- `top_spans` lists up to ten retained spans by descending **inclusive** duration; equal durations
-  keep their original span order.
+- `top_spans` groups maximal paths of single-child edges in the retained tree into entries, then
+  lists up to ten entries by the outer span's **inclusive** duration; ties use its original index.
+  A grouped entry keeps the outer span's fields and adds `inner_span`, containing the innermost
+  span's own index, category, duration, and optional tag/label. A singleton omits `inner_span`.
+  Endpoints can have very different durations: one retained child does not establish complete
+  coverage of its parent. Grouping neither subtracts costs nor attributes the outer duration to
+  the inner label. Intermediate spans remain accessible through the raw parent links.
 - `phase_spans` lists the largest retained span in each observed category among `Kernel`,
   `Elab.def.maxSharing`, `addDecl`, `Elab.definition.value` and `Elab.lint`, in that order. These are
   individual observations, not phase totals. Missing categories are omitted, never reported as zero.
 - Each entry has `span` (its zero-based index in `profile.spans`), `category`, and `duration_ms`.
   Nonempty `tag` and available `label` are included. The same index can appear in both views;
   it is the same observation and its label is rendered once.
-- `omitted_from_top` is exactly `spans.length - top_spans.length`. Those spans remain available in
-  `spans`, and some may appear in `phase_spans`. This is not the number of events Lean discarded.
+- `collapsed_spans` counts members of the shown paths that do not get separate top-level entries,
+  including their inner endpoints. `omitted_from_top` counts retained spans in paths outside the
+  top list. Exactly `top_spans.length + collapsed_spans + omitted_from_top == spans.length`.
+  Both counts exclude the independent phase view; neither counts events Lean discarded.
 
 `initial_threshold_ms` remains beside the summary as the starting collection setting. Retained
 spans give a lower bound on recorded events; Beam does not walk excluded subtrees to count them.
-`truncated: true` alone cannot establish that another span exists: clipping a label also sets it.
+`truncated: true` reports projection bounds or incompatible clocks, including clipping raw
+category/tag identifiers. It does not establish an exact count of missing spans.
 
 Labels use Lean's ordinary context-aware message renderer on only the selected headers. They
 describe trace nodes, may contain expanded tactic syntax, and are neither source identifiers nor
 proof verdicts. Each label is limited to 160 Unicode code points, with a final `…` when clipped.
-An empty label is omitted. Clipping sets `truncated`. The raw span array does not duplicate the
-labels.
+An empty label is omitted. The trailing ellipsis marks label clipping; it does not change
+`truncated`. Grouping and the top-list limit also leave that flag unchanged. The raw span array
+does not duplicate the labels.
 
 Rendering can evaluate Lean's deferred descriptions. The count and output-length limits do not
 bound that computation's time or allocation. Cancellation is checked between labels and after the
@@ -465,7 +474,7 @@ Beam omits span ranges.
 Profiling returns at most 1024 spans, limits traversal visits to 8192 (including trace-state entries),
 and limits `MessageData` nesting to 128. Context and formatting wrappers count toward both traversal
 bounds, so the retained span tree can stop below depth 128. `truncated: true` means projection omitted
-trace nodes or clipped labels; it does not identify which bound was reached. It can also report
+trace nodes or clipped raw category/tag identifiers; it does not identify which bound was reached. It can also report
 clock-incompatible nodes as described above. These traversal bounds do not bound Lean's upstream
 trace allocation or selected-label rendering. Profiled results preserve ordinary warnings and errors in `messages`,
 but ordinary Lean trace text is suppressed from both `messages` and `traces`; `traces` is `[]`.

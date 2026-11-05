@@ -121,11 +121,15 @@ theorem demo_add_zero (n : Nat) : n + 0 = n := by
 ```
 
 Inspect `success` and ordinary warnings/errors first, then `profile.elapsed_ms` and `profile.summary`.
-`summary.top_spans` ranks up to ten retained spans by inclusive duration. `summary.phase_spans`
+`summary.top_spans` groups retained single-child paths and ranks up to ten by outer inclusive
+duration. An optional `inner_span` gives the inner endpoint's own index, duration and label;
+the outer duration is not the inner step's cost. `summary.phase_spans`
 shows the largest observed span for each known declaration-phase category, not totals or zeros for
 missing phases. Entries have `span` indices into `profile.spans`, plus category, duration and
 available Lean-rendered labels. An entry in both views is the same observation.
-`summary.omitted_from_top` counts retained spans absent from the top list, not unrecorded work.
+`summary.collapsed_spans` counts members folded into shown top entries; `summary.omitted_from_top`
+counts retained spans in paths outside the top list. Together with the top entry count they equal
+the raw span count; neither counts unrecorded work.
 Use `profile.spans` for the retained tree; do not sum overlapping durations.
 Parse failures have no profile; a Lean failure after elaboration can have one. `elapsed_ms` is wall
 time for speculative re-elaboration in the loaded environment, not the original file, a cold build,
@@ -138,8 +142,9 @@ evaluate deferred Lean descriptions, so these output limits are not a time bound
 waits for an active formatter to settle. Labels are not proof verdicts or inferred source locations.
 `initial_threshold_ms` is Beam's initial 1 ms trace threshold, not a guarantee of the effective
 threshold: submitted Lean code or metaprograms may change profiler options. Span data can therefore
-be partial even when `truncated` is false. `truncated: true` means projection omitted nodes or clipped
-labels, including nodes whose clock is incompatible with the request's wall clock; false does not
+be partial even when `truncated` is false. `truncated: true` means projection hit a bound or excluded
+incompatible-clock nodes; raw category/tag clipping also sets it. Summary label clipping is marked
+only by a final `…`, and grouping does not change this flag. False does not
 prove complete trace coverage.
 
 Each span's `thread`, `category`, and `tag` are raw Lean trace identifiers, not stable source

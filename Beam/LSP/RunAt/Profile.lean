@@ -42,26 +42,61 @@ def maxTopSpans : Nat := 10
 def maxLabelChars : Nat := 160
 private def maxSnippetSourceBytes : Nat := 8192
 
-/-- Summary views refer to retained spans. A phase entry is the largest observed span of its
-category, not a sum of overlapping work or a claim that the entire phase was recorded. -/
+/-- A maximal single-child path in the retained forest. Endpoints keep their own measurements;
+one retained child does not imply equal cost or complete coverage of its parent. -/
+structure Chain where
+  outer : Nat
+  inner : Nat
+  size : Nat
+  deriving BEq
+
+/-- Summary views refer to retained spans. Top entries group paths; a phase entry is the largest
+observed span of its category, not a sum or a claim that the entire phase was recorded. -/
 structure Selection where
-  top : Array Nat := #[]
+  top : Array Chain := #[]
   phases : Array Nat := #[]
+  deriving BEq
 
 def select (spans : Array Span) : Selection := Id.run do
   let ranked := (Array.range spans.size).qsort fun i j =>
     spans[i]!.durationMs > spans[j]!.durationMs ||
       (spans[i]!.durationMs == spans[j]!.durationMs && i < j)
+  let mut children : Array (Array Nat) := Array.replicate spans.size #[]
+  for i in [:spans.size] do
+    if let some parent := spans[i]!.parent? then
+      if parent < i then
+        children := children.modify parent (·.push i)
+  let mut top : Array Chain := #[]
+  for i in ranked do
+    if top.size == maxTopSpans then break
+    if let some parent := spans[i]!.parent? then
+      if parent < i && children[parent]!.size == 1 then continue
+    let mut inner := i
+    let mut size := 1
+    -- Edges go forward, so a path visits at most spans.size nodes.
+    for _ in [:spans.size] do
+      if children[inner]!.size != 1 then break
+      inner := children[inner]![0]!
+      size := size + 1
+    top := top.push { outer := i, inner, size }
   let mut phases := #[]
   for category in #["Kernel", "Elab.def.maxSharing", "addDecl", "Elab.definition.value", "Elab.lint"] do
     if let some index := ranked.find? (fun i => spans[i]!.category == category) then
       phases := phases.push index
-  return { top := ranked.extract 0 maxTopSpans, phases }
+  return { top, phases }
+
+/-- The number of raw spans represented by top paths, including their intermediate nodes. -/
+def Selection.represented (selection : Selection) : Nat :=
+  selection.top.foldl (fun count chain => count + chain.size) 0
 
 /-- Render an entry shared by the two views only once. -/
-def Selection.indices (selection : Selection) : Array Nat :=
-  selection.phases.foldl (fun indices index =>
-    if indices.contains index then indices else indices.push index) selection.top
+def Selection.indices (selection : Selection) : Array Nat := Id.run do
+  let mut indices := #[]
+  for chain in selection.top do
+    indices := indices.push chain.outer
+    if chain.inner != chain.outer then indices := indices.push chain.inner
+  return selection.phases.foldl (fun indices index =>
+    if indices.contains index then indices else indices.push index) indices
 
 /-- Retain structured trace data in memory. An explicitly present empty export path is Lean's
 retention switch; Beam never calls the frontend's profile file writer or HTTP server. -/
@@ -245,15 +280,15 @@ The limits bound this projection and its response, not Lean's upstream trace all
 def collect (startNs stopNs : Nat) (states : Array TraceState) (text : String) : Result :=
   (project startNs stopNs states text).result startNs stopNs
 
-private def renderLabel (header : MessageData) : BaseIO (Option String × Bool) := do
+private def renderLabel (header : MessageData) : BaseIO (Option String) := do
   -- Use Lean's context-aware renderer, as its profiler exporter does. A custom label can perform
   -- IO; keep it away from the protocol streams. Clipping bounds output, not rendering work.
   let (_, rendered) ← IO.FS.withIsolatedStreams do
     let label ← header.toString
     let bounded := (label.take (maxLabelChars + 1)).toString
     if bounded.length > maxLabelChars then
-      return (some ((bounded.take (maxLabelChars - 1)).toString ++ "…"), true)
-    return (if bounded.isEmpty then none else some bounded, false)
+      return some ((bounded.take (maxLabelChars - 1)).toString ++ "…")
+    return if bounded.isEmpty then none else some bounded
   return rendered
 
 /-- Add Lean-rendered headers only for summary entries, after the measured execution ends.
@@ -266,10 +301,9 @@ def collectWithLabels {m : Type → Type} [Monad m] [MonadLiftT BaseIO m]
   let mut result := projection.result startNs stopNs
   for index in (select result.spans).indices do
     checkCancelled
-    let (label?, clipped) ← renderLabel projection.headers[index]!
+    let label? ← renderLabel projection.headers[index]!
     result := { result with
-      spans := result.spans.modify index fun span => { span with label? }
-      truncated := result.truncated || clipped }
+      spans := result.spans.modify index fun span => { span with label? } }
   checkCancelled
   return result
 

@@ -7,7 +7,8 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 ### Added
 
 - Add inclusive summaries and Lean trace labels to CLI/MCP speculative profiling results.
-  Summary entries reference retained spans and keep unobserved phases absent
+  Summary entries group retained single-child paths with each endpoint's own measurements,
+  distinguish collapsed and omitted spans, and keep unobserved phases absent
   ([#416](https://github.com/leanprover/lean-beam/pull/416), @ejgallego).
 - Add opt-in re-elaboration profiling to speculative Lean probes on the CLI, LSP, and MCP surfaces.
   Results include request-local wall time and bounded trace spans; spans may overlap or be partial

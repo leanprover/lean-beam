@@ -22,6 +22,7 @@ private def profileOf (result : Beam.LSP.RunAt.Result) : ScenarioM Beam.LSP.RunA
     | throw <| IO.userError s!"missing profile: {(toJson result).compress}"
   require (profile.elapsedMs > 0) "profile elapsed time must be positive"
   require (profile.spans.size <= Beam.LSP.RunAt.Profile.maxSpans) "profile exceeded span bound"
+  require (!profile.truncated) "small profile unexpectedly hit a projection bound"
   require (profile.spans.all fun span => span.label?.all (·.length <= Beam.LSP.RunAt.Profile.maxLabelChars))
     "summary label exceeded its output bound"
   require (profile.initialThresholdMs == 1) "initial profiling threshold changed"

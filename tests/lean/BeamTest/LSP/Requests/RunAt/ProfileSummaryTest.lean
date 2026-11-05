@@ -17,7 +17,57 @@ private def require (condition : Bool) (message : String) : IO Unit :=
 private def category (i : Nat) : Name :=
   if i < 2 then `Kernel else if i == 2 then `Elab.def.maxSharing else `step
 
+private def span (durationMs : Float) (parent? : Option Nat := none)
+    (category : String := "step") : Span := {
+  thread := 0, category, tag := "", startMs := 0, durationMs, parent? }
+
+private def checkChains : IO Unit := do
+  -- Retained paths group wrapper noise, even when an outer scope includes substantial work
+  -- absent from its sole child. Branch points and the independent phase view stay visible.
+  let spans := #[
+    span 547 none "Elab.definition.value", span 346 (some 0), span 345 (some 1),
+    span 377 none "Elab.def.maxSharing", span 231, span 230 (some 4) "Kernel",
+    span 240, span 80 (some 6), span 50 (some 7), span 1 (some 8), span 100 (some 6)]
+  let selected := select spans
+  require (selected.top.map (·.outer) == #[0, 3, 6, 4, 10, 7]) "chains not ranked by outer duration"
+  require (selected.top.map (·.inner) == #[2, 3, 6, 5, 10, 9]) "chains crossed a retained branch"
+  require (selected.top.map (·.size) == #[3, 1, 1, 2, 1, 3]) "chain member counts are not exact"
+  require (selected.represented == spans.size) "grouping lost retained spans"
+  require (selected.phases == #[5, 3, 0]) "grouping lost independent phase observations"
+  require (!selected.indices.contains 1 && !selected.indices.contains 8)
+    "intermediate wrapper labels would still be rendered"
+  require (selected.indices.size == 9) "shared endpoints/phases rendered repeatedly"
+
+  let mut many : Array Span := #[]
+  for i in [:12] do
+    many := many.push (span (100 - i).toFloat)
+    many := many.push (span 1 (some (2 * i)))
+  let bounded := select many
+  require (bounded.top.size == 10 && bounded.represented == 20)
+    "top budget counts raw spans rather than retained paths"
+  require (many.size - bounded.represented == 4 && bounded.represented - bounded.top.size == 10)
+    "omitted paths and collapsed members were conflated"
+  -- A projection may stop mid-path. Group only retained evidence, without inventing the tail.
+  let partialTree := many.extract 0 23
+  require ((select partialTree).represented == 20 && partialTree.size - (select partialTree).represented == 3)
+    "a partial retained path changed exact omission accounting"
+
+  let calls ← IO.mkRef (Array.replicate 3 0)
+  let header := fun i => MessageData.ofLazy (fun _ => do
+    calls.modify (·.modify i (· + 1))
+    pure <| Dynamic.mk (m!"endpoint {i}")) (fun _ => false)
+  let leaf := MessageData.trace { cls := `inner, startTime := 1.3, stopTime := 1.4 } (header 2) #[]
+  let mid := MessageData.trace { cls := `wrapper, startTime := 1.2, stopTime := 1.5 } (header 1) #[leaf]
+  let root := MessageData.trace { cls := `outer, startTime := 1.1, stopTime := 1.9 } (header 0) #[mid]
+  let state : TraceState := {
+    tid := 0
+    traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := root } }
+  let result ← collectWithLabels (pure () : IO Unit) 1000000000 2000000000 #[state] ""
+  require ((← calls.get) == #[1, 0, 1]) "collapsed intermediate header was evaluated"
+  require (!result.truncated && result.spans.size == 3) "grouping altered the raw projection"
+
 def run : IO Unit := do
+  checkChains
   let calls ← IO.mkRef (Array.replicate 13 0)
   let env ← mkEmptyEnvironment
   let context : MessageDataContext := { env, mctx := {}, lctx := {}, opts := {} }
@@ -43,7 +93,7 @@ def run : IO Unit := do
   let pureResult := collect 1000000000 2000000000 states ""
   require ((← calls.get).all (· == 0)) "pure profile collector evaluated a header"
   let selection := select pureResult.spans
-  require (selection.top == #[12, 11, 10, 9, 8, 7, 6, 5, 4, 3]) "top spans not ranked by inclusive duration"
+  require (selection.top.map (·.outer) == #[12, 11, 10, 9, 8, 7, 6, 5, 4, 3]) "top spans not ranked by inclusive duration"
   require (selection.phases == #[1, 2]) "phase selection did not select the largest observed span"
   require (selection.indices.size == 12) "phase/top selection omitted or duplicated an index"
   require (pureResult.spans.size - selection.top.size == 3) "top omission count changed"
@@ -61,13 +111,14 @@ def run : IO Unit := do
   require (result.spans[1]!.label? == some "LabelScope: step 1") "renderer lost its naming context"
   require (result.spans[7]!.label?.any (fun s => s.length == maxLabelChars && s.endsWith "…"))
     "Unicode label was not visibly clipped to the output bound"
-  require result.truncated "label clipping was not reflected in partial-evidence flag"
+  require (!result.truncated) "label clipping incorrectly marked the raw projection incomplete"
+  require (select result.spans == selection) "label rendering changed the pure selection decision"
 
   let tied : Array Span := #[
     { thread := 0, category := "Kernel", tag := "", startMs := 0, durationMs := 1 },
     { thread := 0, category := "step", tag := "", startMs := 0, durationMs := 1 }]
   let same := select tied
-  require (same.top == #[0, 1] && same.phases == #[0] && same.indices == #[0, 1])
+  require (same.top.map (·.outer) == #[0, 1] && same.phases == #[0] && same.indices == #[0, 1])
     "tie ordering or overlapping view deduplication changed"
   let empty := select #[]
   require (empty.top.isEmpty && empty.phases.isEmpty) "empty evidence invented summary entries"

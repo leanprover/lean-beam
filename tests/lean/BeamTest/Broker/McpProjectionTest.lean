@@ -812,13 +812,22 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   let summary ← requireObjVal "profile" "summary" profile
   let top ← IO.ofExcept <| summary.getObjValAs? (Array Json) "top_spans"
   let phases ← IO.ofExcept <| summary.getObjValAs? (Array Json) "phase_spans"
-  require "summary keeps top spans and only observed phases" (top.size == 2 && phases.size == 1)
+  require "summary groups chains and keeps only observed phases" (top.size == 1 && phases.size == 1)
   requireJsonInt "top span reference" "span" 0 top[0]!
   requireJsonString "summary uses Lean label" "label" "typechecking declarations [demo]" top[0]!
   requireJsonString "summary phase category" "category" "Kernel" phases[0]!
-  require "overlapping summary views refer to the same observation" (top[0]! == phases[0]!)
+  require "overlapping summary views refer to the same observation"
+    ((← requireObjVal "outer" "span" top[0]!) == (← requireObjVal "phase" "span" phases[0]!))
   requireFieldAbsent "empty summary tag is omitted" "tag" top[0]!
-  requireJsonString "nonempty summary tag retained" "tag" "simp" top[1]!
+  let inner ← requireObjVal "grouped top span" "inner_span" top[0]!
+  requireJsonInt "inner endpoint index" "span" 1 inner
+  requireJsonString "nonempty summary tag retained" "tag" "simp" inner
+  requireJsonString "inner endpoint label" "label" "simp" inner
+  require "outer measurement is not attributed to the inner endpoint"
+    ((← requireObjVal "outer" "duration_ms" top[0]!) == toJson (3 : Float) &&
+      (← requireObjVal "inner" "duration_ms" inner) == toJson (2 : Float))
+  requireFieldAbsent "phase is an individual observation" "inner_span" phases[0]!
+  requireJsonInt "one chain member collapsed into its outer entry" "collapsed_spans" 1 summary
   requireJsonInt "all retained spans shown" "omitted_from_top" 0 summary
   let emptyProfile := Beam.Broker.Response.success <| toJson ({
     profile? := some { elapsedMs := 0 }
@@ -831,6 +840,7 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   require "known empty top spans retained" ((← requireObjVal "empty summary" "top_spans" emptySummary) == Json.arr #[])
   require "unobserved phases are not invented" ((← requireObjVal "empty summary" "phase_spans" emptySummary) == Json.arr #[])
   requireJsonInt "empty summary omission count" "omitted_from_top" 0 emptySummary
+  requireJsonInt "empty summary collapsed count" "collapsed_spans" 0 emptySummary
 
   let manySpans : Array Beam.LSP.RunAt.Profile.Span := (Array.range 13).map fun i => {
     thread := 0, category := if i == 0 then "Kernel" else "step", tag := ""
@@ -848,6 +858,7 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   requireJsonInt "largest span first" "span" 12 manyTop[0]!
   requireJsonInt "small phase remains available outside top list" "span" 0 manyPhases[0]!
   requireJsonInt "exact retained omission count excludes phase view" "omitted_from_top" 3 manySummary
+  requireJsonInt "independent spans are not collapsed" "collapsed_spans" 0 manySummary
   requireFieldAbsent "unavailable header is not invented" "label" manyTop[0]!
   requireJsonBool "top selection alone does not imply truncated evidence" "truncated" false manyProfile
 
