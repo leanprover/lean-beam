@@ -9,6 +9,15 @@ import Beam.System
 
 namespace Beam.Installation.LocalTarget
 
+/-- The selector observation that chose one concrete compiler. This is diagnostic context, not
+permission to resolve it again or substitute a different installation. -/
+structure Selection where
+  path : System.FilePath
+  text : String
+  command : System.FilePath
+  /-- An exact Elan name usable by the installer; direct filesystem selections have none. -/
+  installerToolchain? : Option String := none
+
 inductive Failure where
   | unavailable (selector : String)
   | floating (selector : String)
@@ -70,17 +79,19 @@ private def selectorPresent (root marker : System.FilePath) : IO Bool := do
 /-- Resolve regular selector files through local context.
 No candidate executable, elan command, download, or build runs. -/
 def resolve (root : System.FilePath) (home? : Option System.FilePath) :
-    IO (Except Failure (Option System.FilePath)) := do
+    IO (Except Failure (Option Selection)) := do
   try
     let marker := root / "lean-toolchain"
     unless ← selectorPresent root marker do return .ok none
     unless (← marker.metadata).type == .file do
       throw <| IO.userError s!"project selector must resolve to a regular file: {marker}"
     let selector := ((← IO.FS.readFile marker).splitOn "\n").headD "" |>.trimAscii.toString
+    let selected := fun command installerToolchain? =>
+      some { path := marker, text := selector, command, installerToolchain? : Selection }
     if selector.isEmpty then return .error (.unavailable selector)
     let path := System.FilePath.mk selector
     let toolchainRoot := if path.isAbsolute then path else root / path
-    if let some command ← leanIn? toolchainRoot then return .ok (some command)
+    if let some command ← leanIn? toolchainRoot then return .ok (selected command none)
     if path.isAbsolute || ["./", "../", ".\\", "..\\"].any (fun start => selector.startsWith start) then
       return .error (.unavailable selector)
     let (origin, release) ← match selector.splitOn ":" with
@@ -89,7 +100,7 @@ def resolve (root : System.FilePath) (home? : Option System.FilePath) :
       | _ => return .error (.unavailable selector)
     let some home := home? | return .error (.unavailable selector)
     -- Elan gives a locally linked release name precedence over the remote descriptor.
-    if let some command ← linkedLean? home release then return .ok (some command)
+    if let some command ← linkedLean? home release then return .ok (selected command (some release))
     if ["stable", "beta", "nightly", "lean-toolchain"].contains release then
       return .error (.floating selector)
     let origin := if release.startsWith "nightly" && !origin.endsWith "-nightly" then
@@ -97,7 +108,8 @@ def resolve (root : System.FilePath) (home? : Option System.FilePath) :
     let release := if release.toList.head?.any Char.isDigit then "v" ++ release else release
     let some name := directoryName? (origin ++ ":" ++ release)
       | return .error (.unavailable selector)
-    if let some command ← leanIn? (home / "toolchains" / name) then return .ok (some command)
+    if let some command ← leanIn? (home / "toolchains" / name) then
+      return .ok (selected command (some (origin ++ ":" ++ release)))
     return .error (.unavailable selector)
   catch error => return .error (.io error)
 

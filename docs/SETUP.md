@@ -45,6 +45,37 @@ internet access or public network bind is needed for that communication. A writa
 directory alone does not make a daemon reachable across separate network namespaces. See
 [sessions and recovery](#sessions-and-recovery) for private-directory requirements and selectors.
 
+**Use the registered Beam MCP tools when each shell command runs in a separate network namespace.**
+For CLI use, the owner and every attaching command must share a network namespace.
+
+Claude Code's Bash sandbox on Linux and WSL2 is one such environment. A healthy `lean-beam serve`
+owner is then unreachable from later commands: they report `sessionRecoveryRequired`, and `doctor`
+reports that recovery is required.
+
+**Do not run `recover` until you have independently confirmed that the matching owner, daemon,
+and every other producer have stopped.** Connection refusal, `sessionRecoveryRequired`, and a
+returned `error.data.remedy_command` do not establish this. If you cannot confirm shutdown, stop
+and coordinate with the operator.
+
+To move an existing session out of the sandbox, stop its foreground owner and confirm cleanup
+before starting a replacement. In Claude Code, request an unsandboxed Bash retry with the Bash tool
+parameter `dangerouslyDisableSandbox: true`. For repeated direct `lean-beam` calls, merge this into
+your `.claude/settings.local.json`:
+
+```json
+{
+  "sandbox": {
+    "excludedCommands": ["lean-beam *"]
+  }
+}
+```
+
+The pattern matches direct `lean-beam` calls with arguments. Absolute paths and `elan run` need
+matching patterns; a `cd` or redirect keeps the call sandboxed. Excluded commands have host
+filesystem and network access and still follow Claude Code's permission policy. If that policy
+disallows unsandboxed calls, use the registered MCP tools. See
+[Claude Code's sandbox guidance](https://code.claude.com/docs/en/sandboxing#run-commands-outside-the-sandbox-with-excludedcommands).
+
 A CLI request executes Lean in the existing owner's workers, with that owner's launch permissions.
 Putting only the attaching CLI command in a sandbox does not constrain an owner launched outside
 it. A sandbox applied to an agent's shell commands does not automatically sandbox an MCP server
@@ -157,8 +188,9 @@ This section describes toolchain selection for checkout installations. Bundled B
 [containing Lean installation](#use-beam-bundled-with-lean).
 
 The supported Lean release window is 4.34–4.36. The repository defaults to 4.36.0-rc1, a release
-candidate. Projects on Lean 4.28–4.33 must upgrade their Lean
-toolchain or keep a Beam checkout that still supports their release line.
+candidate. For a project outside that window, use a Beam revision that supports its existing
+toolchain. Keep the project's `lean-toolchain` and dependency pins unchanged unless upgrading the
+project itself is the task.
 
 Lean Beam distinguishes exact validated toolchains from compatible release lines. Exact toolchains
 listed in [`validated-lean-toolchains`](../validated-lean-toolchains) receive dedicated Linux
@@ -215,8 +247,10 @@ To retain other project targets too, include their `--toolchain` or `--custom-to
 in that same invocation, including when reinstalling after a local Lean rebuild.
 
 Custom toolchains are not validated release targets. The installer records each selected Lean
-installation and its qualified matching runtime in the published component set. After rebuilding
-Lean or relinking a local toolchain, rerun the installer and restart its Beam clients.
+installation and its qualified matching runtime in the published component set. Before rebuilding
+Lean or relinking a local toolchain, stop affected CLI owners and drop affected MCP workspaces,
+then confirm their cleanup. After the rebuild or relink, rerun the installer and restart clients
+against the new installation.
 See [CUSTOM_TOOLCHAINS.md](CUSTOM_TOOLCHAINS.md) for the full model.
 
 Each install builds its selected targets in fresh temporary workspaces inside its staging

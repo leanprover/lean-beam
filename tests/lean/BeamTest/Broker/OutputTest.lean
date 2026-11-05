@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Broker.Output
+import Beam.Broker.Errors
 
 open Lean Beam.Broker
 
@@ -12,6 +13,32 @@ namespace BeamTest.Broker.OutputTest
 
 private def require (message : String) (condition : Bool) : IO Unit :=
   unless condition do throw <| IO.userError message
+
+private def withOutputPeer
+    (act : Transport.Connection → Transport.Connection → IO α) : IO α := do
+  let listener ← Transport.bindAndListen (.tcp 0)
+  try
+    let client ← Transport.connect (← Transport.listenerEndpoint listener)
+    try
+      let peer ← Transport.accept listener
+      try act peer client
+      finally Transport.abandonConnection peer
+    finally Transport.abandonConnection client
+  finally Transport.closeListener listener
+
+private def receiveMessage (client : Transport.Connection) : IO StreamMessage := do
+  let some bytes ← Transport.recvMsgUntil client ((← IO.monoNanosNow) + 2000000000)
+    | throw <| IO.userError "output peer did not receive a frame"
+  let json ← IO.ofExcept <| (Json.parse bytes).mapError IO.userError
+  IO.ofExcept <| (fromJson? json).mapError IO.userError
+
+private def requirePeerEof (client : Transport.Connection) : IO Unit := do
+  let closed ←
+    try
+      discard <| Transport.recvMsgUntil client ((← IO.monoNanosNow) + 2000000000)
+      pure false
+    catch _ => pure true
+  require "output peer received extra bytes or remained open instead of EOF" closed
 
 private def checkCodec : IO Unit := do
   let chunk : Beam.WorkspaceOutput.Chunk := { source := .stderr, text := "α", omittedBefore := true }
@@ -149,6 +176,31 @@ private def checkExistingDiagnosticAllowance : IO Unit := do
     message := String.ofList (List.replicate (1024 * 1024) 'x') }
   require "delivery narrowed the existing diagnostic frame allowance" (!(← queue.failed))
 
+private def requireCapacityError (error : IO.Error) : IO Unit :=
+  match error with
+  | .userError message =>
+      require "required diagnostic failure changed its original cause"
+        (message == "broker required diagnostic capacity exhausted")
+  | _ => throw <| IO.userError "required diagnostic capacity did not retain its typed IO error"
+
+private def checkAcceptedCapacity : IO Unit := do
+  let text ← Beam.WorkspaceOutput.Buffer.create
+  let queue ← Output.Queue.create text
+  for _ in [:64] do
+    queue.diagnostic none {
+      path := "Example.lean", uri := "file:///Example.lean", range := default, message := "required" }
+  require "exactly 64 required diagnostics exceeded capacity" (!(← queue.failed))
+  let execution ← IO.asTask (prio := Task.Priority.dedicated) <|
+    pure (Response.success Json.null)
+  let frames ← IO.mkRef (#[] : Array StreamMessage)
+  discard <| queue.run execution some none fun message => frames.modify (·.push message)
+  let messages ← frames.get
+  require "accepted diagnostic capacity did not drain completely"
+    ((messages.filter fun message => match message with | .diagnostic .. => true | _ => false).size == 64)
+  require "accepted diagnostic capacity did not end in exactly one terminal"
+    (messages.size == 65 && messages.back?.any fun message => match message with
+      | .response .. => true | _ => false)
+
 private def checkRequiredCapacity : IO Unit := do
   let text ← Beam.WorkspaceOutput.Buffer.create
   let queue ← Output.Queue.create text
@@ -156,6 +208,179 @@ private def checkRequiredCapacity : IO Unit := do
     queue.diagnostic none {
       path := "Example.lean", uri := "file:///Example.lean", range := default, message := "required" }
   require "required diagnostic exhaustion was silent" (← queue.failed)
+  let some original ← queue.failure?
+    | throw <| IO.userError "required diagnostic exhaustion lost its original error"
+  requireCapacityError original
+  let settled ← IO.Promise.new
+  let execution ← IO.asTask (prio := Task.Priority.dedicated) do
+    settled.resolve ()
+    pure (Response.success Json.null)
+  let frames ← IO.mkRef (#[] : Array StreamMessage)
+  let writer ← IO.asTask (prio := Task.Priority.dedicated) <|
+    queue.run execution some none fun message => frames.modify (·.push message)
+  match ← IO.wait writer with
+  | .error error => requireCapacityError error
+  | .ok _ => throw <| IO.userError "exhausted required diagnostics were reported as successful delivery"
+  discard <| IO.ofExcept (← IO.wait execution)
+  require "queue failure prevented producer settlement"
+    (← Beam.waitTaskWithTimeout settled.result? 2000).isSome
+  require "exhausted queue emitted an incomplete successful stream" (← frames.get).isEmpty
+
+private def checkOverflowAfterDeliveredFrame : IO Unit :=
+  withOutputPeer fun peer client => do
+    let text ← Beam.WorkspaceOutput.Buffer.create
+    let queue ← Output.Queue.create text
+    let phase ← IO.mkRef Output.FramePhase.betweenFrames
+    let delivered ← IO.Promise.new
+    let overflow ← IO.Promise.new
+    let releaseWriter ← IO.Promise.new
+    let releaseExecution ← IO.Promise.new
+    let settled ← IO.Promise.new
+    queue.progress none { updates := 1, done := false }
+    let execution ← IO.asTask (prio := Task.Priority.dedicated) do
+      try
+        discard <| IO.wait delivered.result?
+        for _ in [:65] do
+          queue.diagnostic none {
+            path := "Example.lean", uri := "file:///Example.lean", range := default, message := "required" }
+        overflow.resolve ()
+        discard <| IO.wait releaseExecution.result?
+        pure (Response.success Json.null)
+      finally settled.resolve ()
+    let frames ← IO.mkRef (#[] : Array StreamMessage)
+    let writer ← IO.asTask (prio := Task.Priority.dedicated) <|
+      queue.run execution some none fun message => do
+        Output.writeMessage phase message <| Transport.sendMsg peer (toJson message).compress
+        frames.modify (·.push message)
+        match message with
+        | .fileProgress .. =>
+            -- Pause the callback after accepting one whole message; no socket scheduling guess.
+            delivered.resolve ()
+            discard <| IO.wait releaseWriter.result?
+        | _ => pure ()
+    try
+      require "controlled required-diagnostic burst did not finish"
+        (← Beam.waitTaskWithTimeout overflow.result? 2000).isSome
+      require "controlled burst failed to exhaust pending capacity" (← queue.failed)
+      releaseWriter.resolve ()
+      let some result ← Beam.waitTaskWithTimeout writer 2000
+        | throw <| IO.userError "overflow writer remained blocked after release"
+      let failure ← match result with
+        | .error error => pure error
+        | .ok _ => throw <| IO.userError "overflow after a delivered frame became successful delivery"
+      requireCapacityError failure
+      require "delivery failure was mistaken for producer settlement" (!(← IO.hasFinished execution))
+      releaseExecution.resolve ()
+      discard <| IO.ofExcept (← IO.wait execution)
+      let reported ← Output.tryReportFailure phase peer none
+        (responseFailureFor .internalError failure.toString) (pure false)
+      require "completed-frame overflow could not report its terminal failure" reported
+      match ← receiveMessage client with
+      | .fileProgress .. => pure ()
+      | _ => throw <| IO.userError "overflow peer lost its complete first frame"
+      match ← receiveMessage client with
+      | .response _ (.errorResult failure) =>
+          require "overflow peer received the wrong terminal error" (failure.error.code == "internalError")
+      | _ => throw <| IO.userError "overflow peer did not receive one typed terminal failure"
+      Transport.abandonConnection peer
+      requirePeerEof client
+    finally
+      delivered.resolve ()
+      releaseWriter.resolve ()
+      releaseExecution.resolve ()
+      discard <| IO.wait writer
+      discard <| IO.ofExcept (← IO.wait execution)
+    require "controlled producer failed to settle after release"
+      (← Beam.waitTaskWithTimeout settled.result? 2000).isSome
+    let messages ← frames.get
+    require "controlled overflow produced a terminal or extra accepted message"
+      (messages.size == 1 && messages.all fun message => match message with
+        | .fileProgress .. => true | _ => false)
+
+private def checkPartialFrameFailure : IO Unit :=
+  withOutputPeer fun peer client => do
+    let phase ← IO.mkRef Output.FramePhase.betweenFrames
+    let message := StreamMessage.fileProgress none { updates := 1, done := false }
+    let partialSent ← IO.mkRef false
+    let failed ←
+      try
+        Output.writeMessage phase message do
+          let .tcp socket _ := peer
+          -- Emit only half the declared body, then fail the send callback deterministically.
+          let sent ← Std.Internal.UV.TCP.Socket.send socket #["8\n{\"ok".toUTF8]
+          let some result ← IO.wait sent.result?
+            | throw <| IO.userError "partial-frame fixture lost its send result"
+          discard <| IO.ofExcept result
+          partialSent.set true
+          throw <| IO.userError "controlled partial frame failure"
+        pure false
+      catch _ => pure true
+    require "partial-frame fixture did not fail" failed
+    require "partial-frame fixture failed before emitting its bytes" (← partialSent.get)
+    require "failed notification lost its uncertain phase" ((← phase.get) == .sendingNotification)
+    let reported ← Output.tryReportFailure phase peer none
+      (responseFailureFor .internalError "must not append after a partial frame") (pure false)
+    require "partial frame admitted a replacement terminal" (!reported)
+    Transport.abandonConnection peer
+    requirePeerEof client
+
+private def checkPostTerminalCleanupFailure : IO Unit :=
+  withOutputPeer fun peer client => do
+    let phase ← IO.mkRef Output.FramePhase.betweenFrames
+    let message := StreamMessage.response none (Response.success (toJson "finished"))
+    Output.writeMessage phase message <| Transport.sendMsg peer (toJson message).compress
+    let reported : Bool ←
+      try
+        throw <| IO.userError "controlled post-terminal cleanup failure"
+      catch error =>
+        Output.tryReportFailure phase peer none
+          (responseFailureFor .internalError error.toString) (pure false)
+    require "post-terminal cleanup admitted a duplicate response" (!reported)
+    require "complete terminal lost its phase" ((← phase.get) == .terminalComplete)
+    Transport.abandonConnection peer
+    match ← receiveMessage client with
+    | .response _ (.successResult ..) => pure ()
+    | _ => throw <| IO.userError "post-terminal cleanup lost the original successful response"
+    requirePeerEof client
+
+private def checkFailureBeforeOutput : IO Unit :=
+  withOutputPeer fun peer client => do
+    let phase ← IO.mkRef Output.FramePhase.awaitingRequest
+    let reported ← Output.tryReportFailure phase peer (some "early-failure")
+      (responseFailureFor .internalError "before output") (pure false)
+    require "failure before output was not reported" reported
+    match ← receiveMessage client with
+    | .response id? (.errorResult failure) =>
+        require "early failure lost request identity" (id? == some "early-failure")
+        require "early failure lost its typed outcome" (failure.error.code == "internalError")
+    | _ => throw <| IO.userError "early failure did not deliver one terminal response"
+    Transport.abandonConnection peer
+    requirePeerEof client
+
+private def checkRecoveryObservesStop : IO Unit := do
+  let stopped ← IO.mkRef false
+  let started ← IO.Promise.new
+  let phase ← IO.mkRef Output.FramePhase.betweenFrames
+  -- A legal, substantial reply keeps a non-reading peer backpressured on ordinary sockets.
+  -- Completion can still win the stop race; both outcomes must settle without closing the peer.
+  let message := String.join (List.replicate 3840 (String.ofList (List.replicate 4096 'x')))
+  let (writer, beforePeerCleanup) ← withOutputPeer fun peer _ => do
+    let writer ← IO.asTask (prio := Task.Priority.dedicated) do
+      started.resolve ()
+      Output.tryReportFailure phase peer none
+        (responseFailureFor .internalError message) stopped.get
+    discard <| IO.wait started.result?
+    stopped.set true
+    let outcome ← Beam.waitTaskWithTimeout writer 5000
+    pure (writer, outcome)
+  -- Join after closing the owned sockets even on a regression, so a failed assertion does not
+  -- leave the blocked writer behind. The earlier observation must not depend on this cleanup.
+  let some settled ← Beam.waitTaskWithTimeout writer 5000
+    | throw <| IO.userError "recovery writer did not settle after owned socket cleanup"
+  let reported ← IO.ofExcept settled
+  require "recovery send ignored shutdown until its peer was closed" beforePeerCleanup.isSome
+  require "recovery completion lost its frame phase"
+    ((← phase.get) == if reported then .terminalComplete else .sendingTerminal)
 
 def check : IO Unit := do
   checkCodec
@@ -163,6 +388,12 @@ def check : IO Unit := do
   checkBlockedWriter
   checkCancelledOutput
   checkExistingDiagnosticAllowance
+  checkAcceptedCapacity
   checkRequiredCapacity
+  checkOverflowAfterDeliveredFrame
+  checkPartialFrameFailure
+  checkPostTerminalCleanupFailure
+  checkFailureBeforeOutput
+  checkRecoveryObservesStop
 
 end BeamTest.Broker.OutputTest

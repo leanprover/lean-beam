@@ -60,8 +60,9 @@ Nested tactics and whitespace may select an enclosing or neighboring tactic. `go
 
 `todo FILE VERSION` queries the whole file. Supply `SL SC EL EC` to restrict the query to a range.
 For a goal-bearing item with both `run_at_position` and `proof_state`, a probe there selects those
-goals. Diagnostics and code actions can have a position without a proof state. When no position
-selects the item's goals, the field is omitted; edit the source instead.
+goals. Diagnostics and code actions can have a position without a proof state. If Beam omits the
+position for reported goals, none of the positions it checked selected them; another source
+position may still work. Edit the source when you need to expose those goals for a probe.
 
 For sorries, holes, diagnostics, and incomplete proofs, a nonempty `todo` query uses half-open
 range overlap: its end is excluded. An empty range is a point query. It matches items containing
