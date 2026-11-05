@@ -126,13 +126,17 @@ evidence that preparation stopped; see the
   that request; it does not establish completed cleanup or an overall shutdown deadline. Confirm
   settlement with the owner or supervisor before replacement or external builds. If the owner is
   killed, the daemon shuts down cooperatively but the session fence remains.
-- After an abnormal owner or broker exit, the session stays fenced until
-  `lean-beam --root ROOT recover --generation ID`. Recovery quarantines the metadata and never
-  signals its recorded PIDs.
+- After an abnormal owner or broker exit, the session stays fenced. Independently confirm that
+  the matching owner, daemon, and every other producer have stopped before using
+  `lean-beam --root ROOT recover --generation ID` through the original installation and session
+  selection. Otherwise stop and coordinate. Recovery quarantines metadata and never signals
+  recorded PIDs.
 - `lean-beam prune` previews old installed runtimes. Before `prune --apply`, stop old owners and
   confirm cleanup, update clients pinned to old executables, and verify the running server's
-  intended installation with `beam_version` for each MCP server in use. Do not apply pruning while
-  any previewed runtime is still in use; the command removes all previewed old runtimes.
+  intended installation with `beam_version` for each MCP server in use. Preview and apply each
+  compute a fresh plan. Coordinate installers and other maintenance so no other process changes
+  the installed generations or `current` selection before apply completes. If that state changes,
+  preview again and repeat the usage checks. Do not apply while any removal candidate is in use.
 - If a runtime's own manifest is corrupted or replaced, identity reporting fails: stop normal Beam
   work and preserve that installation for inspection. Do not try to repair it with `prune`. After
   stopping active Beam agents and MCP clients, move the invalid runtime out of

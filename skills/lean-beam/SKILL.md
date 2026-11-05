@@ -34,7 +34,7 @@ lean-beam --root ROOT stop
 Error paths below use CLI `error.data`; MCP tool failures use `structuredContent.data` with
 `isError: true`.
 
-Beam reads only the on-disk file and never edits `.lean` sources; you edit files with your own tools.
+Beam reads saved `.lean` source and never edits it.
 
 1. Edit and save the file.
 2. `lean-beam update Foo.lean` and take `result.version` from its JSON.
@@ -140,9 +140,9 @@ confirm cleanup, then recreate them afterward.
 - The probe result should become real source: edit, save, `update`/`sync`.
 - Probes stop clarifying the problem: change approach rather than repeating variants.
 - `save` fails with `saveImportsChanged`: `refresh`, then save.
-- On `syncBarrierIncomplete`, save supplied `save_deps`, then refresh `target_path` in the same
-  CLI session or MCP workspace. Missing plan or failed step: stop; see
-  [recovery](references/workflow-details.md#file-progress-and-readiness).
+- On `syncBarrierIncomplete`, save `save_deps`, then refresh `target_path` in the same CLI session
+  or MCP workspace. Stop on a missing plan or failed step. Inspect diagnostics and readiness after
+  refresh succeeds; see [recovery](references/workflow-details.md#file-progress-and-readiness).
 - After dependency checkpoints, refresh importers you use; a save alone does not reload them.
 - `contentModified`, stale state, or rebuild trouble keeps appearing unexpectedly: inspect
   `open-files` and `doctor`, then stop and report it rather than working around it.

@@ -321,11 +321,14 @@ if update_json="$(lean-beam update "Foo.lean")" &&
   lean-beam definition "Foo.lean" "$version" 10 2
   lean-beam goals before "Foo.lean" "$version" 10 2
   lean-beam run-at "Foo.lean" "$version" 10 2 "exact trivial"
+else
+  printf '%s\n' "$update_json"
 fi
 ```
 
 Replace `Foo.lean` and the coordinates with a saved file and position in your project.
-The guard skips JSON parsing and probes when `update` fails; read its stderr diagnostic first.
+The guard prints `update`'s reply in both cases and skips probes if `update` or version extraction
+fails. Read its stderr diagnostic first.
 
 The `python3` line extracts `result.version` for shell examples. You can also copy that version
 number from the printed `lean-beam update` JSON.
@@ -739,8 +742,9 @@ check the running server's installation identity. Then call `lean_sync` for an e
 Supply the absolute project root in `workspace` and the file path relative to that root,
 as shown below. The project's Lean target must already belong to the installed component set.
 A successful call verifies the configured client, stdio transport, runtime selection, and Lean
-request path together. The returned `document_progress` describes elaboration progress; success
-does not require `done: true`, a file without Lean diagnostics, or readiness to save artifacts.
+request path together. A successful `lean_sync` has completed its diagnostics barrier and sets
+`document_progress.done` to `true`; Lean errors or restrictions on saving can remain. Inspect the
+diagnostics and readiness separately.
 
 For executable and installation identity, run:
 
@@ -897,9 +901,12 @@ contains the new target. If cleanup is pending, failed, or unconfirmed, stop and
 of starting a replacement. Stop does not require the newly selected target to be usable.
 
 For MCP, call `lean_drop_workspace` with the retained workspace descriptor before using another
-target. A standalone MCP installation can select another target in its recorded component set;
+target. Confirm completed cleanup with the original server or supervisor before a request recreates
+the workspace. If cleanup is pending, failed, or unconfirmed, stop and coordinate. A standalone
+MCP installation can select another target in its recorded component set;
 a bundled MCP server requires the new toolchain's server. Restart the MCP server if its installation
-generation changed. Drop invalidates the old workspace's handles.
+generation changed, confirming that the old server's producers have stopped before replacement.
+Drop invalidates the old workspace's handles.
 
 If only the selector changed and restoring it resolves to the original runtime, admission can
 succeed again without recreation. This does not reload other project configuration. Changes to a
@@ -1063,11 +1070,15 @@ Before removing an old runtime, stop its foreground owners through their origina
 and confirm cleanup. Update any client registration pinned to that old runtime and restart clients
 against the intended installation. For each MCP server in use, check its running identity with
 `beam_version`. A restart alone can select the same old absolute executable.
-Leave a runtime in place while any process
-still uses it; pruning does not discover active users. `prune --apply` removes all previewed old
-runtimes, so do not apply it while any previewed runtime remains in use.
+Leave a runtime in place while any process still uses it; pruning does not discover active users.
 
-Apply the displayed runtime cleanup with:
+Preview and apply each acquire the install lock and compute a fresh plan. `--apply` does not reuse
+an earlier preview. Coordinate installers and other maintenance so no other process changes the
+installed generations or `current` selection between preview and completion of apply. If that state changes,
+preview again and repeat the usage checks: a generation that was current during the earlier preview
+may now be a removal candidate.
+
+After those checks, apply runtime cleanup with:
 
 ```bash
 lean-beam prune --apply

@@ -165,13 +165,18 @@ returns `dropped: false` with `reason: "notFound"` when no cache exists. A later
 with the same descriptor recreates the runtime lazily. Workspace removal commits before backend
 cleanup: if cleanup fails, drop reports the error and the cache entry remains evicted. The next
 ordinary request can recreate it without a second drop; unrelated workspace entries remain cached.
+Before allowing a request to recreate the workspace, confirm completed cleanup with the original
+server or its supervisor. If cleanup failed or remains unconfirmed, stop and coordinate before
+replacement or an external build.
 Retain the canonical descriptor when a Lean operation, non-confidential feedback result, or drop
 result echoes it: cache eviction accepts that absolute descriptor even if the project directory or
 its Lean/Lake markers have since disappeared.
 
-After editing a lakefile, manifest, package override, Lean options, plugins, or
-dynamic libraries, drop that workspace or restart the MCP server before the next request. Re-syncing
-inside the old Lean process is not sufficient to reload workspace configuration.
+After editing a lakefile, manifest, package override, Lean options, plugins, or dynamic libraries,
+drop that workspace and confirm cleanup before recreating it. If restarting the MCP server instead,
+confirm that its old producers have stopped before starting a replacement. If cleanup failed or
+remains unconfirmed, stop and coordinate with the original server or supervisor. Re-syncing inside
+the old Lean process is not sufficient to reload workspace configuration.
 Bundled selector changes to another alias of the same installation preserve documents and handles.
 Selecting another installation is rejected; use its matching MCP server for that workspace.
 

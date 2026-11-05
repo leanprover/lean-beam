@@ -91,8 +91,8 @@ Bundled binaries do not install an agent skill. For either distribution, install
 including its `references` directory, in your client's skill directory. To use MCP, also register the installed
 `lean-beam-mcp` command with your client; see [MCP setup](docs/SETUP.md#mcp-setup).
 
-For Codex or Claude, the installer can install the skill and register MCP together. Pi uses the
-CLI skill:
+From the root of a Beam checkout, choose the command for your client. The Codex and Claude commands
+install the skill and register MCP together; Pi uses the CLI skill:
 
 ```bash
 ./scripts/install-beam.sh --codex --codex-mcp
