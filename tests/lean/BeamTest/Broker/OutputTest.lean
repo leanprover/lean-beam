@@ -6,8 +6,10 @@ Author: Emilio J. Gallego Arias
 
 import Beam.Broker.Output
 import Beam.Broker.Errors
+import BeamTest.Broker.ClientUtil
 
 open Lean Beam.Broker
+open BeamTest.Broker.TestUtil (receiveSocketBytes requirePeerEof)
 
 namespace BeamTest.Broker.OutputTest
 
@@ -32,14 +34,6 @@ private def receiveMessage (client : Transport.Connection) : IO StreamMessage :=
   let json ← IO.ofExcept <| (Json.parse bytes).mapError IO.userError
   IO.ofExcept <| (fromJson? json).mapError IO.userError
 
-private def requirePeerEof (client : Transport.Connection) : IO Unit := do
-  let closed ←
-    try
-      discard <| Transport.recvMsgUntil client ((← IO.monoNanosNow) + 2000000000)
-      pure false
-    catch _ => pure true
-  require "output peer received extra bytes or remained open instead of EOF" closed
-
 private def checkCodec : IO Unit := do
   let chunk : Beam.WorkspaceOutput.Chunk := { source := .stderr, text := "α", omittedBefore := true }
   let message := StreamMessage.workspaceOutput (some "output-request") chunk
@@ -58,6 +52,26 @@ private def checkCodec : IO Unit := do
     let envelope := Json.mkObj [("kind", toJson "workspaceOutput"), ("payload", invalid)]
     require "workspace output accepted an invalid payload"
       (match fromJson? (α := StreamMessage) envelope with | .error _ => true | .ok _ => false)
+
+private def checkEofRejectsSuffix : IO Unit := do
+  for buffered in [false, true] do
+    withOutputPeer fun peer client => do
+      let suffix := "8\n{\"ok".toUTF8
+      if buffered then
+        let .tcp _ pending := client
+        pending.set (Transport.Framing.Buffer.ofBytes suffix)
+      else
+        let .tcp socket _ := peer
+        let sent ← Std.Internal.UV.TCP.Socket.send socket #[suffix]
+        let some result ← IO.wait sent.result?
+          | throw <| IO.userError "malformed suffix fixture lost its send result"
+        IO.ofExcept result
+      Transport.abandonConnection peer
+      let rejected ← try
+        requirePeerEof client
+        pure false
+      catch _ => pure true
+      require s!"EOF assertion accepted a malformed suffix (buffered={buffered})" rejected
 
 private def checkCompletedTail : IO Unit := do
   let text ← Beam.WorkspaceOutput.Buffer.create
@@ -250,7 +264,7 @@ private def checkOverflowAfterDeliveredFrame : IO Unit :=
     let frames ← IO.mkRef (#[] : Array StreamMessage)
     let writer ← IO.asTask (prio := Task.Priority.dedicated) <|
       queue.run execution some none fun message => do
-        Output.writeMessage phase message <| Transport.sendMsg peer (toJson message).compress
+        Output.writeMessage phase message (Transport.sendFrame peer)
         frames.modify (·.push message)
         match message with
         | .fileProgress .. =>
@@ -297,6 +311,75 @@ private def checkOverflowAfterDeliveredFrame : IO Unit :=
       (messages.size == 1 && messages.all fun message => match message with
         | .fileProgress .. => true | _ => false)
 
+private def frameAtBytes (bytes : Nat) : StreamMessage := Id.run do
+  let envelope := StreamMessage.response (some "frame-limit") (Response.success (toJson ""))
+  let count := bytes - (toJson envelope).compress.utf8ByteSize
+  let block := String.ofList (List.replicate 4096 'x')
+  let text := String.join (List.replicate (count / 4096) block) ++
+    String.ofList (List.replicate (count % 4096) 'x')
+  return .response (some "frame-limit") (Response.success (toJson text))
+
+private def sendFrameBefore (client : Transport.Connection) (deadline : Nat)
+    (frame : Transport.PreparedFrame) : IO Unit := do
+  match ← Transport.sendFrameInterruptibly client frame (do return (← IO.monoNanosNow) >= deadline) with
+  | .completed () => pure ()
+  | .interrupted => throw <| IO.userError "output fixture send deadline expired"
+
+private def checkFrameLimit : IO Unit := do
+  let message := frameAtBytes Transport.maxFrameBytes
+  let frame := (toJson message).compress
+  require "frame-limit fixture has the wrong byte size" (frame.utf8ByteSize == Transport.maxFrameBytes)
+  withOutputPeer fun peer client => do
+    let phase ← IO.mkRef Output.FramePhase.betweenFrames
+    let deadline := (← IO.monoNanosNow) + 10000000000
+    let receiver ← IO.asTask (prio := Task.Priority.dedicated) <|
+      Transport.recvMsgUntil client deadline
+    try
+      Output.writeMessage phase message (sendFrameBefore peer deadline)
+      let received ← IO.ofExcept (← IO.wait receiver)
+      require "exact-limit frame did not arrive intact" (received == some frame)
+      require "exact-limit terminal did not complete" ((← phase.get) == .terminalComplete)
+    finally
+      Transport.abandonConnection peer
+      discard <| IO.wait receiver
+  -- Once a reader stops, the sender must settle before closing the owned peer frees it.
+  let (sender, beforeCleanup) ← withOutputPeer fun peer client => do
+    let deadline ← IO.monoNanosNow
+    require "stopped-reader fixture unexpectedly received bytes"
+      (← Transport.recvMsgUntil client deadline).isNone
+    let phase ← IO.mkRef Output.FramePhase.betweenFrames
+    let sender ← IO.asTask (prio := Task.Priority.dedicated) <|
+      Output.writeMessage phase message (sendFrameBefore peer deadline)
+    let observed ← Beam.waitTaskWithTimeout sender 2000
+    pure (sender, observed)
+  -- Join after owned socket cleanup even on a regression; send completion can win the stop race.
+  let some _ ← Beam.waitTaskWithTimeout sender 5000
+    | throw <| IO.userError "frame sender did not settle after socket cleanup"
+  require "frame sender needed peer cleanup after its reader stopped" beforeCleanup.isSome
+  withOutputPeer fun peer client => do
+    let phase ← IO.mkRef Output.FramePhase.betweenFrames
+    let called ← IO.mkRef false
+    let message := frameAtBytes (Transport.maxFrameBytes + 1)
+    let failure? ← try
+      Output.writeMessage phase message fun frame => do
+        called.set true
+        Transport.sendFrame peer frame
+      pure none
+    catch error => pure (some error)
+    let some failure := failure? | throw <| IO.userError "oversized terminal was accepted"
+    require "oversized terminal entered the send callback" (!(← called.get))
+    require "known-unsent terminal lost its safe phase" ((← phase.get) == .betweenFrames)
+    let reported ← Output.tryReportFailure phase peer (some "frame-limit")
+      (responseFailureFor .internalError failure.toString) (pure false)
+    require "oversized terminal could not report its error" reported
+    match ← receiveMessage client with
+    | .response id? (.errorResult failure) =>
+        require "frame-limit error lost request identity" (id? == some "frame-limit")
+        require "frame-limit error lost its typed outcome" (failure.error.code == "internalError")
+    | _ => throw <| IO.userError "oversized terminal did not deliver a typed failure"
+    Transport.abandonConnection peer
+    requirePeerEof client
+
 private def checkPartialFrameFailure : IO Unit :=
   withOutputPeer fun peer client => do
     let phase ← IO.mkRef Output.FramePhase.betweenFrames
@@ -304,7 +387,7 @@ private def checkPartialFrameFailure : IO Unit :=
     let partialSent ← IO.mkRef false
     let failed ←
       try
-        Output.writeMessage phase message do
+        Output.writeMessage phase message fun _ => do
           let .tcp socket _ := peer
           -- Emit only half the declared body, then fail the send callback deterministically.
           let sent ← Std.Internal.UV.TCP.Socket.send socket #["8\n{\"ok".toUTF8]
@@ -322,13 +405,22 @@ private def checkPartialFrameFailure : IO Unit :=
       (responseFailureFor .internalError "must not append after a partial frame") (pure false)
     require "partial frame admitted a replacement terminal" (!reported)
     Transport.abandonConnection peer
+    -- Consume the deliberately incomplete frame; strict EOF must reject any suffix after it.
+    let expected := "8\n{\"ok".toUTF8
+    let mut received := ByteArray.empty
+    while received.size < expected.size do
+      let some bytes ← receiveSocketBytes client (expected.size - received.size)
+        | throw <| IO.userError "partial-frame fixture lost its expected prefix"
+      require "partial-frame fixture received an empty chunk" (!bytes.isEmpty)
+      received := received ++ bytes
+    require "partial-frame fixture changed its expected prefix" (received == expected)
     requirePeerEof client
 
 private def checkPostTerminalCleanupFailure : IO Unit :=
   withOutputPeer fun peer client => do
     let phase ← IO.mkRef Output.FramePhase.betweenFrames
     let message := StreamMessage.response none (Response.success (toJson "finished"))
-    Output.writeMessage phase message <| Transport.sendMsg peer (toJson message).compress
+    Output.writeMessage phase message (Transport.sendFrame peer)
     let reported : Bool ←
       try
         throw <| IO.userError "controlled post-terminal cleanup failure"
@@ -384,6 +476,7 @@ private def checkRecoveryObservesStop : IO Unit := do
 
 def check : IO Unit := do
   checkCodec
+  checkEofRejectsSuffix
   checkCompletedTail
   checkBlockedWriter
   checkCancelledOutput
@@ -391,6 +484,7 @@ def check : IO Unit := do
   checkAcceptedCapacity
   checkRequiredCapacity
   checkOverflowAfterDeliveredFrame
+  checkFrameLimit
   checkPartialFrameFailure
   checkPostTerminalCleanupFailure
   checkFailureBeforeOutput

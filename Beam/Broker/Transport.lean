@@ -217,23 +217,28 @@ def closeListener (listener : Listener) : IO Unit := do
       catch _ =>
         pure ()
 
-private def framedMessage (msg : String) : IO (Array ByteArray) := do
+/-- Encoded, size-checked bytes. Preparation cannot fail after a writer starts sending. -/
+structure PreparedFrame where
+  private mk ::
+  private parts : Array ByteArray
+
+def prepareFrame (msg : String) : IO PreparedFrame := do
   let bytes := msg.toUTF8
   if bytes.size > maxFrameBytes then
     throw <| IO.userError s!"Beam daemon frame exceeds {maxFrameBytes} bytes"
   let header := s!"{bytes.size}\n".toUTF8
-  pure #[header, bytes]
+  pure ⟨#[header, bytes]⟩
 
-private def sendMsgTcp (client : TCP.Socket) (msg : String) : IO Unit := do
-  let promise ← TCP.Socket.send client (← framedMessage msg)
+private def sendFrameTcp (client : TCP.Socket) (frame : PreparedFrame) : IO Unit := do
+  let promise ← TCP.Socket.send client frame.parts
   waitTcpPromise promise "Beam daemon connection closed before TCP send completed"
 
-private def sendMsgTcpUsing
+private def sendFrameTcpUsing
     {stop : Type}
     (client : TCP.Socket)
-    (msg : String)
+    (frame : PreparedFrame)
     (shouldStop : IO (Option stop)) : IO (Except stop Unit) := do
-  let promise ← TCP.Socket.send client (← framedMessage msg)
+  let promise ← TCP.Socket.send client frame.parts
   let result ← waitTcpPromiseWithStop promise shouldStop
     "Beam daemon connection closed before TCP send completed"
   match result with
@@ -369,9 +374,12 @@ private def recvMsgTcpInterruptiblyUntil
   | .error WaitStop.timedOut => pure .timedOut
   | .error WaitStop.interrupted => pure .interrupted
 
-def sendMsg (conn : Connection) (msg : String) : IO Unit := do
+def sendFrame (conn : Connection) (frame : PreparedFrame) : IO Unit := do
   match conn with
-  | .tcp client _ => sendMsgTcp client msg
+  | .tcp client _ => sendFrameTcp client frame
+
+def sendMsg (conn : Connection) (msg : String) : IO Unit := do
+  sendFrame conn (← prepareFrame msg)
 
 def sendMsgUntil
     (conn : Connection)
@@ -379,7 +387,7 @@ def sendMsgUntil
     (deadlineNanos : Nat) : IO (DeadlineResult Unit) := do
   match conn with
   | .tcp client _ =>
-      let result ← sendMsgTcpUsing client msg do
+      let result ← sendFrameTcpUsing client (← prepareFrame msg) do
         if (← IO.monoNanosNow) >= deadlineNanos then
           pure <| some ()
         else
@@ -388,13 +396,13 @@ def sendMsgUntil
       | .ok () => pure <| .completed ()
       | .error () => pure .timedOut
 
-def sendMsgInterruptibly
+def sendFrameInterruptibly
     (conn : Connection)
-    (msg : String)
+    (frame : PreparedFrame)
     (interrupted : IO Bool) : IO (InterruptResult Unit) := do
   match conn with
   | .tcp client _ =>
-      let result ← sendMsgTcpUsing client msg do
+      let result ← sendFrameTcpUsing client frame do
         if ← interrupted then
           pure <| some ()
         else
@@ -402,6 +410,12 @@ def sendMsgInterruptibly
       match result with
       | .ok () => pure <| .completed ()
       | .error () => pure .interrupted
+
+def sendMsgInterruptibly
+    (conn : Connection)
+    (msg : String)
+    (interrupted : IO Bool) : IO (InterruptResult Unit) := do
+  sendFrameInterruptibly conn (← prepareFrame msg) interrupted
 
 def recvMsg (conn : Connection) : IO String := do
   match conn with
