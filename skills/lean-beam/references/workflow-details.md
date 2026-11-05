@@ -120,16 +120,33 @@ theorem demo_add_zero (n : Nat) : n + 0 = n := by
   rfl
 ```
 
-Inspect `success` and ordinary warnings/errors first, then `profile.elapsed_ms` and `profile.spans`.
+Inspect `success` and ordinary warnings/errors first, then `profile.elapsed_ms` and `profile.summary`.
+`summary.top_spans` groups retained single-child paths and ranks up to ten by outer inclusive
+duration. Optional `inner_span` gives the deepest member retaining at least half the positive outer
+duration, with its own index, duration and label; it is omitted if no descendant qualifies. This
+display heuristic does not identify a cause or guarantee a tactic node. The entire path remains
+grouped, including any smaller tail; the outer duration is not the inner step's cost. `summary.phase_spans`
+shows the largest observed span for each known declaration-phase category, not totals or zeros for
+missing phases. Entries have `span` indices into `profile.spans`, plus category, duration and
+available Lean-rendered labels. An entry in both views is the same observation.
+`summary.collapsed_spans` counts members folded into shown top entries; `summary.omitted_from_top`
+counts retained spans in paths outside the top list. Together with the top entry count they equal
+the raw span count; neither counts unrecorded work.
+Use `profile.spans` for the retained tree; do not sum overlapping durations.
 Parse failures have no profile; a Lean failure after elaboration can have one. `elapsed_ms` is wall
 time for speculative re-elaboration in the loaded environment, not the original file, a cold build,
 or native CPU time. It starts after parsing and ends after synchronous execution and the elaboration
 tasks still registered in the final Lean snapshot state settle. Tasks whose registrations a custom
 tactic discarded by backtracking, and unregistered tasks, are not covered and may still be running.
+Summary labels render after the elapsed interval. Lean renders only selected headers; labels may show expanded
+syntax rather than a source tactic and are clipped to 160 characters with `…`. Rendering can
+evaluate deferred Lean descriptions, so these output limits are not a time bound. Cancellation
+waits for an active formatter to settle. Labels are not proof verdicts or inferred source locations.
 `initial_threshold_ms` is Beam's initial 1 ms trace threshold, not a guarantee of the effective
 threshold: submitted Lean code or metaprograms may change profiler options. Span data can therefore
-be partial even when `truncated` is false. `truncated: true` means projection omitted nodes or clipped
-labels, including nodes whose clock is incompatible with the request's wall clock; false does not
+be partial even when `truncated` is false. `truncated: true` means projection hit a bound or excluded
+incompatible-clock nodes; raw category/tag clipping also sets it. Summary label clipping is marked
+only by a final `…`, and grouping does not change this flag. False does not
 prove complete trace coverage.
 
 Each span's `thread`, `category`, and `tag` are raw Lean trace identifiers, not stable source

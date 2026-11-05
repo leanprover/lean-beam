@@ -406,13 +406,54 @@ and inspect elaboration costs. To include kernel checking and expression sharing
 declaration at its first doc comment or attribute, or at the declaration keyword if neither is present.
 Tactic-only probes do not measure those later declaration phases. The result includes
 `profile` when execution reaches elaboration, even if the Lean text fails; parse failures and
-unrequested profiling omit it. The object contains `elapsed_ms`, `initial_threshold_ms`, `spans`,
-and `truncated`. Known-empty `spans` is `[]`; that does not mean the execution took no time.
+unrequested profiling omit it. The object contains `elapsed_ms`, `initial_threshold_ms`, `summary`,
+`spans`, and `truncated`. Known-empty `spans` is `[]`; that does not mean the execution took no time.
+
+Start with `elapsed_ms` and `summary`:
+
+- `top_spans` groups maximal paths of single-child edges in the retained tree into entries, then
+  lists up to ten entries by the outer span's **inclusive** duration; ties use its original index.
+  A grouped entry keeps the outer span's fields. Optional `inner_span` shows the deepest member
+  of that path whose duration is at least half the positive outer duration, with that member's
+  own index, category, duration, and optional tag/label. It is omitted when no descendant qualifies.
+  This fixed display heuristic avoids presenting a tiny leaf as the interesting inner step; it
+  does not guarantee a tactic node or a stable identity across runs. Grouping still covers the
+  entire structural path, including descendants beyond the displayed member. One retained child
+  does not establish complete coverage of its parent. Grouping neither subtracts costs nor
+  attributes the outer duration to the inner label. All members remain accessible through the
+  raw parent links.
+- `phase_spans` lists the largest retained span in each observed category among `Kernel`,
+  `Elab.def.maxSharing`, `addDecl`, `Elab.definition.value` and `Elab.lint`, in that order. These are
+  individual observations, not phase totals. Missing categories are omitted, never reported as zero.
+- Each entry has `span` (its zero-based index in `profile.spans`), `category`, and `duration_ms`.
+  Nonempty `tag` and available `label` are included. The same index can appear in both views;
+  it is the same observation and its label is rendered once.
+- `collapsed_spans` counts members of the shown paths that do not get separate top-level entries,
+  including tails beyond the displayed inner members. `omitted_from_top` counts retained spans in paths outside the
+  top list. Exactly `top_spans.length + collapsed_spans + omitted_from_top == spans.length`.
+  Both counts exclude the independent phase view; neither counts events Lean discarded.
+
+`initial_threshold_ms` remains beside the summary as the starting collection setting. Retained
+spans give a lower bound on recorded events; Beam does not walk excluded subtrees to count them.
+`truncated: true` reports projection bounds or incompatible clocks, including clipping raw
+category/tag identifiers. It does not establish an exact count of missing spans.
+
+Labels use Lean's ordinary context-aware message renderer on only the selected headers. They
+describe trace nodes, may contain expanded tactic syntax, and are neither source identifiers nor
+proof verdicts. Each label is limited to 160 Unicode code points, with a final `…` when clipped.
+An empty label is omitted. The trailing ellipsis marks label clipping; it does not change
+`truncated`. Grouping and the top-list limit also leave that flag unchanged. The raw span array
+does not duplicate the labels.
+
+Rendering can evaluate Lean's deferred descriptions. The count and output-length limits do not
+bound that computation's time or allocation. Cancellation is checked between labels and after the
+last formatter settles; Beam does not abandon a formatter to return early. Formatter stdout and
+stderr are captured and discarded. No message contexts are retained in the response or a handle.
 
 `elapsed_ms` is wall time for speculative re-elaboration in the already-loaded environment. Its
 interval starts after parsing and ends after the synchronous execution and the elaboration tasks
 still registered in its final Lean snapshot state settle; it excludes
-snapshot selection, import loading, response projection, and transport. It is not the original
+snapshot selection, import loading, summary-label rendering, response projection, and transport. It is not the original
 file's elaboration time, cold-build time, or native CPU time. Custom tactics can spawn tasks and then
 discard their registrations by backtracking. Those tasks, and tasks never registered with Lean's
 snapshot system, are outside this interval and may still be running when the result arrives.
@@ -437,9 +478,9 @@ Beam omits span ranges.
 Profiling returns at most 1024 spans, limits traversal visits to 8192 (including trace-state entries),
 and limits `MessageData` nesting to 128. Context and formatting wrappers count toward both traversal
 bounds, so the retained span tree can stop below depth 128. `truncated: true` means projection omitted
-trace nodes or clipped labels; it does not identify which bound was reached. It can also report
-clock-incompatible nodes as described above. These bounds limit response construction, not Lean's
-upstream trace allocation. Profiled results preserve ordinary warnings and errors in `messages`,
+trace nodes or clipped raw category/tag identifiers; it does not identify which bound was reached. It can also report
+clock-incompatible nodes as described above. These traversal bounds do not bound Lean's upstream
+trace allocation or selected-label rendering. Profiled results preserve ordinary warnings and errors in `messages`,
 but ordinary Lean trace text is suppressed from both `messages` and `traces`; `traces` is `[]`.
 Nested and parallel span intervals can overlap, so do not sum them or treat them as exclusive costs.
 Profiling adds overhead. A continuation profile measures only that continuation call, not earlier

@@ -441,8 +441,9 @@ def runCommandText (snap : Snapshots.Snapshot) (text : String) (profile : Bool :
             throw ex
           let profile? ← if profile then do
               let stopNs ← IO.monoNanosNow
-              pure <| some <| Profile.collect startNs stopNs
-                (#[state.traceState] ++ profileStates) text
+              pure <| some (← Profile.collectWithLabels
+                (Elab.Command.liftCoreM Core.checkInterrupted) startNs stopNs
+                (#[state.traceState] ++ profileStates) text)
             else pure none
           let state := if profile then { state with
               scopes := Profile.restoreScopes snap.cmdState.scopes state.scopes
@@ -616,7 +617,8 @@ def runTacticText (snapshot : ProofSnapshot) (initialProofState : ProofState) (t
         throw ex
     let (profile?, proofSnapshot') ← if profile then do
         let stopNs ← IO.monoNanosNow
-        let result := Profile.collect startNs stopNs outcome.profileStates text
+        let result ← Profile.collectWithLabels checkRequestCancelled
+          startNs stopNs outcome.profileStates text
         -- Restore the visible source, option, trace, and task context. Lean may retain profiling
         -- options in deferred declaration contexts inside the environment; handle continuations
         -- therefore remain profiled. The profile itself keeps only bounded value data.

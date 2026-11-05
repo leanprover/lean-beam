@@ -774,10 +774,13 @@ private def checkCrossSurfaceResultParity : IO Unit := do
     profile? := some {
       elapsedMs := 3.5
       spans := #[
-        { thread := 7, category := "elaborate", tag := "root", startMs := 0, durationMs := 3 },
+        { thread := 7, category := "Kernel", tag := "", startMs := 0, durationMs := 3,
+          label? := some "typechecking declarations [demo]" },
         { parent? := some 0, thread := 7, category := "tactic", tag := "simp",
-          startMs := 1, durationMs := 2, range? := some {
-            start := { line := 0, character := 0 }, «end» := { line := 0, character := 4 } } }
+          startMs := 1, durationMs := 2, label? := some "simp", range? := some {
+            start := { line := 0, character := 0 }, «end» := { line := 0, character := 4 } } },
+        { parent? := some 1, thread := 7, category := "Meta.synthInstance", tag := "",
+          startMs := 1.5, durationMs := 0.1, label? := some "CharZero ℚ" }
       ]
     }
   }
@@ -794,17 +797,40 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   requireFieldAbsent "public profile" "thresholdMs" profile
   requireFieldAbsent "public profile" "initialThresholdMs" profile
   requireFieldAbsent "no legacy threshold alias" "threshold_ms" profile
+  requireFieldAbsent "no profile version metadata" "schema_version" profile
+  requireFieldAbsent "no profile boundary metadata" "boundary" profile
   require "elapsed wall clock preserved" ((← requireObjVal "profile" "elapsed_ms" profile) == toJson (3.5 : Float))
   requireJsonInt "initial profiling threshold" "initial_threshold_ms" 1 profile
   requireJsonBool "profile boundedness" "truncated" false profile
   let spans ← IO.ofExcept <| profile.getObjValAs? (Array Json) "spans"
-  require "profile spans preserved" (spans.size == 2)
+  require "profile spans preserved including the small tail" (spans.size == 3)
   requireFieldAbsent "root span" "parent" spans[0]!
   requireFieldAbsent "root span" "range" spans[0]!
   requireFieldAbsent "public span" "startMs" spans[1]!
   requireFieldAbsent "public span" "durationMs" spans[1]!
   requireJsonInt "child span" "parent" 0 spans[1]!
   require "span duration preserved" ((← requireObjVal "span" "duration_ms" spans[1]!) == toJson (2 : Float))
+  requireFieldAbsent "raw span does not duplicate the summary label" "label" spans[0]!
+  let summary ← requireObjVal "profile" "summary" profile
+  let top ← IO.ofExcept <| summary.getObjValAs? (Array Json) "top_spans"
+  let phases ← IO.ofExcept <| summary.getObjValAs? (Array Json) "phase_spans"
+  require "summary groups chains and keeps only observed phases" (top.size == 1 && phases.size == 1)
+  requireJsonInt "top span reference" "span" 0 top[0]!
+  requireJsonString "summary uses Lean label" "label" "typechecking declarations [demo]" top[0]!
+  requireJsonString "summary phase category" "category" "Kernel" phases[0]!
+  require "overlapping summary views refer to the same observation"
+    ((← requireObjVal "outer" "span" top[0]!) == (← requireObjVal "phase" "span" phases[0]!))
+  requireFieldAbsent "empty summary tag is omitted" "tag" top[0]!
+  let inner ← requireObjVal "grouped top span" "inner_span" top[0]!
+  requireJsonInt "substantial inner member, not the tiny leaf" "span" 1 inner
+  requireJsonString "nonempty summary tag retained" "tag" "simp" inner
+  requireJsonString "inner endpoint label" "label" "simp" inner
+  require "outer measurement is not attributed to the inner endpoint"
+    ((← requireObjVal "outer" "duration_ms" top[0]!) == toJson (3 : Float) &&
+      (← requireObjVal "inner" "duration_ms" inner) == toJson (2 : Float))
+  requireFieldAbsent "phase is an individual observation" "inner_span" phases[0]!
+  requireJsonInt "all descendants collapsed, including the undisplayed tail" "collapsed_spans" 2 summary
+  requireJsonInt "all retained spans shown" "omitted_from_top" 0 summary
   let emptyProfile := Beam.Broker.Response.success <| toJson ({
     profile? := some { elapsedMs := 0 }
   } : Beam.LSP.RunAt.Result)
@@ -812,6 +838,46 @@ private def checkCrossSurfaceResultParity : IO Unit := do
     Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) emptyProfile
   let emptyEvidence ← requireObjVal "empty profile" "profile" projectedEmpty
   require "known empty spans retained" ((← requireObjVal "empty profile" "spans" emptyEvidence) == Json.arr #[])
+  let emptySummary ← requireObjVal "empty profile" "summary" emptyEvidence
+  require "known empty top spans retained" ((← requireObjVal "empty summary" "top_spans" emptySummary) == Json.arr #[])
+  require "unobserved phases are not invented" ((← requireObjVal "empty summary" "phase_spans" emptySummary) == Json.arr #[])
+  requireJsonInt "empty summary omission count" "omitted_from_top" 0 emptySummary
+  requireJsonInt "empty summary collapsed count" "collapsed_spans" 0 emptySummary
+
+  let smallChild := Beam.Broker.Response.success <| toJson ({
+    profile? := some { elapsedMs := 10, spans := #[
+      { thread := 0, category := "outer", tag := "", startMs := 0, durationMs := 10 },
+      { thread := 0, parent? := some 0, category := "small", tag := "", startMs := 1, durationMs := 1 }] }
+  } : Beam.LSP.RunAt.Result)
+  let smallPublic ← expectToolOk "chain with no substantial descendant" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) smallChild
+  let smallProfile ← requireObjVal "small child profile" "profile" smallPublic
+  let smallSummary ← requireObjVal "small child profile" "summary" smallProfile
+  let smallTop ← IO.ofExcept <| smallSummary.getObjValAs? (Array Json) "top_spans"
+  require "chain stays grouped" (smallTop.size == 1)
+  requireFieldAbsent "small leaf is not presented as the inner step" "inner_span" smallTop[0]!
+  requireJsonInt "undisplayed child still counted" "collapsed_spans" 1 smallSummary
+  requireJsonInt "no retained member omitted from the group" "omitted_from_top" 0 smallSummary
+
+  let manySpans : Array Beam.LSP.RunAt.Profile.Span := (Array.range 13).map fun i => {
+    thread := 0, category := if i == 0 then "Kernel" else "step", tag := ""
+    startMs := 0, durationMs := (i + 1).toFloat }
+  let manyResponse := Beam.Broker.Response.success <| toJson ({
+    profile? := some { elapsedMs := 20, spans := manySpans }
+  } : Beam.LSP.RunAt.Result)
+  let manyPublic ← expectToolOk "more retained spans than top entries" <|
+    Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) manyResponse
+  let manyProfile ← requireObjVal "many spans" "profile" manyPublic
+  let manySummary ← requireObjVal "many spans" "summary" manyProfile
+  let manyTop ← IO.ofExcept <| manySummary.getObjValAs? (Array Json) "top_spans"
+  let manyPhases ← IO.ofExcept <| manySummary.getObjValAs? (Array Json) "phase_spans"
+  require "top list bounded independently of phase list" (manyTop.size == 10 && manyPhases.size == 1)
+  requireJsonInt "largest span first" "span" 12 manyTop[0]!
+  requireJsonInt "small phase remains available outside top list" "span" 0 manyPhases[0]!
+  requireJsonInt "exact retained omission count excludes phase view" "omitted_from_top" 3 manySummary
+  requireJsonInt "independent spans are not collapsed" "collapsed_spans" 0 manySummary
+  requireFieldAbsent "unavailable header is not invented" "label" manyTop[0]!
+  requireJsonBool "top selection alone does not imply truncated evidence" "truncated" false manyProfile
 
   let emptySync := Beam.Broker.Response.success <| toJson ({
     path := "Clean.lean",
