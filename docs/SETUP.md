@@ -784,7 +784,9 @@ To evict one cached runtime after project-configuration changes, call `lean_drop
 ```
 
 Drop invalidates proof handles for that runtime. It does not select context for later calls; a later
-request with the same descriptor recreates the runtime. Retain the canonical `workspace` descriptor
+request with the same descriptor recreates the runtime. Before that request, confirm cleanup with
+the original server or supervisor; if cleanup failed or remains unconfirmed, stop and coordinate.
+Retain the canonical `workspace` descriptor
 when a Lean operation, non-confidential feedback result, or drop result echoes it; it can still evict
 cached state after the project path or its Lean/Lake markers become unavailable. `beam_version` and
 `beam_stats` are process-wide and accept no descriptor. Exact tool and version semantics live in the
@@ -1071,6 +1073,7 @@ and confirm cleanup. Update any client registration pinned to that old runtime a
 against the intended installation. For each MCP server in use, check its running identity with
 `beam_version`. A restart alone can select the same old absolute executable.
 Leave a runtime in place while any process still uses it; pruning does not discover active users.
+Coordinate clients so no process starts using a removal candidate before apply completes.
 
 Preview and apply each acquire the install lock and compute a fresh plan. `--apply` does not reuse
 an earlier preview. Coordinate installers and other maintenance so no other process changes the

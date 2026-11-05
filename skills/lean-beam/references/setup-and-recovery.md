@@ -136,7 +136,8 @@ evidence that preparation stopped; see the
   intended installation with `beam_version` for each MCP server in use. Preview and apply each
   compute a fresh plan. Coordinate installers and other maintenance so no other process changes
   the installed generations or `current` selection before apply completes. If that state changes,
-  preview again and repeat the usage checks. Do not apply while any removal candidate is in use.
+  preview again and repeat the usage checks. Do not apply while any removal candidate is in use,
+  and coordinate clients so none starts using a candidate before apply completes.
 - If a runtime's own manifest is corrupted or replaced, identity reporting fails: stop normal Beam
   work and preserve that installation for inspection. Do not try to repair it with `prune`. After
   stopping active Beam agents and MCP clients, move the invalid runtime out of
