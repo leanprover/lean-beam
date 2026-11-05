@@ -12,7 +12,7 @@ the broker both produce such messages, so it lives here with no dependencies. A 
 session is live leaves Beam's sync and save history describing artifacts that changed under it.
 -/
 def externalLakeBuildProcedure : String :=
-  "To build with Lake instead, first stop the CLI owner or drop the MCP workspace and confirm " ++
+  "If you run lake build instead, first stop the CLI owner or drop the MCP workspace and confirm " ++
     "cleanup; rebuild only after cleanup completes, then start a fresh session or workspace."
 
 end Beam
