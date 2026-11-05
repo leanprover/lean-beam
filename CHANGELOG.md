@@ -12,6 +12,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- `todo` can now supply a usable `run_at_position` for goals left after completed nested proofs
+  and aggregate tactic runs by checking a small set of adjacent positions. Item ranges stay
+  unchanged, and a missing position no longer claims that every source position was checked
+  ([#417](https://github.com/leanprover/lean-beam/pull/417), @ejgallego).
 - Broker results exceeding the 16 MiB frame limit now return `internalError` with
   `operation_may_have_completed: true` when the error reply fits. The shared Lean session
   remains usable after the rejected result, and recovery replies preserve request correlation
