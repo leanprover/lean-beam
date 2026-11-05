@@ -81,8 +81,9 @@ structure TodoItem where
   kind : TodoKind
   range : Lean.Lsp.Range
   /--
-  Where `runAt` starts from this item's `proofState`, when it has one. It is absent when no source
-  position selects that state, for example the goals left after a branch bullet.
+  Where `runAt` starts from this item's `proofState`, when both are supplied. The position may be
+  adjacent to the item's range. Absence means no checked candidate selected the state, not that
+  every source position was checked.
   -/
   runAtPosition? : Option Lean.Lsp.Position := none
   message? : Option String := none
@@ -102,8 +103,8 @@ structure TodoResult where
 /--
 An item with the goals it accounts for, kept together until the response is assembled. `covers` are
 the goals and holes whose Lean diagnostics the item restates. `tacticGoals?` are the goals that
-`runAt` must start from at the item's position, for an item whose proof state tactics left; the item
-keeps its position only when `runAt` there selects exactly these goals.
+`runAt` must start from at the item's action position, for an item whose proof state tactics left;
+the item gets a position only when `runAt` there selects exactly these goals.
 -/
 private structure TodoEntry where
   item : TodoItem
@@ -893,24 +894,52 @@ private def runAtTacticGoalsAt (position : Lsp.Position) :
         RequestM.mapRequestTaskCostly basisTask fun basis? => return basis?.map basisGoals
 
 /--
-An item whose proof state tactics left keeps its `runAtPosition?` only when `runAt` there starts from
-the same goals. Goals that no source position selects, such as those left after a branch bullet,
-keep their proof state without a position. A `sorry` or hole term needs no check: its goal comes
-from the placeholder lookup `runAt` uses.
+Preserve the original candidate first, then try the range end and the following line's start.
+These few adjacent positions can select the enclosing state after a completed nested tactic.
+They do not extend the item's range, and this is not a search over every possible source position.
 -/
-private partial def keepSelectableRunAtPositions (entries : List TodoEntry) (acc : Array TodoItem) :
+private def runAtPositionCandidates (text : FileMap) (item : TodoItem)
+    (original : Lsp.Position) : List Lsp.Position := Id.run do
+  let eof := text.utf8PosToLspPos text.source.rawEndPos
+  let mut positions := []
+  for position in [original, item.range.«end», { line := item.range.«end».line + 1, character := 0 }] do
+    if position.line <= eof.line && position.character <= lineUtf16Length text position.line &&
+        !positions.contains position then
+      positions := positions ++ [position]
+  return positions
+
+private partial def firstSelectableRunAtPosition (positions : List Lsp.Position)
+    (expected : List MVarId) : RequestM (RequestTask (Option Lsp.Position)) := do
+  checkRequestCancelled
+  match positions with
+  | [] => return .pure none
+  | position :: rest =>
+      let goalsTask ← runAtTacticGoalsAt position
+      RequestM.bindRequestTaskCostly goalsTask fun goals? => do
+        if goals? == some expected then
+          return .pure (some position)
+        else
+          firstSelectableRunAtPosition rest expected
+
+/--
+An item whose proof state tactics left gets a position only when `runAt` selects the same ordered
+goal identities there. If no bounded candidate matches, keep its proof state without a position.
+A `sorry` or hole term needs no check: its goal comes from the placeholder lookup `runAt` uses.
+-/
+private partial def keepSelectableRunAtPositions (text : FileMap)
+    (entries : List TodoEntry) (acc : Array TodoItem) :
     RequestM (RequestTask (Array TodoItem)) := do
+  checkRequestCancelled
   match entries with
   | [] => return .pure acc
   | entry :: rest =>
       let item := entry.item
       match item.runAtPosition?, entry.tacticGoals? with
       | some position, some expected =>
-          let goalsTask ← runAtTacticGoalsAt position
-          RequestM.bindRequestTaskCostly goalsTask fun goals? => do
-            let item := if goals? == some expected then item else { item with runAtPosition? := none }
-            keepSelectableRunAtPositions rest (acc.push item)
-      | _, _ => keepSelectableRunAtPositions rest (acc.push item)
+          let positionTask ← firstSelectableRunAtPosition (runAtPositionCandidates text item position) expected
+          RequestM.bindRequestTaskCostly positionTask fun position? => do
+            keepSelectableRunAtPositions text rest (acc.push { item with runAtPosition? := position? })
+      | _, _ => keepSelectableRunAtPositions text rest (acc.push item)
 
 def handleTodo (p : TodoParams) : RequestM (RequestTask TodoResult) := do
   requireDocumentVersion p.textDocument
@@ -958,8 +987,9 @@ def handleTodo (p : TodoParams) : RequestM (RequestTask TodoResult) := do
     RequestM.bindRequestTaskCostly codeActionTask fun codeActions => do
       checkRequestCancelled
       let entries ← todoEntries doc p range snaps.toArray codeActions
-      let itemsTask ← keepSelectableRunAtPositions entries.toList #[]
-      RequestM.bindRequestTaskCostly itemsTask fun items =>
+      let itemsTask ← keepSelectableRunAtPositions doc.meta.text entries.toList #[]
+      RequestM.bindRequestTaskCostly itemsTask fun items => do
+        checkRequestCancelled
         return .pure { version := doc.meta.version, range, items }
 
 end Beam.LSP.Todo

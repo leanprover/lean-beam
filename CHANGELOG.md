@@ -12,6 +12,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- `todo` can now supply a usable `run_at_position` for goals left after completed nested proofs
+  and aggregate tactic runs by checking a small set of adjacent positions. Item ranges stay
+  unchanged, and a missing position no longer claims that every source position was checked
+  ([#417](https://github.com/leanprover/lean-beam/pull/417), @ejgallego).
 - `save` refusals that suggest `lake build` (`saveUnsupportedSetup`, `saveTraceStale`) and the
   deferred-compilation readiness message in `sync` now say to stop the CLI owner or drop the MCP
   workspace and confirm cleanup before building, then start a fresh session. Building while the session was live left dependencies marked as needing a save,
