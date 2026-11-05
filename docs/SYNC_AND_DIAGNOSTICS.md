@@ -472,6 +472,12 @@ done notification cannot override a fatal snapshot or a stale-dependency veto. F
 calls, file progress may be partial because the request can return before the whole file reaches
 `done = true`.
 
+Final diagnostic counts and requested replay come from the barrier's accepted snapshot.
+Beam also retains completion-blocking observations from the latest diagnostic publication:
+a dependency can become stale after the snapshot is collected but before its reply arrives,
+without changing the document version or text hash. A later publication replaces that observed
+evidence, including clearing it; ordinary live diagnostics do not become another final report.
+
 ## Interpreting operation outcomes
 
 Read the transport result, the operation's semantic result, proof state, readiness, and checkpoint

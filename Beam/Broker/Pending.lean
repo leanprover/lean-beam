@@ -24,16 +24,15 @@ namespace Beam.Broker
 structure PendingResult where
   result : Json
   progress? : Option SyncFileProgress := none
-  diagnostics : Array Diagnostic := #[]
-  diagnosticsSeen : Bool := false
+  /-- `none` means no publication; `some #[]` means the last publication cleared blockers. -/
+  completionDiagnostics? : Option (Array Diagnostic) := none
 
 structure PendingRequest where
   cancelRef? : Option (IO.Ref Bool) := none
   promise : IO.Promise (Except ResponseFailure PendingResult)
   tracked? : Option (DocumentUri × Nat) := none
   progressRef : IO.Ref (Option SyncFileProgress)
-  diagnosticsRef : IO.Ref (Array Diagnostic)
-  diagnosticsSeenRef : IO.Ref Bool
+  completionDiagnosticsRef : IO.Ref (Option (Array Diagnostic))
   emitProgress? : Option (SyncFileProgress → IO Unit) := none
   diagnosticScope : DiagnosticScope := .errors
   seenDiagnosticKeysRef : IO.Ref (Std.TreeSet String compare)
@@ -68,10 +67,9 @@ namespace PendingRequest
 
 def resolveResponse (pending : PendingRequest) (result : Json) : IO Unit := do
   let progress? ← pending.progressRef.get
-  let diagnostics ← pending.diagnosticsRef.get
-  let diagnosticsSeen ← pending.diagnosticsSeenRef.get
+  let completionDiagnostics? ← pending.completionDiagnosticsRef.get
   try
-    pending.promise.resolve (.ok { result, progress?, diagnostics, diagnosticsSeen })
+    pending.promise.resolve (.ok { result, progress?, completionDiagnostics? })
   catch _ =>
     pure ()
 
@@ -109,15 +107,9 @@ def awaitOutcome (pending : PendingRequest) : IO (Except ResponseFailure Pending
   | .error failure =>
       pure (.error (← RequestCancellation.backendFailure pending.cancelRef? failure))
 
-private def normalizePublishDiagnostics (params : PublishDiagnosticsParams) :
-    PublishDiagnosticsParams := {
-  params with
-  diagnostics :=
-    let diagnostics := Beam.LSP.Lib.userVisibleDiagnostics params.diagnostics
-    let sorted := diagnostics.toList.mergeSort fun d1 d2 =>
-      compare d1.fullRange d2.fullRange |>.then (compare d1.message d2.message) |>.isLE
-    sorted.toArray
-}
+private def sortDiagnostics (diagnostics : Array Diagnostic) : Array Diagnostic :=
+  (diagnostics.toList.mergeSort fun d1 d2 =>
+    compare d1.fullRange d2.fullRange |>.then (compare d1.message d2.message) |>.isLE).toArray
 
 private structure FileProgressRangeInfo where
   rangeStartLine : Nat
@@ -189,19 +181,6 @@ private def observeSyncFileProgress
   | _, _, _ =>
       progress?
 
-private def trackedPublishDiagnosticsParam?
-    (trackedUri? : Option DocumentUri)
-    (diagnosticParam : PublishDiagnosticsParams) : Option PublishDiagnosticsParams :=
-  match trackedUri? with
-  | some uri =>
-      let diagnosticParam := normalizePublishDiagnostics diagnosticParam
-      if diagnosticParam.uri == uri then
-        some diagnosticParam
-      else
-        none
-  | none =>
-      none
-
 private def diagnosticStreamKey (diagnostic : Diagnostic) : String :=
   (toJson diagnostic).compress
 
@@ -210,7 +189,7 @@ private def emitNewTrackedDiagnostics
     (seen : Std.TreeSet String compare)
     (diagnosticParam : PublishDiagnosticsParams)
     (diagnosticScope : DiagnosticScope)
-    (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) :
+    (emitDiagnostic : StreamDiagnostic → IO Unit) :
     IO (Std.TreeSet String compare) := do
   let mut seen := seen
   let diagnostics := filterSyncDiagnostics diagnosticScope diagnosticParam.diagnostics
@@ -218,15 +197,11 @@ private def emitNewTrackedDiagnostics
     let key := diagnosticStreamKey diagnostic
     if !seen.contains key then
       seen := seen.insert key
-      match emitDiagnostic? with
-      | some emitDiagnostic =>
-          try
-            emitDiagnostic <|
-              streamDiagnosticOfDiagnostic root diagnosticParam.uri diagnosticParam.version? diagnostic
-          catch _ =>
-            pure ()
-      | none =>
-          pure ()
+      try
+        emitDiagnostic <|
+          streamDiagnosticOfDiagnostic root diagnosticParam.uri diagnosticParam.version? diagnostic
+      catch _ =>
+        pure ()
   pure seen
 
 def observeProgress
@@ -250,16 +225,21 @@ def observePublishDiagnostics
     (root : System.FilePath)
     (pending : PendingRequest)
     (diagnosticParam : PublishDiagnosticsParams) : IO Unit := do
-  match trackedPublishDiagnosticsParam? (pending.tracked?.map Prod.fst) diagnosticParam with
-  | none =>
-      pure ()
-  | some diagnosticParam =>
-      pending.diagnosticsSeenRef.set true
-      pending.diagnosticsRef.set diagnosticParam.diagnostics
-      let seen ← pending.seenDiagnosticKeysRef.get
-      let seen ←
-        emitNewTrackedDiagnostics root seen diagnosticParam pending.diagnosticScope pending.emitDiagnostic?
-      pending.seenDiagnosticKeysRef.set seen
+  let some (uri, _) := pending.tracked? | return
+  if diagnosticParam.uri != uri then return
+  let visible := Beam.LSP.Lib.userVisibleDiagnostics diagnosticParam.diagnostics
+  -- Sort the full report only for presentation; a missing sink needs only ordered blockers.
+  let diagnostics := sortDiagnostics <|
+    if pending.emitDiagnostic?.isSome then visible else visible.filter isIncompleteBarrierDiagnostic
+  -- A publication may contain a newer invalidation than the in-flight barrier captured.
+  -- Preserve replacement/clear semantics, but retain only evidence used for completion.
+  pending.completionDiagnosticsRef.set <|
+    some <| diagnostics.filter isIncompleteBarrierDiagnostic
+  let some emitDiagnostic := pending.emitDiagnostic? | return
+  let diagnosticParam := { diagnosticParam with diagnostics }
+  let seen ← pending.seenDiagnosticKeysRef.get
+  let seen ← emitNewTrackedDiagnostics root seen diagnosticParam pending.diagnosticScope emitDiagnostic
+  pending.seenDiagnosticKeysRef.set seen
 
 def observeDiagnostics
     [ToJson α]
