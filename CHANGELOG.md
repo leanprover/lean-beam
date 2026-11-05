@@ -12,9 +12,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
-- `save` refusals that suggest `lake build` (`saveUnsupportedSetup`, `saveTraceStale`) now say to
-  stop the CLI owner or drop the MCP workspace and confirm cleanup before building, then start a
-  fresh session. Building while the session was live left dependencies marked as needing a save,
+- `save` refusals that suggest `lake build` (`saveUnsupportedSetup`, `saveTraceStale`) and the
+  deferred-compilation readiness message in `sync` now say to stop the CLI owner or drop the MCP
+  workspace and confirm cleanup before building, then start a fresh session. Building while the session was live left dependencies marked as needing a save,
   so every later sync of an importer failed with a recovery plan that could not be followed
   ([#415](https://github.com/leanprover/lean-beam/pull/415), @ejgallego).
 - When the selected Lean compiler has no Beam runtime, setup guidance identifies the compiler

@@ -102,7 +102,7 @@ private def saveTraceStaleMessage (root path : FilePath) : String :=
   s!"Lake save trace is stale for {relPath}. " ++
   "A dependency or build input would need to rebuild before Beam can save this module safely. " ++
   "Save stale direct dependencies with lean-beam save, then retry. " ++
-  s!"If an external Lake build is required, {externalLakeBuildProcedure}."
+  externalLakeBuildProcedure
 
 private def ensureSaveTraceReady
     (ws : Workspace)
@@ -157,7 +157,7 @@ def computeSaveSpecification
             message :=
               "lean-beam save requires matching compiler revisions for Beam's compiled code, " ++
               "its loaded Lean runtime, and the target compiler; " ++
-              "rebuild or reinstall Beam for the target Lean build, or use lake build instead: " ++
+              "rebuild or reinstall Beam for the target Lean build. " ++
               externalLakeBuildProcedure
           }
     let some mod := ws.findModuleBySrc? path
@@ -177,7 +177,7 @@ def computeSaveSpecification
           s!"lean-beam save cannot reuse the Lean server snapshot for {relPath}: {reason}. " ++
           "Move shared -D settings from moreLeanArgs to leanOptions so Lake applies them to both " ++
           "the language server and batch compilation. If the arguments are intentionally batch-only, " ++
-          s!"run lake build for this module instead: {externalLakeBuildProcedure}."
+          s!"Beam cannot save this module. {externalLakeBuildProcedure}"
         data? := some <| Json.mkObj [("reason", toJson reason), ("path", toJson relPath)]
       }
     let depTraceResult ← buildDepTrace ws root path mod snapshot
@@ -242,7 +242,7 @@ def writePrivateSaveTrace (spec : LeanSaveSpec) : IO Unit := do
     (toJson (BuildMetadata.ofStub (Hash.ofNat 0))).getObjValAs? String "schemaVersion"
   unless schema == expectedSchema do
     throw <| IO.userError <|
-      s!"unsupported Lake trace schema '{schema}'; use lake build instead: {externalLakeBuildProcedure}"
+      s!"unsupported Lake trace schema '{schema}'. {externalLakeBuildProcedure}"
   let outputs ← leanSaveOutputs spec.toLeanSaveOutputs
   -- Preserve the target's dependency metadata; only completed output descriptors change.
   let metadata := spec.traceMetadata.setObjVal! "outputs" (toJson outputs)

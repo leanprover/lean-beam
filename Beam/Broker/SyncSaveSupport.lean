@@ -216,7 +216,7 @@ def syncBarrierIncompleteMessage
     "Follow recovery_plan in order; stop if a step fails. After refresh succeeds, inspect its " ++
     "diagnostics and save readiness before continuing. If a save is unsupported or the barrier remains " ++
     "incomplete, stop retrying and inspect upstream diagnostics and configuration. " ++
-    s!"If an external Lake build is required, {externalLakeBuildProcedure}."
+    externalLakeBuildProcedure
 
 def leanSaveResult
     (spec : LeanSaveSpec)

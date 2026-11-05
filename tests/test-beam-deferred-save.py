@@ -35,6 +35,15 @@ def artifact_family(root):
     return {p: p.read_bytes() for p in paths if p.is_file()}
 
 
+def assert_build_after_cleanup(readiness):
+    messages = [m["message"] for m in readiness["blocking_messages"]]
+    assert any("compiler.postponeCompile" in m for m in messages), readiness
+    for message in messages:
+        if "Lake" in message or "lake build" in message:
+            assert "drop the MCP workspace and confirm cleanup" in message, readiness
+            assert "rebuild only after cleanup completes" in message, readiness
+
+
 def check_deferred_save(root, scoped):
     # Prepare a complete prior artifact family with ordinary compilation first.
     run(root, "lake", "--no-cache", "build", "SaveSmoke/ModuleB.lean")
@@ -64,7 +73,9 @@ def check_deferred_save(root, scoped):
             sync = json.loads(beam(root, "sync", "SaveSmoke/ModuleB.lean").stdout)["result"]
             assert sync["readiness"]["save_ready"] is False, sync
             assert sync["readiness"]["reason"] == "deferredCompilation", sync
-            assert any("lake build" in m["message"] for m in sync["readiness"]["blocking_messages"]), sync
+            # Building while this session is live would leave its sync history stale (#256), so
+            # every message offering a Lake build orders it after session cleanup.
+            assert_build_after_cleanup(sync["readiness"])
             assert sync["diagnostics"]["counts"]["error"] == 0, sync
             for command in ["save", "close-save"]:
                 rejected = beam(root, command, "SaveSmoke/ModuleB.lean", check=False)
@@ -74,6 +85,7 @@ def check_deferred_save(root, scoped):
                 assert failure["data"]["sync"]["readiness"]["save_ready"] is False, failure
                 assert "compiler.postponeCompile" in failure["message"], failure
                 assert "rebuild only after cleanup completes" in failure["message"], failure
+                assert_build_after_cleanup(failure["data"]["sync"]["readiness"])
                 assert artifact_family(root) == before, command
             print(f"deferred compilation ({'scoped' if scoped else 'Lake option'}): rejected, prior family preserved")
         finally:
