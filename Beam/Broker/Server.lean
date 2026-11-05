@@ -560,8 +560,7 @@ private def startRequestJsonTrackedDetailed
     IO (Session × PendingRequest) := do
   let (session, id) := nextRequestId session
   let progressRef ← IO.mkRef (initialProgress? <|> tracked.map (fun _ => {}))
-  let diagnosticsRef ← IO.mkRef #[]
-  let diagnosticsSeenRef ← IO.mkRef false
+  let completionDiagnosticsRef ← IO.mkRef none
   let seenDiagnosticKeysRef ← IO.mkRef ({} : Std.TreeSet String compare)
   let promise ← IO.Promise.new
   let pending : PendingRequest := {
@@ -569,8 +568,7 @@ private def startRequestJsonTrackedDetailed
       promise := promise
       tracked? := tracked
       progressRef := progressRef
-      diagnosticsRef := diagnosticsRef
-      diagnosticsSeenRef := diagnosticsSeenRef
+      completionDiagnosticsRef := completionDiagnosticsRef
       emitProgress? := emitProgress?
       diagnosticScope := diagnosticScope
       seenDiagnosticKeysRef := seenDiagnosticKeysRef
@@ -654,12 +652,12 @@ def sendRequestJsonTrackedDetailed
     (emitProgress? : Option (SyncFileProgress → IO Unit) := none)
     (diagnosticScope : DiagnosticScope := .errors)
     (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) :
-    IO (Except ResponseFailure (Session × Json × Option SyncFileProgress × Array Diagnostic)) := do
+    IO (Except ResponseFailure (Session × PendingResult)) := do
   let (session, pending) ←
     startRequestJsonTrackedDetailed session method param clientRequestId? tracked initialProgress?
       emitProgress? diagnosticScope emitDiagnostic?
   match ← pending.awaitOutcome with
-  | .ok pending => pure <| .ok (session, pending.result, pending.progress?, pending.diagnostics)
+  | .ok pending => pure <| .ok (session, pending)
   | .error failure => pure <| .error failure
 
 private partial def awaitInitializeResponse (stdout : IO.FS.Stream) : IO Unit := do
@@ -2249,13 +2247,11 @@ private def staleDirectDepsBlock
 private def syncBarrierOutcome
     (started : StartedTrackedBarrier)
     (progress? : Option SyncFileProgress)
-    (diagnosticsSeen : Bool)
+    (completionDiagnostics? : Option (Array Diagnostic))
     (hasFatalSnapshot : Bool)
-    (observedDiagnostics : Array Diagnostic)
     (directImports : Array String)
     (currentDiagnostics : Array Diagnostic) : HandlerM SyncBarrierOutcome := do
-  let completionDiagnostics :=
-    if diagnosticsSeen then observedDiagnostics else currentDiagnostics
+  let completionDiagnostics := completionDiagnostics?.getD currentDiagnostics
   let decision :=
     decideSyncBarrier started.document.uri started.document.version started.priorProgress? progress?
       hasFatalSnapshot completionDiagnostics
@@ -2356,8 +2352,8 @@ private def saveOleanCore
       syncSaveReadinessOfBarrierResult started.document.uri started.document.version started.documentHash barrierResult
   let currentDiagnostics := saveReadiness.currentDiagnostics
   let barrierOutcome ← withFailureProgress barrier.progress? <|
-    syncBarrierOutcome started barrier.progress? barrier.diagnosticsSeen barrierResult.hasFatalSnapshot
-      barrier.diagnostics barrierResult.directImports currentDiagnostics
+    syncBarrierOutcome started barrier.progress? barrier.completionDiagnostics? barrierResult.hasFatalSnapshot
+      barrierResult.directImports currentDiagnostics
   let barrierProgress? := barrierOutcome.fileProgress?
   withFailureProgress barrierProgress? <|
     liftHandlerIO <| started.document.recordProgress barrierProgress?
@@ -2537,7 +2533,7 @@ private def handleSyncFileOp
     s!"sync_file clientRequestId={optionLabel req.clientRequestId?} uri={started.document.uri} version={started.document.version}"
     (started.document.awaitOutcome started.pending)
   liftHandlerIO <| traceBroker
-    s!"sync_file barrier completed clientRequestId={optionLabel req.clientRequestId?} progress={pending.progress?.isSome} diagnostics={pending.diagnostics.size} diagnosticsSeen={pending.diagnosticsSeen}"
+    s!"sync_file barrier completed clientRequestId={optionLabel req.clientRequestId?} progress={pending.progress?.isSome} completionObserved={pending.completionDiagnostics?.isSome}"
   let barrierResult : DiagnosticsBarrierResult ←
     withFailureProgress pending.progress? <| liftHandlerIO <| decodeResponseAs pending.result
   if barrierResult.version != started.document.version then
@@ -2548,8 +2544,8 @@ private def handleSyncFileOp
       syncSaveReadinessOfBarrierResult started.document.uri started.document.version started.documentHash barrierResult
   let currentDiagnostics := saveReadiness.currentDiagnostics
   let barrierOutcome ← withFailureProgress pending.progress? <|
-    syncBarrierOutcome started pending.progress? pending.diagnosticsSeen barrierResult.hasFatalSnapshot
-      pending.diagnostics barrierResult.directImports currentDiagnostics
+    syncBarrierOutcome started pending.progress? pending.completionDiagnostics? barrierResult.hasFatalSnapshot
+      barrierResult.directImports currentDiagnostics
   let fileProgress? := barrierOutcome.fileProgress?
   withFailureProgress fileProgress? <|
     liftHandlerIO <| started.document.recordProgress fileProgress?

@@ -361,9 +361,7 @@ private def checkFrameLimit : IO Unit := do
     let called ← IO.mkRef false
     let message := frameAtBytes (Transport.maxFrameBytes + 1)
     let failure? ← try
-      Output.writeMessage phase message fun frame => do
-        called.set true
-        Transport.sendFrame peer frame
+      Output.writeMessage phase message fun _ => called.set true
       pure none
     catch error => pure (some error)
     let some failure := failure? | throw <| IO.userError "oversized terminal was accepted"

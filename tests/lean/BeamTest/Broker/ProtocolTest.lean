@@ -1403,8 +1403,7 @@ private def checkShutdownReplyCleanup (reply : ShutdownReply) : IO Unit := do
       let ordinary : PendingRequest := {
         promise := ← IO.Promise.new
         progressRef := ← IO.mkRef none
-        diagnosticsRef := ← IO.mkRef #[]
-        diagnosticsSeenRef := ← IO.mkRef false
+        completionDiagnosticsRef := ← IO.mkRef none
         seenDiagnosticKeysRef := ← IO.mkRef {}
       }
       discard <| PendingRequestStore.register initial.pending 0 ordinary
@@ -1709,8 +1708,7 @@ private def cleanupPending (cancelRef? : Option (IO.Ref Bool) := none) : IO Pend
     cancelRef?
     promise := ← IO.Promise.new
     progressRef := ← IO.mkRef none
-    diagnosticsRef := ← IO.mkRef #[]
-    diagnosticsSeenRef := ← IO.mkRef false
+    completionDiagnosticsRef := ← IO.mkRef none
     seenDiagnosticKeysRef := ← IO.mkRef {}
   }
 
@@ -2149,8 +2147,7 @@ private def checkDeadSessionCleanupReleasesStateMutex : IO Unit := do
   let cleanupPending : PendingRequest := {
     promise := ← IO.Promise.new
     progressRef := ← IO.mkRef none
-    diagnosticsRef := ← IO.mkRef #[]
-    diagnosticsSeenRef := ← IO.mkRef false
+    completionDiagnosticsRef := ← IO.mkRef none
     seenDiagnosticKeysRef := ← IO.mkRef {}
   }
   discard <| PendingRequestStore.register session.pending 0 cleanupPending
@@ -2290,8 +2287,7 @@ private def checkExitedSessionCleanupFailure
       let pending : PendingRequest := {
         promise := ← IO.Promise.new
         progressRef := ← IO.mkRef none
-        diagnosticsRef := ← IO.mkRef #[]
-        diagnosticsSeenRef := ← IO.mkRef false
+        completionDiagnosticsRef := ← IO.mkRef none
         seenDiagnosticKeysRef := ← IO.mkRef {}
       }
       discard <| PendingRequestStore.register session.pending 0 pending
@@ -2461,6 +2457,64 @@ private def withDocumentAdmissionSession
       try act runtime writes
       finally runtime.close
   finally runtime.close
+
+/-- A publication can be newer than the diagnostics captured by an in-flight barrier. -/
+private def checkObservedCompletionDiagnostics : IO Unit := do
+  let root := System.FilePath.mk s!"/tmp/beam-observed-completion-{← IO.monoNanosNow}"
+  IO.FS.createDirAll root
+  let source := root / "Tracked.lean"
+  IO.FS.writeFile source "def value : Nat := 1\n"
+  let blocker := diagnostic .information "Imports are out of date and should be rebuilt"
+  let ordinary := diagnostic .error "ordinary earlier diagnostic"
+  let silent := { blocker with isSilent? := some true }
+  let cases : Array (String × Array Diagnostic × Array (Array Diagnostic) × Bool × Nat) := #[
+    ("no publication", #[], #[], false, 0),
+    ("pull blocker", #[blocker], #[], true, 0),
+    ("newer blocker", #[], #[#[blocker]], true, 1),
+    ("cleared blocker", #[], #[#[blocker], #[]], false, 1),
+    ("clear overrides pull", #[blocker], #[#[]], false, 0),
+    ("ordinary overrides pull", #[blocker], #[#[ordinary]], false, 1),
+    ("silent publication", #[blocker], #[#[silent]], false, 0)
+  ]
+  try
+    for (label, pulled, publications, incomplete, expectedEvents) in cases do
+      withDocumentAdmissionSession root (replyBarrier := fun pending result => do
+        let some (uri, version) := pending.tracked?
+          | throw <| IO.userError "completion fixture lost its tracked document"
+        for diagnostics in publications do
+          PendingRequest.observePublishDiagnostics root pending {
+            uri
+            version? := some (Int.ofNat version)
+            diagnostics
+          }
+        let barrier : DiagnosticsBarrierResult ← IO.ofExcept <| fromJson? result
+        PendingRequest.resolveResponse pending <| toJson {
+          barrier with saveReadiness := { barrier.saveReadiness with currentDiagnostics := pulled }
+        }) fun runtime _ => do
+        let streamed ← IO.mkRef (#[] : Array StreamDiagnostic)
+        let response ← runtime.dispatchRequest {
+          workspaceId? := some "document-admission"
+          payload := .syncFile { path := source.toString, diagnosticScope? := some .all }
+        } (emitDiagnostic? := some fun diagnostic => streamed.modify (·.push diagnostic))
+        if incomplete then
+          require label (response.error?.any (·.code == "syncBarrierIncomplete"))
+          let some data := response.error?.bind (·.data?)
+            | throw <| IO.userError "newer completion evidence lost error data"
+          let diagnostics ← IO.ofExcept <|
+            data.getObjValAs? (Array Json) "completionBlockingDiagnostics"
+          require "newer blocker remains in the final error" (diagnostics.size == 1)
+          let evidence := diagnostics[0]!
+          requireJsonString label "message" blocker.message evidence
+          requireJsonInt label "severity" 1 evidence
+          requireJsonBool label "completionBlocking" true evidence
+          let range ← IO.ofExcept <| evidence.getObjValAs? Range "range"
+          require "completion evidence keeps its source range" (range == blocker.fullRange)
+        else
+          require label response.ok
+        require s!"{label}: live diagnostics survived completion handling"
+          ((← streamed.get).size == expectedEvents)
+  finally
+    IO.FS.removeDirAll root
 
 private def requireSourceInputFailure (label : String) (response : Response) : IO Unit := do
   let some error := response.error?
@@ -3384,6 +3438,7 @@ def main : IO Unit := do
   checkExitedSessionCleanupFailure false .runtimeClose
   checkExitedSessionCleanupFailure true .runtimeClose
   checkDocumentAdmission
+  checkObservedCompletionDiagnostics
   checkDocumentSourceInputs
   checkSourceEncoding
   checkSourceObservationFailures

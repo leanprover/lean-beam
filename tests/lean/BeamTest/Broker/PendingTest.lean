@@ -32,16 +32,14 @@ private def mkPending
     (emitDiagnostic? : Option (StreamDiagnostic → IO Unit) := none) : IO PendingRequest := do
   let promise ← IO.Promise.new
   let progressRef ← IO.mkRef progress?
-  let diagnosticsRef ← IO.mkRef #[]
-  let diagnosticsSeenRef ← IO.mkRef false
+  let completionDiagnosticsRef ← IO.mkRef none
   let seenDiagnosticKeysRef ← IO.mkRef ({} : Std.TreeSet String compare)
   pure {
     cancelRef?
     promise
     tracked?
     progressRef
-    diagnosticsRef
-    diagnosticsSeenRef
+    completionDiagnosticsRef
     seenDiagnosticKeysRef
     emitProgress?
     diagnosticScope
@@ -210,8 +208,8 @@ private def checkPendingStoreResolve : IO Unit := do
   requireJsonBool "pending response result" "value" true result.result
   require "pending response preserves progress"
     (result.progress? == some { updates := 3, done := false })
-  require "pending response records no diagnostics publication"
-    (!result.diagnosticsSeen)
+  require "pending response has no observed completion evidence"
+    result.completionDiagnostics?.isNone
   require "pending store is empty after remove"
     ((← PendingRequestStore.snapshot store).isEmpty)
 
@@ -498,16 +496,18 @@ private def checkDiagnosticLineCanExceedProgressRange : IO Unit := do
     })
 
   let farDiagnostic := mkDiagnostic (mkRange 20 2 20 8) "diagnostic beyond progress range"
+  let streamed ← IO.mkRef (#[] : Array StreamDiagnostic)
   let pending ← mkPending
     (progress? := some finished)
     (tracked? := some ("file:///workspace/Foo.lean", 1))
+    (emitDiagnostic? := some fun diagnostic => streamed.modify (·.push diagnostic))
   PendingRequest.observeDiagnostics
     (System.FilePath.mk ".")
     pending
     (mkPublishDiagnostics #[farDiagnostic])
   require "diagnostic publication does not rewrite fileProgress range"
     ((← pending.progressRef.get) == some finished)
-  let diagnostics ← pending.diagnosticsRef.get
+  let diagnostics ← streamed.get
   let some diagnostic := diagnostics[0]?
     | throw <| IO.userError "expected diagnostic beyond progress range"
   require "diagnostic may start beyond progress rangeEndLine"
@@ -529,7 +529,7 @@ private def observeStreamedDiagnostics
   streamedRef.get
 
 private def checkDiagnosticEmitterFailureIsolation : IO Unit := do
-  let diagnostic := mkDiagnostic (mkRange 1 0 1 4) "stream consumer disconnected"
+  let diagnostic := mkDiagnostic (mkRange 1 0 1 4) "Failed to build module dependencies."
   let pending ← mkPending
     (tracked? := some ("file:///workspace/Foo.lean", 1))
     (diagnosticScope := .all)
@@ -539,10 +539,13 @@ private def checkDiagnosticEmitterFailureIsolation : IO Unit := do
     (System.FilePath.mk "/workspace")
     pending
     (mkPublishDiagnostics #[diagnostic])
-  require "diagnostic sink failure still records the publication"
-    (← pending.diagnosticsSeenRef.get)
-  require "diagnostic sink failure still records current diagnostics"
-    ((← pending.diagnosticsRef.get).map (·.message) == #[diagnostic.message])
+  PendingRequest.resolveResponse pending Json.null
+  let result ← IO.ofExcept <| (← pending.awaitOutcome).mapError fun failure =>
+    s!"diagnostic sink failure replaced the backend response: {failure.error.message}"
+  require "diagnostic sink failure preserves the backend response" (result.result == Json.null)
+  require "diagnostic sink failure retains completion evidence"
+    (result.completionDiagnostics?.any fun diagnostics =>
+      diagnostics.map (·.message) == #[diagnostic.message])
 
 private def checkProgressEmitterFailureIsolation : IO Unit := do
   let pending ← mkPending
@@ -558,6 +561,24 @@ private def checkProgressEmitterFailureIsolation : IO Unit := do
       rangeStartLine? := some 1
       rangeEndLine? := some 2
     })
+
+private def checkCompletionObservationWithoutSink : IO Unit := do
+  let blocker := mkDiagnostic (mkRange 1 0 1 4) "Failed to build module dependencies."
+  for sameDocument in [false, true] do
+    let pending ← mkPending (tracked? := some ("file:///workspace/Foo.lean", 1))
+    PendingRequest.observePublishDiagnostics (System.FilePath.mk "/workspace") pending {
+      uri := if sameDocument then "file:///workspace/Foo.lean" else "file:///workspace/Other.lean"
+      version? := some 1
+      diagnostics := #[blocker]
+    }
+    PendingRequest.resolveResponse pending Json.null
+    let result ← IO.ofExcept <| (← pending.awaitOutcome).mapError (·.error.message)
+    if sameDocument then
+      require "completion observation does not require a presentation sink"
+        (result.completionDiagnostics?.any fun diagnostics =>
+          diagnostics.map (·.message) == #[blocker.message])
+    else
+      require "another document cannot supply completion evidence" result.completionDiagnostics?.isNone
 
 private def checkSetupFileProgressStreamsByScope : IO Unit := do
   let setupProgress :=
@@ -604,6 +625,7 @@ def main : IO Unit := do
   checkDiagnosticLineCanExceedProgressRange
   checkDiagnosticEmitterFailureIsolation
   checkProgressEmitterFailureIsolation
+  checkCompletionObservationWithoutSink
   checkSetupFileProgressStreamsByScope
 
 end BeamTest.Broker.PendingTest

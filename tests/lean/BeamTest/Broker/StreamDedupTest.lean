@@ -246,7 +246,7 @@ def check : IO Unit := do
         (diagnosticScope := .all)
         (emitDiagnostic? := some fun diagnostic =>
           streamedRef.modify fun seen => seen.push diagnostic)
-    let (_session, _result, _progress?, diagnostics) ←
+    let (_session, result) ←
       match trackedResult with
       | .ok result => pure result
       | .error failure =>
@@ -259,8 +259,8 @@ def check : IO Unit := do
       throw <| IO.userError s!"expected deduped diagnostic paths to stay relative, got {(toJson streamed).compress}"
     unless streamed.map (·.message) == #["first warning", "second warning"] do
       throw <| IO.userError s!"expected deduped diagnostics in first-seen order, got {(toJson streamed).compress}"
-    unless diagnostics.map (·.message) == #["first warning", "second warning"] do
-      throw <| IO.userError s!"expected final tracked diagnostics snapshot to keep both warnings, got {(toJson diagnostics).compress}"
+    unless result.completionDiagnostics?.any (·.isEmpty) do
+      throw <| IO.userError "ordinary streamed warnings became completion evidence"
   finally
     try
       discard <| session.proc.terminate 1000

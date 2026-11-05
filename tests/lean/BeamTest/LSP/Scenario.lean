@@ -274,7 +274,8 @@ private partial def waitForDiagnostics (expectedID : RequestID)
 
 private partial def waitForRequestOutcomeCollectDiagnostics
     (expectedID : RequestID)
-    (lastDiag? : Option PublishDiagnosticsParams := none) :
+    (lastDiag? : Option PublishDiagnosticsParams := none)
+    (uri? : Option DocumentUri := none) :
     ScenarioM (RequestOutcome × Option PublishDiagnosticsParams) := do
   if let some outcome ← takeQueuedResponse? expectedID then
     return (outcome, lastDiag?)
@@ -286,7 +287,7 @@ private partial def waitForRequestOutcomeCollectDiagnostics
         pure (outcome, lastDiag?)
       else
         queueResponse id outcome
-        waitForRequestOutcomeCollectDiagnostics expectedID lastDiag?
+        waitForRequestOutcomeCollectDiagnostics expectedID lastDiag? uri?
   | .responseError id code message _ =>
       let outcome := {
         errorCode? := some (errorCodeName code)
@@ -297,14 +298,16 @@ private partial def waitForRequestOutcomeCollectDiagnostics
         pure (outcome, lastDiag?)
       else
         queueResponse id outcome
-        waitForRequestOutcomeCollectDiagnostics expectedID lastDiag?
+        waitForRequestOutcomeCollectDiagnostics expectedID lastDiag? uri?
   | .notification "textDocument/publishDiagnostics" (some param) =>
       let diagnosticParam ← decodePublishDiagnostics (toJson param)
-      waitForRequestOutcomeCollectDiagnostics expectedID (some diagnosticParam)
+      let lastDiag? :=
+        if uri?.all (· == diagnosticParam.uri) then some diagnosticParam else lastDiag?
+      waitForRequestOutcomeCollectDiagnostics expectedID lastDiag? uri?
   | .notification .. =>
-      waitForRequestOutcomeCollectDiagnostics expectedID lastDiag?
+      waitForRequestOutcomeCollectDiagnostics expectedID lastDiag? uri?
   | .request .. =>
-      waitForRequestOutcomeCollectDiagnostics expectedID lastDiag?
+      waitForRequestOutcomeCollectDiagnostics expectedID lastDiag? uri?
 
 private def mkRangeChange (spec : ChangeSpec) : TextDocumentContentChangeEvent :=
   let endLine := spec.endLine?.getD spec.line
@@ -378,6 +381,20 @@ def collectDiagnostics (doc : DocHandle) : ScenarioM PublishDiagnosticsParams :=
   let some diagnostics ← collectDiagnostics? doc
     | throw <| IO.userError s!"expected publishDiagnostics notification for document handle {doc.id}"
   pure diagnostics
+
+/-- Observe the custom barrier and its last document publication in one LSP exchange. -/
+def collectDiagnosticsBarrier (doc : DocHandle) :
+    ScenarioM (Beam.LSP.DiagnosticsBarrier.Result × Option PublishDiagnosticsParams) := do
+  let docState ← getDocState doc
+  let requestID ← sendRequest Beam.LSP.DiagnosticsBarrier.method <|
+    toJson <| WaitForDiagnosticsParams.mk docState.uri (docState.versionNo - 1)
+  let (outcome, diagnostics?) ←
+    waitForRequestOutcomeCollectDiagnostics requestID (uri? := some docState.uri)
+  let some result := outcome.result?
+    | throw <| IO.userError
+        s!"diagnostics barrier failed with {outcome.errorCode?}: {outcome.errorMessage}"
+  let result ← IO.ofExcept <| fromJson? result
+  pure (result, diagnostics?)
 
 def waitForILeansDiagnostics? (doc : DocHandle) : ScenarioM (Option PublishDiagnosticsParams) := do
   let docState ← getDocState doc
