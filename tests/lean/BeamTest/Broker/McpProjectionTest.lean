@@ -831,6 +831,7 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   requireFieldAbsent "phase is an individual observation" "inner_span" phases[0]!
   requireJsonInt "all descendants collapsed, including the undisplayed tail" "collapsed_spans" 2 summary
   requireJsonInt "all retained spans shown" "omitted_from_top" 0 summary
+
   let emptyProfile := Beam.Broker.Response.success <| toJson ({
     profile? := some { elapsedMs := 0 }
   } : Beam.LSP.RunAt.Result)
@@ -921,6 +922,61 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   let wrappedPlainArray ← IO.ofExcept <| cliPlainArray.getObjValAs? (Array Json) "value"
   require "array payload is retained without progress" (wrappedPlainArray == #[toJson (8 : Nat)])
   requireFieldAbsent "array result without progress" "document_progress" cliPlainArray
+
+private def checkProfileLabelOmission : IO Unit := do
+  -- Repeated display text is noise, but distinct indices, tags and costs remain evidence.
+  -- Equal clipped previews in particular do not establish equivalent underlying operations.
+  let clippedLabel := ("".pushn 'λ' 159) ++ "…"
+  let labelCases : Array (String × Option String × Option String × Option String) := #[
+    ("equal", some "grind", some "grind", none),
+    ("clipped-equal", some clippedLabel, some clippedLabel, none),
+    ("different", some "simp", some "grind", some "grind"),
+    ("missing-outer", none, some "grind", some "grind"),
+    ("missing-inner", some "grind", none, none),
+    ("both-missing", none, none, none)]
+  for (name, outerLabel?, innerLabel?, expectedInnerLabel?) in labelCases do
+    try
+      let response := Beam.Broker.Response.success <| toJson ({
+        profile? := some { elapsedMs := 130, spans := #[
+          { thread := 0, category := "Elab.step", tag := "Lean.Parser.Tactic.tacticSeq",
+            startMs := 0, durationMs := 100, label? := outerLabel? },
+          { thread := 0, parent? := some 0, category := "Elab.step", tag := "Lean.Parser.Tactic.grind",
+            startMs := 10, durationMs := 60, label? := innerLabel? },
+          { thread := 0, category := "Kernel", tag := "", startMs := 100, durationMs := 30,
+            label? := some "grind" }] }
+      } : Beam.LSP.RunAt.Result)
+      let mcp ← expectToolOk "MCP profile label omission" <|
+        Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) response
+      let cliEnvelope ← expectToolOk "CLI profile label omission" <|
+        (Beam.Cli.prepareOperationResponse (.broker .runAt) response).map (·.json)
+      let cli ← requireObjVal "CLI label omission envelope" "result" cliEnvelope
+      require "CLI/MCP profile label omission parity" (cli == mcp)
+      let p ← requireObjVal "label omission result" "profile" cli
+      let s ← requireObjVal "label omission profile" "summary" p
+      let tops ← IO.ofExcept <| s.getObjValAs? (Array Json) "top_spans"
+      let phaseEntries ← IO.ofExcept <| s.getObjValAs? (Array Json) "phase_spans"
+      let child ← requireObjVal "distinct inner measurement retained" "inner_span" tops[0]!
+      match outerLabel? with
+      | some label => requireJsonString "outer label retained" "label" label tops[0]!
+      | none => requireFieldAbsent "missing outer label not invented" "label" tops[0]!
+      match expectedInnerLabel? with
+      | some label => requireJsonString "distinct or only available inner label retained" "label" label child
+      | none => requireFieldAbsent "repeated or unavailable inner label omitted" "label" child
+      requireJsonInt "distinct inner index retained" "span" 1 child
+      requireJsonString "distinct inner tag retained" "tag" "Lean.Parser.Tactic.grind" child
+      require "distinct inner duration retained" ((← requireObjVal "inner" "duration_ms" child) == toJson (60 : Float))
+      require "outer duration retained" ((← requireObjVal "outer" "duration_ms" tops[0]!) == toJson (100 : Float))
+      require "independent phase keeps its label in both views" (phaseEntries[0]! == tops[1]!)
+      requireJsonString "independent phase label retained" "label" "grind" phaseEntries[0]!
+      requireJsonInt "label omission does not alter grouping" "collapsed_spans" 1 s
+      requireJsonInt "label omission does not alter retained omissions" "omitted_from_top" 0 s
+      requireJsonBool "label omission does not truncate evidence" "truncated" false p
+      let raw ← IO.ofExcept <| p.getObjValAs? (Array Json) "spans"
+      require "raw spans retained" (raw.size == 3)
+      requireJsonInt "raw parent retained" "parent" 0 raw[1]!
+      require "raw inner duration retained" ((← requireObjVal "raw inner" "duration_ms" raw[1]!) == toJson (60 : Float))
+    catch error =>
+      throw <| IO.userError s!"profile label omission ({name}): {error}"
 
 private def checkProjectionFailureEvidence : IO Unit := do
   let partialReceipt := Json.mkObj [("module", toJson "Main"), ("sourceHash", toJson "saved")]
@@ -1942,6 +1998,7 @@ def main : IO Unit := do
   checkRunAtNormalization
   checkSyncAndSaveNormalization
   checkCrossSurfaceResultParity
+  checkProfileLabelOmission
   checkCrossSurfaceErrorParity
   checkBrokerFailureCodeCompleteness
   checkSaveImportsChangedProjection

@@ -123,12 +123,14 @@ theorem demo_add_zero (n : Nat) : n + 0 = n := by
 Inspect `success` and ordinary warnings/errors first, then `profile.elapsed_ms` and `profile.summary`.
 `summary.top_spans` groups retained single-child paths and ranks up to ten by outer inclusive
 duration. Optional `inner_span` gives the deepest member retaining at least half the positive outer
-duration, with its own index, duration and label; it is omitted if no descendant qualifies. This
+duration, with its own index, duration and available label; it is omitted if no descendant qualifies. This
 display heuristic does not identify a cause or guarantee a tactic node. The entire path remains
 grouped, including any smaller tail; the outer duration is not the inner step's cost. `summary.phase_spans`
 shows the largest observed span for each known declaration-phase category, not totals or zeros for
 missing phases. Entries have `span` indices into `profile.spans`, plus category, duration and
 available Lean-rendered labels. An entry in both views is the same observation.
+An inner label identical to its outer entry's displayed label is omitted; the inner index, tag
+and own duration remain. Equal labels, including clipped previews, do not imply equivalent operations.
 `summary.collapsed_spans` counts members folded into shown top entries; `summary.omitted_from_top`
 counts retained spans in paths outside the top list. Together with the top entry count they equal
 the raw span count; neither counts unrecorded work.

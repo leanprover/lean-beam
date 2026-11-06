@@ -23,6 +23,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- Omit an inner profile label when it repeats the outer entry's displayed text on CLI/MCP.
+  The inner span keeps its distinct index, tag and duration, including when clipped previews coincide
+  ([#419](https://github.com/leanprover/lean-beam/pull/419), @ejgallego).
 - `save` refusals that suggest `lake build` (`saveUnsupportedSetup`, `saveTraceStale`) and the
   deferred-compilation readiness message in `sync` now say to stop the CLI owner or drop the MCP
   workspace and confirm cleanup before building, then start a fresh session. Building while the session was live left dependencies marked as needing a save,
