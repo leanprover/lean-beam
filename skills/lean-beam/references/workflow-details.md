@@ -160,8 +160,11 @@ a document position or a guaranteed mapping to a source occurrence. If the sourc
 Profiled results retain ordinary warnings and errors, but suppress ordinary Lean trace text from
 both `messages` and `traces`; `traces` is `[]`. Each continuation profile measures only that call,
 not earlier work represented by its handle. Nested and parallel spans overlap, so do not sum their
-durations. The profile has at most 1024 spans, 8192 traversal visits (including trace-state entries),
-and `MessageData` nesting depth 128. Context and formatting wrappers count, so span depth can be lower.
+durations. The profile has at most 128 spans, 16384 traversal visits (including trace-state entries),
+and `MessageData` nesting depth 256. Shallow nodes are visited before deep descendants; retained
+spans are chosen by inclusive duration with their ancestors, then returned in original tree order.
+This favors significant work across the visited forest, but neither complete traversal nor retention
+of every phase is guaranteed. Context and formatting wrappers count, so span depth can be lower.
 These limits do not bound Lean's trace allocation. Profiling adds overhead. For candidate comparisons, keep the
 same snapshot or handle and loaded environment, repeat the comparison, and check the candidate from
 the document or an ordinary handle with profiling disabled before treating a speed difference as an optimization.

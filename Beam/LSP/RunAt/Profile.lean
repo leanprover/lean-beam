@@ -35,9 +35,9 @@ structure Result where
   deriving FromJson, ToJson
 
 def initialThresholdMs : Nat := 1
-def maxSpans : Nat := 1024
-def maxVisited : Nat := 8192
-def maxDepth : Nat := 128
+def maxSpans : Nat := 128
+def maxVisited : Nat := 16384
+def maxDepth : Nat := 256
 def maxTopSpans : Nat := 10
 def maxLabelChars : Nat := 160
 private def maxSnippetSourceBytes : Nat := 8192
@@ -139,7 +139,6 @@ private structure Projection where
   spans : Array Span := #[]
   /-- Temporary references only, bounded with spans and dropped before publishing a result. -/
   headers : Array MessageData := #[]
-  visited : Nat := 0
   truncated : Bool := false
 
 private def boundedNameString (name : Name) (limit : Nat) : String × Bool := Id.run do
@@ -200,79 +199,178 @@ private def snippetRange? (text : String) (ref : Syntax) : Option Lean.Lsp.Range
   let fileMap := text.toFileMap
   return { start := fileMap.utf8PosToLspPos start, «end» := fileMap.utf8PosToLspPos stop }
 
-private def visit (origin stop : Float) (thread : UInt64) (fuel : Nat)
-    (heartbeatClock : Bool) (wrap : MessageData → MessageData)
-    (parent? : Option Nat) (range? : Option Lean.Lsp.Range) (msg : MessageData) :
-    StateM Projection Unit := do
-  let state ← get
-  if state.visited >= maxVisited || state.spans.size >= maxSpans then
-    modify fun s => { s with truncated := true }
-    return
-  match fuel with
-  | 0 => modify fun s => { s with truncated := true }
-  | fuel + 1 =>
-    modify fun s => { s with visited := s.visited + 1 }
-    match msg with
-    | .trace data header children =>
-      let mut parent? := parent?
-      -- Exclude untimed nodes and invalid intervals. The request-clock bounds also prevent traces
-      -- inherited from a saved snapshot from being presented as work done by this request.
-      -- TraceData has no clock tag. Lean's message context records the surrounding options;
-      -- never reinterpret a known heartbeat-clock node as seconds, even if its numbers happen
-      -- to lie in the request interval. A child's own context can restore wall-clock collection.
-      if heartbeatClock then
-        modify fun s => { s with truncated := true }
-      else if data.startTime >= origin && data.stopTime >= data.startTime && data.stopTime <= stop then
-        let index := (← get).spans.size
-        let (category, categoryTruncated) := boundedNameString data.cls 160
-        let tag := (data.tag.take 256).toString
-        modify fun s => { s with
-          truncated := s.truncated || categoryTruncated || tag != data.tag
-          spans := s.spans.push {
-            parent?, thread, category, tag
-            startMs := (data.startTime - origin) * 1000
-            durationMs := (data.stopTime - data.startTime) * 1000
-            range?
-          }
-          headers := s.headers.push (wrap header)
-        }
-        parent? := some index
-      for child in children do
-        if (← get).visited >= maxVisited || (← get).spans.size >= maxSpans then
-          modify fun s => { s with truncated := true }
-          break
-        -- Nested MessageData does not retain a trustworthy source reference on all supported
-        -- Lean versions. Do not copy an enclosing range onto a child.
-        visit origin stop thread fuel heartbeatClock wrap parent? none child
-    | .withContext context msg =>
-      visit origin stop thread fuel (trace.profiler.useHeartbeats.get context.opts)
-        (fun m => wrap (.withContext context m)) parent? range? msg
-    | .withNamingContext context msg =>
-      visit origin stop thread fuel heartbeatClock
-        (fun m => wrap (.withNamingContext context m)) parent? range? msg
-    | .nest _ msg | .group msg | .tagged _ msg | .ofWidget _ msg
-    | .ofOriginatingSyntax _ msg => visit origin stop thread fuel heartbeatClock wrap parent? range? msg
-    | .compose left right =>
-      visit origin stop thread fuel heartbeatClock wrap parent? range? left
-      visit origin stop thread fuel heartbeatClock wrap parent? range? right
-    | _ => pure ()
+private structure Observation where
+  key : List Nat
+  span : Span
+  -- Temporary original header references; no rendering/evaluation, bounded by valid visits.
+  header : MessageData
+  deriving Inhabited
 
-private def project (startNs stopNs : Nat) (states : Array TraceState) (text : String) : Projection := Id.run do
+private structure Frame where
+  thread : UInt64
+  fuel : Nat
+  heartbeat : Bool := false
+  wrap : MessageData → MessageData := id
+  parent? : Option Nat := none
+  pathRev : List Nat
+  range? : Option Lsp.Range := none
+
+private inductive Work where
+  | states (index : Nat)
+  | roots (stateIndex traceIndex : Nat)
+  | children (items : Array MessageData) (next : Nat) (frame : Frame)
+  | single (msg : MessageData) (frame : Frame)
+
+private structure Explored where
+  observations : Array Observation := #[]
+  visited : Nat := 0
+  depthStops : Nat := 0
+  incompatible : Nat := 0
+  clipped : Bool := false
+  pendingAtStop : Nat := 0
+  deriving Inhabited
+
+private def Explored.complete (e : Explored) : Bool := e.pendingAtStop == 0 && e.depthStops == 0
+
+private def dispatch (origin stop : Float) (msg : MessageData) (f : Frame)
+    (e : Explored) : Explored × Array Work := Id.run do
+  if f.fuel == 0 then return ({e with depthStops := e.depthStops + 1}, #[])
+  let mut e := {e with visited := e.visited + 1}
+  let f := {f with fuel := f.fuel - 1}
+  match msg with
+  | .trace data header children =>
+    let mut f := f
+    if f.heartbeat then e := {e with incompatible := e.incompatible + 1}
+    else if data.startTime >= origin && data.stopTime >= data.startTime && data.stopTime <= stop then
+      let (category, clipped) := boundedNameString data.cls 160
+      let tag := (data.tag.take 256).toString
+      let index := e.observations.size
+      let span : Span := {
+        parent? := f.parent?
+        thread := f.thread
+        category
+        tag
+        startMs := (data.startTime - origin) * 1000
+        durationMs := (data.stopTime - data.startTime) * 1000
+        range? := f.range?
+      }
+      e := {e with
+        observations := e.observations.push {
+          key := f.pathRev.reverse
+          span
+          header := f.wrap header
+        }
+        clipped := e.clipped || clipped || tag != data.tag
+      }
+      f := {f with parent? := some index}
+    return (e, if children.isEmpty then #[] else #[.children children 0 {f with range? := none}])
+  | .withContext context inner =>
+    let innerFrame := {f with
+      heartbeat := trace.profiler.useHeartbeats.get context.opts
+      wrap := fun m => f.wrap (.withContext context m)
+      pathRev := 0 :: f.pathRev
+    }
+    return (e, #[.single inner innerFrame])
+  | .withNamingContext context inner =>
+    let innerFrame := {f with
+      wrap := fun m => f.wrap (.withNamingContext context m)
+      pathRev := 0 :: f.pathRev
+    }
+    return (e, #[.single inner innerFrame])
+  | .nest _ inner | .group inner | .tagged _ inner | .ofWidget _ inner | .ofOriginatingSyntax _ inner =>
+    return (e, #[.single inner {f with pathRev := 0 :: f.pathRev}])
+  | .compose left right => return (e, #[.single left {f with pathRev := 0 :: f.pathRev},
+    .single right {f with pathRev := 1 :: f.pathRev}])
+  | _ => return (e, #[])
+
+private def Work.level : Work → Nat
+  | .states .. | .roots .. => 0
+  | .single _ frame | .children _ _ frame => maxDepth - frame.fuel
+
+/-- Visit complete shallow levels before deep descendants. Sequence cursors avoid expanding a
+wide array into a work queue. Both retained candidates and pending cursors are bounded by visits.
+Context wrappers count as levels, matching the existing depth limit. -/
+private def explore (startNs stopNs : Nat) (states : Array TraceState) (text : String) : Explored := Id.run do
   let origin := startNs.toFloat / 1000000000
   let stop := stopNs.toFloat / 1000000000
-  let project : StateM Projection Unit := do
-    for state in states do
-      if (← get).visited >= maxVisited then
-        modify fun s => { s with truncated := true }
-        return
-      modify fun s => { s with visited := s.visited + 1 }
-      for trace in state.traces do
-        if (← get).visited >= maxVisited || (← get).spans.size >= maxSpans then
-          modify fun s => { s with truncated := true }
-          return
-        visit origin stop state.tid maxDepth false id none (snippetRange? text trace.ref) trace.msg
-  let (_, projection) := project.run {}
-  return projection
+  let mut levels : Array (List Work) := Array.replicate (maxDepth + 1) []
+  if !states.isEmpty then levels := levels.set! 0 [.states 0]
+  let mut e : Explored := {}
+  for depth in [:maxDepth + 1] do
+    for _ in [:3 * maxVisited + 1] do
+      if e.visited >= maxVisited then break
+      let work :: rest := levels[depth]! | break
+      levels := levels.set! depth rest
+      let mut tasks := #[]
+      match work with
+      | .states index =>
+        e := {e with visited := e.visited + 1}
+        if !states[index]!.traces.isEmpty then tasks := tasks.push (.roots index 0)
+        if index + 1 < states.size then tasks := tasks.push (.states (index + 1))
+      | .roots si ri =>
+        let state := states[si]!
+        let item := state.traces[ri]!
+        let frame : Frame := {
+          thread := state.tid
+          fuel := maxDepth
+          pathRev := [ri, si]
+          range? := snippetRange? text item.ref
+        }
+        (e, tasks) := dispatch origin stop item.msg frame e
+        if ri + 1 < state.traces.size then tasks := tasks.push (.roots si (ri + 1))
+      | .children items next frame =>
+        (e, tasks) := dispatch origin stop items[next]! {frame with pathRev := next :: frame.pathRev} e
+        if next + 1 < items.size then tasks := tasks.push (.children items (next + 1) frame)
+      | .single msg frame => (e, tasks) := dispatch origin stop msg frame e
+      for task in tasks.reverse do
+        levels := levels.modify task.level (task :: ·)
+    if e.visited >= maxVisited then break
+  return {e with pendingAtStop := levels.foldl (fun n xs => n + xs.length) 0}
+
+private def sourceLT (a b : Observation) : Bool := compare a.key b.key == .lt
+
+/-- Rank inclusive observations, retaining all ancestors inside the same output budget.
+Equal durations use original trace-tree order, independent of traversal scheduling. -/
+private def retain (e : Explored) (cap : Nat) : Array Nat := Id.run do
+  let ranked := (Array.range e.observations.size).qsort fun a b =>
+    let x := e.observations[a]!
+    let y := e.observations[b]!
+    x.span.durationMs > y.span.durationMs ||
+      (x.span.durationMs == y.span.durationMs && sourceLT x y)
+  let mut selected := #[]
+  let mut kept := Array.replicate e.observations.size false
+  for i in ranked do
+    if selected.size == cap then break
+    if kept[i]! then continue
+    let mut additions := #[i]
+    let mut parent := e.observations[i]!.span.parent?
+    for _ in [:maxDepth] do
+      let some p := parent | break
+      if kept[p]! then break
+      additions := additions.push p
+      parent := e.observations[p]!.span.parent?
+    if selected.size + additions.size <= cap then
+      for j in additions do
+        selected := selected.push j
+        kept := kept.set! j true
+  return selected.qsort (fun a b => sourceLT e.observations[a]! e.observations[b]!)
+
+private def materialize (explored : Explored) (cap : Nat) : Projection := Id.run do
+  let selected := retain explored cap
+  let mut indices : Array (Option Nat) := Array.replicate explored.observations.size none
+  let mut result : Projection := {truncated := !explored.complete || explored.incompatible > 0 ||
+    explored.clipped || selected.size < explored.observations.size}
+  for i in selected do
+    let observation := explored.observations[i]!
+    let parent? := observation.span.parent?.bind (indices[·]!)
+    indices := indices.set! i (some result.spans.size)
+    result := {result with
+      spans := result.spans.push {observation.span with parent?}
+      headers := result.headers.push observation.header}
+  return result
+
+private def project (startNs stopNs : Nat) (states : Array TraceState) (text : String) : Projection :=
+  materialize (explore startNs stopNs states text) maxSpans
 
 private def Projection.result (projection : Projection) (startNs stopNs : Nat) : Result := {
     elapsedMs := (stopNs - startNs).toFloat / 1000000
