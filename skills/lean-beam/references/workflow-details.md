@@ -160,7 +160,7 @@ a document position or a guaranteed mapping to a source occurrence. If the sourc
 Profiled results retain ordinary warnings and errors, but suppress ordinary Lean trace text from
 both `messages` and `traces`; `traces` is `[]`. Each continuation profile measures only that call,
 not earlier work represented by its handle. Nested and parallel spans overlap, so do not sum their
-durations. The profile has at most 1024 spans, 16384 traversal visits (including trace-state entries),
+durations. The profile has at most 192 spans, 16384 traversal visits (including trace-state entries),
 and `MessageData` nesting depth 256. Shallow nodes are visited before deep descendants; retained
 spans are chosen by inclusive duration with their ancestors, then returned in original tree order.
 This favors significant work across the visited forest, but neither complete traversal nor retention
