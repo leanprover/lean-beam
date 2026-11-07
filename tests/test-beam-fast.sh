@@ -38,6 +38,7 @@ run_step "project SDK binding" python3 tests/test-project-sdk.py
 run_step "fixture workspace evidence" python3 tests/test-fixture-workspace.py
 run_step "extended CI helper" python3 tests/test-extended-ci.py
 run_step "process watchdog" python3 tests/test-process-watchdog.py
+run_step "PID receipt sharing" python3 tests/test-pid-receipts.py
 run_step "CI step logging" python3 tests/test-ci-steps.py
 
 run_quiet_step "defensive validation Git isolation" bash tests/test-validate-defensive.sh
