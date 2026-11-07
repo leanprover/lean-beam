@@ -20,6 +20,7 @@ import time
 
 from installation_fixture import EXE, REPO, stage
 from lib.process_watchdog import process_is_running, run_with_watchdog
+from lib.pid_receipts import read_pid_receipt
 
 spec = importlib.util.spec_from_file_location("mcp_stdio_tests", REPO / "tests/test-mcp-stdio.py")
 mcp = importlib.util.module_from_spec(spec)
@@ -77,7 +78,7 @@ def pid_receipts(root):
     pids = []
     for name in ["helper.pid", "descendant.pid"]:
         try:
-            text = (root / name).read_text(encoding="ascii")
+            text = read_pid_receipt(root / name)
         except FileNotFoundError:
             return None
         if not text.isdecimal() or int(text) <= 0:
