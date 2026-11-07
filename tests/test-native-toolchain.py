@@ -132,6 +132,7 @@ def run_ordinary_source_checks(lean_prefix: Path, build_env: dict[str, str]) -> 
 def qualify(args, lean_prefix, scratch):
     # The parent captures UTF-8, including unittest failures with non-ASCII fixture names.
     run([sys.executable, "-X", "utf8", REPO / "tests/test-native-provenance.py"])
+    run([sys.executable, "-X", "utf8", REPO / "tests/test-pid-receipts.py"])
     real_elan = shutil.which("elan")
     management_commands = ["prune", "validated-toolchains", "compatible-release-lines"]
     build_commit = None
