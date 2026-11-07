@@ -475,7 +475,7 @@ UTF-16 character offsets; its end is exclusive. A range is not a document coordi
 that Lean can map the span to a source occurrence. If the source snippet exceeds 8192 UTF-8 bytes,
 Beam omits span ranges.
 
-Profiling returns at most 192 spans, limits traversal visits to 16384 (including trace-state entries),
+Profiling returns at most 128 spans, limits traversal visits to 16384 (including trace-state entries),
 and limits `MessageData` nesting to 256. Traversal considers roots and shallow message nodes before
 deeper descendants. Among visited timed nodes, retention ranks inclusive duration, breaking ties by
 original trace-tree order. A node is admitted with all its timed ancestors only when the group fits
