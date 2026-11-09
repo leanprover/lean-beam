@@ -171,7 +171,8 @@ private def matchesSyncFileProgress
     (version : Nat)
     (params : LeanFileProgressParams) : Bool :=
   let matchesUri := params.textDocument.uri == uri
-  let matchesVersion := params.textDocument.version?.map (fun progressVersion =>
+  let ⟨_, progressVersion?⟩ := params.textDocument
+  let matchesVersion := progressVersion?.map (fun progressVersion =>
     decide (version <= progressVersion)) |>.getD true
   matchesUri && matchesVersion
 

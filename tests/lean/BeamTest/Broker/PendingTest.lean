@@ -399,8 +399,9 @@ private def mkRange (startLine startCharacter endLine endCharacter : Nat) : Rang
   «end» := { line := endLine, character := endCharacter }
 }
 
-private def mkFileProgress (ranges : Array Range) : LeanFileProgressParams := {
-  textDocument := { uri := "file:///workspace/Foo.lean", version? := some 1 }
+private def mkFileProgress (ranges : Array Range)
+    (version? : Option Nat := some 1) : LeanFileProgressParams := {
+  textDocument := ⟨"file:///workspace/Foo.lean", version?⟩
   processing := ranges.map fun range => { range }
 }
 
@@ -486,6 +487,24 @@ private def checkSyncFileProgressLines : IO Unit := do
   requireFieldAbsent "finished progress" "line" renderedProgress
   requireFieldAbsent "finished progress" "totalLines" renderedProgress
   requireJsonInt "finished progress" "rangeEndLine" 13 renderedProgress
+
+/-- Exercise the wire identifier as well as progress selection: Lean 4.37 briefly renamed its
+optional version field, but neither missing versions nor stale progress may change meaning. -/
+private def checkSyncFileProgressVersionSelection : IO Unit := do
+  for (version?, expectedUpdates) in [
+      (none, 1), (some 0, 0), (some 1, 1), (some 2, 1)] do
+    let params := mkFileProgress #[mkRange 0 0 1 0] version?
+    let decoded : LeanFileProgressParams ← match fromJson? (toJson params) with
+      | .ok value => pure value
+      | .error error => throw <| IO.userError s!"fileProgress identifier round trip: {error}"
+    let pending ← mkPending
+      (progress? := some {})
+      (tracked? := some ("file:///workspace/Foo.lean", 1))
+    PendingRequest.observeProgress pending decoded
+    let some progress ← pending.progressRef.get
+      | throw <| IO.userError "versioned fileProgress cleared progress"
+    require s!"fileProgress version {version?} selects only current or unversioned progress"
+      (progress.updates == expectedUpdates)
 
 private def checkDiagnosticLineCanExceedProgressRange : IO Unit := do
   let active ← observeFileProgress {} #[mkRange 0 0 1 0]
@@ -601,6 +620,7 @@ def main : IO Unit := do
   checkPendingResolveError
   checkSyncFileProgressDisplay
   checkSyncFileProgressLines
+  checkSyncFileProgressVersionSelection
   checkDiagnosticLineCanExceedProgressRange
   checkDiagnosticEmitterFailureIsolation
   checkProgressEmitterFailureIsolation

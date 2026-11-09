@@ -368,7 +368,7 @@ def changeDocBatch (doc : DocHandle) (specs : Array ChangeSpec) : ScenarioM Unit
   let docState ← getDocState doc
   let contentChanges := specs.map mkRangeChange
   let params : DidChangeTextDocumentParams := {
-    textDocument := { uri := docState.uri, version? := docState.versionNo }
+    textDocument := ⟨docState.uri, docState.versionNo⟩
     contentChanges
   }
   Ipc.writeNotification ⟨"textDocument/didChange", params⟩
@@ -429,10 +429,7 @@ def notifyWatchedFileChanged (path : System.FilePath)
 def sendRunAt (doc : DocHandle) (spec : SendRunAtSpec) : ScenarioM ReqHandle := do
   let docState ← getDocState doc
   let params : Beam.LSP.RunAt.Params := {
-    textDocument := {
-      uri := docState.uri
-      version? := some (spec.version?.getD (docState.versionNo - 1))
-    }
+    textDocument := ⟨docState.uri, some (spec.version?.getD (docState.versionNo - 1))⟩
     position := { line := spec.line, character := spec.character }
     text := spec.text
     storeHandle? := if spec.storeHandle then some true else none
@@ -457,10 +454,7 @@ def runWithHandle (doc : DocHandle) (handle : Beam.LSP.RunAt.Handle) (spec : Run
 def sendGoals (doc : DocHandle) (spec : GoalsSpec) : ScenarioM ReqHandle := do
   let docState ← getDocState doc
   let params : Beam.LSP.Goals.Params := {
-    textDocument := {
-      uri := docState.uri
-      version? := some (spec.version?.getD (docState.versionNo - 1))
-    }
+    textDocument := ⟨docState.uri, some (spec.version?.getD (docState.versionNo - 1))⟩
     position := { line := spec.line, character := spec.character }
   }
   let method := if spec.useAfter then Beam.LSP.Goals.afterMethod else Beam.LSP.Goals.prevMethod
@@ -470,10 +464,7 @@ def sendGoals (doc : DocHandle) (spec : GoalsSpec) : ScenarioM ReqHandle := do
 def sendTodo (doc : DocHandle) (spec : TodoSpec) : ScenarioM ReqHandle := do
   let docState ← getDocState doc
   let params : Beam.LSP.Todo.TodoParams := {
-    textDocument := {
-      uri := docState.uri
-      version? := some (spec.version?.getD (docState.versionNo - 1))
-    }
+    textDocument := ⟨docState.uri, some (spec.version?.getD (docState.versionNo - 1))⟩
     range? := some {
       start := { line := spec.startLine, character := spec.startCharacter }
       «end» := { line := spec.endLine, character := spec.endCharacter }
@@ -489,7 +480,7 @@ def sendTodoWholeDocument
     (kinds? : Option (Array Beam.LSP.Todo.TodoKind) := none) : ScenarioM ReqHandle := do
   let docState ← getDocState doc
   let params : Beam.LSP.Todo.TodoParams := {
-    textDocument := { uri := docState.uri, version? := some (docState.versionNo - 1) }
+    textDocument := ⟨docState.uri, some (docState.versionNo - 1)⟩
     kinds?
   }
   let requestID ← sendRequest Beam.LSP.Todo.method (toJson params)
@@ -537,7 +528,7 @@ def sendImportBasisCheck (doc : DocHandle) (version? : Option Nat := none)
     ScenarioM ReqHandle := do
   let docState ← getDocState doc
   let params : Beam.LSP.ImportBasis.CheckParams := {
-    textDocument := { uri := docState.uri, version? := some (version?.getD (docState.versionNo - 1)) }
+    textDocument := ⟨docState.uri, some (version?.getD (docState.versionNo - 1))⟩
     publishedModules
   }
   let requestID ← sendRequest Beam.LSP.ImportBasis.checkMethod (toJson params)
