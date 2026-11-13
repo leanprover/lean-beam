@@ -222,6 +222,11 @@ private def registerRequest (requestID : RequestID) (params : Json) : ScenarioM 
   }
   pure req
 
+/-- Send JSON unchanged so request tests can exercise malformed or omitted fields. -/
+def sendRawRequest (method : String) (params : Json) : ScenarioM ReqHandle := do
+  let requestID ← sendRequest method params
+  registerRequest requestID params
+
 private partial def waitForRequestOutcome (expectedID : RequestID) : ScenarioM RequestOutcome := do
   if let some outcome ← takeQueuedResponse? expectedID then
     return outcome

@@ -488,22 +488,24 @@ private def checkSyncFileProgressLines : IO Unit := do
   requireFieldAbsent "finished progress" "totalLines" renderedProgress
   requireJsonInt "finished progress" "rangeEndLine" 13 renderedProgress
 
-/-- Exercise the wire identifier as well as progress selection: Lean 4.37 briefly renamed its
-optional version field, but neither missing versions nor stale progress may change meaning. -/
+/-- Both wire encodings of an unknown version must preserve progress selection. -/
 private def checkSyncFileProgressVersionSelection : IO Unit := do
-  for (version?, expectedUpdates) in [
-      (none, 1), (some 0, 0), (some 1, 1), (some 2, 1)] do
-    let params := mkFileProgress #[mkRange 0 0 1 0] version?
-    let decoded : LeanFileProgressParams ← match fromJson? (toJson params) with
-      | .ok value => pure value
-      | .error error => throw <| IO.userError s!"fileProgress identifier round trip: {error}"
+  let uri := "file:///workspace/Foo.lean"
+  for (versionFields, expectedUpdates) in [
+      ([], 1), ([("version", Json.null)], 1),
+      ([("version", toJson (0 : Nat))], 0),
+      ([("version", toJson (1 : Nat))], 1),
+      ([("version", toJson (2 : Nat))], 1)] do
+    let param := Json.mkObj [
+      ("textDocument", Json.mkObj (("uri", toJson uri) :: versionFields)),
+      ("processing", toJson (mkFileProgress #[mkRange 0 0 1 0]).processing)]
     let pending ← mkPending
       (progress? := some {})
-      (tracked? := some ("file:///workspace/Foo.lean", 1))
-    PendingRequest.observeProgress pending decoded
+      (tracked? := some (uri, 1))
+    PendingRequest.observeProgress pending param
     let some progress ← pending.progressRef.get
       | throw <| IO.userError "versioned fileProgress cleared progress"
-    require s!"fileProgress version {version?} selects only current or unversioned progress"
+    require s!"fileProgress version filtering: {param.compress}"
       (progress.updates == expectedUpdates)
 
 private def checkDiagnosticLineCanExceedProgressRange : IO Unit := do
