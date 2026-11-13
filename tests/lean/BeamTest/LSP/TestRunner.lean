@@ -105,7 +105,7 @@ private def buildParams (runner : Lean.Server.Test.Runner.RunnerState) (paramsTe
   let Except.ok params := Json.parse paramsText
     | throw <| IO.userError s!"failed to parse {paramsText}"
   let params := params.setObjVal! "textDocument" <|
-    toJson ({ uri := runner.uri, version? := some (runner.versionNo - 1) : VersionedTextDocumentIdentifier })
+    toJson (VersionedTextDocumentIdentifier.mk runner.uri (some (runner.versionNo - 1)))
   let params := params.setObjVal! "position" (toJson runner.pos)
   pure params
 

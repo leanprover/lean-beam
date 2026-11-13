@@ -343,6 +343,25 @@ def checkRunAtStaleEdit : ScenarioM Unit := do
 
   closeDoc doc
 
+def checkRunAtMissingVersion : ScenarioM Unit := do
+  let path := "tests/scenario/docs/SimpleProof.lean"
+  let doc ← openDoc path
+  syncDoc doc
+  let uri := System.Uri.pathToUri (← IO.FS.realPath path)
+  for versionFields in [[], [("version", Json.null)]] do
+    let params := Json.mkObj [
+      ("textDocument", Json.mkObj (("uri", toJson uri) :: versionFields)),
+      ("position", toJson ({ line := 1, character := 2 } : Lean.Lsp.Position)),
+      ("text", toJson "exact trivial")]
+    let req ← sendRawRequest Beam.LSP.RunAt.method params
+    expectErrorContains req invalidParamsJson
+    let outcome ← awaitReq req
+    unless outcome.errorMessage.contains "textDocument.version is required" do
+      throw <| IO.userError s!"unversioned runAt: unexpected error {outcome.errorMessage}"
+  -- Rejected requests must leave the document usable.
+  requireRunAtSolvesProof "runAt after unversioned requests" doc ⟨1, 2⟩ "exact trivial"
+  closeDoc doc
+
 def checkRunAtStaleVersion : ScenarioM Unit := do
   let doc ← openDoc "tests/scenario/docs/SimpleProof.lean"
   syncDoc doc
@@ -565,6 +584,7 @@ def run : ScenarioM Unit := do
   checkRunAtInvalidPositionLine
   checkRunAtInvalidPositionCharacter
   checkRunAtStaleEdit
+  checkRunAtMissingVersion
   checkRunAtStaleVersion
   checkRunAtStaleEditConcurrentRequest
   checkRunAtCancellation
