@@ -151,15 +151,19 @@ private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Id.r
   -- Selection depends only on the unchanged span forest and timings, never rendered labels.
   -- Reusing the pure selector avoids storing a second, potentially stale summary in Result.
   let selection := Beam.LSP.RunAt.Profile.select profile.spans
-  let fields := fun index =>
+  let fields := fun index (outerLabel? : Option String) =>
     let span := profile.spans[index]!
     [("span", toJson index), ("category", toJson span.category),
        ("duration_ms", toJson span.durationMs)] ++
       (if span.tag.isEmpty then [] else [("tag", toJson span.tag)]) ++
-      (match span.label? with | some label => [("label", toJson label)] | none => [])
-  let entry := fun index => Json.mkObj (fields index)
-  let chainEntry := fun (chain : Beam.LSP.RunAt.Profile.Chain) => Json.mkObj <| fields chain.outer ++
-    if chain.inner == chain.outer then [] else [("inner_span", entry chain.inner)]
+      (match span.label? with
+      | some label => if outerLabel? == some label then [] else [("label", toJson label)]
+      | none => [])
+  let entry := fun index => Json.mkObj (fields index none)
+  let chainEntry := fun (chain : Beam.LSP.RunAt.Profile.Chain) => Json.mkObj <| fields chain.outer none ++
+    -- Equal displayed text (possibly clipped) does not make the two measurements equivalent.
+    if chain.inner == chain.outer then [] else
+      [("inner_span", Json.mkObj <| fields chain.inner profile.spans[chain.outer]!.label?)]
   return Json.mkObj [
     ("elapsed_ms", toJson profile.elapsedMs), ("initial_threshold_ms", toJson profile.initialThresholdMs),
     ("summary", Json.mkObj [

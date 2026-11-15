@@ -23,6 +23,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- Omit an inner profile label when it repeats the outer entry's displayed text on CLI/MCP.
+  The inner span keeps its distinct index, tag and duration, including when clipped previews coincide
+  ([#419](https://github.com/leanprover/lean-beam/pull/419), @ejgallego).
 - Keep snapshot-bound requests and progress notifications compatible with the
   `VersionedTextDocumentIdentifier` field rename proposed in
   [Lean #16237](https://github.com/leanprover/lean4/pull/16237), without changing the supported release window.

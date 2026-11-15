@@ -426,7 +426,10 @@ Start with `elapsed_ms` and `summary`:
   `Elab.def.maxSharing`, `addDecl`, `Elab.definition.value` and `Elab.lint`, in that order. These are
   individual observations, not phase totals. Missing categories are omitted, never reported as zero.
 - Each entry has `span` (its zero-based index in `profile.spans`), `category`, and `duration_ms`.
-  Nonempty `tag` and available `label` are included. The same index can appear in both views;
+  Nonempty `tag` and available `label` are included, except that an `inner_span.label` identical
+  to its outer entry's displayed label is omitted. The inner span's index, tag and own duration
+  remain: equal text, including equal clipped previews, does not establish equivalent operations.
+  The same index can appear in both views;
   it is the same observation and its label is rendered once.
 - `collapsed_spans` counts members of the shown paths that do not get separate top-level entries,
   including tails beyond the displayed inner members. `omitted_from_top` counts retained spans in paths outside the
