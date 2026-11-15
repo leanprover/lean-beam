@@ -82,7 +82,7 @@ Windows support is [experimental](docs/STATUS.md#distribution). Native builds an
 establish an official elan Windows distribution path; that distribution is deferred pending the
 libuv investigation and fixes.
 
-Before updating an existing installation, follow [the upgrade guide](docs/SETUP.md#before-an-upgrade).
+Before updating an existing installation, follow [the upgrade guide](docs/MAINTENANCE.md#before-an-upgrade).
 
 Bundled binaries do not install an agent skill. For bundled Beam, install the
 [Lean agent skill](docs/SETUP.md#install-the-lean-skill-manually) from the matching Beam release,
@@ -130,7 +130,7 @@ Setup and workflows:
 - [Setup](docs/SETUP.md): install Beam, connect an agent, and verify the connection.
 - [Agent workflow](skills/lean-beam/SKILL.md): editing, speculative checks, and module checkpoints;
   [workflow details](skills/lean-beam/references/workflow-details.md) cover the detailed procedures.
-- [Maintenance and recovery](docs/SETUP.md#before-an-upgrade): upgrades, toolchain changes,
+- [Maintenance and recovery](docs/MAINTENANCE.md): upgrades, toolchain changes,
   sessions, and pruning.
 - [Trust and proof confirmation](skills/lean-beam/references/trust-and-validation.md): checkpoints,
   batch builds, and independent proof confirmation.

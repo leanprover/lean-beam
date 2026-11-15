@@ -48,7 +48,7 @@ A workspace retains the runtime it accepted. After changing its selector to anot
 CLI users must stop the original owner through its original installation, confirm cleanup, and
 start a new owner. MCP users must drop the old workspace and confirm cleanup before recreating it;
 a bundled target needs its matching MCP server. Follow the
-[toolchain-change procedure](SETUP.md#changing-the-project-toolchain). Another alias for the same
+[toolchain-change procedure](MAINTENANCE.md#changing-the-project-toolchain). Another alias for the same
 canonical Lean installation preserves the binding and its documents and handles.
 
 ## Updating a local Lean build
