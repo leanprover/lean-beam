@@ -23,6 +23,10 @@ A non-confidential report can include caller narrative, request and response pay
 Beam stats, open-file data, daemon logs and incidents, and bundle evidence. Review all of it before
 posting.
 
+Default redaction replaces the reporting process's nonempty `HOME` in text and JSON string values.
+JSON keys and the non-confidential MCP result's absolute workspace root remain unchanged. Review
+those paths even when redaction is enabled.
+
 ## Confidential Workspaces
 
 Set `"confidential": true` for a non-public workspace. This forces HOME-path redaction and omits
