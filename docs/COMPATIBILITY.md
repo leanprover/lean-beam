@@ -54,6 +54,12 @@ A Lean release line is the canonical `major.minor` family recorded in
   use Lake's full `ModulePreSetup.trace` directly. Lake 4.34–4.35 require the C output descriptor;
   4.36 and current nightly SDKs use optional `ModuleOutputDescrs.c?`. Beam supplies the generated C
   descriptor on both shapes.
+- `Lean.Lsp.VersionedTextDocumentIdentifier` uses positional construction and matching across
+  the `version?` → `version` field rename in
+  [Lean #16237](https://github.com/leanprover/lean4/pull/16237), reverted by
+  [Lean #16356](https://github.com/leanprover/lean4/pull/16356). Both forms carry a `DocumentUri`
+  and an `Option Nat`. Progress accepts an unknown version; snapshot-bound requests require one.
+  Named version fields can be used again when every supported SDK includes the rename.
 - Standalone installation manifest schema 4 and native installation manifest schema 3.
   Earlier installation records do not establish a complete component
   set and must be reinstalled; they are not accepted as current installation inventories.

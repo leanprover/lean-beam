@@ -935,7 +935,7 @@ private def syncFileSnapshotDetailed
       if changedSource then sendTextDocumentDidSave session snapshot.uri else pure session
     | .change =>
         let param := toJson ({
-          textDocument := { uri := snapshot.uri, version? := some decision.version }
+          textDocument := ⟨snapshot.uri, some decision.version⟩
           contentChanges := #[TextDocumentContentChangeEvent.fullChange snapshot.text]
           : DidChangeTextDocumentParams
         })
@@ -2313,7 +2313,7 @@ private def requireCurrentImportBasis
     let publishedModules := current.publishedModules.toArray.map fun (module, eventSeq) =>
       { module, eventSeq : Beam.LSP.ImportBasis.PublishedModule }
     let param := toJson ({
-      textDocument := { uri := started.document.uri, version? := some started.document.version }
+      textDocument := ⟨started.document.uri, some started.document.version⟩
       publishedModules
       : Beam.LSP.ImportBasis.CheckParams
     })
@@ -2642,7 +2642,7 @@ private def handleRunAtOp
   let started ← liftFailureIO <| server.withRequestSessionState req do
     startSyncedWorkspaceRequest server req snapshot method
       (fun uri => Json.mkObj <|
-        [ ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier }))
+        [ ("textDocument", toJson (VersionedTextDocumentIdentifier.mk uri (some request.version)))
         , ("position", toJson ({ line := request.line, character := request.character : Lsp.Position }))
         , ("text", toJson request.text)
         ] ++ (match request.storeHandle? with
@@ -2666,7 +2666,7 @@ private def positionLspParams
     (extraFields : List (String × Json) := []) : Json :=
   Json.mkObj <|
     [
-      ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier })),
+      ("textDocument", toJson (VersionedTextDocumentIdentifier.mk uri (some request.version))),
       ("position", toJson ({ line := request.line, character := request.character : Lsp.Position }))
     ] ++ extraFields
 
@@ -2836,7 +2836,7 @@ private def handleGoalsOp
   let position : Lsp.Position := { line := request.line, character := request.character }
   let pending ← runSyncedDocumentRequest server req method
     (fun uri => Json.mkObj [
-      ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier })),
+      ("textDocument", toJson (VersionedTextDocumentIdentifier.mk uri (some request.version))),
       ("position", toJson position)
     ])
     request.version
@@ -2852,7 +2852,7 @@ private def handleTodoOp
   let method := todoMethod
   let pending ← runSyncedDocumentRequest server req method
     (fun uri => Json.mkObj <|
-      [ ("textDocument", toJson ({ uri := uri, version? := some request.version : VersionedTextDocumentIdentifier }))
+      [ ("textDocument", toJson (VersionedTextDocumentIdentifier.mk uri (some request.version)))
       ] ++
       (match request.range? with
       | some range => [("range", toJson range)]
