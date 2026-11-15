@@ -30,9 +30,14 @@ Use this reference as a short checklist of what not to assume in Lean `beam` wor
 - use a real edit, save, then `lean-beam sync` when the speculative result should become source
 - use `lean-beam save` only for a synced workspace module
 - use MCP when a client requires machine-readable live diagnostics or progress
-- use `lake build` when the task has become dependency freshness
-- rely on successful Beam checkpoints for ordinary local development, ensure CI runs `lake build`
-  from clean artifacts, and use local `lean-beam --root ROOT stop`, `lake clean`, and `lake build` once only
-  when no successful clean CI result is available or server-sensitive elaboration is suspected
+- for dependency edits, sync the dependency, require save readiness, checkpoint it, then refresh
+  the importer in the same CLI session or MCP workspace; inspect diagnostics and readiness before
+  probing again; see the [dependency workflow](workflow-details.md#dependency-edits-and-rebuild-boundary)
+- rely on successful Beam checkpoints for ordinary local development, and use a clean CI
+  `lake build` for batch-build evidence
+- when no successful clean CI result is available or server-sensitive elaboration is suspected,
+  follow the [local batch-build procedure](workflow-details.md#before-a-local-batch-build): stop all
+  affected CLI owners and drop affected MCP workspaces, then confirm cleanup before `lake clean`
+  and `lake build`; if cleanup is pending, failed, or unconfirmed, stop and coordinate
 - distinguish batch-build evidence from [independent proof confirmation](trust-and-validation.md);
   readiness, empty goals, and checkpoint success do not replace the latter
