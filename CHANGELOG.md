@@ -23,6 +23,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- Keep snapshot-bound requests and progress notifications compatible with the
+  `VersionedTextDocumentIdentifier` field rename proposed in
+  [Lean #16237](https://github.com/leanprover/lean4/pull/16237), without changing the supported release window.
 - `save` refusals that suggest `lake build` (`saveUnsupportedSetup`, `saveTraceStale`) and the
   deferred-compilation readiness message in `sync` now say to stop the CLI owner or drop the MCP
   workspace and confirm cleanup before building, then start a fresh session. Building while the session was live left dependencies marked as needing a save,

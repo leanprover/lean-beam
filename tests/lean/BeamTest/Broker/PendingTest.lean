@@ -399,8 +399,9 @@ private def mkRange (startLine startCharacter endLine endCharacter : Nat) : Rang
   «end» := { line := endLine, character := endCharacter }
 }
 
-private def mkFileProgress (ranges : Array Range) : LeanFileProgressParams := {
-  textDocument := { uri := "file:///workspace/Foo.lean", version? := some 1 }
+private def mkFileProgress (ranges : Array Range)
+    (version? : Option Nat := some 1) : LeanFileProgressParams := {
+  textDocument := ⟨"file:///workspace/Foo.lean", version?⟩
   processing := ranges.map fun range => { range }
 }
 
@@ -486,6 +487,26 @@ private def checkSyncFileProgressLines : IO Unit := do
   requireFieldAbsent "finished progress" "line" renderedProgress
   requireFieldAbsent "finished progress" "totalLines" renderedProgress
   requireJsonInt "finished progress" "rangeEndLine" 13 renderedProgress
+
+/-- Both wire encodings of an unknown version must preserve progress selection. -/
+private def checkSyncFileProgressVersionSelection : IO Unit := do
+  let uri := "file:///workspace/Foo.lean"
+  for (versionFields, expectedUpdates) in [
+      ([], 1), ([("version", Json.null)], 1),
+      ([("version", toJson (0 : Nat))], 0),
+      ([("version", toJson (1 : Nat))], 1),
+      ([("version", toJson (2 : Nat))], 1)] do
+    let param := Json.mkObj [
+      ("textDocument", Json.mkObj (("uri", toJson uri) :: versionFields)),
+      ("processing", toJson (mkFileProgress #[mkRange 0 0 1 0]).processing)]
+    let pending ← mkPending
+      (progress? := some {})
+      (tracked? := some (uri, 1))
+    PendingRequest.observeProgress pending param
+    let some progress ← pending.progressRef.get
+      | throw <| IO.userError "versioned fileProgress cleared progress"
+    require s!"fileProgress version filtering: {param.compress}"
+      (progress.updates == expectedUpdates)
 
 private def checkDiagnosticLineCanExceedProgressRange : IO Unit := do
   let active ← observeFileProgress {} #[mkRange 0 0 1 0]
@@ -601,6 +622,7 @@ def main : IO Unit := do
   checkPendingResolveError
   checkSyncFileProgressDisplay
   checkSyncFileProgressLines
+  checkSyncFileProgressVersionSelection
   checkDiagnosticLineCanExceedProgressRange
   checkDiagnosticEmitterFailureIsolation
   checkProgressEmitterFailureIsolation
