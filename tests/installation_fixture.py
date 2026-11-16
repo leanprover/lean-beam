@@ -11,7 +11,7 @@ REPO = Path(__file__).resolve().parent.parent
 EXE = ".exe" if os.name == "nt" else ""
 
 
-def stage(root, *, constructor_env=None):
+def stage(root, *, constructor_env=None, extra_target=None):
     compiler_prefix = subprocess.run(["lake", "env", "lean", "--print-prefix"], cwd=REPO,
                                      check=True, capture_output=True, text=True).stdout.strip()
     compiler = Path(compiler_prefix) / "bin" / ("lean" + EXE)
@@ -19,7 +19,8 @@ def stage(root, *, constructor_env=None):
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, check=True,
                             capture_output=True, text=True).stdout.strip()
     result = subprocess.run([REPO / ".lake/build/bin" / ("beam-installation-stage-fixture" + EXE),
-                             REPO, root, compiler, selector, commit], cwd=REPO,
+                             REPO, root, compiler, selector, commit,
+                             *([extra_target] if extra_target is not None else [])], cwd=REPO,
                             capture_output=True, text=True, timeout=90, env=constructor_env)
     assert result.returncode == 0, (result.stdout, result.stderr)
     return compiler.parent.parent.resolve()

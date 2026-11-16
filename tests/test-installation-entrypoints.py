@@ -3,6 +3,7 @@
 # Released under Apache 2.0 license as described in the file LICENSE.
 """Shipped entry points cannot select foreign components or attach across installations."""
 
+import importlib.util
 import json
 import os
 import shlex
@@ -14,6 +15,11 @@ import tempfile
 import time
 
 from installation_fixture import EXE, stage
+
+ROOT = Path(__file__).resolve().parent.parent
+spec = importlib.util.spec_from_file_location("installation_mcp_client", ROOT / "tests/test-mcp-stdio.py")
+stdio = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(stdio)
 
 
 def run(command, *arguments, env, cwd, ok=True, input=None):
@@ -36,14 +42,19 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
     fake_elan = construction_shim / "elan"
     fake_elan.write_text(f'#!/bin/sh\nprintf invoked >> "{marker}"\nexit 99\n')
     fake_elan.chmod(0o755)
+    unrelated_sdk = directory / "unrelated-sdk"
+    unrelated_lean = unrelated_sdk / "bin" / ("lean" + EXE)
+    unrelated_lean.parent.mkdir(parents=True)
+    unrelated_lean.write_bytes(fake_elan.read_bytes())
+    unrelated_lean.chmod(0o755)
     # The fixture captures its compiler first; constructing with it must not reselect via elan.
-    compiler = stage(g, constructor_env=dict(os.environ,
+    compiler = stage(g, extra_target=unrelated_lean, constructor_env=dict(os.environ,
         PATH=str(construction_shim) + os.pathsep + os.environ["PATH"]))
     assert not marker.exists(), "construction reselected the captured frontend SDK"
     shutil.copytree(g, h)
     record = json.loads((g / "manifest.json").read_text())
     assert json.loads((h / "manifest.json").read_text()) == record
-    target, = record["components"]["targets"]
+    target, _ = record["components"]["targets"]
     project = directory / "project"
     project.mkdir()
     (project / "lean-toolchain").write_text(str(compiler) + "\n")
@@ -62,6 +73,67 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
     cli_h = h / record["components"]["frontends"]["cli"]
     mcp = g / record["components"]["frontends"]["mcp"]
     daemon = g / target["daemon"]
+    unavailable_project = directory / "unavailable-project"
+    unavailable_project.mkdir()
+    (unavailable_project / "lean-toolchain").write_text(str(unrelated_sdk) + "\n")
+    (unavailable_project / "lakefile.toml").write_text('name = "unavailable_target"\n')
+    (unavailable_project / "Smoke.lean").write_text("def smoke : Nat := 42\n")
+    manifest_bytes = (g / "manifest.json").read_bytes()
+    parked_sdk = directory / "unrelated-sdk-parked"
+    unrelated_bytes = unrelated_lean.read_bytes()
+    for phase in ["missing", "dangling"]:
+        if phase == "missing":
+            unrelated_lean.unlink()
+        else:
+            unrelated_sdk.rename(parked_sdk)
+            if os.name == "nt":
+                subprocess.run(["cmd", "/d", "/c", "mklink", "/J", unrelated_sdk,
+                                directory / "absent-sdk"], check=True, capture_output=True, timeout=15)
+            else:
+                unrelated_sdk.symlink_to(directory / "absent-sdk", target_is_directory=True)
+        try:
+            for executable in [cli_g, mcp, g / "bin/lean-beam", g / "bin/lean-beam-mcp"]:
+                for cwd in [project, unavailable_project]:
+                    version = run(executable, "--version", env=env, cwd=cwd)
+                    assert str(g) in version.stdout, version.stdout
+            healthy = run(cli_g, "doctor", "--json", env=env, cwd=project)
+            assert "error" not in json.loads(healthy.stdout), healthy.stdout
+            rejected_target = run(cli_g, "doctor", "--json", env=env,
+                                  cwd=unavailable_project, ok=False)
+            failure = json.loads(rejected_target.stdout)["error"]
+            assert failure["code"] == "setupError", failure
+            assert "unavailable locally" in failure["message"], failure
+            assert not rejected_target.stderr, rejected_target.stderr
+            client = stdio.McpClient(directory, project, 30, label=f"external-{phase}",
+                                     server_command=[mcp], extra_env=env)
+            try:
+                client.initialize()
+                identity = client.call_tool("beam_version")
+                assert identity["beam_home"] == str(g), identity
+                assert identity["runtime_active"] is False, identity
+                denied = stdio.expect_error_code(client.request("tools/call", {
+                    "name": "lean_sync", "arguments": {
+                        "workspace": {"root": str(unavailable_project)}, "path": "Smoke.lean"}}), -32600)
+                assert "unavailable locally" in denied["message"], denied
+                synced = client.call_tool("lean_sync", {
+                    "workspace": {"root": str(project)}, "path": "Smoke.lean"})
+                assert "document_progress" in synced, synced
+            finally:
+                client.close()
+            assert (g / "manifest.json").read_bytes() == manifest_bytes
+            assert not (unavailable_project / ".beam").exists()
+            assert not marker.exists(), "unavailable target caused a foreign compiler invocation"
+            print(f"unrelated external SDK {phase}: CLI/MCP identity and surviving runtime passed", flush=True)
+        finally:
+            if phase == "missing":
+                unrelated_lean.write_bytes(unrelated_bytes)
+                unrelated_lean.chmod(0o755)
+            else:
+                if os.name == "nt":
+                    unrelated_sdk.rmdir()
+                else:
+                    unrelated_sdk.unlink()
+                parked_sdk.rename(unrelated_sdk)
     # Reject a target outside the installation before creating any session state. Existing
     # private state belongs to its owner and must remain untouched when admission fails.
     admission_env = dict(env, HOME=str(directory / "admission-home"),

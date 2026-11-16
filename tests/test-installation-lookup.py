@@ -82,6 +82,35 @@ with tempfile.TemporaryDirectory(prefix="beam installation lookup-") as temporar
         unreadable.parent.chmod(0)
     try:
         run_lookup()
+        run_lookup("external-availability", "stage")
+        second = directory / "sdk-1/bin" / ("lean" + suffix)
+        second_bytes = second.read_bytes()
+        second.unlink()
+        try:
+            run_lookup("external-availability", "missing")
+        finally:
+            second.write_bytes(second_bytes)
+            second.chmod(0o755)
+        second_sdk = directory / "sdk-1"
+        parked_sdk = directory / "sdk-1-parked"
+        second_sdk.rename(parked_sdk)
+        try:
+            run_lookup("external-availability", "dangling")
+            if os.name == "nt":
+                subprocess.run(["cmd", "/d", "/c", "mklink", "/J", second_sdk,
+                                directory / "foreign"], check=True, capture_output=True, timeout=15)
+            else:
+                second_sdk.symlink_to(directory / "foreign", target_is_directory=True)
+            try:
+                run_lookup("external-availability", "substituted")
+            finally:
+                if os.name == "nt":
+                    second_sdk.rmdir()
+                else:
+                    second_sdk.unlink()
+        finally:
+            parked_sdk.rename(second_sdk)
+        run_lookup("external-availability", "restored")
         # The exact installed release remains present throughout every alias transition.
         run_lookup("shadowed-alias", "absent")
         link("v4.34.1", "foreign")

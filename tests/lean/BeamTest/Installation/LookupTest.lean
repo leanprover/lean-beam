@@ -335,10 +335,44 @@ private def runFullFixture (directory : System.FilePath) : IO Unit := do
   discard <| accepted other project
   IO.println "exact lookup, aliases, target ownership, retained generation, and independent installation isolation passed"
 
+private def checkExternalAvailability (directory : System.FilePath) (phase : String) : IO Unit := do
+  let suffix := if System.Platform.isWindows then ".exe" else ""
+  let home := directory / "external-availability"
+  if phase == "stage" then discard <| stage directory home
+  let installation ← Installation.openExecutable (home / ("libexec/beam-cli" ++ suffix)) .cli false
+  let .ok observation ← installation.observe
+    | throw <| IO.userError s!"unrelated external target blocked installation identity: {phase}"
+  let identity := observation.identity { name := "availability-fixture" }
+  require (identity.beamHome? == some home.toString) "identity lost its bound installation"
+  let project := directory / "project"
+  IO.FS.writeFile (project / "lean-toolchain") "fixture-alias\n"
+  let healthy ← accepted installation project
+  let expected ← Beam.resolveExistingPath (directory / "sdk-0" / "bin" / ("lean" ++ suffix))
+  require (Beam.sameCanonicalPath expected healthy.command)
+    s!"unavailable second target changed the surviving runtime: expected {expected}, got {healthy.command}"
+  IO.FS.writeFile (project / "lean-toolchain") "fixture-second\n"
+  if phase == "substituted" then
+    let .error (.unavailable target) ← installation.lookup project
+      | throw <| IO.userError "changed external link admitted an unrecorded compiler"
+    require (Beam.sameCanonicalPath target.selected.command
+      (← Beam.resolveExistingPath (directory / "foreign/bin" / ("lean" ++ suffix))))
+      "changed external link lost its actual selected compiler"
+  else if phase == "missing" || phase == "dangling" then
+    let .error (.selection (.io _)) ← installation.lookup project
+      | throw <| IO.userError "missing selected external compiler lost its typed selection failure"
+    let .error failure ← (installation.runtime.resolve project).run
+      | throw <| IO.userError "CLI admitted a missing selected external compiler"
+    require (failure.failure.error.code == "setupError") "selected external failure became an internal error"
+  else
+    discard <| accepted installation project
+  IO.println s!"external availability passed: {phase}"
+
 def main (args : List String) : IO Unit := do
   match args with
   | [directory] => runFullFixture directory
   | [directory, "remedy"] => remedyExample directory
   | [directory, "shadowed-alias", phase] =>
       checkShadowedAlias (← Beam.resolveExistingPath directory) phase
+  | [directory, "external-availability", phase] =>
+      checkExternalAvailability (← Beam.resolveExistingPath directory) phase
   | _ => throw <| IO.userError "expected owned fixture directory and optional shadowing-alias phase"
