@@ -183,7 +183,8 @@ private def withTempSiblingDir
   let parent := path.parent.getD (System.FilePath.mk ".")
   let pid ← IO.Process.getPID
   let tmpDir := parent / s!".beam-save-tmp-{pid}-{← IO.monoNanosNow}"
-  IO.FS.createDirAll tmpDir
+  -- Acquire cleanup authority only for a directory created by this attempt.
+  IO.FS.createDir tmpDir
   try
     useDir tmpDir
   finally

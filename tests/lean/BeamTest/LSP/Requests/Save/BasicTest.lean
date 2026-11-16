@@ -240,8 +240,9 @@ def checkSaveArtifactsWriteModuleFamily
   let bcFile? := if Lean.Internal.hasLLVMBackend () then some (outDir / "bc" / "ModuleArtifacts.bc")
     else none
   -- Confirm the supplied destination itself is writable before testing serializer suffixes.
+  let priorOlean := "prior private artifact"
   IO.FS.createDirAll (outDir / "module")
-  IO.FS.writeFile paths[0]! "prior private artifact"
+  IO.FS.writeFile paths[0]! priorOlean
   if bcFile?.isNone then
     IO.eprintln "saveArtifacts module bitcode: unsupported (toolchain has no LLVM backend)"
   let saveReq ← sendSaveArtifacts doc {
@@ -262,6 +263,9 @@ def checkSaveArtifactsWriteModuleFamily
   unless saved.written && saved.version == 1 && saved.textHash == hash text do
     throw <| IO.userError "saveArtifacts module family returned the wrong completion"
   for path in paths do expectFileExists "saveArtifacts module family" path
+  let writtenOlean ← IO.FS.readBinFile paths[0]!
+  if writtenOlean.isEmpty || writtenOlean == priorOlean.toUTF8 then
+    throw <| IO.userError "module serialization did not replace the prior artifact"
   if let some bcFile := bcFile? then expectFileExists "saveArtifacts module bitcode" bcFile
   let entries ← (outDir / "module").readDir
   if entries.any (·.fileName.startsWith ".beam-save-tmp-") then
