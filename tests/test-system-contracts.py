@@ -60,7 +60,7 @@ def inspect_foreign_owner():
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix="beam system contracts-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="beam system contracts Ω-") as temporary:
         root = Path(temporary).resolve()
         target = root / "target"
         target.mkdir()
@@ -73,6 +73,10 @@ def main():
         missing_target.rmdir()
         (root / "file").write_bytes(b"ordinary file")
         (root / "file").chmod(0o600)
+        (root / "file-link").symlink_to(root / "file")
+        (root / "dangling-file").symlink_to(root / "missing-file")
+        if os.name != "nt":
+            os.mkfifo(root / "fifo", 0o600)
         (root / "executable").write_bytes(b"static inspection must not execute this file")
         (root / "executable").chmod(0o700)
         non_private = root / "non-private"

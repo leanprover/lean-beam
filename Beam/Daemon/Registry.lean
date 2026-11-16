@@ -77,20 +77,17 @@ private def validateSessionDescriptor (entry : SessionDescriptor) : Except Strin
   validateWorkspaceBinding entry.workspace
 
 def readRegistryAt (path : System.FilePath) : IO RegistryRead := do
-  let metadata? ←
+  let metadata ←
     try
-      pure <| some (← path.symlinkMetadata)
-    catch
-    | .noFileOrDirectory .. => pure none
-    | err =>
-        return .invalid <| .malformed s!"could not inspect registry: {err}"
-  let some metadata := metadata?
-    | return .absent
-  match metadata.type with
-  | .symlink =>
+      Beam.observeEntry path
+    catch err =>
+      return .invalid <| .malformed s!"could not inspect registry: {err}"
+  match metadata with
+  | .absent => return .absent
+  | .symlink | .junction =>
       return .invalid <| .unsafeLeaf
         s!"unsafe session descriptor {path}: symbolic links are not accepted"
-  | .dir | .other =>
+  | .directory | .reparse _ | .other =>
       return .invalid <| .unsafeLeaf
         s!"unsafe session descriptor {path}: expected a regular file"
   | .file => pure ()
@@ -120,12 +117,13 @@ def readRegistryAt (path : System.FilePath) : IO RegistryRead := do
 
 /-- Refuse to reopen an unsafe descriptor leaf for in-place lifecycle mutation. -/
 def requireRegularRegistryLeaf (path : System.FilePath) : IO Unit := do
-  let metadata ← path.symlinkMetadata
-  match metadata.type with
+  match ← Beam.observeEntry path with
   | .file => pure ()
-  | .symlink =>
+  | .symlink | .junction =>
       throw <| IO.userError s!"unsafe session descriptor {path}: symbolic links are not accepted"
-  | .dir | .other =>
+  | .absent =>
+      throw <| IO.Error.noFileOrDirectory path.toString 0 "session descriptor is absent"
+  | .directory | .reparse _ | .other =>
       throw <| IO.userError s!"unsafe session descriptor {path}: expected a regular file"
 
 def readRegistry (root : System.FilePath) : IO RegistryRead := do

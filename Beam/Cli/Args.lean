@@ -274,12 +274,14 @@ private def resolveSessionDirArg (dir : String) : CliM System.FilePath := do
   let path := System.FilePath.mk dir
   unless path.isAbsolute do
     throw <| .argument "--session-dir" dir (fun preview => s!"--session-dir requires an absolute path, got '{preview}'")
-  match ← path.symlinkMetadata.toBaseIO with
-  | .ok metadata =>
-      if metadata.type == .symlink then
+  match ← (Beam.observeEntry path).toBaseIO with
+  | .ok .absent => Beam.resolvePathForCreation path
+  | .ok kind =>
+      if kind == .symlink || kind == .junction then
         throw <| .argument "--session-dir" dir (fun preview => s!"--session-dir does not accept a symbolic-link leaf: '{preview}'")
+      if let .reparse _ := kind then
+        throw <| .argument "--session-dir" dir (fun preview => s!"--session-dir does not accept a reparse-point leaf: '{preview}'")
       Beam.resolveExistingPath path
-  | .error (.noFileOrDirectory ..) => Beam.resolvePathForCreation path
   | .error error => throw <| .argument "--session-dir" dir (fun preview =>
       s!"cannot inspect --session-dir '{preview}': {(argumentPreview "IO detail" error.toString).preview}")
 

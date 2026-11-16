@@ -11,6 +11,7 @@ Author: Emilio J. Gallego Arias
 #include <string.h>
 #include <sys/stat.h>
 #if !defined(_WIN32)
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -20,7 +21,7 @@ enum private_dir_kind {
   PRIVATE_POSIX_MODE, PRIVATE_WINDOWS_DACL, PRIVATE_POSIX_OWNER
 };
 
-static lean_obj_res observation(enum private_dir_kind kind, uint32_t mode) {
+static lean_obj_res observation(uint8_t kind, uint32_t mode) {
   lean_object *result = lean_alloc_ctor(0, 2, 0);
   lean_ctor_set(result, 0, lean_box(kind));
   lean_ctor_set(result, 1, lean_box_uint32(mode));
@@ -33,6 +34,21 @@ static int valid_path(b_lean_obj_arg path) {
 
 static lean_obj_res path_error(int error, b_lean_obj_arg path) {
   return lean_io_result_mk_error(lean_decode_io_error(error, path));
+}
+
+/* link() follows a source symlink on Darwin. linkat(..., 0) retains the leaf itself. */
+LEAN_EXPORT lean_obj_res lean_beam_hard_link_no_follow(
+    b_lean_obj_arg source, b_lean_obj_arg target, lean_obj_arg world) {
+  (void)world;
+  if (!valid_path(source)) return path_error(EINVAL, source);
+  if (!valid_path(target)) return path_error(EINVAL, target);
+#if defined(_WIN32)
+  return path_error(ENOSYS, source);
+#else
+  if (linkat(AT_FDCWD, lean_string_cstr(source), AT_FDCWD, lean_string_cstr(target), 0) != 0)
+    return path_error(errno, source);
+  return lean_io_result_mk_ok(lean_box(0));
+#endif
 }
 
 #if defined(_WIN32)
@@ -142,32 +158,47 @@ static DWORD private_directory(HANDLE handle, TOKEN_USER *user, BOOL *result) {
 }
 #endif
 
-/* Lean's Windows symlinkMetadata follows links. Inspect the exact leaf's tag instead. */
-LEAN_EXPORT lean_obj_res lean_beam_path_is_link(b_lean_obj_arg path, lean_obj_arg world) {
+/* Tags are decoded by Beam.System.observeEntry, independently of private-directory policy. */
+enum entry_kind {
+  ENTRY_ABSENT, ENTRY_FILE, ENTRY_DIRECTORY, ENTRY_SYMLINK, ENTRY_JUNCTION,
+  ENTRY_REPARSE, ENTRY_OTHER
+};
+
+/* Lean's Windows symlinkMetadata follows links. Inspect the exact leaf's handle instead. */
+LEAN_EXPORT lean_obj_res lean_beam_observe_entry(b_lean_obj_arg path, lean_obj_arg world) {
   (void)world;
   if (!valid_path(path)) return path_error(EINVAL, path);
-  int linked;
+  enum entry_kind kind;
+  uint32_t tag = 0;
 #if defined(_WIN32)
   HANDLE handle;
   DWORD error = open_path_no_follow(path, FILE_READ_ATTRIBUTES, &handle);
-  if (missing_path(error)) return lean_io_result_mk_ok(lean_box(0));
+  if (missing_path(error)) return observation(ENTRY_ABSENT, 0);
   if (error != ERROR_SUCCESS) return windows_error(error, path);
   FILE_ATTRIBUTE_TAG_INFO info;
   BOOL success = GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &info, sizeof(info));
   error = success ? ERROR_SUCCESS : GetLastError();
-  CloseHandle(handle);
+  if (!CloseHandle(handle) && error == ERROR_SUCCESS) error = GetLastError();
   if (error != ERROR_SUCCESS) return windows_error(error, path);
-  linked = (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
-    (info.ReparseTag == IO_REPARSE_TAG_SYMLINK || info.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT);
+  if (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+    if (info.ReparseTag == IO_REPARSE_TAG_SYMLINK) kind = ENTRY_SYMLINK;
+    else if (info.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT) kind = ENTRY_JUNCTION;
+    else { kind = ENTRY_REPARSE; tag = info.ReparseTag; }
+  } else if (info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) kind = ENTRY_DIRECTORY;
+  else if (info.FileAttributes & FILE_ATTRIBUTE_DEVICE) kind = ENTRY_OTHER;
+  else kind = ENTRY_FILE;
 #else
   struct stat status;
   if (lstat(lean_string_cstr(path), &status) != 0) {
-    if (errno == ENOENT) return lean_io_result_mk_ok(lean_box(0));
+    if (errno == ENOENT) return observation(ENTRY_ABSENT, 0);
     return path_error(errno, path);
   }
-  linked = S_ISLNK(status.st_mode);
+  if (S_ISLNK(status.st_mode)) kind = ENTRY_SYMLINK;
+  else if (S_ISREG(status.st_mode)) kind = ENTRY_FILE;
+  else if (S_ISDIR(status.st_mode)) kind = ENTRY_DIRECTORY;
+  else kind = ENTRY_OTHER;
 #endif
-  return lean_io_result_mk_ok(lean_box(linked));
+  return observation(kind, tag);
 }
 
 /* Observation only: Windows ACLs are deliberately not approximated by POSIX execute bits. */

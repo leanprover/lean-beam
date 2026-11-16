@@ -470,6 +470,19 @@ not SDK or compiled-artifact copies, and are retained for 14 days. For local def
 use `--keep-root` to keep the enclosing clone as well as the inner failed workspace. Remove only
 the printed owned scratch directory after the evidence is no longer needed.
 
+The native system-contract fixture checks non-following entry classification for ordinary files,
+directories, file links, Windows junctions, dangling links, missing paths, invalid paths and
+observation errors (plus FIFOs on POSIX). It checks that selector fallback requires a usable
+project directory, registry/session admission rejects linked leaves before canonicalization, and
+Windows publication rejection preserves existing links, their targets, trace bytes and output hashes.
+On POSIX, injected publication failures check restoration of original non-directory entries, including
+live and dangling file links and FIFOs. The fixture requires the injected failure to be reached before
+checking rollback, so an earlier backup error cannot satisfy the preservation assertions.
+Unknown Windows reparse tags remain distinct from ordinary files. Private-directory admission
+continues to reject all reparse points under its stricter policy.
+The Windows runner must allow file symbolic-link creation; these controls do not replace file
+links with ordinary copies or skip the no-follow assertions when that prerequisite is missing.
+
 ## Native Toolchain Qualification
 
 [tests/test-native-toolchain.py](../tests/test-native-toolchain.py) takes an SDK prefix and checks

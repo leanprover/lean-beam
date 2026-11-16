@@ -63,26 +63,17 @@ private def linkedLean? (home : System.FilePath) (release : String) : IO (Option
   -- Once this link takes precedence, observation and compiler failures are terminal.
   pure <| some (← leanIn path)
 
-/-- Only genuine absence permits the bundled default. Windows metadata follows file links,
-so a missing target requires a non-following directory observation before declaring absence. -/
-private def selectorPresent (root marker : System.FilePath) : IO Bool := do
-  try
-    discard <| marker.symlinkMetadata
-    return true
-  catch
-  | .noFileOrDirectory .. =>
-      return (← root.readDir).any fun entry =>
-        if System.Platform.isWindows then entry.fileName.toLower == "lean-toolchain"
-        else entry.fileName == "lean-toolchain"
-  | error => throw error
-
 /-- Resolve regular selector files through local context.
 No candidate executable, elan command, download, or build runs. -/
 def resolve (root : System.FilePath) (home? : Option System.FilePath) :
     IO (Except Failure (Option Selection)) := do
   try
     let marker := root / "lean-toolchain"
-    unless ← selectorPresent root marker do return .ok none
+    if (← Beam.observeEntry marker) == .absent then
+      -- Absence of a selector does not authorize fallback from a missing or unusable root.
+      unless (← root.metadata).type == .dir do
+        throw <| IO.userError s!"project root must be a directory: {root}"
+      return .ok none
     unless (← marker.metadata).type == .file do
       throw <| IO.userError s!"project selector must resolve to a regular file: {marker}"
     let selector := ((← IO.FS.readFile marker).splitOn "\n").headD "" |>.trimAscii.toString
