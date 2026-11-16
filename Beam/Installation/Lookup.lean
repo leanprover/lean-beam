@@ -177,7 +177,9 @@ private def memberPath (root : System.FilePath) (relative : String) : IO System.
     throw <| IO.userError s!"component escapes its recorded path: {path}"
   pure canonical
 
-private def targetCommand (root : System.FilePath) (bundled : Bool)
+/-- Bundled Lean is an owned member. Standalone Lean is an external dependency whose
+recorded canonical path is matched against the locally selected compiler during lookup. -/
+private def recordedTargetCommand (root : System.FilePath) (bundled : Bool)
     (target : Beam.Installation.Target) : IO System.FilePath := do
   let path := System.FilePath.mk target.lean
   if bundled then
@@ -186,12 +188,9 @@ private def targetCommand (root : System.FilePath) (bundled : Bool)
       throw <| IO.userError "bundled target must name the containing Lean executable"
     return ← memberPath root target.lean
   unless path.isAbsolute do throw <| IO.userError "standalone target Lean path is not absolute"
-  let command ← Beam.resolveExistingPath path
-  unless Beam.sameCanonicalPath command path && (← command.metadata).type == .file do
-    throw <| IO.userError s!"recorded target Lean path changed: {path}"
-  pure command
+  pure path
 
-private structure ResolvedTarget where
+private structure CheckedTarget where
   target : Beam.Installation.Target
   command : System.FilePath
   daemon : System.FilePath
@@ -203,7 +202,7 @@ structure Observation where
   private home : System.FilePath
   private record : Record
   private cli : System.FilePath
-  private targets : Array ResolvedTarget
+  private targets : Array CheckedTarget
   private daemonTarget? : Option Nat
 
 private def checkRecord (root app : System.FilePath) (role : Role)
@@ -223,10 +222,10 @@ private def checkRecord (root app : System.FilePath) (role : Role)
       | .cli => Beam.sameCanonicalPath app cli
       | .mcp => Beam.sameCanonicalPath app mcp
       | .daemon => false
-    let mut targets : Array ResolvedTarget := #[]
+    let mut targets : Array CheckedTarget := #[]
     let mut daemonTarget? := none
     for target in components.targets do
-      let command ← targetCommand root record.isBundled target
+      let command ← recordedTargetCommand root record.isBundled target
       if targets.any (fun target => Beam.sameCanonicalPath command target.command) then
         return .error (.invalid "duplicate canonical target Lean path")
       let daemon ← member target.daemon
@@ -299,7 +298,8 @@ private def Observation.installContext (observation : Observation) : IO TargetIn
   catch _ => pure ()
   return .unconfirmed location.installRoot
 
-/-- Select from checked members; no installation member is resolved a second time. -/
+/-- Resolve only the project's selected external compiler, then require its canonical path
+to match the record. Owned installation members come from the checked observation. -/
 def Observation.lookup (observation : Observation) (root : System.FilePath) : IO (Except Failure RuntimeRef) := do
   let selected ← Beam.Installation.LocalTarget.resolve root (← Beam.Installation.LocalTarget.elanHome)
   let selected ← match selected with

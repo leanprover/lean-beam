@@ -225,6 +225,11 @@ interactive choices specify another set. Each successful installer run publishes
 target set**. It does not add to the previous installation's targets or automatically retain the
 repo-pinned target when you select others. Include every toolchain you want to keep using.
 
+Removing an external Lean SDK does not remove its recorded Beam target. Other installed targets
+and `--version` remain usable; selecting the removed SDK reports a setup error. Restore that exact
+SDK or rerun the installer with the complete set of targets you want to retain. Missing files inside
+the Beam installation itself still require repair or reinstallation.
+
 For example, select two project toolchains in one invocation:
 
 ```bash

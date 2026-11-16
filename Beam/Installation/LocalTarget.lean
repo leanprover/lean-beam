@@ -25,7 +25,7 @@ inductive Failure where
 
 def Failure.message : Failure → String
   | .unavailable selector =>
-      s!"project target '{selector}' is unavailable locally; install or link its exact Lean installation, then reinstall Beam with that target"
+      s!"project target '{selector}' is unavailable locally; restore or link its exact Lean installation, then retry"
   | .floating selector =>
       s!"project selector '{selector}' requires remote resolution; pin an exact locally installed target or use an explicit local link"
   | .io error => error.toString

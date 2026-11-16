@@ -13,8 +13,12 @@ private def copy (source destination : System.FilePath) : IO Unit := do
 
 /-- Test setup only: stage already-built same-compiler artifacts without building target runtimes. -/
 def main (args : List String) : IO Unit := do
-  let [source, destination, lean, selector, commit] := args
-    | throw <| IO.userError "expected SOURCE STAGING LEAN SELECTOR COMMIT"
+  let (source, destination, lean, selector, commit, extraLean?) ← match args with
+    | [source, destination, lean, selector, commit] =>
+        pure (source, destination, lean, selector, commit, none)
+    | [source, destination, lean, selector, commit, extraLean] =>
+        pure (source, destination, lean, selector, commit, some extraLean)
+    | _ => throw <| IO.userError "expected SOURCE STAGING LEAN SELECTOR COMMIT [EXTRA_LEAN]"
   let source ← Beam.resolveExistingPath source
   let root := System.FilePath.mk destination
   let suffix := if System.Platform.isWindows then ".exe" else ""
@@ -49,8 +53,21 @@ def main (args : List String) : IO Unit := do
     compilerRevision := Beam.compiledCompilerRevision
     leanVersion := "same-compiler test fixture", lakeVersion := "same-compiler test fixture"
   }
+  let mut targets := #[target]
+  if let some extraLean := extraLean? then
+    let extraDaemon := "runtimes/1/bin/beam-daemon" ++ suffix
+    let extraPlugin := "runtimes/1/" ++ pluginName
+    copy (root / daemon) (root / extraDaemon)
+    copy (root / plugin) (root / extraPlugin)
+    Beam.Install.Construction.stageSharedLibraries
+      (libraries.map (fun path => source / ".lake/build" / System.FilePath.mk path))
+      (root / "runtimes/1") "bin"
+    targets := targets.push { target with
+      lean := (← Beam.resolveExistingPath extraLean).toString
+      toolchain := "unrelated-fixture"
+      daemon := extraDaemon, plugin := extraPlugin }
   let manifest ← Beam.Install.Construction.finalize root (some commit) {
     frontends := { cli, mcp, compilerRevision := Beam.compiledCompilerRevision }
-    license := "LICENSE", targets := #[target]
+    license := "LICENSE", targets
   }
   IO.println manifest.payloadHash

@@ -1170,6 +1170,14 @@ identity reporting consume its resolved member paths; `doctor` shares one observ
 Subsequent operations repeat the live member checks and compare with the process's startup record.
 Observations rely on immutable publication and stay local to the operation that requested them.
 
+Standalone SDKs are external dependencies, outside the owned artifact inventory. Observation checks
+every owned component, executable role, and recorded compiler relationship, while retaining the
+recorded absolute SDK paths. Project lookup resolves only the selected compiler and requires its
+canonical path to match a recorded target. Removing an unrelated external SDK therefore does not
+block identity reporting or healthy targets. Selecting a missing SDK still returns a typed selection
+failure; a changed link cannot substitute an unrecorded compiler. Bundled Lean remains an owned
+inventory member and retains the complete member checks.
+
 Local Elan aliases must be actual links. On Windows these include directory junctions; an ordinary
 directory does not become an alias merely because its `bin` directory links to an admitted compiler.
 Lean 4.36.0-rc1's Windows `symlinkMetadata` follows links, so Beam's filesystem helper inspects the
@@ -1222,6 +1230,10 @@ shadowing alias moves through healthy foreign, missing compiler, non-file compil
 failure, dangling link, and removal states; only removal restores exact-release admission.
 Its candidate compiler files are unusable; on POSIX they also record invocation attempts. Lookup must
 not run them or create provider caches.
+The lookup and installed-entrypoint regressions remove one of two external SDKs, including a
+dangling-link case, and check identity, surviving-target admission, and typed selected-target failure.
+An in-process remove/restore control retains installations opened before and during SDK absence;
+both reject the missing compiler and recover the same runtime after restoration, without restarting.
 The MCP protocol tests retain creation/admission counters, cancellation, independent workspaces,
 and a controlled drop/recreate race. Native qualification tests selector aliases with live handles,
 generation replacement, and cleanup after provenance becomes unusable in both protocol families.
