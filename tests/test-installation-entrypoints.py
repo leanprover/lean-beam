@@ -103,6 +103,8 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
             failure = json.loads(rejected_target.stdout)["error"]
             assert failure["code"] == "setupError", failure
             assert "unavailable locally" in failure["message"], failure
+            assert "restore or link its exact Lean installation, then retry" in failure["message"], failure
+            assert "reinstall" not in failure["message"], failure
             assert not rejected_target.stderr, rejected_target.stderr
             client = stdio.McpClient(directory, project, 30, label=f"external-{phase}",
                                      server_command=[mcp], extra_env=env)
@@ -115,6 +117,8 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
                     "name": "lean_sync", "arguments": {
                         "workspace": {"root": str(unavailable_project)}, "path": "Smoke.lean"}}), -32600)
                 assert "unavailable locally" in denied["message"], denied
+                assert "restore or link its exact Lean installation, then retry" in denied["message"], denied
+                assert "reinstall" not in denied["message"], denied
                 synced = client.call_tool("lean_sync", {
                     "workspace": {"root": str(project)}, "path": "Smoke.lean"})
                 assert "document_progress" in synced, synced

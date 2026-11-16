@@ -1232,6 +1232,8 @@ Its candidate compiler files are unusable; on POSIX they also record invocation 
 not run them or create provider caches.
 The lookup and installed-entrypoint regressions remove one of two external SDKs, including a
 dangling-link case, and check identity, surviving-target admission, and typed selected-target failure.
+An in-process remove/restore control retains installations opened before and during SDK absence;
+both reject the missing compiler and recover the same runtime after restoration, without restarting.
 The MCP protocol tests retain creation/admission counters, cancellation, independent workspaces,
 and a controlled drop/recreate race. Native qualification tests selector aliases with live handles,
 generation replacement, and cleanup after provenance becomes unusable in both protocol families.

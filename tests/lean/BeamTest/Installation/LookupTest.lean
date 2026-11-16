@@ -335,6 +335,27 @@ private def runFullFixture (directory : System.FilePath) : IO Unit := do
   discard <| accepted other project
   IO.println "exact lookup, aliases, target ownership, retained generation, and independent installation isolation passed"
 
+private def checkRetainedRestoration (installation : Installation)
+    (project compiler : System.FilePath) : IO Unit := do
+  let original ← accepted installation project
+  let parked := compiler.parent.getD compiler / "parked-lean-fixture"
+  let suffix := if System.Platform.isWindows then ".exe" else ""
+  IO.FS.rename compiler parked
+  let during ← try
+    let during ← Installation.openExecutable
+      (installation.home / ("libexec/beam-cli" ++ suffix)) .cli false
+    for retained in [installation, during] do
+      discard <| retained.readIdentity { name := "retained-availability-fixture" }
+      let .error (.selection (.io _)) ← retained.lookup project
+        | throw <| IO.userError "retained installation admitted the missing selected compiler"
+    pure during
+  finally
+    IO.FS.rename parked compiler
+  for retained in [installation, during] do
+    require (original.sameRuntime (← accepted retained project))
+      "restoring the SDK did not recover the retained installation's exact runtime"
+  IO.println "external availability passed: retained restoration"
+
 private def checkExternalAvailability (directory : System.FilePath) (phase : String) : IO Unit := do
   let suffix := if System.Platform.isWindows then ".exe" else ""
   let home := directory / "external-availability"
@@ -365,6 +386,8 @@ private def checkExternalAvailability (directory : System.FilePath) (phase : Str
     require (failure.failure.error.code == "setupError") "selected external failure became an internal error"
   else
     discard <| accepted installation project
+    if phase == "restored" then
+      checkRetainedRestoration installation project (directory / "sdk-1" / "bin" / ("lean" ++ suffix))
   IO.println s!"external availability passed: {phase}"
 
 def main (args : List String) : IO Unit := do
