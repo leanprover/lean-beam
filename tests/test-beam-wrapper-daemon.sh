@@ -917,7 +917,7 @@ for command in stop recover; do
   upgrade_remedy_args=(--root "$resolved_tmp1" --session-dir "$resolved_tmp1/.beam" "$command")
   if [ "$command" = recover ]; then upgrade_remedy_args+=(--generation "$daemon1_id"); fi
   assert_json_file_command_equals "upgrade $command owning remedy" "$tmp1/upgrade-$command.out" \
-    error.data.remedy_command "$beam_script" "${upgrade_remedy_args[@]}"
+    error.data.remedy_command "$beam_script" ${upgrade_remedy_args[@]+"${upgrade_remedy_args[@]}"}
 
 done
 if ! cmp -s "$tmp1/before-upgrade-descriptor.json" "$registry"; then
