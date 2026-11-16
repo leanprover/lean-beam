@@ -20,12 +20,40 @@ native implementation borrows it. Remove this declaration once every supported S
 @[extern "lean_io_process_child_pid"]
 opaque processChildPid {cfg : @& IO.Process.StdioConfig} : @& IO.Process.Child cfg → UInt32
 
-/-- Inspect one exact leaf. Missing leaves return false; other observation failures are errors. -/
-@[extern "lean_beam_path_is_link"]
-private opaque pathIsLinkNative (path : @& String) : IO Bool
+/-- A non-following leaf observation. Unknown Windows reparse tags remain distinct from files. -/
+inductive EntryKind where
+  | absent
+  | file
+  | directory
+  | symlink
+  | junction
+  | reparse (tag : UInt32)
+  | other
+  deriving BEq, Repr
 
-def pathIsLink (path : System.FilePath) : IO Bool :=
-  pathIsLinkNative path.toString
+@[extern "lean_beam_observe_entry"]
+private opaque observeEntryNative (path : @& String) : IO (UInt8 × UInt32)
+
+/-- Inspect the final leaf without following it. Missing paths are absent; other I/O errors propagate.
+Ancestors may contain links. This observation neither opens file contents nor retains a handle. -/
+def observeEntry (path : System.FilePath) : IO EntryKind := do
+  let (kind, tag) ← observeEntryNative path.toString
+  match kind.toNat with
+  | 0 => pure .absent
+  | 1 => pure .file
+  | 2 => pure .directory
+  | 3 => pure .symlink
+  | 4 => pure .junction
+  | 5 => pure (.reparse tag)
+  | 6 => pure .other
+  | _ => throw <| IO.userError s!"invalid native filesystem entry kind: {kind}"
+
+/-- Recognize symbolic links and Windows junctions; other reparse tags are not link aliases.
+Missing paths return false; other observation failures propagate. -/
+def pathIsLink (path : System.FilePath) : IO Bool := do
+  match ← observeEntry path with
+  | .symlink | .junction => pure true
+  | _ => pure false
 
 /-- POSIX execute-bit observation; Windows execution rights are not inferred from mode bits. -/
 @[extern "lean_beam_file_execute_bits"]

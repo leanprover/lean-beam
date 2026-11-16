@@ -536,19 +536,14 @@ private def daemonStartupLogLimit : Nat :=
   64 * 1024
 
 private def validateDaemonStartupLog (logPath : System.FilePath) : IO Unit := do
-  try
-    let metadata ← logPath.symlinkMetadata
-    match metadata.type with
-    | .file => pure ()
-    | .symlink =>
-        throw <| IO.userError <|
-          s!"unsafe Beam daemon startup log {logPath}: symbolic links are not accepted"
-    | .dir | .other =>
-        throw <| IO.userError <|
-          s!"unsafe Beam daemon startup log {logPath}: expected a regular file"
-  catch
-  | .noFileOrDirectory .. => pure ()
-  | err => throw err
+  match ← Beam.observeEntry logPath with
+  | .absent | .file => pure ()
+  | .symlink | .junction =>
+      throw <| IO.userError <|
+        s!"unsafe Beam daemon startup log {logPath}: symbolic links are not accepted"
+  | .directory | .reparse _ | .other =>
+      throw <| IO.userError <|
+        s!"unsafe Beam daemon startup log {logPath}: expected a regular file"
 
 private def startDaemon
     (desired : DesiredConfig)

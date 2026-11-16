@@ -26,10 +26,8 @@ def generation (manifest : InstallManifest) : IO String := do
 private partial def files (root directory : System.FilePath) : IO (Array System.FilePath) := do
   let mut result := #[]
   for entry in (← directory.readDir).qsort (fun a b => a.fileName < b.fileName) do
-    if ← Beam.pathIsLink entry.path then
-      throw <| IO.userError s!"installation contains a symlink or special file: {entry.path}"
-    match (← entry.path.symlinkMetadata).type with
-    | .dir => result := result ++ (← files root entry.path)
+    match ← Beam.observeEntry entry.path with
+    | .directory => result := result ++ (← files root entry.path)
     | .file =>
         unless entry.path == root / "manifest.json" do result := result.push entry.path
     | _ => throw <| IO.userError s!"installation contains a symlink or special file: {entry.path}"
@@ -90,7 +88,7 @@ private def makeExecutable (destination : System.FilePath) : IO Unit := do
 
 /-- Copy one declared build output into staging; links and missing outputs are rejected. -/
 def stageOutput (source destination : System.FilePath) : IO Unit := do
-  if (← Beam.pathIsLink source) || !(← Beam.regularNonSymlinkFile source) then
+  unless (← Beam.observeEntry source) == .file do
     throw <| IO.userError s!"missing regular construction output: {source}"
   IO.FS.createDirAll (destination.parent.getD ".")
   IO.FS.writeBinFile destination (← IO.FS.readBinFile source)

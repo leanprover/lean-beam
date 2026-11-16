@@ -97,9 +97,9 @@ def responsePath (directory : System.FilePath) : System.FilePath := directory / 
 
 /-- Private one-shot messages have a size bound and never share project stdout. -/
 def readJson (path : System.FilePath) : IO Json := do
-  let metadata ← path.symlinkMetadata
-  unless metadata.type == .file do
+  unless (← Beam.observeEntry path) == .file do
     throw <| IO.userError "target Lake helper message is not a regular file"
+  let metadata ← path.metadata
   if metadata.byteSize > 16 * 1024 * 1024 then
     throw <| IO.userError "target Lake helper message exceeds 16 MiB"
   IO.ofExcept <| Json.parse (← IO.FS.readFile path)

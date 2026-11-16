@@ -240,6 +240,13 @@ Save target resolution delegates to Lake's workspace loader for the
 project's real `lakefile.lean` or `lakefile.toml`; the broker does not synthesize fallback Lake
 configuration from `lakefile.lean` text and never batch-builds as part of `save`.
 
+Private save candidates must be ordinary files on every platform. Windows canonical output leaves
+must be ordinary files or absent; reparse points and special leaves are rejected before backups or
+changes to the old trace and output hashes. POSIX retains its existing behavior for non-directory output leaves: backups preserve a symbolic
+link or special leaf itself, rather than following its target.
+Directory targets are rejected. Directory ancestors may still be aliases; these rules concern the
+final leaf.
+
 Before replacing checkpoint artifacts, Beam invalidates Lake's cached hashes for the outputs it
 writes so later incremental builds recheck their dependents. If publication fails, Beam attempts
 to restore the previous artifacts; successful recovery leaves the final trace absent. Failed recovery

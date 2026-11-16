@@ -4,15 +4,15 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: Emilio J. Gallego Arias
 -/
 
-import Lean
+import Beam.System
 
 namespace Beam
 
-/-- Return whether `path` itself is a regular file, without following symbolic links. -/
+/-- Recognize an ordinary file without following the final link or accepting a reparse point.
+Missing paths and observation failures return false; use `observeEntry` to retain those distinctions. -/
 def regularNonSymlinkFile (path : System.FilePath) : IO Bool := do
   try
-    let metadata ← path.symlinkMetadata
-    pure (metadata.type == IO.FS.FileType.file)
+    pure ((← observeEntry path) == .file)
   catch _ =>
     pure false
 

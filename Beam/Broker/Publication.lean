@@ -115,17 +115,20 @@ def promote (plan : Plan)
     (rename : FilePath → FilePath → IO Unit) (removeFile : FilePath → IO Unit)
     (hardLink : FilePath → FilePath → IO Unit := IO.FS.hardLink) : IO Unit := do
   for artifact in plan.artifacts do
-    unless (← artifact.candidate.symlinkMetadata).type == .file do
+    unless (← Beam.observeEntry artifact.candidate) == .file do
       throw <| IO.userError s!"save candidate is not a regular file: {artifact.candidate}"
-    if ← artifact.target.isDir then
-      throw <| IO.userError s!"save publication target is a directory: {artifact.target}"
   let some trace := plan.artifacts.back?
     | throw <| IO.userError "empty save publication plan"
   let originals ← plan.artifacts.mapM fun artifact => do
-    let existed ← match ← artifact.target.symlinkMetadata.toBaseIO with
-      | .ok _ => pure true
-      | .error (.noFileOrDirectory ..) => pure false
-      | .error error => throw error
+    let existed ← match ← Beam.observeEntry artifact.target with
+      | .absent => pure false
+      | .file => pure true
+      | kind =>
+          -- POSIX link() preserves a link/special leaf itself as the beforeimage. Windows
+          -- hard-link semantics do not establish that guarantee for reparse points.
+          if System.Platform.isWindows || kind == .directory || (← artifact.target.isDir) then
+            throw <| IO.userError s!"save publication target cannot be preserved: {artifact.target}"
+          pure true
     pure (artifact, existed)
   let backups := originals.filterMap fun (artifact, existed) =>
     if existed then some artifact else none

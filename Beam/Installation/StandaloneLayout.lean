@@ -75,14 +75,13 @@ def installedRuntimeLocation? (home : System.FilePath) : Option InstalledRuntime
 def checkInstallRootMarker
     (installRoot : System.FilePath) : IO (Except InstallRootMarkerError Unit) := do
   let marker := installRoot / ".lean-beam-install-root"
-  let markerMetadata? ←
+  let markerMetadata ←
     try
-      pure <| some (← marker.symlinkMetadata)
+      Beam.observeEntry marker
     catch _ =>
-      pure none
-  let some markerMetadata := markerMetadata?
-    | return .error .missing
-  unless markerMetadata.type == IO.FS.FileType.file do
+      return .error .invalid
+  if markerMetadata == .absent then return .error .missing
+  unless markerMetadata == .file do
     return .error .invalid
   try
     let resolvedInstallRoot ← Beam.resolveExistingPath installRoot

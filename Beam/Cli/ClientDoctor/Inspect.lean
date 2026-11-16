@@ -58,12 +58,8 @@ private def readFile (path : System.FilePath) : IO FileRead := do
   | .noFileOrDirectory .. =>
       -- A dangling symlink is a broken configured file, rather than absent configuration.
       try
-        if ← Beam.pathIsLink path then return .unreadable
-        let _ ← path.symlinkMetadata
-        return .unreadable
-      catch
-      | .noFileOrDirectory .. => return .missing
-      | _ => return .unreadable
+        return if (← Beam.observeEntry path) == .absent then .missing else .unreadable
+      catch _ => return .unreadable
   | _ => return .unreadable
 
 private def readProblem (report : ClientReport) (path : String) (role : SourceRole)
