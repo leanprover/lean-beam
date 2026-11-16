@@ -215,7 +215,8 @@ def checkSaveArtifactsBufferedWriteFailure (extension : String) : ScenarioM Unit
     throw <| IO.userError "flush failure left module adapter scratch files"
   closeDoc doc
 
-def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
+def checkSaveArtifactsWriteModuleFamily
+    (oleanName : String := "ModuleArtifacts.olean") : ScenarioM Unit := do
   let incompletePaths := Json.mkObj [
     ("oleanServerFile", toJson "ModuleArtifacts.olean.server"),
     ("oleanPrivateFile", toJson "ModuleArtifacts.olean.private"),
@@ -231,13 +232,17 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
   let outDir ← mkTmpDir "beam-save-module-family"
 
   -- The broker supplies each companion in its own private directory. Exercise that layout.
-  let paths := #[outDir / "module" / "ModuleArtifacts.olean",
+  let paths := #[outDir / "module" / oleanName,
     outDir / "server" / "ModuleArtifacts.olean.server",
     outDir / "private" / "ModuleArtifacts.olean.private", outDir / "ir" / "ModuleArtifacts.ir",
     outDir / "signature" / "ModuleArtifacts.ir.sig", outDir / "ilean" / "ModuleArtifacts.ilean",
     outDir / "c" / "ModuleArtifacts.c"]
   let bcFile? := if Lean.Internal.hasLLVMBackend () then some (outDir / "bc" / "ModuleArtifacts.bc")
     else none
+  -- Confirm the supplied destination itself is writable before testing serializer suffixes.
+  let priorOlean := "prior private artifact"
+  IO.FS.createDirAll (outDir / "module")
+  IO.FS.writeFile paths[0]! priorOlean
   if bcFile?.isNone then
     IO.eprintln "saveArtifacts module bitcode: unsupported (toolchain has no LLVM backend)"
   let saveReq ← sendSaveArtifacts doc {
@@ -258,6 +263,9 @@ def checkSaveArtifactsWriteModuleFamily : ScenarioM Unit := do
   unless saved.written && saved.version == 1 && saved.textHash == hash text do
     throw <| IO.userError "saveArtifacts module family returned the wrong completion"
   for path in paths do expectFileExists "saveArtifacts module family" path
+  let writtenOlean ← IO.FS.readBinFile paths[0]!
+  if writtenOlean.isEmpty || writtenOlean == priorOlean.toUTF8 then
+    throw <| IO.userError "module serialization did not replace the prior artifact"
   if let some bcFile := bcFile? then expectFileExists "saveArtifacts module bitcode" bcFile
   let entries ← (outDir / "module").readDir
   if entries.any (·.fileName.startsWith ".beam-save-tmp-") then
@@ -576,6 +584,8 @@ def run : ScenarioM Unit := do
   checkSaveArtifactsBufferedWriteFailure "c"
   checkSaveArtifactsBufferedWriteFailure "olean.private"
   checkSaveArtifactsWriteModuleFamily
+  -- A legal destination basename must not grow into the serializer's companion filenames.
+  checkSaveArtifactsWriteModuleFamily (String.ofList (List.replicate 243 'a') ++ ".olean")
   checkDeferredCompilationReadiness
   checkSaveArtifactsPartialPrivateFailure
   checkSaveArtifactsInvalidShape

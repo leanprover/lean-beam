@@ -183,7 +183,8 @@ private def withTempSiblingDir
   let parent := path.parent.getD (System.FilePath.mk ".")
   let pid ← IO.Process.getPID
   let tmpDir := parent / s!".beam-save-tmp-{pid}-{← IO.monoNanosNow}"
-  IO.FS.createDirAll tmpDir
+  -- Acquire cleanup authority only for a directory created by this attempt.
+  IO.FS.createDir tmpDir
   try
     useDir tmpDir
   finally
@@ -229,9 +230,10 @@ private def writeModuleArtifacts
     (oleanFile : System.FilePath)
     (moduleFiles : Array System.FilePath) : IO Unit := do
   withTempSiblingDir oleanFile fun tmpDir => do
-    let some fileName := oleanFile.fileName
-      | throw <| IO.userError s!"module artifact path has no file name: {oleanFile}"
-    let generatedOlean := tmpDir / fileName
+    unless oleanFile.fileName.isSome do
+      throw <| IO.userError s!"module artifact path has no file name: {oleanFile}"
+    -- Lean appends companion and PID suffixes; do not inherit a long destination basename.
+    let generatedOlean := tmpDir / "m.olean"
     Lean.writeModule env generatedOlean
     let generated :=
       if env.header.isModule then
