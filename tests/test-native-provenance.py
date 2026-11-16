@@ -423,6 +423,21 @@ string(JSON record SET "${{record}}" components targets 0 daemon "\\\"{path}\\\"
 
 
 class NativeQualificationReportTest(unittest.TestCase):
+    def test_entrypoint_logs_unicode_with_a_legacy_redirected_code_page(self):
+        with tempfile.TemporaryDirectory(prefix="beam-native-encoding-") as temporary:
+            root = Path(temporary)
+            # A missing SDK stops before qualify() recursively invokes this test suite.
+            prefix = root / "missing SDK λ"
+            result = subprocess.run([
+                sys.executable, REPO / "tests/test-native-toolchain.py", prefix,
+                "--scratch", root / "reports", "--skip-build",
+            ], env=dict(os.environ, PYTHONIOENCODING="cp1252:strict"),
+                capture_output=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing SDK λ", result.stdout.decode("utf-8"))
+            self.assertIn("FileNotFoundError", result.stderr.decode("utf-8"))
+            self.assertNotIn(b"UnicodeEncodeError", result.stderr)
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="beam-native-report-")
         self.addCleanup(temp.cleanup)

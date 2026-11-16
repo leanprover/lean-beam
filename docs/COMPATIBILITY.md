@@ -10,9 +10,10 @@ The [native toolchain build/install interface](TOOLCHAIN_BUNDLING.md) also targe
 supplied native Lean installation, including development compilers, when its build and runtime
 regression passes. The standalone toolchain registries below govern the standalone install path.
 
-The Windows native path is experimental. Native build and CI coverage do not establish official
-elan Windows distribution support; see [distribution status](STATUS.md#distribution) for the libuv
-investigation and release constraint.
+Windows x86_64 native support is experimental and limited to the toolchain build/install interface
+and its bundled CLI, MCP server, daemon, and LSP plugin. The checkout installer and shell wrappers
+target Linux and macOS. Native CI coverage does not establish official elan Windows distribution
+support; see [distribution qualification](STATUS.md#distribution).
 
 A Lean release line is the canonical `major.minor` family recorded in
 `compatible-lean-release-lines`. An exact toolchain variant is a canonical immutable

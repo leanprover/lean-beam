@@ -478,6 +478,25 @@ consumers, and rejection of foreign or incomplete runtimes. Release and nightly 
 assertions and reporting; see [release qualification](TOOLCHAIN_BUNDLING.md#release-qualification)
 for the build integration contract.
 
+The fixture installs and relocates the SDK into distinct paths containing spaces and Unicode,
+then exercises CRLF sources, inferred project roots, save/replay, native consumers, and MCP stdio.
+The native build also checks `BeamTest.PathBoundaryTest` compile-time assertions for filesystem
+roots, native separators, Unicode module names, and sibling-prefix rejection. The fast CLI tests
+import those same assertions.
+
+Windows construction uses the configured native SDK headers. Before construction, relative
+system-include and Clang-resource directories vary independently between two caller directories
+(A → B → A); both native objects' dependency hashes must change for B and return for A.
+Compiler header fixtures use junctions to the official headers without copying them.
+
+Every installed Windows entrypoint runs with only the relocated SDK's `bin` directory and Windows
+`System32` on `PATH`. POSIX runtime checks retain traps for Elan and other provisioning commands.
+Fixture creation invokes the captured Elan executable in a separate environment sharing the
+fixture-owned `ELAN_HOME`. Selector, MCP, and helper-lifetime checks retain runtime isolation.
+Windows qualification also checks that rejecting a non-private session directory preserves its
+DACL, sentinel bytes, and directory entries. Owner shutdown attempts are bounded and preserve an
+existing scenario failure; the separate helper-lifetime tests check descendant settlement.
+
 Each invocation prints its unique scratch directory under `.native-test/` (`--scratch` overrides
 the parent). Its `qualification.json` records SDK and Beam identity, source dirty status, platform,
 and test options. The result starts as `running`, becomes `passed` or `failed` on completion, and

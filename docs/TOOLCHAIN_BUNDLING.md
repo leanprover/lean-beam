@@ -6,9 +6,10 @@ Lean installation; the resulting commands use that installation's Lean, Lake, da
 Installing from a Beam checkout with `scripts/install-beam.sh` is the other installation path.
 That installer can publish several explicitly selected target runtimes in one installation.
 
-The Windows build and CI instructions below describe experimental work. Official elan Windows
-distribution is deferred pending the libuv investigation and fixes; successful native qualification
-does not remove that [distribution constraint](STATUS.md#distribution).
+The Windows x86_64 build and runtime are experimental; the checkout installer and shell wrappers
+target Linux and macOS. Official elan Windows distribution awaits qualification of the actual
+containing SDK archive; source CI does not remove that
+[distribution constraint](STATUS.md#distribution).
 
 The two Beam installation paths have different responsibilities:
 
@@ -57,6 +58,9 @@ Direct developer Lake builds can supply the same include directories as a JSON s
 Lake resolves these SDK paths relative to its caller's working directory and canonicalizes them before
 compilation and object-cache tracing. The build retains host header-search settings such as `CPATH`
 and `C_INCLUDE_PATH`.
+
+The installed Windows runtime does not require MSYS2, Git Bash, or Elan on `PATH`. Runtime
+selector lookup reads local toolchain links without invoking Elan.
 
 ### Build Environment
 
