@@ -64,6 +64,20 @@ def _cleanup_owner(owner, command, *, env):
         print(f"owner cleanup failed: {cleanup_error}", file=sys.stderr)
 
 
+def _restore_provenance_and_cleanup_owner(owner, command, *, env, provenance, metadata):
+    """Restore the fixture without losing its failure or its owner cleanup obligation."""
+    original_failure = sys.exc_info()[1]
+    try:
+        try:
+            provenance.write_text(json.dumps(metadata))
+        except Exception as restoration_error:
+            if original_failure is None:
+                raise
+            print(f"provenance restoration failed: {restoration_error}", file=sys.stderr)
+    finally:
+        _cleanup_owner(owner, command, env=env)
+
+
 def check_native_cli_usage(beam, env, management_commands):
     help_result = run([beam, "--help"], env=env)
     assert "lean-beam [--pretty] [--root PATH] run-at " in help_result.stdout, help_result
@@ -515,16 +529,9 @@ def qualify(args, lean_prefix, scratch):
             call("stop", timeout=10)
             assert owner.wait(timeout=30) == 0, owner_log.read_text()
         finally:
-            original_failure = sys.exc_info()[1]
-            try:
-                try:
-                    provenance.write_text(json.dumps(metadata))
-                except Exception as restoration_error:
-                    if original_failure is None:
-                        raise
-                    print(f"provenance restoration failed: {restoration_error}", file=sys.stderr)
-            finally:
-                _cleanup_owner(owner, [beam, "--root", project], env=env)
+            _restore_provenance_and_cleanup_owner(
+                owner, [beam, "--root", project], env=env,
+                provenance=provenance, metadata=metadata)
 
     # Exercise the relocated executable over real stdio in both supported protocol families.
     mcp_smoke(mcp, source, cwd=project, env=env)
