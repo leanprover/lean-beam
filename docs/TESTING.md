@@ -476,7 +476,8 @@ observation errors (plus FIFOs on POSIX). It checks that selector fallback requi
 project directory, registry/session admission rejects linked leaves before canonicalization, and
 Windows publication rejection preserves existing links, their targets, trace bytes and output hashes.
 On POSIX, injected publication failures check restoration of original non-directory entries, including
-live and dangling file links and FIFOs.
+live and dangling file links and FIFOs. The fixture requires the injected failure to be reached before
+checking rollback, so an earlier backup error cannot satisfy the preservation assertions.
 Unknown Windows reparse tags remain distinct from ordinary files. Private-directory admission
 continues to reject all reparse points under its stricter policy.
 The Windows runner must allow file symbolic-link creation; these controls do not replace file

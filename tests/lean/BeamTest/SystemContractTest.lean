@@ -62,9 +62,14 @@ private def posixPublicationBeforeimage (root : System.FilePath) (leaf : String)
     let rename := fun source target => do
       if source == plan.outputs.cPath then throw <| IO.userError "controlled publication failure"
       IO.FS.rename source target
-    rejected (Beam.Broker.Publication.Internal.promote plan rename IO.FS.removeFile)
-      "controlled publication failure did not occur"
-    require ((← Beam.observeEntry canonical.oleanPath) == before) "rollback lost the original leaf kind"
+    let result ← (Beam.Broker.Publication.Internal.promote plan rename IO.FS.removeFile).toBaseIO
+    match result with
+    | .error (.userError "controlled publication failure") => pure ()
+    | .error error => throw error
+    | .ok _ => throw <| IO.userError "controlled publication failure did not occur"
+    let after ← Beam.observeEntry canonical.oleanPath
+    require (after == before)
+      s!"rollback changed {leaf} from {repr before} to {repr after}"
     require ((← IO.FS.readFile canonical.ileanPath) == "prior bytes") "rollback lost an earlier output"
     require (!(← canonical.tracePath.pathExists)) "rollback restored the old trace"
     require ((← IO.FS.readFile (root / "file")) == "ordinary file") "publication followed the old link"

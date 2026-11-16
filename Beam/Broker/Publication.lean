@@ -113,7 +113,8 @@ namespace Internal
 Metadata, ownership, and disposal still use the real filesystem. -/
 def promote (plan : Plan)
     (rename : FilePath → FilePath → IO Unit) (removeFile : FilePath → IO Unit)
-    (hardLink : FilePath → FilePath → IO Unit := IO.FS.hardLink) : IO Unit := do
+    (hardLink : FilePath → FilePath → IO Unit :=
+      if System.Platform.isWindows then IO.FS.hardLink else Beam.hardLinkNoFollow) : IO Unit := do
   for artifact in plan.artifacts do
     unless (← Beam.observeEntry artifact.candidate) == .file do
       throw <| IO.userError s!"save candidate is not a regular file: {artifact.candidate}"
@@ -124,8 +125,8 @@ def promote (plan : Plan)
       | .absent => pure false
       | .file => pure true
       | kind =>
-          -- POSIX link() preserves a link/special leaf itself as the beforeimage. Windows
-          -- hard-link semantics do not establish that guarantee for reparse points.
+          -- POSIX backups use an explicit non-following link operation. Windows hard-link
+          -- semantics do not establish that guarantee for reparse points.
           if System.Platform.isWindows || kind == .directory || (← artifact.target.isDir) then
             throw <| IO.userError s!"save publication target cannot be preserved: {artifact.target}"
           pure true

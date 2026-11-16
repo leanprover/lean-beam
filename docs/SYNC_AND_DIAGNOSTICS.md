@@ -242,8 +242,9 @@ configuration from `lakefile.lean` text and never batch-builds as part of `save`
 
 Private save candidates must be ordinary files on every platform. Windows canonical output leaves
 must be ordinary files or absent; reparse points and special leaves are rejected before backups or
-changes to the old trace and output hashes. POSIX retains its existing behavior for non-directory output leaves: backups preserve a symbolic
-link or special leaf itself, rather than following its target.
+changes to the old trace and output hashes. On POSIX, backups preserve a non-directory output leaf
+itself, including symbolic links and special files. The backup operation explicitly disables following
+the source leaf on Linux and macOS.
 Directory targets are rejected. Directory ancestors may still be aliases; these rules concern the
 final leaf.
 

@@ -11,6 +11,7 @@ Author: Emilio J. Gallego Arias
 #include <string.h>
 #include <sys/stat.h>
 #if !defined(_WIN32)
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -33,6 +34,21 @@ static int valid_path(b_lean_obj_arg path) {
 
 static lean_obj_res path_error(int error, b_lean_obj_arg path) {
   return lean_io_result_mk_error(lean_decode_io_error(error, path));
+}
+
+/* link() follows a source symlink on Darwin. linkat(..., 0) retains the leaf itself. */
+LEAN_EXPORT lean_obj_res lean_beam_hard_link_no_follow(
+    b_lean_obj_arg source, b_lean_obj_arg target, lean_obj_arg world) {
+  (void)world;
+  if (!valid_path(source)) return path_error(EINVAL, source);
+  if (!valid_path(target)) return path_error(EINVAL, target);
+#if defined(_WIN32)
+  return path_error(ENOSYS, source);
+#else
+  if (linkat(AT_FDCWD, lean_string_cstr(source), AT_FDCWD, lean_string_cstr(target), 0) != 0)
+    return path_error(errno, source);
+  return lean_io_result_mk_ok(lean_box(0));
+#endif
 }
 
 #if defined(_WIN32)

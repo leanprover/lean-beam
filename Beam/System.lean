@@ -55,6 +55,14 @@ def pathIsLink (path : System.FilePath) : IO Bool := do
   | .symlink | .junction => pure true
   | _ => pure false
 
+@[extern "lean_beam_hard_link_no_follow"]
+private opaque hardLinkNoFollowNative (source target : @& String) : IO Unit
+
+/-- Create a POSIX hard link to the final source leaf itself, including a symbolic link.
+Ancestors may contain links. Errors propagate; Windows does not support this operation. -/
+def hardLinkNoFollow (source target : System.FilePath) : IO Unit :=
+  hardLinkNoFollowNative source.toString target.toString
+
 /-- POSIX execute-bit observation; Windows execution rights are not inferred from mode bits. -/
 @[extern "lean_beam_file_execute_bits"]
 private opaque fileExecuteBitsNative (path : @& String) : IO (Option Bool)
