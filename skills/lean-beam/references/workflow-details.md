@@ -280,39 +280,9 @@ What is not a valid checkpoint target:
 - if imported targets are stale or the Lean worker cannot finish that diagnostics barrier,
   `lean-beam sync` fails; do not treat a failed sync as safe to follow with `lean-beam save`
 - `lean-beam sync` prints one final JSON response on stdout for completed operations and ordinary
-  CLI failures; diagnostics and progress go to stderr. Exit `2` means local usage/input error;
-  exit `3` (`noLiveSession`) includes the exact `serve` remedy; exit `130` (`requestCancelled`)
-  reports interruption without establishing producer settlement. Preserve broker failure codes and
-  data when deciding recovery; never treat failed sync as save-ready.
-  Local remedies are `{executable, arguments}` objects in `error.data.remedy_command`.
-  Execute the vector directly without shell parsing; stderr contains only a human display.
-  `sessionRecoveryRequired` (exit `1`) includes the generation when known; obey its
-  `recovery_precondition` and independently verify that the matching owner, daemon, and all other
-  producers have stopped before running recovery. An unavailable endpoint alone is insufficient
-  evidence. `status` state `unresponsive` means the endpoint did not validate, including incomplete
-  or malformed replies; `sessionUnresponsive` (exit `1`) preserves the descriptor and refuses
-  recovery. Resume or inspect the original owner and daemon through their supervisor before retrying
-- `serve` checks the selected descriptor locally without probing its endpoint. An existing
-  matching-root descriptor marked `live` fails with `setupError`, recorded/requested configuration hashes,
-  and an exact `status` remedy. This does not establish owner liveness. `status` state `running`
-  means an authenticated workspace probe succeeded, not that Lean elaboration is ready or complete
-- the first successful `stop` acknowledges a shutdown request with `state: "stopping"`. A retained
-  shutdown descriptor means completion is unconfirmed: `status` reports `shutdownUnconfirmed`, and
-  repeated stop, serve, or attachment gives `sessionShutdownUnconfirmed` with the generation and an
-  owning-installation `status` remedy. Wait for cleanup and check for `absent` before restarting.
-  Execute `remedy_command.executable` with its exact `arguments`; a different installation on `PATH` cannot
-  control this session (`sessionInstallationMismatch`). A foreign control refusal preserves the
-  attempted command and generation in the owning-installation remedy. A mismatched recovery
-  generation instead returns `invalidParams`/exit `2` with the recorded `generation`, before
-  ownership admission. Do not automatically substitute the recorded generation and retry: confirm
-  the intended generation and independently verify that its owner, daemon, and every other producer
-  have stopped. If the owning installation's executable is missing,
-  interrupt the original owner or use its supervisor. `recovery_command` is a separate conditional
-  command: if cleanup cannot finish within the caller's waiting budget, perform full supervised cleanup of every original producer
-  before recovering any remaining descriptor. Neither the record nor its age establishes owner death
-- remedy and conditional recovery values contain `executable` and `arguments`. Execute that
-  vector directly with shell parsing disabled, after satisfying the action's intent and recovery
-  prerequisites. Human stderr displays use POSIX syntax on Linux/macOS and PowerShell on Windows
+  CLI failures; diagnostics and progress go to stderr. Check the exit status before parsing stdout.
+  For failure codes, exact remedies, shutdown confirmation, or generation mismatches, read
+  [CLI troubleshooting](troubleshooting.md#cli-transport-and-session-recovery) before recovery
 - `--text-file` and `--handle-file` require regular-file targets and allow ordinary symlinks;
   directories, devices, FIFOs, and symlink loops observed at admission fail with
   `invalidParams`/exit `2` before dispatch. The target check and later open are separate operations,
