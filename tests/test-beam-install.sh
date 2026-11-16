@@ -1389,8 +1389,8 @@ if ! grep -q "$unavailable_target" "$unavailable_err"; then
   exit 1
 fi
 # shellcheck disable=SC2016
-if ! grep -q 'install or link its exact Lean installation' "$unavailable_err"; then
-  echo "expected unavailable target failure to explain explicit target setup" >&2
+if ! grep -q 'restore or link its exact Lean installation, then retry' "$unavailable_err"; then
+  echo "expected unavailable target failure to explain SDK recovery" >&2
   cat "$unavailable_err" >&2
   remove_tmp_file "$unavailable_err"
   exit 1

@@ -91,7 +91,8 @@ def check(server, provenance, foreign_selector, *, env, matching_selectors=None)
                         assert "bundled Beam serves only its containing Lean installation" in message, rejected
                         assert "lean-toolchain" in message and selector in message, rejected
                     else:
-                        assert "unavailable locally" in message and "install or link" in message, rejected
+                        assert "unavailable locally" in message and "restore or link" in message, rejected
+                        assert "retry" in message and "reinstall" not in message, rejected
                     if scenario == "generation":
                         identity = tool(client, modern, "beam_version", {})
                         assert identity.get("error", {}).get("code") == -32603, identity
