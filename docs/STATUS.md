@@ -444,8 +444,10 @@ client protocol.
 ### Distribution
 
 Windows support is experimental. Native Windows builds and CI exercise the implementation, but
-official elan Windows distribution is deferred until the libuv investigation and required fixes
-are complete. Native build or test success alone does not establish readiness for that distribution.
+upstream Lean now includes [libuv 1.53.0](https://github.com/leanprover/lean4/pull/16357).
+Official elan Windows distribution remains deferred until the current containing SDK archive and
+bundled Beam revision are qualified together. Native build or test success alone does not establish
+readiness for that distribution.
 
 - The agent skill ships in the source checkout. Install it with the checkout installer or
   [copy the complete skill directory manually](SETUP.md#install-the-lean-skill-manually); it is not
