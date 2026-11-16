@@ -483,6 +483,12 @@ continues to reject all reparse points under its stricter policy.
 The Windows runner must allow file symbolic-link creation; these controls do not replace file
 links with ordinary copies or skip the no-follow assertions when that prerequisite is missing.
 
+`python3 tests/test-session-remedies.py` runs in the fast suite and against the installed native
+SDK. It checks owning-installation command generation, exact root/session selectors, Unicode and
+apostrophes, and native argument transport of control characters, trailing backslashes and empty
+arguments. It executes read-only status against a fixture-owned absent session; it does not execute
+conditional recovery or infer producer settlement from a remedy.
+
 ## Native Toolchain Qualification
 
 [tests/test-native-toolchain.py](../tests/test-native-toolchain.py) takes an SDK prefix and checks

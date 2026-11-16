@@ -1428,9 +1428,10 @@ private def checkUnconfirmedShutdown : IO Unit := do
           (System.FilePath.mk entry.installationRoot) root control .status))
       let some data := failure.failure.error.data? | throw <| IO.userError "missing shutdown recovery data"
       requireJsonString "shutdown recovery generation" "generation" entry.daemonId data
-      requireJsonString "conditional shutdown recovery selects the owning installation" "recoveryCommand"
-        (Beam.Cli.installationSessionCommand (System.FilePath.mk entry.installationRoot)
-          root control (.recoverGeneration entry.daemonId)) data
+      require "conditional shutdown recovery selects the owning installation"
+        ((data.getObjValAs? Beam.CommandInvocation "recoveryCommand").toOption ==
+          some (Beam.Cli.installationSessionCommand (System.FilePath.mk entry.installationRoot)
+            root control (.recoverGeneration entry.daemonId)))
       let precondition ← IO.ofExcept <| data.getObjValAs? String "recoveryPrecondition"
       requireSubstring "all producers must stop before recovery" "all other producers" precondition
       require "observation preserves the shutdown fence" ((← IO.FS.readFile registry) == bytes)
@@ -2056,6 +2057,17 @@ end BeamTest.Broker.CliDaemonTest
 
 def main (args : List String) : IO UInt32 :=
   match args with
+  | ["--session-commands", installation, root, control, generation] => do
+      let command := Beam.Cli.installationSessionCommand installation root control
+      IO.println <| (Json.mkObj [
+        ("status", toJson (command .status)),
+        ("stop", toJson (command .stop)),
+        ("recover", toJson (command (.recoverGeneration generation)))
+      ]).compress
+      pure 0
+  | "--record-invocation" :: arguments => do
+      IO.println (toJson arguments).compress
+      pure 0
   | [] => do BeamTest.Broker.CliDaemonTest.main; pure 0
   | ["--interrupt-watcher", mode] => BeamTest.Broker.InterruptWatcherTest.child mode
   | ["--blocked-output", stream, port] => do

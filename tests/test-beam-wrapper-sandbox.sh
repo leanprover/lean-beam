@@ -188,13 +188,16 @@ if sandbox_beam stats >"$missing_out" 2>"$missing_err"; then
   sed -n '1,160p' "$missing_out" >&2
   exit 1
 fi
-if ! grep -Fq "lean-beam --root '$project_root'" "$missing_err" || \
-    ! grep -Fq -- "--session-dir '$control_root/" "$missing_err" || \
-    ! grep -Fq " serve" "$missing_err"; then
-  echo "expected the missing-owner error to preserve the exact sandbox session selector" >&2
-  sed -n '1,160p' "$missing_err" >&2
-  exit 1
-fi
+python3 - "$missing_out" "$project_root" "$control_root" <<'PYSELECTOR'
+import json, sys
+from pathlib import Path
+report, project, control = sys.argv[1:]
+command = json.loads(Path(report).read_text())["error"]["data"]["remedy_command"]
+assert command["executable"] == "lean-beam", command
+assert command["arguments"][:3] == ["--root", project, "--session-dir"], command
+assert Path(command["arguments"][3]).parent == Path(control), command
+assert command["arguments"][4:] == ["serve"], command
+PYSELECTOR
 
 sandbox_owner owner-1
 if ! wait_for_registry || ! wait_for_nonempty_file "$owner_out" "sandbox owner response"; then
@@ -319,12 +322,14 @@ if [ "$(json_file_text_field "$after_kill_out" error.code)" != "sessionRecoveryR
   sed -n '1,160p' "$after_kill_out" >&2
   exit 1
 fi
-recovery_command="$(json_file_text_field "$after_kill_out" error.data.remedy_command)"
-if ! grep -Fxq -- "$recovery_command" "$after_kill_err"; then
-  echo "expected the recovery command on its own stderr line" >&2
-  sed -n '1,160p' "$after_kill_err" >&2
-  exit 1
-fi
+python3 - "$after_kill_out" "$after_kill_err" <<'PYCOMMAND'
+import json, shlex, sys
+from pathlib import Path
+command = json.loads(Path(sys.argv[1]).read_text())["error"]["data"]["remedy_command"]
+assert shlex.split(Path(sys.argv[2]).read_text().splitlines()[-1]) == [
+    command["executable"], *command["arguments"]]
+PYCOMMAND
+
 if ! find "$control_root" -name beam-daemon.json -print -quit | grep -q .; then
   echo "expected ordinary cross-domain lookup to preserve the unsafe descriptor" >&2
   exit 1

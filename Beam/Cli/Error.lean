@@ -30,7 +30,7 @@ structure CliFailure where
   /-- Typed context for human reports and JSON diagnostics, prepared only at the output edge. -/
   contextLines : List String := []
   usage? : Option String := none
-  remedyCommand? : Option String := none
+  remedyCommand? : Option Beam.CommandInvocation := none
   jsonOutputFormat : JsonOutputFormat := .compact
   /-- A final response write has started; never append a replacement JSON response. -/
   responseStarted : Bool := false
@@ -140,9 +140,9 @@ def CliFailure.responseOutput (response : Beam.Broker.Response) (error : IO.Erro
 }
 
 /-- Attach a copyable local remedy and its machine-readable prerequisites. -/
-def CliFailure.withRemedy (failure : CliFailure) (command : String)
+def CliFailure.withRemedy (failure : CliFailure) (command : Beam.CommandInvocation)
     (data : List (String × Lean.Json) := []) : CliFailure :=
-  let suffix := "\n" ++ command
+  let suffix := "\n" ++ command.display
   let message := failure.failure.error.message
   let message := if message.endsWith suffix then (message.dropEnd suffix.length).toString else message
   { failure with

@@ -1328,7 +1328,25 @@ private def checkErrorProjectionFallbacks : IO Unit := do
   require "explicit null error data remains null" (nullError.data? == some Json.null)
 
 private def checkControlProjectionCatalog : IO Unit := do
-  let command := "lean-beam --root /repo recover"
+  let command : Beam.CommandInvocation := {
+    executable := "lean-beam", arguments := #["--root", "/repo", "recover"]
+  }
+  let encoded := toJson command
+  let malformedCommands := #[
+    ("legacy shell string", toJson "lean-beam recover"),
+    ("extra field", encoded.setObjVal! "shell" (toJson true)),
+    ("empty executable", encoded.setObjVal! "executable" (toJson "")),
+    ("invalid arguments", encoded.setObjVal! "arguments" (toJson (#[7] : Array Nat))),
+    ("NUL argument", encoded.setObjVal! "arguments"
+      (toJson (#[String.singleton (Char.ofNat 0)] : Array String)))
+  ]
+  for (label, malformed) in malformedCommands do
+    let raw := Json.mkObj [("remedyCommand", malformed)]
+    let failure : Beam.Broker.ResponseFailure := {
+      error := { code := "noLiveSession", message := "no session", data? := some raw }
+    }
+    requireProjectionFallback s!"command invocation {label}"
+      (Beam.Output.OutputError.fromControlFailure failure).data? raw
   let argument := Json.mkObj [
     ("field", toJson "text"), ("preview", toJson "short"), ("omittedChars", toJson (5 : Nat))
   ]
@@ -1703,14 +1721,16 @@ private def checkTypedErrorDataProjection : IO Unit := do
   let recoveryControlFailure : Beam.Broker.ResponseFailure := {
     error := { code := "sessionRecoveryRequired", message := "recover session", data? := some <|
       Json.mkObj [
-        ("remedyCommand", toJson "lean-beam status"),
+        ("remedyCommand", toJson ({ executable := "lean-beam", arguments := #["status"] } : Beam.CommandInvocation)),
         ("sessionDir", toJson "/tmp/beam-session"),
         ("recoveryPrecondition", toJson "verify owner stopped")
       ] }
   }
   let recoveryControl := Beam.Output.OutputError.fromControlFailure recoveryControlFailure
   let recoveryControlData := recoveryControl.data?.getD Json.null
-  requireJsonString "control remedy" "remedy_command" "lean-beam status" recoveryControlData
+  require "control remedy retains invocation"
+    ((recoveryControlData.getObjValAs? Beam.CommandInvocation "remedy_command").toOption ==
+      some { executable := "lean-beam", arguments := #["status"] })
   requireJsonString "control error" "session_dir" "/tmp/beam-session" recoveryControlData
   requireJsonString "control error" "recovery_precondition" "verify owner stopped" recoveryControlData
 
@@ -1729,29 +1749,32 @@ private def checkTypedErrorDataProjection : IO Unit := do
     ("sessionRecoveryRequired", #[("remedyCommand", "remedy_command"),
       ("recoveryPrecondition", "recovery_precondition")])
   ]
-  let command := "'/owning installation/bin/lean-beam' --root '/project' recover --generation 'generation-7'"
+  let command : Beam.CommandInvocation := {
+    executable := "/owning installation/bin/lean-beam"
+    arguments := #["--root", "/project", "recover", "--generation", "generation-7"]
+  }
   let unchanged := [("generation", toJson "generation-7"), ("root", toJson "/project"),
     ("detail", toJson "owner state is unconfirmed"), ("diagnostics", toJson "probe output")]
   for (code, fields) in sessionCases do
     let fieldValue := fun (key : String) => match key with
       | "remedyCommand" => if code == "sessionShutdownUnconfirmed" then
-          "'/owning installation/bin/lean-beam' --root '/project' status" else command
-      | "recoveryCommand" => command
-      | "installationRoot" => "/owning installation"
-      | "currentInstallationRoot" => "/current installation"
-      | "sessionDir" => "/session directory"
-      | "recoveryPrecondition" => "independently verify all original producers have stopped"
-      | "recordedConfigHash" => "recorded-config"
-      | "requestedConfigHash" => "requested-config"
-      | _ => "unexpected fixture field"
-    let data := Json.mkObj <| fields.toList.map (fun (raw, _) => (raw, toJson (fieldValue raw))) ++ unchanged
+          toJson { command with arguments := #["--root", "/project", "status"] } else toJson command
+      | "recoveryCommand" => toJson command
+      | "installationRoot" => toJson "/owning installation"
+      | "currentInstallationRoot" => toJson "/current installation"
+      | "sessionDir" => toJson "/session directory"
+      | "recoveryPrecondition" => toJson "independently verify all original producers have stopped"
+      | "recordedConfigHash" => toJson "recorded-config"
+      | "requestedConfigHash" => toJson "requested-config"
+      | _ => toJson "unexpected fixture field"
+    let data := Json.mkObj <| fields.toList.map (fun (raw, _) => (raw, fieldValue raw)) ++ unchanged
     let failure : Beam.Broker.ResponseFailure := {
       error := { code, message := "session control failed", data? := some data }
     }
     let response := Beam.Cli.prepareControlResponse (.errorResult failure) (some "session-request")
     let error ← requireObjVal "session-control envelope" "error" response.json
     let actual ← requireObjVal "session-control error" "data" error
-    let expected := Json.mkObj <| fields.toList.map (fun (raw, publicKey) => (publicKey, toJson (fieldValue raw))) ++ unchanged
+    let expected := Json.mkObj <| fields.toList.map (fun (raw, publicKey) => (publicKey, fieldValue raw)) ++ unchanged
     require "session-control fields use only public spellings" (actual == expected)
     require "session-control preparation retains original evidence" (toJson response.observed == toJson (Beam.Broker.Response.errorResult failure))
     requireJsonString "session-control correlation" "client_request_id" "session-request" response.json
@@ -1761,11 +1784,13 @@ private def checkTypedErrorDataProjection : IO Unit := do
       (Beam.Output.OutputError.fromControlFailure malformedFailure).data? malformed
   let noConditionalRecovery : Beam.Broker.ResponseFailure := {
     error := { code := "sessionShutdownUnconfirmed", message := "check status", data? := some <|
-      Json.mkObj [("remedyCommand", toJson "lean-beam status")] }
+      Json.mkObj [("remedyCommand", toJson ({ executable := "lean-beam", arguments := #["status"] } : Beam.CommandInvocation))] }
   }
   let noConditionalData := (Beam.Output.OutputError.fromControlFailure noConditionalRecovery).data?.getD Json.null
   requireFieldAbsent "no conditional recovery supplied" "recovery_command" noConditionalData
-  requireJsonString "status remedy without recovery" "remedy_command" "lean-beam status" noConditionalData
+  require "status remedy without recovery"
+    ((noConditionalData.getObjValAs? Beam.CommandInvocation "remedy_command").toOption ==
+      some { executable := "lean-beam", arguments := #["status"] })
   let unrelatedRecovery : Beam.Broker.ResponseFailure := {
     error := { code := "externalError", message := "opaque backend", data? := some <|
       Json.mkObj [("recoveryCommand", toJson command), ("installationRoot", toJson "/opaque")] }

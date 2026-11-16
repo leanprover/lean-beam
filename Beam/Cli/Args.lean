@@ -202,33 +202,30 @@ def parseLeanTodoArgs (args : List String) : CliM (Option (Array Beam.LSP.Todo.T
           (fun preview => s!"invalid todo arguments: {preview}") (some leanTodoUsage)
   loop args #[]
 
-def shellQuote (text : String) : String :=
-  "'" ++ text.replace "'" "'\\''" ++ "'"
-
-private def WrapperSessionCommand.text : WrapperSessionCommand → String
-  | .serve => "serve"
-  | .status => "status"
-  | .stop => "stop"
-  | .recoverGeneration generation =>
-      s!"recover --generation {shellQuote generation}"
+private def WrapperSessionCommand.arguments : WrapperSessionCommand → Array String
+  | .serve => #["serve"]
+  | .status => #["status"]
+  | .stop => #["stop"]
+  | .recoverGeneration generation => #["recover", "--generation", generation]
 
 private def sessionCommand (executable : String)
     (root sessionDir : System.FilePath)
-    (command : WrapperSessionCommand) : String :=
-  s!"{executable} --root {shellQuote root.toString} " ++
-    s!"--session-dir {shellQuote sessionDir.toString} {command.text}"
+    (command : WrapperSessionCommand) : Beam.CommandInvocation := {
+  executable
+  arguments := #["--root", root.toString, "--session-dir", sessionDir.toString] ++ command.arguments
+}
 
-/-- Render one exact public wrapper-session command selector. -/
+/-- One exact public wrapper-session invocation, without shell quoting. -/
 def wrapperSessionCommand (root sessionDir : System.FilePath)
-    (command : WrapperSessionCommand) : String :=
+    (command : WrapperSessionCommand) : Beam.CommandInvocation :=
   sessionCommand "lean-beam" root sessionDir command
 
-/-- Both supported installation layouts expose the public frontend under bin; Windows is native. -/
+/-- Both installation layouts expose the public frontend under bin; Windows uses a native executable. -/
 def installationSessionCommand (installationRoot root sessionDir : System.FilePath)
-    (command : WrapperSessionCommand) : String :=
+    (command : WrapperSessionCommand) : Beam.CommandInvocation :=
   let executable := installationRoot / "bin" /
     (if System.Platform.isWindows then "lean-beam.exe" else "lean-beam")
-  sessionCommand (shellQuote executable.toString) root sessionDir command
+  sessionCommand executable.toString root sessionDir command
 
 def installationCommandFallback : String :=
   "If the owning installation's executable no longer exists, interrupt the original foreground owner or use its supervisor."

@@ -86,6 +86,7 @@ run_quiet_step "stage installed test runtime" python3 tests/installation_fixture
   "$BEAM_TEST_INSTALLATION" --project "$BEAM_TEST_PROJECT"
 beam_test_cli="$BEAM_TEST_INSTALLATION/bin/lean-beam"
 beam_test_mcp="$BEAM_TEST_INSTALLATION/bin/lean-beam-mcp"
+run_step "session remedy invocations" python3 tests/test-session-remedies.py
 
 # Exercise implicit root discovery at the actual filesystem root, without passing it through argv.
 # A regression must fail within the watchdog budget rather than loop forever at a Windows drive root.

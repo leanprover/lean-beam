@@ -517,12 +517,25 @@ Local CLI codes include `setupError`, `brokerUnavailable`, `noLiveSession`,
 Local argument echoes use bounded previews. `error.data.argument` identifies the field, an escaped
 preview, and `omitted_chars`; individual argument previews retain at most 128 Unicode characters.
 Generic usage-message previews retain at most 512 characters. CLI error diagnostics escape terminal
-control characters. Local remedies appear in `error.data.remedy_command`; commands with ordinary
-printable text also appear verbatim on their own stderr line. A control-bearing remedy is labelled
-as an escaped display on stderr; use the exact JSON command for execution.
-These command strings use POSIX shell syntax. On Windows they require Bash/MSYS2; they are not
-cmd.exe or PowerShell command strings. Shell-independent Windows remedy execution is tracked in
-[#371](https://github.com/leanprover/lean-beam/issues/371).
+control characters. Local remedies appear in `error.data.remedy_command` as an object with `executable` and
+`arguments`. Execute `[executable, *arguments]` directly with shell parsing disabled; retain the
+argument order and exact values. `error.data.recovery_command` has the same shape for a conditional
+recovery step. Neither value establishes that recovery is safe.
+
+Execute only a command that matches the intended action, after independently satisfying any
+`recovery_precondition` and cleanup requirements. `remedy_command` itself may select recovery;
+its presence is not permission to recover. For example, in Python:
+
+```python
+# First establish the action's intent and any recovery/cleanup prerequisites.
+command = error["data"]["remedy_command"]
+subprocess.run([command["executable"], *command["arguments"]], check=True)
+```
+
+Terminal diagnostics derive a human command display from that object: POSIX shell syntax on
+Linux/macOS and PowerShell syntax on Windows. Control-bearing values are escaped for display;
+execute the JSON argument vector, not the escaped display. Standalone installer remedies explicitly
+invoke Bash and remain subject to the checkout installer's platform requirements.
 `sessionRecoveryRequired` includes the recorded `generation` when known, plus a
 `recovery_precondition`: independently verify that the matching owner, daemon, and all other
 producers have stopped.

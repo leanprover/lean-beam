@@ -239,7 +239,7 @@ private def serveProject
           mkSessionStatus .running root owner.client.controlDir (some owner.generation)
         IO.eprintln <|
           "beam: serving Beam session; interrupt this process or run when finished:\n" ++
-          wrapperSessionCommand root owner.client.controlDir .stop
+          (wrapperSessionCommand root owner.client.controlDir .stop).display
         runThenHoldUntilInterrupted watcher owner (pure ())).run) opts.jsonOutputFormat
 
 private def sessionStatus (opts : CliOptions) : CliM Unit := do

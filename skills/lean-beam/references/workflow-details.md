@@ -284,7 +284,8 @@ What is not a valid checkpoint target:
   exit `3` (`noLiveSession`) includes the exact `serve` remedy; exit `130` (`requestCancelled`)
   reports interruption without establishing producer settlement. Preserve broker failure codes and
   data when deciding recovery; never treat failed sync as save-ready.
-  Local remedies are in `error.data.remedy_command` and on their own stderr line.
+  Local remedies are `{executable, arguments}` objects in `error.data.remedy_command`.
+  Execute the vector directly without shell parsing; stderr contains only a human display.
   `sessionRecoveryRequired` (exit `1`) includes the generation when known; obey its
   `recovery_precondition` and independently verify that the matching owner, daemon, and all other
   producers have stopped before running recovery. An unavailable endpoint alone is insufficient
@@ -299,7 +300,7 @@ What is not a valid checkpoint target:
   shutdown descriptor means completion is unconfirmed: `status` reports `shutdownUnconfirmed`, and
   repeated stop, serve, or attachment gives `sessionShutdownUnconfirmed` with the generation and an
   owning-installation `status` remedy. Wait for cleanup and check for `absent` before restarting.
-  Execute the absolute executable in `remedy_command`; a different installation on `PATH` cannot
+  Execute `remedy_command.executable` with its exact `arguments`; a different installation on `PATH` cannot
   control this session (`sessionInstallationMismatch`). A foreign control refusal preserves the
   attempted command and generation in the owning-installation remedy. A mismatched recovery
   generation instead returns `invalidParams`/exit `2` with the recorded `generation`, before
@@ -309,8 +310,9 @@ What is not a valid checkpoint target:
   interrupt the original owner or use its supervisor. `recovery_command` is a separate conditional
   command: if cleanup cannot finish within the caller's waiting budget, perform full supervised cleanup of every original producer
   before recovering any remaining descriptor. Neither the record nor its age establishes owner death
-- remedy strings use POSIX shell syntax, including on Windows. Use Bash/MSYS2 for these strings;
-  cmd.exe/PowerShell and shell-independent remedies are tracked in [#371](https://github.com/leanprover/lean-beam/issues/371)
+- remedy and conditional recovery values contain `executable` and `arguments`. Execute that
+  vector directly with shell parsing disabled, after satisfying the action's intent and recovery
+  prerequisites. Human stderr displays use POSIX syntax on Linux/macOS and PowerShell on Windows
 - `--text-file` and `--handle-file` require regular-file targets and allow ordinary symlinks;
   directories, devices, FIFOs, and symlink loops observed at admission fail with
   `invalidParams`/exit `2` before dispatch. The target check and later open are separate operations,
@@ -318,7 +320,7 @@ What is not a valid checkpoint target:
   starts; on POSIX, SIGINT in this phase may exit `130` without JSON
 - local argument previews identify their field and omitted-character count in `error.data.argument`.
   CLI error stderr escapes terminal controls. Control-bearing remedies are labelled escaped
-  displays; execute the exact command from `error.data.remedy_command`, not that display
+  displays; execute the exact argument vector from `error.data.remedy_command`, not that display
 - every `lean-beam run-at` request probes one on-disk document version without changing its real
   elaboration state; Lean code can still perform external IO
 - `lean-beam run-at-handle` is the same style of isolated probe, but asks Lean to retain follow-up
