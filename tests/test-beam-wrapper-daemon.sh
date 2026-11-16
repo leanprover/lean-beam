@@ -222,12 +222,10 @@ if "$beam_script" --root "$tmp1" stats > "$missing_owner_out" 2> "$missing_owner
   cat "$missing_owner_out" >&2
   exit 1
 fi
-missing_owner_command="lean-beam --root '$resolved_tmp1' --session-dir '$resolved_tmp1/.beam' serve"
-if ! grep -Fq "$missing_owner_command" "$missing_owner_err"; then
-  echo "expected missing-owner error to preserve the exact session selector" >&2
-  cat "$missing_owner_err" >&2
-  exit 1
-fi
+assert_json_file_command_equals "missing-owner exact session selector" "$missing_owner_out" \
+  error.data.remedy_command lean-beam --root "$resolved_tmp1" \
+  --session-dir "$resolved_tmp1/.beam" serve
+
 missing_status="$("$beam_script" --root "$tmp1" status)"
 assert_json_field_equals "absent session status response" "$missing_status" ok true
 assert_json_field_equals "absent session status state" "$missing_status" result.state absent
@@ -447,13 +445,14 @@ if "$beam_script" --root "$tmp2" --session-dir "$tmp1/.beam" status \
   echo "expected status through a mismatched session selector to fail" >&2
   exit 1
 fi
-if ! grep -Fq "sessionSelectorMismatch" "$tmp2/cross-root-status.err" || \
-    ! grep -Fq -- "--root '$resolved_tmp1' --session-dir '$resolved_tmp1/.beam' status" \
-      "$tmp2/cross-root-status.err"; then
-  echo "expected cross-root status rejection to identify the selector mismatch and exact selector" >&2
-  cat "$tmp2/cross-root-status.err" >&2
+if ! grep -Fq "sessionSelectorMismatch" "$tmp2/cross-root-status.err"; then
+  echo "expected cross-root status rejection to identify the selector mismatch" >&2
   exit 1
 fi
+assert_json_file_command_equals "cross-root exact selector" "$tmp2/cross-root-status.out" \
+  error.data.remedy_command lean-beam --root "$resolved_tmp1" \
+  --session-dir "$resolved_tmp1/.beam" status
+
 if ! cmp -s -- "$cross_root_descriptor" "$registry"; then
   echo "cross-root status must preserve the descriptor byte-for-byte" >&2
   exit 1
@@ -915,11 +914,11 @@ for command in stop recover; do
     error.code sessionInstallationMismatch "$tmp1/upgrade-$command.err"
   assert_json_file_field_equals "upgrade $command owning installation" "$tmp1/upgrade-$command.out" \
     error.data.installation_root "$BEAM_TEST_INSTALLATION" "$tmp1/upgrade-$command.err"
-  upgrade_remedy="'$beam_script' --root '$resolved_tmp1' --session-dir '$resolved_tmp1/.beam' $command"
-  if [ "$command" = recover ]; then upgrade_remedy="$upgrade_remedy --generation '$daemon1_id'"; fi
-  assert_json_file_field_equals "upgrade $command owning remedy" "$tmp1/upgrade-$command.out" \
-    error.data.remedy_command "$upgrade_remedy" \
-    "$tmp1/upgrade-$command.err"
+  upgrade_remedy_args=(--root "$resolved_tmp1" --session-dir "$resolved_tmp1/.beam" "$command")
+  if [ "$command" = recover ]; then upgrade_remedy_args+=(--generation "$daemon1_id"); fi
+  assert_json_file_command_equals "upgrade $command owning remedy" "$tmp1/upgrade-$command.out" \
+    error.data.remedy_command "$beam_script" "${upgrade_remedy_args[@]}"
+
 done
 if ! cmp -s "$tmp1/before-upgrade-descriptor.json" "$registry"; then
   echo "rejected commands from the new installation must preserve the original descriptor" >&2
@@ -943,9 +942,10 @@ assert_json_file_field_equals "configuration mismatch error" "$drift_owner_out" 
   error.code setupError "$drift_owner_err"
 assert_json_file_field_equals "configuration mismatch generation" "$drift_owner_out" \
   error.data.generation "$daemon1_id" "$drift_owner_err"
-assert_json_file_field_equals "configuration mismatch stop command" "$drift_owner_out" \
-  error.data.remedy_command "'$beam_script' --root '$resolved_tmp1' --session-dir '$resolved_tmp1/.beam' stop" \
-  "$drift_owner_err"
+assert_json_file_command_equals "configuration mismatch stop command" "$drift_owner_out" \
+  error.data.remedy_command "$beam_script" \
+  --root "$resolved_tmp1" --session-dir "$resolved_tmp1/.beam" stop
+
 if [ -s "$drift_err" ]; then
   echo "ordinary frozen-configuration attachment produced unexpected diagnostics" >&2
   cat "$drift_out" >&2
@@ -998,7 +998,8 @@ import sys
 wrapper, report, installation, other = sys.argv[1:]
 data = json.loads(Path(report).read_text())["error"]["data"]
 assert data["installation_root"] == str(Path(installation).resolve()), data
-command = shlex.split(data["remedy_command"])
+invocation = data["remedy_command"]
+command = [invocation["executable"], *invocation["arguments"]]
 assert command[0] == wrapper, command
 env = dict(os.environ, PATH=str(Path(other) / "bin") + os.pathsep + os.environ["PATH"])
 subprocess.run(command, env=env, check=True, timeout=20)
@@ -1122,10 +1123,15 @@ for operation in recover serve stop; do
     echo "unresponsive admission changed the descriptor or its live owner/daemon" >&2
     exit 1
   fi
-  if grep -Fq "recover --generation" "$tmp1/unresponsive-$operation.err"; then
-    echo "uncertain session errors must not suggest recovery" >&2
-    exit 1
-  fi
+  python3 - "$tmp1/unresponsive-$operation.out" <<'PYNORECOVERY'
+import json, sys
+from pathlib import Path
+error = json.loads(Path(sys.argv[1]).read_text())["error"]
+command = error.get("data", {}).get("remedy_command")
+assert not command or "recover" not in command["arguments"], command
+assert "recovery_command" not in error.get("data", {}), error
+PYNORECOVERY
+
 done
 kill -CONT "$unresponsive_pid"
 paused_daemon_pid=""
@@ -1287,7 +1293,8 @@ import sys
 for report in sys.argv[1:]:
     error = json.loads(Path(report).read_text())["error"]
     assert error["code"] == "sessionShutdownUnconfirmed", error
-    command = shlex.split(error["data"]["remedy_command"])
+    invocation = error["data"]["remedy_command"]
+    command = [invocation["executable"], *invocation["arguments"]]
     assert command[-1] == "status", command
     result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=15)
     assert json.loads(result.stdout)["result"]["state"] == "shutdownUnconfirmed", result.stdout
@@ -1368,7 +1375,7 @@ assert_json_field_equals \
 assert_json_field_equals \
   "owner-loss session status generation" "$owner_loss_status" result.generation "$owner_loss_generation"
 python3 - "$owner_loss_out" "$owner_loss_err" "$owner_loss_generation" <<'PY_CHECK'
-import json, sys
+import json, shlex, sys
 from pathlib import Path
 out, err, generation = sys.argv[1:]
 error = json.loads(Path(out).read_text())["error"]
@@ -1377,8 +1384,9 @@ assert error["data"]["generation"] == generation, error
 assert "Beam daemon connect failed" in error["data"]["diagnostics"], error
 assert "does not establish" in error["data"]["recovery_precondition"], error
 command = error["data"]["remedy_command"]
-assert Path(err).read_text().splitlines()[-1] == command
-assert command.endswith(f"recover --generation '{generation}'"), command
+argv = [command["executable"], *command["arguments"]]
+assert shlex.split(Path(err).read_text().splitlines()[-1]) == argv
+assert command["arguments"][-3:] == ["recover", "--generation", generation], command
 PY_CHECK
 for command in serve stop; do
   set +e
@@ -1504,7 +1512,7 @@ if ! grep -Fq "existing mode is 0755, expected 0700" "$tmp2/changed-mode.err"; t
   cat "$tmp2/changed-mode.err" >&2
   exit 1
 fi
-explicit_stop_command="lean-beam --root '$resolved_tmp2' --session-dir '$(beam_test_realpath "$explicit_control")' stop"
+explicit_stop_command="'lean-beam' '--root' '$resolved_tmp2' '--session-dir' '$(beam_test_realpath "$explicit_control")' 'stop'"
 # The descriptor can appear before the foreground owner publishes its guidance.
 if ! wait_for_file_text "$tmp2/explicit-control-owner.err" "$explicit_stop_command" \
     "explicit control-directory owner stop command"; then

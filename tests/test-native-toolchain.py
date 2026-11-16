@@ -210,7 +210,7 @@ def qualify(args, lean_prefix, scratch):
         # without replacing that CLI or changing the ordinary configuration.
         run([lean_prefix / "bin" / f"lake{EXE}", "--reconfigure", "-KbeamToolchain=false",
              "--no-cache", "build", "beam-cli",
-             "beam-lake-helper-client-fixture", "beam-installation-lookup-test",
+             "beam-lake-helper-client-fixture", "beam-cli-daemon-test", "beam-installation-lookup-test",
              "beam-installation-construction-test", "beam-installation-manifest-test",
              "beam-system-contract-test", "beam-backend-process-test", "beam-transport-test",
              "beam-transaction-test", "beam-publication-test", "beam-prune-lock-test",
@@ -348,6 +348,8 @@ def qualify(args, lean_prefix, scratch):
     assert metadata["payloadHash"] in version and metadata["components"]["targets"][0]["leanVersion"] in version, version
     mcp = relocated / "bin" / f"lean-beam-mcp{EXE}"
     mcp_version = run([mcp, "--version"], cwd=scratch, env=env).stdout
+    run([sys.executable, "-X", "utf8", REPO / "tests/test-session-remedies.py",
+         "--native-prefix", relocated], env=env)
     # A relative loader path must use the containing SDK, without an absolute build-prefix fallback.
     shared_dir = relocated / ("bin" if os.name == "nt" else "lib/lean")
     suffix = ".dll" if os.name == "nt" else ".dylib" if sys.platform == "darwin" else ".so"

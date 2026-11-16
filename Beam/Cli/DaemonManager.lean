@@ -773,7 +773,7 @@ def sessionSelectorMismatchMessage
   let recordedRoot := entry.workspace.root
   s!"sessionSelectorMismatch: selected workspace {root}, but Beam session {entry.daemonId} " ++
     s!"in {sessionDir} belongs to workspace {recordedRoot}. Use the recorded exact selector:\n" ++
-    wrapperSessionCommand (System.FilePath.mk recordedRoot) sessionDir .status
+    (wrapperSessionCommand (System.FilePath.mk recordedRoot) sessionDir .status).display
 
 private def registryRecoveryMessage
     (root : System.FilePath)

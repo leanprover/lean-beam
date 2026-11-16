@@ -35,7 +35,7 @@ private structure TargetFailureData where
   leanCommand : String
   installationRoot : String
   retainedTargets : Array String
-  remedyCommand? : Option String
+  remedyCommand? : Option Beam.CommandInvocation
   deriving ToJson
 
 private def installationFailure (failure : Beam.Installation.Failure) : CliFailure :=
@@ -49,7 +49,8 @@ private def installationFailure (failure : Beam.Installation.Failure) : CliFailu
         leanCommand := target.selected.command.toString
         installationRoot := target.installationRoot.toString
         retainedTargets := target.retainedTargets
-        remedyCommand? := remedy.command? }
+        remedyCommand? := remedy.command?.map fun command =>
+          { executable := "bash", arguments := #["-c", command] } }
       { (CliFailure.setup (target.explanation remedy)) with
         remedyCommand? := data.remedyCommand?
         failure.error.data? := some (toJson data) }

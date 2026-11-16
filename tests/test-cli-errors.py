@@ -18,6 +18,13 @@ from installation_fixture import stage
 REPO = Path(__file__).resolve().parents[1]
 
 
+def command_argv(command):
+    assert set(command) == {"executable", "arguments"}, command
+    assert isinstance(command["executable"], str), command
+    assert all(isinstance(arg, str) for arg in command["arguments"]), command
+    return [command["executable"], *command["arguments"]]
+
+
 class CliErrorsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -353,16 +360,16 @@ class CliErrorsTest(unittest.TestCase):
         result = self.invoke("--root", project, "stats")
         error = self.failure(result, "noLiveSession", 3)
         command = error["data"]["remedy_command"]
-        self.assertEqual(shlex.split(command), ["lean-beam", "--root", str(project),
+        self.assertEqual(command_argv(command), ["lean-beam", "--root", str(project),
                                                "--session-dir", str(project / ".beam"), "serve"])
-        self.assertIn("\n", command)
-        self.assertIn("\x1b", command)
+        self.assertIn("\n", command["arguments"][1])
+        self.assertIn("\x1b", command["arguments"][1])
         self.assertNotIn("\x1b", result.stderr)
         self.assertEqual(len(result.stderr.splitlines()), 2)
         self.assertIn("remedy (escaped display; exact command in error.data.remedy_command)", result.stderr)
         self.assertIn(r"\n", result.stderr)
         self.assertIn(r"\u001b", result.stderr)
-        self.assertEqual(subprocess.run(["bash", "-n", "-c", command], capture_output=True).returncode, 0)
+        self.assertEqual(command_argv(command)[2], str(project))
         self.assertFalse((project / ".beam").exists())
 
     def test_invalid_handle_has_one_usage_response(self):
@@ -372,9 +379,10 @@ class CliErrorsTest(unittest.TestCase):
     def test_no_live_owner_has_distinct_exit_and_exact_remedy(self):
         result = self.invoke("--root", self.root, "stats")
         error = self.failure(result, "noLiveSession", 3)
-        command = f"lean-beam --root '{self.root}' --session-dir '{self.root / '.beam'}' serve"
+        command = {"executable": "lean-beam", "arguments": ["--root", str(self.root),
+                   "--session-dir", str(self.root / ".beam"), "serve"]}
         self.assertEqual(error["data"]["remedy_command"], command)
-        self.assertEqual(result.stderr.splitlines()[-1], command)
+        self.assertEqual(shlex.split(result.stderr.splitlines()[-1]), command_argv(command))
         self.assertFalse((self.root / ".beam").exists())
 
     def test_absent_status_and_stop_still_succeed(self):
@@ -435,10 +443,10 @@ class CliErrorsTest(unittest.TestCase):
             result = self.invoke("--root", project, "--session-dir", control, "stats")
             error = self.failure(result, "setupError", 1)
             data = error["data"]
-            self.assertEqual(shlex.split(data["remedy_command"]),
+            self.assertEqual(command_argv(data["remedy_command"]),
                              [str(self.installation / "bin" / ("lean-beam.exe" if os.name == "nt" else "lean-beam")),
                               "--root", str(project), "--session-dir", str(control), "stop"])
-            self.assertEqual(result.stderr.splitlines()[-1], data["remedy_command"])
+            self.assertEqual(shlex.split(result.stderr.splitlines()[-1]), command_argv(data["remedy_command"]))
             self.assertEqual(data["generation"], "fixture-generation")
             self.assertEqual(data["installation_root"], str(self.installation))
             self.assertEqual(data["root"], str(project))
@@ -498,7 +506,7 @@ class CliErrorsTest(unittest.TestCase):
             error = self.failure(self.invoke("--root", project, "--session-dir", control, "stats"),
                                  "setupError", 1)
             executable = owner / "bin" / ("lean-beam.exe" if os.name == "nt" else "lean-beam")
-            self.assertEqual(shlex.split(error["data"]["remedy_command"]),
+            self.assertEqual(command_argv(error["data"]["remedy_command"]),
                              [str(executable), "--root", str(project), "--session-dir", str(control), "stop"])
 
     def test_unconfirmed_shutdown_suggests_status_and_preserves_descriptor(self):
@@ -519,9 +527,9 @@ class CliErrorsTest(unittest.TestCase):
                 with self.subTest(command=command):
                     error = self.failure(self.invoke("--root", project, "--session-dir", control, command),
                                          "sessionShutdownUnconfirmed", 1)
-                    remedy = shlex.split(error["data"]["remedy_command"])
+                    remedy = command_argv(error["data"]["remedy_command"])
                     self.assertEqual(remedy[-1], "status")
-                    recovery = shlex.split(error["data"]["recovery_command"])
+                    recovery = command_argv(error["data"]["recovery_command"])
                     self.assertEqual(recovery[-3:], ["recover", "--generation", entry["daemonId"]])
                     self.assertEqual(recovery[:-3], remedy[:-1])
                     self.assertEqual(error["data"]["generation"], entry["daemonId"])
@@ -556,7 +564,7 @@ class CliErrorsTest(unittest.TestCase):
                                              "recover", "--generation", requested),
                                  "sessionInstallationMismatch", 1)
             executable = owner / "bin" / ("lean-beam.exe" if os.name == "nt" else "lean-beam")
-            self.assertEqual(shlex.split(error["data"]["remedy_command"]),
+            self.assertEqual(command_argv(error["data"]["remedy_command"]),
                              [str(executable), "--root", str(project), "--session-dir", str(control),
                               "recover", "--generation", requested])
             self.assertEqual(self.session_snapshot(control), before)
@@ -605,10 +613,10 @@ class CliErrorsTest(unittest.TestCase):
                     self.assert_descriptor_context(error, project, control)
                 else:
                     self.assertEqual(data["generation"], "fixture-generation")
-                    self.assertEqual(shlex.split(data["remedy_command"]),
+                    self.assertEqual(command_argv(data["remedy_command"]),
                                      [str(self.installation / "bin" / ("lean-beam.exe" if os.name == "nt" else "lean-beam")),
                               "--root", str(project), "--session-dir", str(control), "stop"])
-                    self.assertEqual(result.stderr.splitlines()[-1], data["remedy_command"])
+                    self.assertEqual(shlex.split(result.stderr.splitlines()[-1]), command_argv(data["remedy_command"]))
                     self.assertIn("all other producers", data["recovery_precondition"])
                 self.assertIn(f"registry: {control / 'beam-daemon.json'}", data["diagnostics"])
                 self.assertEqual(self.session_snapshot(control), before)

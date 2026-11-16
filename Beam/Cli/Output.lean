@@ -363,8 +363,9 @@ def renderFailure (failure : CliFailure)
     IO.eprintln <| escapeDiagnosticText <| annotateRequestMessage failure.clientRequestId? diagnostic
     for line in failure.contextLines do IO.eprintln (escapeDiagnosticText line)
     if let some command := failure.remedyCommand? then
-      let display := escapeDiagnosticText command
-      if display == command then IO.eprintln command
+      let rendered := command.display
+      let display := escapeDiagnosticText rendered
+      if display == rendered then IO.eprintln rendered
       else IO.eprintln s!"remedy (escaped display; exact command in error.data.remedy_command): {display}"
     if let some usage := failure.usage? then IO.eprintln <| escapeDiagnosticText usage
   return failure.exitCode

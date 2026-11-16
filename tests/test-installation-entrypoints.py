@@ -5,6 +5,7 @@
 
 import json
 import os
+import shlex
 from pathlib import Path
 import shutil
 import subprocess
@@ -205,7 +206,9 @@ with tempfile.TemporaryDirectory(prefix="beam-entrypoints-") as temporary:
                     assert error["data"]["installation_root"] == str(h.resolve()), error
                     assert error["data"]["current_installation_root"] == str(g.resolve()), error
                     assert error["data"]["generation"] == descriptor["daemonId"], error
-                    assert foreign_control.stderr.splitlines()[-1] == error["data"]["remedy_command"]
+                    assert shlex.split(foreign_control.stderr.splitlines()[-1]) == [
+                        error["data"]["remedy_command"]["executable"],
+                        *error["data"]["remedy_command"]["arguments"]]
                     assert owner.poll() is None, owner_log.read_text()
                     assert registry.read_bytes() == descriptor_bytes
                 run(cli_h, "--root", str(project), "recover", "--force", env=env, cwd=project, ok=False)

@@ -52,8 +52,9 @@ private def checkUnavailableContext (installation : Installation) (project : Sys
   require ((data.getObjVal? "projection_error").toOption.isNone) "target data failed its public schema"
   match target.remedy with
   | .install command _ =>
-      require (failure.remedyCommand? == some command &&
-        (data.getObjValAs? String "remedy_command").toOption == some command)
+      let invocation : Beam.CommandInvocation := { executable := "bash", arguments := #["-c", command] }
+      require (failure.remedyCommand? == some invocation &&
+        (data.getObjValAs? Beam.CommandInvocation "remedy_command").toOption == some invocation)
         "CLI lost the copyable installer command"
       require (!failure.failure.error.message.endsWith ("\n" ++ command))
         "CLI embedded the separately rendered remedy in its explanation"

@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import Lean
 import Beam.JsonFields
+import Beam.CommandInvocation
 import Beam.Broker.Errors
 import Beam.Broker.Protocol
 import Beam.Broker.OpenDocs
@@ -601,11 +602,14 @@ private def projectControlErrorDataImpl (code : String) (data : Json) : Except S
       | "diagnostics" =>
           (validateControlDiagnostics value).map (fun projected => (key, projected, true))
       | "argument" => (projectArgumentPreview value).map (fun projected => ("argument", projected, true))
-      | "remedyCommand" => (validateStringField value).map (fun projected => ("remedy_command", projected, true))
+      | "remedyCommand" =>
+          (fromJson? (α := Beam.CommandInvocation) value).map fun command =>
+            ("remedy_command", toJson command, true)
       | "descriptorPath" =>
           (validateStringField value).map (fun projected => ("descriptor_path", projected, true))
       | "recoveryCommand" =>
-          (validateStringField value).map (fun projected => ("recovery_command", projected, true))
+          (fromJson? (α := Beam.CommandInvocation) value).map fun command =>
+            ("recovery_command", toJson command, true)
       | "installationRoot" =>
           (validateStringField value).map (fun projected => ("installation_root", projected, true))
       | "currentInstallationRoot" =>

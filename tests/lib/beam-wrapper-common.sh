@@ -528,3 +528,20 @@ beam_wrapper_mktemp_file() {
 beam_wrapper_registry_path() {
   printf '%s\n' "$1/.beam/beam-daemon.json"
 }
+
+# Compare a shell-independent command without parsing a rendered diagnostic.
+assert_json_file_command_equals() {
+  local label="$1" payload_file="$2" field="$3" executable="$4"
+  shift 4
+  python3 - "$label" "$payload_file" "$field" "$executable" "$@" <<'PYCOMMAND'
+import json
+from pathlib import Path
+import sys
+label, payload, field, executable, *arguments = sys.argv[1:]
+value = json.loads(Path(payload).read_text())
+for component in field.split("."):
+    value = value[component]
+expected = {"executable": executable, "arguments": arguments}
+assert value == expected, (label, value, expected)
+PYCOMMAND
+}
