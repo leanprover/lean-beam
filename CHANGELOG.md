@@ -4,6 +4,12 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ## Unreleased
 
+### Changed
+
+- Compact CLI/MCP profile spans with per-response thread numbers, optional nonempty tags,
+  and timings rounded at both endpoints to tenths of a millisecond
+  ([#432](https://github.com/leanprover/lean-beam/pull/432), @ejgallego).
+
 ### Fixed
 
 - Retain significant speculative profiling spans across the visited trace forest instead of
