@@ -35,7 +35,7 @@ structure Result where
   deriving FromJson, ToJson
 
 def initialThresholdMs : Nat := 1
-def maxSpans : Nat := 1024
+def maxSpans : Nat := 192
 def maxVisited : Nat := 16384
 def maxDepth : Nat := 256
 def maxTopSpans : Nat := 10
