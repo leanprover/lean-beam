@@ -26,8 +26,6 @@ lean-beam --root ROOT stop
 - In a read-only or sandboxed tree, set `BEAM_SESSION_ROOT` to a writable directory.
 - After configuration changes, stop the original owner, confirm cleanup and an absent session,
   then start a new `serve`; `refresh` does not restart the server.
-- If a call fails, stalls, or needs unexpected approval, read
-  [troubleshooting](references/troubleshooting.md) before retrying or resetting a session.
 
 ## The Edit Loop
 
@@ -52,9 +50,7 @@ lean-beam sync Foo.lean            # errors stream on stderr; add +all-diagnosti
 lean-beam save MyPkg/Sub/Module.lean
 ```
 
-- Every version-bound command needs the version from the latest `update`, `sync`, or `refresh`. On
-  `contentModified` with `error.data.reason = "documentVersionMismatch"`, retry with
-  `error.data.accepted_version` or run `update` again; never guess a version.
+- Use the version from the latest `update`, `sync`, or `refresh` for version-bound commands.
 - Cancellation is soft: interrupting the client does not prove backend work has stopped. Active
   preparation may finish before cleanup; cancellation does not undo committed effects. Do not remove
   temporary files solely because the client exited.
@@ -120,6 +116,9 @@ use them only for context-free syntax checks.
   transport failures may print only to stderr.
 - `sync` failures carry structured `error.data`; save failures with document errors put the
   blocking verdict in `error.data.sync`.
+- For setup, transport, or document-state errors, stalled calls, or unexpected approval, read
+  [troubleshooting](references/troubleshooting.md) before retrying or resetting a session.
+  Use the returned Lean messages to diagnose a completed probe with `success: false`.
 
 ## When To Stop Probing
 
@@ -128,8 +127,6 @@ confirm cleanup, then recreate them afterward.
 
 - The probe result should become real source: edit, save, `update`/`sync`.
 - Probes stop clarifying the problem: change approach rather than repeating variants.
-- Sync/save failure, stale state, or worker trouble: follow
-  [troubleshooting](references/troubleshooting.md); stop if recovery remains unresolved.
 - After dependency checkpoints, refresh importers you use; a save alone does not reload them.
 
 For batch evidence, prefer clean CI `lake build`. The
@@ -144,8 +141,7 @@ challenge and external checkers. Do not add it to every inner-loop operation.
 
 ## References
 
-Open only the reference relevant to the task. Read troubleshooting when a problem arises, not as
-part of routine proof work.
+Open only the reference relevant to the task.
 
 - [Workflow details](references/workflow-details.md): positions, profiling, handles, text, diagnostics, progress
 - [Run-at examples](references/lean-run-at-semantics.md): common mistakes, including local recursion
@@ -153,4 +149,3 @@ part of routine proof work.
 - [Handle search](references/mcts-search.md): branching, linear playouts, release patterns
 - [Anti-patterns](references/anti-patterns.md): assumptions to avoid
 - [Setup and sessions](references/setup-and-recovery.md): installation, sandbox permissions, ownership
-- [Troubleshooting](references/troubleshooting.md): failed or stalled calls, approval, stale state, recovery

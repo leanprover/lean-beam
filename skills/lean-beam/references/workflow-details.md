@@ -378,41 +378,16 @@ Interpretation:
 - if you need to know whether Lean published error-severity diagnostics, inspect
   `result.diagnostics.counts.error`; do not use that field as the save/checkpoint
   decision
-- if `lean-beam sync` fails with an incomplete diagnostics barrier, inspect the JSON
-  `error.data.stale_direct_deps`, `error.data.save_deps`, `error.data.recovery_plan`, and
-  `error.data.completion_blocking_diagnostics`; the recovery hints are based on direct imports from
-  Lean's accepted header snapshot and broker sync/save history, and entries in
-  `completion_blocking_diagnostics` carry `completion_blocking=true`
-- `recovery_plan` is an ordered array of CLI command strings describing save/refresh operations.
-  Use `save_deps` and `target_path` for paths; do not evaluate unchecked plan text as shell code.
-  CLI calls must keep the owning installation, root, and session selection. For MCP, use
-  `lean_save` followed by `lean_refresh` with the same workspace, not a separate CLI session.
-- save only the listed dependencies that still need checkpoints, then refresh the target before
-  relying on downstream probes; stop if any step fails
+- when `lean-beam sync` returns `syncBarrierIncomplete`, its dependency hints come from direct
+  imports in Lean's accepted header snapshot and broker sync/save history. Entries in
+  `completion_blocking_diagnostics` carry `completion_blocking=true`. Follow
+  [sync barrier recovery](troubleshooting.md#sync-barrier-recovery).
 - after `lean-beam run-at`, `result.document_progress` may exist with `done = false`; that is normal
   because the request only waited for its own target snapshot
 - use `lean-beam hover` or `lean-beam signature-help` for semantic inspection and
   `lean-beam goals before` / `lean-beam goals after` for existing proof state; use
   `lean-beam run-at` only when you need speculative execution
 - if you need a real ready/fresh boundary after edits, use `lean-beam sync`, not a successful probe
-
-For `syncBarrierIncomplete`, save only dependencies named by the plan as needing a checkpoint,
-then refresh the target. For example, if the plan names `U.lean` and target `T.lean`:
-
-```bash
-lean-beam save "U.lean" &&
-  lean-beam refresh "T.lean"
-```
-
-After refresh succeeds, inspect its diagnostics and `readiness.save_ready` before continuing. If a step fails,
-saving is unsupported, or the barrier remains incomplete, stop retries and inspect upstream
-diagnostics and configuration. If no plan is supplied, diagnose that failure rather than inventing
-save targets or appending a build command.
-
-External `lake build` is a separate fallback, not part of the Beam recovery plan. Before a required
-external build, stop affected CLI owners and drop any affected MCP workspaces, then confirm cleanup
-through their owners or supervisors; see [the local build procedure](#before-a-local-batch-build). Create a
-fresh session/workspace afterward. This targeted recovery is not a full dependency scheduler.
 
 ## Cost Model
 
@@ -487,8 +462,8 @@ build while Beam retains the affected workspace.
 
 ### Before a local batch build
 
-For the one-time local completion fallback, request shutdown through the original owning
-installation, using the same root and session-directory selection:
+Before an external build, request shutdown through the original owning installation, using
+the same root and session-directory selection:
 
 ```bash
 "/path/to/original/installation/bin/lean-beam" --root ROOT stop
@@ -507,23 +482,20 @@ If cleanup is pending, failed, or cannot be confirmed, stop and coordinate with 
 clean or rebuild. A stop acknowledgement, cancellation, or elapsed time is not evidence of
 settlement; do not recover a descriptor to bypass this prerequisite.
 
-Only after cleanup is confirmed, discard the development checkpoints and build from the project
-root:
+Once cleanup is confirmed, choose the build that fits the task. For ordinary recovery, including
+builds required by batch-only `moreLeanArgs`, run `lake build` from the project root and keep
+existing Lake artifacts.
+
+For clean batch-build evidence, prefer CI running `lake build` from clean artifacts. If a local
+clean build is needed, run this sequence once, after the same confirmed cleanup:
 
 ```bash
-lake clean
-lake build
+lake clean && lake build
 ```
 
-Do not run this sequence merely because Beam saved a checkpoint: successful checkpoints are
-normally sufficient during the inner loop. Keep using targeted Beam probes and checkpoints instead
-of repeatedly cleaning the build directory. Batch-build evidence should come from CI running `lake
-build` from clean artifacts, or from this one-time local fallback when no successful clean CI result
-is available.
-
-These builds are separate from [independent proof confirmation](trust-and-validation.md).
-Recreate the owning session after the batch build; do not rely on retained server state noticing
-external build changes.
+Successful checkpoints are normally sufficient during the inner loop. For independent proof
+confirmation, see [the separate validation workflow](trust-and-validation.md).
+Recreate the affected sessions after the build.
 
 ## Stats And Signs Of Good Use
 

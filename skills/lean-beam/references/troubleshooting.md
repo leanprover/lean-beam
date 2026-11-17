@@ -1,8 +1,7 @@
 # Troubleshooting
 
-Read this only when a Beam call fails, stalls, or behaves unexpectedly. Start with the matching
-symptom; read only that section and do not run every diagnostic or recovery command. Keep the
-original request's owner responsible until its outcome and any cleanup are established.
+Read the section that matches the operational error, stalled call, or unexpected approval.
+Keep the original request's owner responsible until its outcome and any cleanup are established.
 
 Error paths use CLI notation (`error.data`). MCP tool failures expose the same fields under
 `structuredContent.data` with `isError: true`; JSON-RPC transport errors have a separate envelope.
@@ -124,17 +123,12 @@ If the request remains pending, return to [stalled calls](#client-approval-and-s
 - On `contentModified` with `reason = "documentAdmissionExpired"`, closure or backend replacement
   invalidated the request. After coordination, issue a new request and reacquire handles if the
   backend was replaced.
-- On `syncBarrierIncomplete`, save the listed `error.data.save_deps`, then refresh
-  `error.data.target_path` in the same CLI session or MCP workspace. Stop on a missing plan or
-  failed step. Inspect diagnostics/readiness after successful refresh; if still blocked, stop
-  retries and inspect upstream diagnostics/configuration. See the
-  [readiness recovery contract](workflow-details.md#file-progress-and-readiness). A failed sync
-  is not save-ready.
+- On `syncBarrierIncomplete`, follow [sync barrier recovery](#sync-barrier-recovery).
 - On `saveImportsChanged`, refresh, then save.
 - On `saveUnsupportedSetup` caused by batch-only `moreLeanArgs`, move shared `-D` settings to
-  `leanOptions`. When those arguments are intentionally batch-only, use the
-  [external build procedure](workflow-details.md#before-a-local-batch-build), including confirmed
-  Beam cleanup before building.
+  `leanOptions`. When those arguments are intentionally batch-only, confirm
+  [cleanup of all affected Beam sessions](workflow-details.md#before-a-local-batch-build),
+  then run `lake build`. Keep existing Lake artifacts unless the task requires a clean batch build.
 - On `error.data.reason = "savedDocumentChanged"`, `error.data.saved` records an already committed
   checkpoint of an earlier version. Run `update` or `sync` and save again if needed. Other postcommit
   failures also retain `error.data.saved`, with prior data under `error.data.original_data`. An
@@ -142,6 +136,24 @@ If the request remains pending, return to [stalled calls](#client-approval-and-s
 
 If stale-state or rebuild errors keep recurring, inspect `open-files` and `doctor`, then stop and
 report the problem. Do not turn recovery into a retry loop.
+
+### Sync barrier recovery
+
+1. Check `error.data.recovery_plan`. If the plan is missing, inspect
+   `stale_direct_deps` and `completion_blocking_diagnostics`, then diagnose upstream errors or
+   configuration. Resume this procedure only when a plan is available.
+2. Save the dependencies in `error.data.save_deps` in order, then refresh `error.data.target_path`.
+   Stop at the first failed step. Use these fields as arguments and treat the plan's command strings
+   as descriptions. With the CLI, run `lean-beam save` and `lean-beam refresh` through the original
+   installation, root, and session selection. With MCP, call `lean_save` and `lean_refresh` using
+   the same `workspace` on every call.
+3. Inspect the refreshed diagnostics and `readiness.save_ready` before proceeding. If a step fails,
+   saving is unsupported, or the barrier remains blocked, stop retrying and inspect the upstream
+   diagnostics and project configuration.
+
+If you determine that an external build is required, confirm
+[cleanup of all affected Beam sessions](workflow-details.md#before-a-local-batch-build) before
+building and recreate them afterward.
 
 ## Worker Recovery
 
