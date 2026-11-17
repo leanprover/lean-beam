@@ -42,6 +42,46 @@ private def hasCategory (profile : Beam.LSP.RunAt.Profile.Result) (category : St
 private def awaitResult (request : ReqHandle) : ScenarioM Beam.LSP.RunAt.Result :=
   awaitResponseAs request
 
+/-- Oversubscribed profiles must preserve later costly work, deterministic ties and ancestry. -/
+def checkRetention : IO Unit := do
+  let forced ← IO.mkRef false
+  let label := MessageData.ofLazy (fun _ => do
+    forced.set true
+    pure <| Dynamic.mk (m!"unused")) (fun _ => false)
+  let timed := fun cls start stop children => MessageData.trace
+    { cls, startTime := start, stopTime := stop } label children
+  let small := (Array.range (Beam.LSP.RunAt.Profile.maxSpans + 20)).map fun i =>
+    MessageData.trace {cls := `small, tag := toString i, startTime := 1.1, stopTime := 1.18} label #[]
+  -- An asynchronous child's inclusive interval can outlast the enclosing scope.
+  let family := timed `parent 1.1 1.12 #[timed `largeChild 1.1 1.9 #[]]
+  let root := timed `body 1.0 1.95 (small.push family)
+  let traces := ({} : PersistentArray TraceElem).push {ref := .missing, msg := root}
+  let late := ({} : PersistentArray TraceElem).push {ref := .missing, msg := timed `Kernel 1.7 1.95 #[]}
+  let result := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
+    #[{tid := 1, traces}, {tid := 2, traces := late}] ""
+  require (result.truncated && result.spans.size == Beam.LSP.RunAt.Profile.maxSpans)
+    "retention must respect the output cap and report omitted timed nodes"
+  require (result.spans.any (·.category == "Kernel")) "late large root was starved"
+  let some child := result.spans.find? (·.category == "largeChild")
+    | throw <| IO.userError "large child was lost"
+  let some parent := child.parent? | throw <| IO.userError "ancestor closure lost parent"
+  require (result.spans[parent]!.category == "parent") "child was reparented incorrectly"
+  let ties := result.spans.filter (·.category == "small")
+  require (ties.map (·.tag) == (Array.range ties.size).map toString)
+    "equal-duration retention must follow original order"
+  for i in [:result.spans.size] do
+    if let some parent := result.spans[i]!.parent? then
+      require (parent < i && result.spans[parent]!.thread == result.spans[i]!.thread)
+        "retention broke parent order or thread identity"
+  let wide := timed `body 1.0 1.95
+    (Array.replicate (Beam.LSP.RunAt.Profile.maxVisited + 1) (m!"untimed"))
+  let exhausted := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
+    #[{tid := 1, traces := ({} : PersistentArray TraceElem).push {ref := .missing, msg := wide}},
+      {tid := 2, traces := late}] ""
+  require (exhausted.truncated && exhausted.spans.any (·.category == "Kernel"))
+    "visit exhaustion must remain truthful after reaching late roots"
+  require (!(← forced.get)) "retention evaluated a lazy header"
+
 def checkProjection : IO Unit := do
   let forced ← IO.mkRef false
   let label := MessageData.ofLazy (fun _ => do
@@ -388,6 +428,7 @@ def checkCancellationAndStaleness : ScenarioM Unit := do
 
 def run : ScenarioM Unit := do
   checkProjection
+  checkRetention
   ProfileContractsTest.run
   ProfileSummaryTest.run
   checkProofs
