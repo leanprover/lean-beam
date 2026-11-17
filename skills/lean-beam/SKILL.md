@@ -51,6 +51,7 @@ lean-beam save MyPkg/Sub/Module.lean
 ```
 
 - Use the version from the latest `update`, `sync`, or `refresh` for version-bound commands.
+  Never guess a version.
 - Cancellation is soft: interrupting the client does not prove backend work has stopped. Active
   preparation may finish before cleanup; cancellation does not undo committed effects. Do not remove
   temporary files solely because the client exited.
@@ -127,6 +128,8 @@ confirm cleanup, then recreate them afterward.
 
 - The probe result should become real source: edit, save, `update`/`sync`.
 - Probes stop clarifying the problem: change approach rather than repeating variants.
+- On `syncBarrierIncomplete`, follow [sync barrier recovery](references/troubleshooting.md#sync-barrier-recovery)
+  before continuing.
 - After dependency checkpoints, refresh importers you use; a save alone does not reload them.
 
 For batch evidence, prefer clean CI `lake build`. The

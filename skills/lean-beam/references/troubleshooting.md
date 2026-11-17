@@ -14,6 +14,7 @@ Error paths use CLI notation (`error.data`). MCP tool failures expose the same f
 | `contentModified`, sync barrier, save refusal, or uncertain checkpoint | [Sync and save failures](#sync-and-save-failures) |
 | `workerCrashed` or `workerExited` | [Worker recovery](#worker-recovery) |
 | Corrupted installation or install-root marker | [Installation recovery](#installation-recovery) |
+| Unresolved problem to report | [Reporting an unresolved problem](#reporting-an-unresolved-problem) |
 
 ## Client Approval And Stalled Calls
 
@@ -21,9 +22,9 @@ An MCP client can pause a tool call for user approval or automatic review before
 Beam cannot report progress for a request it has not received. A pending call, an execution-cell
 ID, or silence from Beam does not establish that Lean is running or stuck.
 
-1. Inspect the calling task and its parent for a pending approval, review, or permission prompt.
-   Record the exact tool, arguments, task, request/item ID, and whether a decision is outstanding.
-   A task-wide `waitingOnApproval` flag alone does not identify the pending action.
+1. Check your client's tool approval or permissions UI for a pending prompt on the calling task
+   or its parent. Record the exact tool, arguments, task, request/item ID, and whether a decision
+   is outstanding. A task-wide `waitingOnApproval` flag alone does not identify the pending action.
 2. Surface that specific pending action to its owner/operator through the client's approval UI.
    Existing authorization for the work does not prove the client received an approval decision.
    If the client exposes no prompt or request ID, report that visibility gap with the task/call
@@ -42,11 +43,9 @@ as a troubleshooting shortcut. Client policy changes belong to the operator and 
 specific tool and intended effects. A shell fallback may use a different owner or permissions and
 does not establish what happened to the original MCP call.
 
-For Codex, the [official approval documentation](https://learn.chatgpt.com/docs/app-server#mcp-tool-call-approvals-apps)
-describes MCP/app approval gates. The
-[configuration reference](https://developers.openai.com/codex/config-reference/)
-documents per-tool MCP approval overrides. These describe client capabilities, not Beam recovery
-commands or guarantees that a pending approval is visible to every agent.
+For example, Codex documents its
+[tool approval flow](https://learn.chatgpt.com/docs/app-server#mcp-tool-call-approvals-apps) and
+[per-tool MCP approval settings](https://learn.chatgpt.com/docs/config-file/config-reference).
 
 ## Setup And Identity
 
@@ -196,6 +195,6 @@ fill a report while the original is pending. Avoid attributing a client approval
 worker without server evidence.
 
 While a call is pending, draft the report locally without invoking another Beam tool. After
-settlement, use [feedback reports](feedback.md) for the report schema, optional local bundles, and
-confidentiality rules. Review paths, source snippets, and payloads before sharing; Beam never
-submits the report.
+settlement, use `lean-beam feedback-report` or MCP `beam_feedback_report` to prepare it. See
+[feedback reports](feedback.md) for inputs, optional local bundles, and confidentiality rules.
+Review paths, source snippets, and payloads before sharing. Beam returns the report to the caller.
