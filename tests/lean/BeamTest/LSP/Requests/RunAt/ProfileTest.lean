@@ -73,6 +73,27 @@ def checkRetention : IO Unit := do
     if let some parent := result.spans[i]!.parent? then
       require (parent < i && result.spans[parent]!.thread == result.spans[i]!.thread)
         "retention broke parent order or thread identity"
+  -- Phase reservation competes with longer spans, includes ancestors and prefers the first tie.
+  let phase := fun tag stop => MessageData.trace
+    {cls := `Elab.def.maxSharing, tag, startTime := 1.5, stopTime := stop} label #[]
+  let shortFamily := timed `phaseParent 1.5 1.51
+    #[phase "shorter" 1.5005, phase "first" 1.501, phase "second" 1.501]
+  let phaseResult := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
+    #[{tid := 1, traces := ({} : PersistentArray TraceElem).push {
+      ref := .missing, msg := timed `body 1.0 1.95 (small.push shortFamily)}}] ""
+  require (phaseResult.truncated && phaseResult.spans.size == Beam.LSP.RunAt.Profile.maxSpans)
+    "phase reservation must share the retained-span budget"
+  let phaseIndices := (Beam.LSP.RunAt.Profile.select phaseResult.spans).phases
+  let some index := phaseIndices.find? (fun i => phaseResult.spans[i]!.category == "Elab.def.maxSharing")
+    | throw <| IO.userError "short phase missing from phase_spans under duration pressure"
+  let reserved := phaseResult.spans[index]!
+  require (reserved.tag == "first") "phase reservation must choose the largest, first equal observation"
+  let some parent := reserved.parent? | throw <| IO.userError "phase reservation lost ancestor"
+  require (parent < index && phaseResult.spans[parent]!.category == "phaseParent")
+    "phase reservation must retain and reindex its ancestor"
+  let phaseTies := phaseResult.spans.filter (·.category == "small")
+  require (phaseTies.map (·.tag) == (Array.range phaseTies.size).map toString)
+    "phase reservation changed duration-fill tie order"
   let wide := timed `body 1.0 1.95
     (Array.replicate (Beam.LSP.RunAt.Profile.maxVisited + 1) (m!"untimed"))
   let exhausted := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000

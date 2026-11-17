@@ -42,6 +42,9 @@ def maxTopSpans : Nat := 10
 def maxLabelChars : Nat := 160
 private def maxSnippetSourceBytes : Nat := 8192
 
+private def phaseCategories : Array String :=
+  #["Kernel", "Elab.def.maxSharing", "addDecl", "Elab.definition.value", "Elab.lint"]
+
 /-- A maximal single-child path in the retained forest. `inner` is its displayed descendant,
 not necessarily its last node: choose the deepest member with at least half the positive outer
 duration. This presentation heuristic does not attribute the outer cost to that member. `size`
@@ -86,7 +89,7 @@ def select (spans : Array Span) : Selection := Id.run do
         inner := cursor
     top := top.push { outer := i, inner, size }
   let mut phases := #[]
-  for category in #["Kernel", "Elab.def.maxSharing", "addDecl", "Elab.definition.value", "Elab.lint"] do
+  for category in phaseCategories do
     if let some index := ranked.find? (fun i => spans[i]!.category == category) then
       phases := phases.push index
   return { top, phases }
@@ -329,17 +332,20 @@ private def explore (startNs stopNs : Nat) (states : Array TraceState) (text : S
 
 private def sourceLT (a b : Observation) : Bool := compare a.key b.key == .lt
 
-/-- Rank inclusive observations, retaining all ancestors inside the same output budget.
-Equal durations use original trace-tree order, independent of traversal scheduling. -/
+/-- Reserve the largest observation of each summary phase, then fill by inclusive duration.
+Every admission includes its ancestors inside the same output budget. Equal durations use original
+trace-tree order, independent of traversal scheduling. -/
 private def retain (e : Explored) (cap : Nat) : Array Nat := Id.run do
   let ranked := (Array.range e.observations.size).qsort fun a b =>
     let x := e.observations[a]!
     let y := e.observations[b]!
     x.span.durationMs > y.span.durationMs ||
       (x.span.durationMs == y.span.durationMs && sourceLT x y)
+  let phases := phaseCategories.filterMap fun category =>
+    ranked.find? (fun i => e.observations[i]!.span.category == category)
   let mut selected := #[]
   let mut kept := Array.replicate e.observations.size false
-  for i in ranked do
+  for i in phases ++ ranked do
     if selected.size == cap then break
     if kept[i]! then continue
     let mut additions := #[i]

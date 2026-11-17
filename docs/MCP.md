@@ -486,8 +486,10 @@ Beam omits span ranges.
 
 Profiling returns at most 128 spans, limits traversal visits to 16384 (including trace-state entries),
 and limits `MessageData` nesting to 256. Traversal considers roots and shallow message nodes before
-deeper descendants. Among visited timed nodes, retention ranks inclusive duration, breaking ties by
-original trace-tree order. A node is admitted with all its timed ancestors only when the group fits
+deeper descendants. Among visited timed nodes, retention first reserves the largest observation of
+each existing summary phase (Kernel, maxSharing, addDecl, definition value, lint), in that order,
+then fills by inclusive duration. Ties use original trace-tree order. Every reservation and later
+admission includes all timed ancestors and is charged to the same cap, only when the group fits
 the remaining span budget. Results retain their original parent-before-child order with remapped
 indices. Small forests that fit the bounds keep every span. Neither this selection nor the summary
 claims global coverage when traversal stops; even fully visited phases may be excluded by the span budget.
