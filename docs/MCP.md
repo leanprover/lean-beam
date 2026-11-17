@@ -475,9 +475,10 @@ independently measured wall-clock total remains valid. Other option changes, inc
 profiling or changing its threshold, can suppress spans without Beam detecting the change. Therefore
 `truncated: false` is not a promise that every elaboration event was recorded.
 
-Each span has `thread`, `category`, `tag`, `start_ms`, and `duration_ms`. `thread`, `category`, and
-`tag` are raw Lean trace identifiers, not stable source identifiers or proof-goal names.
-`start_ms` and `duration_ms` are timing fields; `start_ms` is relative to the profile interval.
+Each span has a numeric `thread` ordinal, assigned from zero in first-seen order within this
+response. Lean supplies the `category` and optional nonempty `tag`. Beam rounds both endpoints to
+0.1 ms relative to the profile interval. `start_ms` is the rounded start and `duration_ms` is the
+difference between the rounded endpoints, including in summary entries. Ranking uses full precision.
 Optional `parent` is the index in this response's `spans` array of the nearest retained ancestor.
 Optional `range` is a half-open range in the submitted text, using zero-based lines and zero-based
 UTF-16 character offsets; its end is exclusive. A range is not a document coordinate or a promise

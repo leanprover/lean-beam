@@ -156,9 +156,10 @@ incompatible-clock nodes; raw category/tag clipping also sets it. Summary label 
 only by a final `…`, and grouping does not change this flag. False does not
 prove complete trace coverage.
 
-Each span's `thread`, `category`, and `tag` are raw Lean trace identifiers, not stable source
-identifiers or proof-goal names. `start_ms` and `duration_ms` are timing fields; `start_ms` is
-relative to the profile interval. `parent`, when present, indexes the nearest retained ancestor in
+Span `thread` numbers start at zero in first-seen order within each response. Lean supplies the
+`category` and optional nonempty `tag`. Endpoints are rounded to 0.1 ms from the start of the
+profile interval. `duration_ms` in raw spans and summaries is the difference of those endpoints.
+`parent`, when present, indexes the nearest retained ancestor in
 this response's `spans` array. `range`, when present, is a half-open range in the submitted text,
 using zero-based lines and zero-based UTF-16 character offsets. Its end is exclusive. A range is not
 a document position or a guaranteed mapping to a source occurrence. If the source snippet exceeds
