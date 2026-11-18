@@ -484,9 +484,17 @@ UTF-16 character offsets; its end is exclusive. A range is not a document coordi
 that Lean can map the span to a source occurrence. If the source snippet exceeds 8192 UTF-8 bytes,
 Beam omits span ranges.
 
-Profiling returns at most 1024 spans, limits traversal visits to 8192 (including trace-state entries),
-and limits `MessageData` nesting to 128. Context and formatting wrappers count toward both traversal
-bounds, so the retained span tree can stop below depth 128. `truncated: true` means projection omitted
+Profiling returns at most 128 spans, limits traversal visits to 16384 (including trace-state entries),
+and limits `MessageData` nesting to 256. Traversal considers roots and shallow message nodes before
+deeper descendants. Among visited timed nodes, retention first reserves the largest observation of
+each existing summary phase (Kernel, maxSharing, addDecl, definition value, lint), in that order,
+then fills by inclusive duration. Ties use original trace-tree order. Every reservation and later
+admission includes all timed ancestors and is charged to the same cap, only when the group fits
+the remaining span budget. Results retain their original parent-before-child order with remapped
+indices. Small forests that fit the bounds keep every span. Neither this selection nor the summary
+claims global coverage when traversal stops; even fully visited phases may be excluded by the span budget.
+Context and formatting wrappers count toward both traversal
+bounds, so the retained span tree can stop below depth 256. `truncated: true` means projection omitted
 trace nodes or clipped raw category/tag identifiers; it does not identify which bound was reached. It can also report
 clock-incompatible nodes as described above. These traversal bounds do not bound Lean's upstream
 trace allocation or selected-label rendering. Profiled results preserve ordinary warnings and errors in `messages`,
