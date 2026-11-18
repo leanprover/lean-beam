@@ -20,7 +20,7 @@ private def require (condition : Bool) (message : String) : IO Unit :=
 private def profileOf (result : Beam.LSP.RunAt.Result) : ScenarioM Beam.LSP.RunAt.Profile.Result := do
   let some profile := result.profile?
     | throw <| IO.userError s!"missing profile: {(toJson result).compress}"
-  require (profile.elapsedMs > 0) "profile elapsed time must be positive"
+  require (profile.elapsedNs > 0) "profile elapsed time must be positive"
   require (profile.spans.size <= Beam.LSP.RunAt.Profile.maxSpans) "profile exceeded span bound"
   require (!profile.truncated) "small profile unexpectedly hit a projection bound"
   require (profile.spans.all fun span => span.label?.all (·.length <= Beam.LSP.RunAt.Profile.maxLabelChars))
@@ -28,8 +28,8 @@ private def profileOf (result : Beam.LSP.RunAt.Result) : ScenarioM Beam.LSP.RunA
   require (profile.initialThresholdMs == 1) "initial profiling threshold changed"
   for i in [:profile.spans.size] do
     let span := profile.spans[i]!
-    require (span.startMs >= 0 && span.durationMs >= 0) "negative span time"
-    require (span.startMs + span.durationMs <= profile.elapsedMs + 0.01)
+    require (span.startNs <= span.stopNs) "span stops before it starts"
+    require (span.stopNs <= profile.elapsedNs)
       "span exceeds execution interval"
     if let some parent := span.parent? then
       require (parent < i) "span parent must precede child"
@@ -120,7 +120,7 @@ def checkProjection : IO Unit := do
     "projection lost nested parent relation"
   require (profile.spans.all (·.thread == 7)) "projection lost thread identity"
   require (profile.spans.all (·.range?.isNone)) "projection invented a missing source location"
-  require (!profile.truncated && profile.elapsedMs == 1000) "unexpected projection summary"
+  require (!profile.truncated && profile.elapsedNs == 1_000_000_000) "unexpected projection summary"
   require (!(← forced.get)) "projection evaluated a lazy trace label"
 
   let wide : MessageData := .trace { cls := `root, startTime := 1.1, stopTime := 1.9 }
@@ -346,7 +346,7 @@ def checkSourceOptions : ScenarioM Unit := do
       }
       require result.success s!"source option changed probe result: {option}"
       let some profile := result.profile? | throw <| IO.userError "source option lost wall-clock total"
-      require (profile.elapsedMs > 0 && profile.initialThresholdMs == 1)
+      require (profile.elapsedNs > 0 && profile.initialThresholdMs == 1)
         "source option changed initial settings or independent wall-clock total"
       require (!hasCategory profile "beam.profile.left")
         "source-suppressed or heartbeat scope was presented as wall-clock timing"

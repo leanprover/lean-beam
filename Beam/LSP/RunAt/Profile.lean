@@ -17,17 +17,20 @@ structure Span where
   thread : UInt64
   category : String
   tag : String
-  startMs : Float
-  durationMs : Float
+  /-- Canonical offsets in nanoseconds from the request origin. JSON preserves both exactly. -/
+  startNs : Nat
+  stopNs : Nat
   range? : Option Lean.Lsp.Range := none
   /-- Lean-rendered header for a selected summary entry. Never retains the message context. -/
   label? : Option String := none
   deriving FromJson, ToJson, Inhabited
 
+def Span.durationNs (span : Span) : Nat := span.stopNs - span.startNs
+
 /-- Wall-clock evidence from one speculative execution in its already-loaded environment.
-Span durations overlap and must not be summed to obtain `elapsedMs`. -/
+Span durations overlap and must not be summed to obtain `elapsedNs`. -/
 structure Result where
-  elapsedMs : Float
+  elapsedNs : Nat
   /-- The collection threshold installed at request start; nested Lean scopes can override it. -/
   initialThresholdMs : Nat := 1
   spans : Array Span := #[]
@@ -64,8 +67,8 @@ structure Selection where
 
 def select (spans : Array Span) : Selection := Id.run do
   let ranked := (Array.range spans.size).qsort fun i j =>
-    spans[i]!.durationMs > spans[j]!.durationMs ||
-      (spans[i]!.durationMs == spans[j]!.durationMs && i < j)
+    spans[i]!.durationNs > spans[j]!.durationNs ||
+      (spans[i]!.durationNs == spans[j]!.durationNs && i < j)
   let mut children : Array (Array Nat) := Array.replicate spans.size #[]
   for i in [:spans.size] do
     if let some parent := spans[i]!.parent? then
@@ -79,13 +82,13 @@ def select (spans : Array Span) : Selection := Id.run do
     let mut inner := i
     let mut cursor := i
     let mut size := 1
-    let outerDuration := spans[i]!.durationMs
+    let outerDuration := spans[i]!.durationNs
     -- Edges go forward, so a path visits at most spans.size nodes.
     for _ in [:spans.size] do
       if children[cursor]!.size != 1 then break
       cursor := children[cursor]![0]!
       size := size + 1
-      if outerDuration > 0 && spans[cursor]!.durationMs >= outerDuration / 2 then
+      if outerDuration > 0 && 2 * spans[cursor]!.durationNs >= outerDuration then
         inner := cursor
     top := top.push { outer := i, inner, size }
   let mut phases := #[]
@@ -235,7 +238,7 @@ private structure Explored where
 
 private def Explored.complete (e : Explored) : Bool := e.pendingAtStop == 0 && e.depthStops == 0
 
-private def dispatch (origin stop : Float) (msg : MessageData) (f : Frame)
+private def dispatch (origin stop : Float) (elapsedNs : Nat) (msg : MessageData) (f : Frame)
     (e : Explored) : Explored × Array Work := Id.run do
   if f.fuel == 0 then return ({e with depthStops := e.depthStops + 1}, #[])
   let mut e := {e with visited := e.visited + 1}
@@ -248,13 +251,17 @@ private def dispatch (origin stop : Float) (msg : MessageData) (f : Frame)
       let (category, clipped) := boundedNameString data.cls 160
       let tag := (data.tag.take 256).toString
       let index := e.observations.size
+      -- Lean records seconds as Floats. At the request stop we already know the exact offset.
+      let offsetNs := fun (time : Float) =>
+        if time == stop then elapsedNs
+        else min elapsedNs (((time - origin) * 1000000000).round.toUInt64.toNat)
       let span : Span := {
         parent? := f.parent?
         thread := f.thread
         category
         tag
-        startMs := (data.startTime - origin) * 1000
-        durationMs := (data.stopTime - data.startTime) * 1000
+        startNs := offsetNs data.startTime
+        stopNs := offsetNs data.stopTime
         range? := f.range?
       }
       e := {e with
@@ -296,6 +303,7 @@ Context wrappers count as levels, matching the existing depth limit. -/
 private def explore (startNs stopNs : Nat) (states : Array TraceState) (text : String) : Explored := Id.run do
   let origin := startNs.toFloat / 1000000000
   let stop := stopNs.toFloat / 1000000000
+  let elapsedNs := stopNs - startNs
   let mut levels : Array (List Work) := Array.replicate (maxDepth + 1) []
   if !states.isEmpty then levels := levels.set! 0 [.states 0]
   let mut e : Explored := {}
@@ -319,12 +327,12 @@ private def explore (startNs stopNs : Nat) (states : Array TraceState) (text : S
           pathRev := [ri, si]
           range? := snippetRange? text item.ref
         }
-        (e, tasks) := dispatch origin stop item.msg frame e
+        (e, tasks) := dispatch origin stop elapsedNs item.msg frame e
         if ri + 1 < state.traces.size then tasks := tasks.push (.roots si (ri + 1))
       | .children items next frame =>
-        (e, tasks) := dispatch origin stop items[next]! {frame with pathRev := next :: frame.pathRev} e
+        (e, tasks) := dispatch origin stop elapsedNs items[next]! {frame with pathRev := next :: frame.pathRev} e
         if next + 1 < items.size then tasks := tasks.push (.children items (next + 1) frame)
-      | .single msg frame => (e, tasks) := dispatch origin stop msg frame e
+      | .single msg frame => (e, tasks) := dispatch origin stop elapsedNs msg frame e
       for task in tasks.reverse do
         levels := levels.modify task.level (task :: ·)
     if e.visited >= maxVisited then break
@@ -339,8 +347,8 @@ private def retain (e : Explored) (cap : Nat) : Array Nat := Id.run do
   let ranked := (Array.range e.observations.size).qsort fun a b =>
     let x := e.observations[a]!
     let y := e.observations[b]!
-    x.span.durationMs > y.span.durationMs ||
-      (x.span.durationMs == y.span.durationMs && sourceLT x y)
+    x.span.durationNs > y.span.durationNs ||
+      (x.span.durationNs == y.span.durationNs && sourceLT x y)
   let phases := phaseCategories.filterMap fun category =>
     ranked.find? (fun i => e.observations[i]!.span.category == category)
   let mut selected := #[]
@@ -379,7 +387,7 @@ private def project (startNs stopNs : Nat) (states : Array TraceState) (text : S
   materialize (explore startNs stopNs states text) maxSpans
 
 private def Projection.result (projection : Projection) (startNs stopNs : Nat) : Result := {
-    elapsedMs := (stopNs - startNs).toFloat / 1000000
+    elapsedNs := stopNs - startNs
     initialThresholdMs
     spans := projection.spans
     truncated := projection.truncated

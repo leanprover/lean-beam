@@ -19,7 +19,7 @@ private def category (i : Nat) : Name :=
 
 private def span (durationMs : Float) (parent? : Option Nat := none)
     (category : String := "step") : Span := {
-  thread := 0, category, tag := "", startMs := 0, durationMs, parent? }
+  thread := 0, category, tag := "", startNs := 0, stopNs := (durationMs * 1000000).round.toUInt64.toNat, parent? }
 
 private def checkChains : IO Unit := do
   -- Retained paths group wrapper noise, even when an outer scope includes substantial work
@@ -127,7 +127,7 @@ def run : IO Unit := do
     collectWithLabels (pure () : IO Unit) 1000000000 2000000000 states ""
   require ((← IO.monoNanosNow) - renderStarted >= 5000000) "slow header was not awaited"
   require output.isEmpty "label rendering escaped isolated streams"
-  require (result.elapsedMs == 1000) "label rendering changed measured elaboration time"
+  require (result.elapsedNs == 1_000_000_000) "label rendering changed measured elaboration time"
   let observed ← calls.get
   require (observed[0]! == 0 && (observed.extract 1 13).all (· == 1))
     "unselected header evaluated or selected header rendered more than once"
@@ -139,8 +139,8 @@ def run : IO Unit := do
   require (select result.spans == selection) "label rendering changed the pure selection decision"
 
   let tied : Array Span := #[
-    { thread := 0, category := "Kernel", tag := "", startMs := 0, durationMs := 1 },
-    { thread := 0, category := "step", tag := "", startMs := 0, durationMs := 1 }]
+    { thread := 0, category := "Kernel", tag := "", startNs := 0, stopNs := 1_000_000 },
+    { thread := 0, category := "step", tag := "", startNs := 0, stopNs := 1_000_000 }]
   let same := select tied
   require (same.top.map (·.outer) == #[0, 1] && same.phases == #[0] && same.indices == #[0, 1])
     "tie ordering or overlapping view deduplication changed"

@@ -206,7 +206,7 @@ def checkRunAtResourceLimits : ScenarioM Unit := do
         unless result.profile?.isSome == profile do
           throw <| IO.userError "resource-limit failure lost profiling opt-in state"
         if let some evidence := result.profile? then
-          unless evidence.elapsedMs > 0 && evidence.initialThresholdMs == 1 do
+          unless evidence.elapsedNs > 0 && evidence.initialThresholdMs == 1 do
             throw <| IO.userError "resource-limit failure lost wall-clock evidence"
         unless !result.success && result.handle?.isNone &&
             result.proofState?.map (·.goals.map (·.target)) ==

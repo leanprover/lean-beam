@@ -141,22 +141,30 @@ private instance : FromJson RunAtBrokerResult where
       profile?
     }
 
-private def profileSpanJson (span : Beam.LSP.RunAt.Profile.Span) : Json := Json.mkObj <|
-  [("thread", toJson span.thread), ("category", toJson span.category),
-   ("tag", toJson span.tag), ("start_ms", toJson span.startMs),
-   ("duration_ms", toJson span.durationMs)] ++
-  (match span.parent? with | some parent => [("parent", toJson parent)] | none => []) ++
-  (match span.range? with | some range => [("range", toJson range)] | none => [])
-
 private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Id.run do
   -- Selection depends only on the unchanged span forest and timings, never rendered labels.
   -- Reusing the pure selector avoids storing a second, potentially stale summary in Result.
   let selection := Beam.LSP.RunAt.Profile.select profile.spans
+  -- Round both endpoints on the same grid so displayed children stay inside their parents.
+  let tenths := fun (ns : Nat) => (ns + 50_000) / 100_000
+  let milliseconds := fun (ticks : Nat) => Json.num ⟨ticks, 1⟩
+  let mut threads : Std.HashMap UInt64 Nat := {}
+  let mut raw := #[]
+  let mut common := #[]
+  for span in profile.spans do
+    let thread := threads.getD span.thread threads.size
+    threads := threads.insert span.thread thread
+    let start := tenths span.startNs
+    let stop := tenths span.stopNs
+    let fields := [("category", toJson span.category), ("duration_ms", milliseconds (stop - start))] ++
+      (if span.tag.isEmpty then [] else [("tag", toJson span.tag)])
+    common := common.push fields
+    raw := raw.push <| Json.mkObj <| fields ++ [("thread", toJson thread), ("start_ms", milliseconds start)] ++
+      (match span.parent? with | some parent => [("parent", toJson parent)] | none => []) ++
+      (match span.range? with | some range => [("range", toJson range)] | none => [])
   let fields := fun index (outerLabel? : Option String) =>
     let span := profile.spans[index]!
-    [("span", toJson index), ("category", toJson span.category),
-       ("duration_ms", toJson span.durationMs)] ++
-      (if span.tag.isEmpty then [] else [("tag", toJson span.tag)]) ++
+    [("span", toJson index)] ++ common[index]! ++
       (match span.label? with
       | some label => if outerLabel? == some label then [] else [("label", toJson label)]
       | none => [])
@@ -166,13 +174,13 @@ private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Id.r
     if chain.inner == chain.outer then [] else
       [("inner_span", Json.mkObj <| fields chain.inner profile.spans[chain.outer]!.label?)]
   return Json.mkObj [
-    ("elapsed_ms", toJson profile.elapsedMs), ("initial_threshold_ms", toJson profile.initialThresholdMs),
+    ("elapsed_ms", milliseconds (tenths profile.elapsedNs)), ("initial_threshold_ms", toJson profile.initialThresholdMs),
     ("summary", Json.mkObj [
       ("top_spans", Json.arr <| selection.top.map chainEntry),
       ("phase_spans", Json.arr <| selection.phases.map entry),
       ("collapsed_spans", toJson (selection.represented - selection.top.size)),
       ("omitted_from_top", toJson (profile.spans.size - selection.represented))]),
-    ("spans", Json.arr <| profile.spans.map profileSpanJson),
+    ("spans", Json.arr raw),
     ("truncated", toJson profile.truncated)
   ]
 
