@@ -4,7 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: Emilio J. Gallego Arias
 -/
 
-import Beam.LSP.RunAt.Profile
+import BeamTest.LSP.Requests.RunAt.ProfileInvariants
 
 open Lean
 open Beam.LSP.RunAt.Profile
@@ -84,6 +84,7 @@ private def checkChains : IO Unit := do
     tid := 0
     traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := root } }
   let result ← collectWithLabels (pure () : IO Unit) 1000000000 2000000000 #[state] ""
+  ProfileInvariants.checkResult result
   require ((← calls.get) == #[1, 1, 0])
     "selected middle header was not rendered exactly once or a tiny leaf header was evaluated"
   require (result.spans[1]!.label? == some "endpoint 1" && result.spans[2]!.label?.isNone)
@@ -115,6 +116,7 @@ def run : IO Unit := do
         .withNamingContext { currNamespace := `LabelScope, openDecls := [] } node }
   let states : Array TraceState := #[{ tid := 7, traces }]
   let pureResult := collect 1000000000 2000000000 states ""
+  ProfileInvariants.checkResult pureResult
   require ((← calls.get).all (· == 0)) "pure profile collector evaluated a header"
   let selection := select pureResult.spans
   require (selection.top.map (·.outer) == #[12, 11, 10, 9, 8, 7, 6, 5, 4, 3]) "top spans not ranked by inclusive duration"
@@ -125,6 +127,7 @@ def run : IO Unit := do
   let renderStarted ← IO.monoNanosNow
   let (output, result) ← IO.FS.withIsolatedStreams do
     collectWithLabels (pure () : IO Unit) 1000000000 2000000000 states ""
+  ProfileInvariants.checkResult result
   require ((← IO.monoNanosNow) - renderStarted >= 5000000) "slow header was not awaited"
   require output.isEmpty "label rendering escaped isolated streams"
   require (result.elapsedNs == 1_000_000_000) "label rendering changed measured elaboration time"
