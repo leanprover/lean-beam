@@ -127,7 +127,7 @@ def run : IO Unit := do
     collectWithLabels (pure () : IO Unit) 1000000000 2000000000 states ""
   require ((← IO.monoNanosNow) - renderStarted >= 5000000) "slow header was not awaited"
   require output.isEmpty "label rendering escaped isolated streams"
-  require (result.elapsedMs == 1000) "label rendering changed measured elaboration time"
+  require (result.elapsedNs == 1_000_000_000) "label rendering changed measured elaboration time"
   let observed ← calls.get
   require (observed[0]! == 0 && (observed.extract 1 13).all (· == 1))
     "unselected header evaluated or selected header rendered more than once"

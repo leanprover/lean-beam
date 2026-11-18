@@ -476,9 +476,11 @@ profiling or changing its threshold, can suppress spans without Beam detecting t
 `truncated: false` is not a promise that every elaboration event was recorded.
 
 Each span has a numeric `thread` ordinal, assigned from zero in first-seen order within this
-response. Lean supplies the `category` and optional nonempty `tag`. Beam rounds both endpoints to
-0.1 ms relative to the profile interval. `start_ms` is the rounded start and `duration_ms` is the
-difference between the rounded endpoints, including in summary entries. Ranking and label selection use the same nanosecond endpoints before display rounding.
+response. The `category` and optional nonempty `tag` are raw Lean trace identifiers. Neither
+field provides a stable source identifier or a proof-goal name. Beam rounds `elapsed_ms` and span
+endpoints to 0.1 ms relative to the start of the request interval. `start_ms` is the rounded start.
+In raw spans and summary entries, `duration_ms` is the difference between the rounded endpoints.
+Entries are ranked by unrounded durations, so equal displayed values may appear in either order.
 Optional `parent` is the index in this response's `spans` array of the nearest retained ancestor.
 Optional `range` is a half-open range in the submitted text, using zero-based lines and zero-based
 UTF-16 character offsets; its end is exclusive. A range is not a document coordinate or a promise

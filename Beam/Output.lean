@@ -174,7 +174,7 @@ private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Id.r
     if chain.inner == chain.outer then [] else
       [("inner_span", Json.mkObj <| fields chain.inner profile.spans[chain.outer]!.label?)]
   return Json.mkObj [
-    ("elapsed_ms", toJson profile.elapsedMs), ("initial_threshold_ms", toJson profile.initialThresholdMs),
+    ("elapsed_ms", milliseconds (tenths profile.elapsedNs)), ("initial_threshold_ms", toJson profile.initialThresholdMs),
     ("summary", Json.mkObj [
       ("top_spans", Json.arr <| selection.top.map chainEntry),
       ("phase_spans", Json.arr <| selection.phases.map entry),
