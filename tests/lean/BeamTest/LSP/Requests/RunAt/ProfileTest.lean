@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import BeamTest.LSP.Requests.Support
+import BeamTest.LSP.Requests.RunAt.ProfileCostlyTest
 import BeamTest.LSP.Requests.RunAt.ProfileContractsTest
 import BeamTest.LSP.Requests.RunAt.ProfileSummaryTest
 
@@ -39,8 +40,10 @@ private def profileOf (result : Beam.LSP.RunAt.Result) : ScenarioM Beam.LSP.RunA
 private def hasCategory (profile : Beam.LSP.RunAt.Profile.Result) (category : String) : Bool :=
   profile.spans.any (·.category == category)
 
-private def awaitResult (request : ReqHandle) : ScenarioM Beam.LSP.RunAt.Result :=
-  awaitResponseAs request
+private def awaitResult (request : ReqHandle) : ScenarioM Beam.LSP.RunAt.Result := do
+  let result : Beam.LSP.RunAt.Result ← awaitResponseAs request
+  if let some profile := result.profile? then ProfileInvariants.checkResult profile
+  return result
 
 /-- Oversubscribed profiles must preserve later costly work, deterministic ties and ancestry. -/
 def checkRetention : IO Unit := do
@@ -52,13 +55,14 @@ def checkRetention : IO Unit := do
     { cls, startTime := start, stopTime := stop } label children
   let small := (Array.range (Beam.LSP.RunAt.Profile.maxSpans + 20)).map fun i =>
     MessageData.trace {cls := `small, tag := toString i, startTime := 1.1, stopTime := 1.18} label #[]
-  -- An asynchronous child's inclusive interval can outlast the enclosing scope.
-  let family := timed `parent 1.1 1.12 #[timed `largeChild 1.1 1.9 #[]]
+  -- A retained child keeps its enclosing same-thread span.
+  let family := timed `parent 1.1 1.91 #[timed `largeChild 1.1 1.9 #[]]
   let root := timed `body 1.0 1.95 (small.push family)
   let traces := ({} : PersistentArray TraceElem).push {ref := .missing, msg := root}
   let late := ({} : PersistentArray TraceElem).push {ref := .missing, msg := timed `Kernel 1.7 1.95 #[]}
   let result := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{tid := 1, traces}, {tid := 2, traces := late}] ""
+  ProfileInvariants.checkResult result
   require (result.truncated && result.spans.size == Beam.LSP.RunAt.Profile.maxSpans)
     "retention must respect the output cap and report omitted timed nodes"
   require (result.spans.any (·.category == "Kernel")) "late large root was starved"
@@ -81,6 +85,7 @@ def checkRetention : IO Unit := do
   let phaseResult := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{tid := 1, traces := ({} : PersistentArray TraceElem).push {
       ref := .missing, msg := timed `body 1.0 1.95 (small.push shortFamily)}}] ""
+  ProfileInvariants.checkResult phaseResult
   require (phaseResult.truncated && phaseResult.spans.size == Beam.LSP.RunAt.Profile.maxSpans)
     "phase reservation must share the retained-span budget"
   let phaseIndices := (Beam.LSP.RunAt.Profile.select phaseResult.spans).phases
@@ -89,7 +94,9 @@ def checkRetention : IO Unit := do
   let reserved := phaseResult.spans[index]!
   require (reserved.tag == "first") "phase reservation must choose the largest, first equal observation"
   let some parent := reserved.parent? | throw <| IO.userError "phase reservation lost ancestor"
-  require (parent < index && phaseResult.spans[parent]!.category == "phaseParent")
+  let some ancestor := phaseResult.spans.findIdx? (·.category == "phaseParent")
+    | throw <| IO.userError "low-ranked phaseParent was dropped"
+  require (parent < index && parent == ancestor)
     "phase reservation must retain and reindex its ancestor"
   let phaseTies := phaseResult.spans.filter (·.category == "small")
   require (phaseTies.map (·.tag) == (Array.range phaseTies.size).map toString)
@@ -99,6 +106,7 @@ def checkRetention : IO Unit := do
   let exhausted := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{tid := 1, traces := ({} : PersistentArray TraceElem).push {ref := .missing, msg := wide}},
       {tid := 2, traces := late}] ""
+  ProfileInvariants.checkResult exhausted
   require (exhausted.truncated && exhausted.spans.any (·.category == "Kernel"))
     "visit exhaustion must remain truthful after reaching late roots"
   require (!(← forced.get)) "retention evaluated a lazy header"
@@ -116,6 +124,7 @@ def checkProjection : IO Unit := do
   } label #[child]
   let state : TraceState := { tid := 7, traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := root } }
   let profile := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000 #[state] ""
+  ProfileInvariants.checkResult profile
   require (profile.spans.size == 2 && profile.spans[1]!.parent? == some 0)
     "projection lost nested parent relation"
   require (profile.spans.all (·.thread == 7)) "projection lost thread identity"
@@ -127,11 +136,13 @@ def checkProjection : IO Unit := do
     label (Array.replicate (Beam.LSP.RunAt.Profile.maxSpans + 1) child)
   let bounded := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := wide } }] ""
+  ProfileInvariants.checkResult bounded
   require (bounded.truncated && bounded.spans.size == Beam.LSP.RunAt.Profile.maxSpans)
     "wide profile exceeded response budget or omitted truncation"
   let deep := (List.range (Beam.LSP.RunAt.Profile.maxDepth + 1)).foldl (fun msg _ => .group msg) root
   let depthBounded := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := deep } }] ""
+  ProfileInvariants.checkResult depthBounded
   require depthBounded.truncated "deep profile did not report truncation"
   let longLabels : MessageData := .trace {
     cls := Name.mkSimple ("".pushn 'c' 200), tag := "".pushn 't' 300
@@ -139,12 +150,14 @@ def checkProjection : IO Unit := do
   } label #[]
   let clipped := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := longLabels } }] ""
+  ProfileInvariants.checkResult clipped
   require (clipped.truncated && clipped.spans.size == 1 &&
       clipped.spans[0]!.category.length == 160 && clipped.spans[0]!.tag.length == 256)
     "label clipping was not bounded and reported independently of the span budget"
   let old : MessageData := .trace { cls := `inherited, startTime := 0.1, stopTime := 0.2 } label #[]
   let filtered := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := old } }] ""
+  ProfileInvariants.checkResult filtered
   require filtered.spans.isEmpty "projection attributed pre-request work to the request"
   require (!(← forced.get)) "bounded projection evaluated lazy labels"
 
@@ -162,6 +175,7 @@ def checkProjection : IO Unit := do
     |>.push { ref := .missing, msg := root }
   let intervalFiltered := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := mixed }] ""
+  ProfileInvariants.checkResult intervalFiltered
   require (intervalFiltered.spans.map (·.category) == #["child", "root", "child"])
     "projection retained an invalid interval or discarded its valid child"
   require (intervalFiltered.spans[0]!.parent?.isNone &&
@@ -174,6 +188,7 @@ def checkProjection : IO Unit := do
     manyTraces := manyTraces.push { ref := .missing, msg := label }
   let visitBounded := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := manyTraces }] ""
+  ProfileInvariants.checkResult visitBounded
   require (visitBounded.truncated && visitBounded.spans.isEmpty)
     "projection exceeded its visited-node budget"
   require (!(← forced.get)) "visited-node bounding evaluated a lazy trace label"
@@ -192,6 +207,7 @@ def checkProjection : IO Unit := do
     |>.push { ref := .missing, msg := .withContext wallContext root }
   let clockFiltered := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := clocks }] ""
+  ProfileInvariants.checkResult clockFiltered
   require (clockFiltered.truncated && clockFiltered.spans.map (·.category) == #["child", "root", "child"])
     "projection interpreted heartbeat values as seconds or lost a wall-clock descendant"
   require (clockFiltered.spans[0]!.parent?.isNone && clockFiltered.spans[2]!.parent? == some 1)
@@ -448,8 +464,10 @@ def checkCancellationAndStaleness : ScenarioM Unit := do
   closeDoc doc
 
 def run : ScenarioM Unit := do
+  ProfileInvariants.checkMalformed
   checkProjection
   checkRetention
+  ProfileCostlyTest.run
   ProfileContractsTest.run
   ProfileSummaryTest.run
   checkProofs

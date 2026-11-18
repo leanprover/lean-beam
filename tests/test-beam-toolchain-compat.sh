@@ -139,7 +139,7 @@ print_toolchain_context() {
 }
 
 run_build() {
-  if ! lake build beam-cli beam-lake-helper-client-fixture > "$build_stdout" 2> "$build_stderr"; then
+  if ! lake build beam-cli beam-lake-helper-client-fixture +BeamTest.LSP.Requests.RunAt.ProfileCostlyTest > "$build_stdout" 2> "$build_stderr"; then
     print_toolchain_context "compatibility fixture build failed"
     return 1
   fi
@@ -228,6 +228,17 @@ PYTHON
     print_toolchain_context "doctor did not use the constructed target binding"
     return 1
   fi
+}
+
+run_costly_profile() {
+  cp tests/scenario/docs/ProfileCostly.lean "$stale_project_root/ProfileCostly.lean" || return 1
+  start_stale_owner || return 1
+  if ! lake env lean --run tests/lean/BeamTest/LSP/ProfileCostlyRunner.lean \
+      ${stale_wrapper_command[@]+"${stale_wrapper_command[@]}"}; then
+    print_toolchain_context "costly profile failed"
+    return 1
+  fi
+  stop_stale_owner
 }
 
 run_save_trace_reader() {
@@ -458,6 +469,7 @@ PY
 run_step "build compatibility fixtures" run_build
 run_step "construct installation for $toolchain" run_installation_construction
 run_step "recorded target membership for $toolchain" run_target_membership_check
+run_step "costly profile $toolchain" run_costly_profile
 run_step "save trace reader $toolchain" run_save_trace_reader
 run_step "module artifact replay $toolchain" run_module_artifact_compat
 run_step "stale diagnostic wording $toolchain" run_stale_diagnostic_compat
