@@ -422,6 +422,118 @@ string(JSON record SET "${{record}}" components targets 0 daemon "\\\"{path}\\\"
         self.assertFalse(destination.exists())
 
 
+class NativeOwnerCleanupTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="beam-native-cleanup-")
+        self.addCleanup(temp.cleanup)
+        self.provenance = Path(temp.name) / "provenance.json"
+        self.metadata = {"payloadHash": "fixture payload"}
+        spec = importlib.util.spec_from_file_location(
+            "native_cleanup", REPO / "tests/test-native-toolchain.py")
+        self.native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.native)
+        self.owner = mock.Mock(spec=subprocess.Popen)
+        self.owner.poll.return_value = None
+        self.owner.wait.return_value = 0
+        self.command = ["fixture beam", "--root", "fixture project"]
+        self.env = {"BEAM_FIXTURE": "owner cleanup"}
+        stop = mock.patch.object(self.native, "run")
+        self.stop = stop.start()
+        self.addCleanup(stop.stop)
+
+    def cleanup(self):
+        self.native._restore_provenance_and_cleanup_owner(
+            self.owner, self.command, env=self.env,
+            provenance=self.provenance, metadata=self.metadata)
+
+    def test_exited_owner_still_restores_provenance(self):
+        self.owner.poll.return_value = 0
+        self.cleanup()
+        self.assertEqual(json.loads(self.provenance.read_text()), self.metadata)
+        self.stop.assert_not_called()
+        self.owner.wait.assert_not_called()
+
+    def test_restoration_failure_propagates_after_owner_cleanup(self):
+        for exited in (False, True):
+            with self.subTest(exited=exited):
+                self.owner.reset_mock()
+                self.stop.reset_mock()
+                self.owner.poll.return_value = 0 if exited else None
+                failure = OSError("provenance storage unavailable")
+                with (
+                    mock.patch.object(Path, "write_text", side_effect=failure),
+                    self.assertRaises(OSError) as raised,
+                ):
+                    self.cleanup()
+                self.assertIs(raised.exception, failure)
+                if exited:
+                    self.stop.assert_not_called()
+                else:
+                    self.stop.assert_called_once_with(
+                        [*self.command, "stop"], env=self.env, ok=False, timeout=10)
+                    self.owner.wait.assert_called_once_with(timeout=10)
+
+    def test_scenario_error_survives_restoration_and_shutdown_failures(self):
+        failure = RuntimeError("scenario failed")
+        self.stop.side_effect = OSError("stop unavailable")
+        self.owner.wait.side_effect = [
+            subprocess.TimeoutExpired("owner", 10),
+            subprocess.TimeoutExpired("owner", 10), 0]
+        diagnostics = io.StringIO()
+        with (
+            mock.patch.object(Path, "write_text", side_effect=OSError("storage unavailable")),
+            redirect_stderr(diagnostics),
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            try:
+                raise failure
+            finally:
+                self.cleanup()
+        self.assertIs(raised.exception, failure)
+        self.assertIn("provenance restoration failed", diagnostics.getvalue())
+        self.assertIn("owner cleanup failed", diagnostics.getvalue())
+        self.owner.assert_has_calls([
+            mock.call.wait(timeout=10), mock.call.terminate(),
+            mock.call.wait(timeout=10), mock.call.kill(), mock.call.wait(timeout=10)])
+
+    def test_shutdown_failure_does_not_replace_restoration_failure(self):
+        failure = OSError("provenance storage unavailable")
+        self.stop.side_effect = RuntimeError("stop unavailable")
+        diagnostics = io.StringIO()
+        with (
+            mock.patch.object(Path, "write_text", side_effect=failure),
+            redirect_stderr(diagnostics),
+            self.assertRaises(OSError) as raised,
+        ):
+            self.cleanup()
+        self.assertIs(raised.exception, failure)
+        self.assertIn("owner cleanup failed", diagnostics.getvalue())
+        self.owner.wait.assert_called_once_with(timeout=10)
+
+    def test_shutdown_failure_without_prior_error_propagates_after_wait(self):
+        failure = OSError("stop unavailable")
+        self.stop.side_effect = failure
+        with self.assertRaises(OSError) as raised:
+            self.cleanup()
+        self.assertIs(raised.exception, failure)
+        self.owner.wait.assert_called_once_with(timeout=10)
+        self.assertEqual(json.loads(self.provenance.read_text()), self.metadata)
+
+    def test_final_wait_failure_preserves_scenario_error(self):
+        failure = RuntimeError("scenario failed")
+        self.owner.wait.side_effect = subprocess.TimeoutExpired("owner", 10)
+        diagnostics = io.StringIO()
+        with redirect_stderr(diagnostics), self.assertRaises(RuntimeError) as raised:
+            try:
+                raise failure
+            finally:
+                self.cleanup()
+        self.assertIs(raised.exception, failure)
+        self.owner.kill.assert_called_once_with()
+        self.assertEqual(self.owner.wait.call_args_list, [mock.call(timeout=10)] * 3)
+        self.assertIn("owner cleanup failed", diagnostics.getvalue())
+
+
 class NativeQualificationReportTest(unittest.TestCase):
     def test_entrypoint_logs_unicode_with_a_legacy_redirected_code_page(self):
         with tempfile.TemporaryDirectory(prefix="beam-native-encoding-") as temporary:
