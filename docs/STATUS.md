@@ -405,7 +405,7 @@ client protocol.
   checks can reject a changed `lean-toolchain`; they do not establish that other configuration is
   unchanged. After editing a lakefile, manifest, package override, `lean-toolchain`, Lean options,
   plugins, or dynamic libraries, confirm cleanup of affected owners/workspaces before recreating
-  them. Use the [toolchain-change procedure](SETUP.md#changing-the-project-toolchain) when selecting
+  them. Use the [toolchain-change procedure](MAINTENANCE.md#changing-the-project-toolchain) when selecting
   a replacement installation; `lean-beam refresh` does not restart the server.
 - A Beam checkpoint contains the Lean server's accepted environment. Elaborators can
   distinguish server execution from batch execution, so exceptional custom elaboration can produce

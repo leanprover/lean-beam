@@ -383,7 +383,7 @@ Changing a launcher's `current` link affects future launches, without retargetin
 Replacing or corrupting a running server's own installation makes identity reporting fail; the
 server cannot adopt the replacement generation. Protocol discovery and workspace drop remain
 available. Restart clients after selecting a new installation, and stop clients before pruning
-their original installation. See the [installed-runtime recovery guidance](SETUP.md#prune-old-installed-state).
+their original installation. See the [installed-runtime recovery guidance](MAINTENANCE.md#prune-old-installed-state).
 
 Direct MCP clients should call `lean_update` or `lean_sync` before snapshot-bound operations and
 pass the returned `version` for the same descriptor and path. `lean_workspace_symbols` is

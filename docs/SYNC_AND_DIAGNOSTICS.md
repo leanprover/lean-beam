@@ -275,7 +275,7 @@ reopens the file within the current server and is not sufficient.
 Beam does recheck runtime admission: a changed project selector or installation can reject reuse.
 This is not general configuration-change detection or live reload. If only the selector changed,
 restoring the retained runtime can restore admission; other configuration edits still require a
-fresh server. See [toolchain-change recovery](SETUP.md#changing-the-project-toolchain).
+fresh server. See [toolchain-change recovery](MAINTENANCE.md#changing-the-project-toolchain).
 
 ## Worker Errors And Document Recovery
 
