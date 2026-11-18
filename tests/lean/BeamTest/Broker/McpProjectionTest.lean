@@ -774,13 +774,13 @@ private def checkCrossSurfaceResultParity : IO Unit := do
     profile? := some {
       elapsedMs := 35.5
       spans := #[
-        { thread := 7, category := "Kernel", tag := "", startMs := 22.747214, durationMs := 12.026059,
+        { thread := 7, category := "Kernel", tag := "", startNs := 22_747_214, stopNs := 34_773_273,
           label? := some "typechecking declarations [demo]" },
         { parent? := some 0, thread := 7, category := "tactic", tag := "simp",
-          startMs := 22.762243, durationMs := 11.971575, label? := some "simp", range? := some {
+          startNs := 22_762_243, stopNs := 34_733_818, label? := some "simp", range? := some {
             start := { line := 0, character := 0 }, «end» := { line := 0, character := 4 } } },
         { parent? := some 1, thread := 99, category := "Meta.synthInstance", tag := "",
-          startMs := 24.5, durationMs := 0.1, label? := some "CharZero ℚ" }
+          startNs := 24_500_000, stopNs := 24_600_000, label? := some "CharZero ℚ" }
       ]
     }
   }
@@ -806,8 +806,8 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   require "profile spans preserved including the small tail" (spans.size == 3)
   requireFieldAbsent "root span" "parent" spans[0]!
   requireFieldAbsent "root span" "range" spans[0]!
-  requireFieldAbsent "public span" "startMs" spans[1]!
-  requireFieldAbsent "public span" "durationMs" spans[1]!
+  requireFieldAbsent "public span" "startNs" spans[1]!
+  requireFieldAbsent "public span" "stopNs" spans[1]!
   requireJsonInt "child span" "parent" 0 spans[1]!
   requireJsonInt "first thread" "thread" 0 spans[0]!
   requireJsonInt "same thread" "thread" 0 spans[1]!
@@ -855,8 +855,8 @@ private def checkCrossSurfaceResultParity : IO Unit := do
 
   let smallChild := Beam.Broker.Response.success <| toJson ({
     profile? := some { elapsedMs := 10, spans := #[
-      { thread := 0, category := "outer", tag := "", startMs := 0, durationMs := 10 },
-      { thread := 0, parent? := some 0, category := "small", tag := "", startMs := 1, durationMs := 1 }] }
+      { thread := 0, category := "outer", tag := "", startNs := 0, stopNs := 10_000_000 },
+      { thread := 0, parent? := some 0, category := "small", tag := "", startNs := 1_000_000, stopNs := 2_000_000 }] }
   } : Beam.LSP.RunAt.Result)
   let smallPublic ← expectToolOk "chain with no substantial descendant" <|
     Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) smallChild
@@ -870,7 +870,7 @@ private def checkCrossSurfaceResultParity : IO Unit := do
 
   let manySpans : Array Beam.LSP.RunAt.Profile.Span := (Array.range 13).map fun i => {
     thread := 0, category := if i == 0 then "Kernel" else "step", tag := ""
-    startMs := 0, durationMs := (i + 1).toFloat }
+    startNs := 0, stopNs := (i + 1) * 1_000_000 }
   let manyResponse := Beam.Broker.Response.success <| toJson ({
     profile? := some { elapsedMs := 20, spans := manySpans }
   } : Beam.LSP.RunAt.Result)
@@ -931,6 +931,57 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   require "array payload is retained without progress" (wrappedPlainArray == #[toJson (8 : Nat)])
   requireFieldAbsent "array result without progress" "document_progress" cliPlainArray
 
+/-- Exercise Lean's clock representation, the worker's label selection and the broker JSON
+round trip together. Equal endpoints and equal durations must survive that boundary. -/
+private def checkProfileWireRoundTrip : IO Unit := do
+  let origin := 36_000_000_000_000
+  let clock := fun (ns : Nat) => (origin + ns).toFloat / 1_000_000_000
+  let publicProfile := fun (traces : PersistentArray TraceElem) => do
+    let profile ← Beam.LSP.RunAt.Profile.collectWithLabels (pure () : IO Unit) origin
+      (origin + 55_000_000) #[{tid := 1, traces}] ""
+    let result : Beam.LSP.RunAt.Result := {success := true, profile? := some profile}
+    let response := Beam.Broker.Response.success (toJson result)
+    let json ← expectToolOk "profile wire round trip" <|
+      Beam.Mcp.normalizeBrokerResponse (.leanOperation .runAt) response
+    return (profile, ← requireObjVal "public result" "profile" json)
+
+  -- The same stop falls exactly halfway between 49.9 and 50.0 ms. Reconstructing it
+  -- from separately serialized start and duration used to put the child outside the parent.
+  let node := fun start children => MessageData.trace
+    {cls := `step, startTime := clock start, stopTime := clock 49_950_000} "step" children
+  let (_, profile) ← publicProfile (({} : PersistentArray TraceElem).push
+    {ref := .missing, msg := node 237 #[node 374 #[]]})
+  let spans ← IO.ofExcept (profile.getObjValAs? (Array Json) "spans")
+  require "both spans survive projection" (spans.size == 2)
+  requireJsonInt "nested child" "parent" 0 spans[1]!
+  for span in spans do
+    require "rounded start" ((← requireObjVal "span" "start_ms" span).compress == "0")
+    require "shared rounded stop" ((← requireObjVal "span" "duration_ms" span).compress == "50")
+
+  -- Eleven equally long roots cross the top-ten cutoff. Only the last is a phase.
+  -- Float JSON used to change which ten roots won the tie after labels had been rendered.
+  let mut traces : PersistentArray TraceElem := {}
+  for i in [:11] do
+    let start := i * 5_000_000
+    let msg := MessageData.trace {
+      cls := if i == 10 then `Kernel else `step
+      startTime := clock start, stopTime := clock (start + 2_000_000)} (m!"step {i}") #[]
+    traces := traces.push {ref := .missing, msg}
+  let (worker, profile) ← publicProfile traces
+  let summary ← requireObjVal "public profile" "summary" profile
+  let top ← IO.ofExcept (summary.getObjValAs? (Array Json) "top_spans")
+  let phases ← IO.ofExcept (summary.getObjValAs? (Array Json) "phase_spans")
+  let index := fun (entry : Json) => IO.ofExcept (entry.getObjValAs? Nat "span")
+  require "top tie uses original trace order" ((← top.mapM index) == Array.range 10)
+  require "phase outside the top list" ((← phases.mapM index) == #[10])
+  let mut publicLabels := Array.replicate worker.spans.size (none : Option String)
+  for entry in top ++ phases do
+    let i ← index entry
+    let label ← IO.ofExcept (entry.getObjValAs? String "label")
+    require "public label identifies the selected trace" (label == s!"step {i}")
+    publicLabels := publicLabels.set! i (some label)
+  require "every worker label lands on its public entry" (worker.spans.map (·.label?) == publicLabels)
+
 private def checkProfileLabelOmission : IO Unit := do
   -- Repeated display text is noise, but distinct indices, tags and costs remain evidence.
   -- Equal clipped previews in particular do not establish equivalent underlying operations.
@@ -947,10 +998,10 @@ private def checkProfileLabelOmission : IO Unit := do
       let response := Beam.Broker.Response.success <| toJson ({
         profile? := some { elapsedMs := 130, spans := #[
           { thread := 0, category := "Elab.step", tag := "Lean.Parser.Tactic.tacticSeq",
-            startMs := 0, durationMs := 100, label? := outerLabel? },
+            startNs := 0, stopNs := 100_000_000, label? := outerLabel? },
           { thread := 0, parent? := some 0, category := "Elab.step", tag := "Lean.Parser.Tactic.grind",
-            startMs := 10, durationMs := 60, label? := innerLabel? },
-          { thread := 0, category := "Kernel", tag := "", startMs := 100, durationMs := 30,
+            startNs := 10_000_000, stopNs := 70_000_000, label? := innerLabel? },
+          { thread := 0, category := "Kernel", tag := "", startNs := 100_000_000, stopNs := 130_000_000,
             label? := some "grind" }] }
       } : Beam.LSP.RunAt.Result)
       let mcp ← expectToolOk "MCP profile label omission" <|
@@ -2031,6 +2082,7 @@ def main : IO Unit := do
   checkRunAtNormalization
   checkSyncAndSaveNormalization
   checkCrossSurfaceResultParity
+  checkProfileWireRoundTrip
   checkProfileLabelOmission
   checkCrossSurfaceErrorParity
   checkBrokerFailureCodeCompleteness

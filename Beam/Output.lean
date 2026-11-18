@@ -146,7 +146,7 @@ private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Id.r
   -- Reusing the pure selector avoids storing a second, potentially stale summary in Result.
   let selection := Beam.LSP.RunAt.Profile.select profile.spans
   -- Round both endpoints on the same grid so displayed children stay inside their parents.
-  let tenths := fun (ms : Float) => (ms * 10).round.toUInt64.toNat
+  let tenths := fun (ns : Nat) => (ns + 50_000) / 100_000
   let milliseconds := fun (ticks : Nat) => Json.num ⟨ticks, 1⟩
   let mut threads : Std.HashMap UInt64 Nat := {}
   let mut raw := #[]
@@ -154,8 +154,8 @@ private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Id.r
   for span in profile.spans do
     let thread := threads.getD span.thread threads.size
     threads := threads.insert span.thread thread
-    let start := tenths span.startMs
-    let stop := tenths (span.startMs + span.durationMs)
+    let start := tenths span.startNs
+    let stop := tenths span.stopNs
     let fields := [("category", toJson span.category), ("duration_ms", milliseconds (stop - start))] ++
       (if span.tag.isEmpty then [] else [("tag", toJson span.tag)])
     common := common.push fields

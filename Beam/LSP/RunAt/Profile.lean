@@ -17,12 +17,15 @@ structure Span where
   thread : UInt64
   category : String
   tag : String
-  startMs : Float
-  durationMs : Float
+  /-- Canonical offsets in nanoseconds from the request origin. JSON preserves both exactly. -/
+  startNs : Nat
+  stopNs : Nat
   range? : Option Lean.Lsp.Range := none
   /-- Lean-rendered header for a selected summary entry. Never retains the message context. -/
   label? : Option String := none
   deriving FromJson, ToJson, Inhabited
+
+def Span.durationNs (span : Span) : Nat := span.stopNs - span.startNs
 
 /-- Wall-clock evidence from one speculative execution in its already-loaded environment.
 Span durations overlap and must not be summed to obtain `elapsedMs`. -/
@@ -64,8 +67,8 @@ structure Selection where
 
 def select (spans : Array Span) : Selection := Id.run do
   let ranked := (Array.range spans.size).qsort fun i j =>
-    spans[i]!.durationMs > spans[j]!.durationMs ||
-      (spans[i]!.durationMs == spans[j]!.durationMs && i < j)
+    spans[i]!.durationNs > spans[j]!.durationNs ||
+      (spans[i]!.durationNs == spans[j]!.durationNs && i < j)
   let mut children : Array (Array Nat) := Array.replicate spans.size #[]
   for i in [:spans.size] do
     if let some parent := spans[i]!.parent? then
@@ -79,13 +82,13 @@ def select (spans : Array Span) : Selection := Id.run do
     let mut inner := i
     let mut cursor := i
     let mut size := 1
-    let outerDuration := spans[i]!.durationMs
+    let outerDuration := spans[i]!.durationNs
     -- Edges go forward, so a path visits at most spans.size nodes.
     for _ in [:spans.size] do
       if children[cursor]!.size != 1 then break
       cursor := children[cursor]![0]!
       size := size + 1
-      if outerDuration > 0 && spans[cursor]!.durationMs >= outerDuration / 2 then
+      if outerDuration > 0 && 2 * spans[cursor]!.durationNs >= outerDuration then
         inner := cursor
     top := top.push { outer := i, inner, size }
   let mut phases := #[]
@@ -248,13 +251,14 @@ private def dispatch (origin stop : Float) (msg : MessageData) (f : Frame)
       let (category, clipped) := boundedNameString data.cls 160
       let tag := (data.tag.take 256).toString
       let index := e.observations.size
+      let offsetNs := fun (time : Float) => ((time - origin) * 1000000000).round.toUInt64.toNat
       let span : Span := {
         parent? := f.parent?
         thread := f.thread
         category
         tag
-        startMs := (data.startTime - origin) * 1000
-        durationMs := (data.stopTime - data.startTime) * 1000
+        startNs := offsetNs data.startTime
+        stopNs := offsetNs data.stopTime
         range? := f.range?
       }
       e := {e with
@@ -339,8 +343,8 @@ private def retain (e : Explored) (cap : Nat) : Array Nat := Id.run do
   let ranked := (Array.range e.observations.size).qsort fun a b =>
     let x := e.observations[a]!
     let y := e.observations[b]!
-    x.span.durationMs > y.span.durationMs ||
-      (x.span.durationMs == y.span.durationMs && sourceLT x y)
+    x.span.durationNs > y.span.durationNs ||
+      (x.span.durationNs == y.span.durationNs && sourceLT x y)
   let phases := phaseCategories.filterMap fun category =>
     ranked.find? (fun i => e.observations[i]!.span.category == category)
   let mut selected := #[]

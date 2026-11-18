@@ -28,8 +28,8 @@ private def profileOf (result : Beam.LSP.RunAt.Result) : ScenarioM Beam.LSP.RunA
   require (profile.initialThresholdMs == 1) "initial profiling threshold changed"
   for i in [:profile.spans.size] do
     let span := profile.spans[i]!
-    require (span.startMs >= 0 && span.durationMs >= 0) "negative span time"
-    require (span.startMs + span.durationMs <= profile.elapsedMs + 0.01)
+    require (span.startNs <= span.stopNs) "span stops before it starts"
+    require (span.stopNs.toFloat / 1000000 <= profile.elapsedMs + 0.01)
       "span exceeds execution interval"
     if let some parent := span.parent? then
       require (parent < i) "span parent must precede child"
