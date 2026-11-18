@@ -233,7 +233,11 @@ PYTHON
 run_costly_profile() {
   cp tests/scenario/docs/ProfileCostly.lean "$stale_project_root/ProfileCostly.lean" || return 1
   start_stale_owner || return 1
-  lake env lean --run tests/lean/BeamTest/LSP/ProfileCostlyRunner.lean ${stale_wrapper_command[@]+"${stale_wrapper_command[@]}"} || return 1
+  if ! lake env lean --run tests/lean/BeamTest/LSP/ProfileCostlyRunner.lean \
+      ${stale_wrapper_command[@]+"${stale_wrapper_command[@]}"}; then
+    print_toolchain_context "costly profile failed"
+    return 1
+  fi
   stop_stale_owner
 }
 
