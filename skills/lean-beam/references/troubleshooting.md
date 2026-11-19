@@ -79,6 +79,7 @@ are `{executable, arguments}` objects in `error.data.remedy_command`; conditiona
 execute the exact vector with shell parsing disabled. Stderr contains a human display, using POSIX
 syntax on Linux/macOS and PowerShell on Windows; do not parse or execute that display.
 
+- On `sessionNetworkNamespaceMismatch`, retry outside the command sandbox where `lean-beam serve` was started before considering recovery.
 - `sessionRecoveryRequired` (exit `1`) includes the generation when known. Obey its
   `recovery_precondition` and independently verify that the matching owner, daemon, and all other
   producers stopped before recovery. Connection refusal and an unavailable endpoint are insufficient.

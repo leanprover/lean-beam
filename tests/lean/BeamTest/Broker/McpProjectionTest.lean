@@ -1450,6 +1450,7 @@ private def checkControlProjectionCatalog : IO Unit := do
       ("sessionDir", "session_dir"), ("recoveryPrecondition", "recovery_precondition"),
       ("recordedConfigHash", "recorded_config_hash"),
       ("requestedConfigHash", "requested_config_hash")]),
+    ("sessionNetworkNamespaceMismatch", #[]),
     ("noLiveSession", #[("remedyCommand", "remedy_command"),
       ("sessionDir", "session_dir"), ("recoveryPrecondition", "recovery_precondition"),
       ("recordedConfigHash", "recorded_config_hash"),
