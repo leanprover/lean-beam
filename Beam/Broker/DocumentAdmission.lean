@@ -31,7 +31,9 @@ The enclosing runtime/workspace lifetime owns these capabilities and all transit
 -/
 structure State where
   private mk ::
+  /-- Next permit identifier in this workspace lifetime; allocation never reuses it. -/
   nextId : Nat
+  /-- In-flight scopes, including revoked permits retained until their owners release them. -/
   entries : List (Permit × Phase)
   deriving Repr
 
