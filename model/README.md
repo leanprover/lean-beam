@@ -16,6 +16,9 @@ they do not import the runtime or its test fixtures. Production code does not im
   filesystem rollback, crash atomicity, sidecar correctness, or exclusion of other processes.
 - [AdmissionLaws](BeamModel/AdmissionLaws.lean) checks ownership and allocation laws of the
   pure component actually used by the broker.
+- [PublicationGateLaws](BeamModel/PublicationGateLaws.lean) proves allocation, exact cleanup, and
+  workspace selection for the pure publication gate used by the broker. The completion payload is
+  opaque; these laws do not establish producer settlement or filesystem effect ordering.
 - [The design note](../docs/CLOSE_SAVE_MODEL.md) defines assumptions, current implementation
   gaps, and the mapping to broker regression tests.
 
