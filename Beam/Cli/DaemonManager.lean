@@ -259,7 +259,7 @@ def probeFailureDisposition (failure : BrokerClientFailure) : ProbeFailureDispos
 /-- Compare only on a refused connect before submission. Neither a descriptor nor a namespace
 difference establishes whether the recorded generation is still alive. -/
 def foreignNetworkNamespaceOnRefusal
-    (recorded? : Option Nat) (failure : BrokerClientFailure) : BaseIO Bool := do
+    (recorded? : Option Nat) (failure : BrokerClientFailure) : IO Bool := do
   let some recorded := recorded? | return false
   let .transport .connect (.noSuchThing _ code _) := failure.cause | return false
   let .notSent := failure.delivery | return false

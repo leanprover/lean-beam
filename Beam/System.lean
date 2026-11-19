@@ -22,7 +22,7 @@ opaque processChildPid {cfg : @& IO.Process.StdioConfig} : @& IO.Process.Child c
 
 /-- Linux network namespace inode, when procfs exposes it to this process. -/
 @[extern "lean_beam_network_namespace"]
-opaque networkNamespace? : BaseIO (Option Nat)
+opaque networkNamespace? : IO (Option Nat)
 
 @[extern "lean_beam_is_connection_refused"]
 opaque isLinuxConnectionRefused (osCode : UInt32) : Bool

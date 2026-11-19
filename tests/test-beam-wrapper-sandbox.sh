@@ -70,12 +70,12 @@ mkdir -p "$project_root" "$control_root"
 rsync -a --exclude='.beam/' tests/save_olean_project/ "$project_root"/
 
 sandbox_beam() {
-  local -a net_args=()
+  local network=--share-net
   if [ "$1" = "--unshare-net" ]; then
-    net_args+=(--unshare-net)
+    network=--unshare-net
     shift
   fi
-  bwrap --unshare-pid "${net_args[@]}" --new-session --die-with-parent \
+  bwrap --unshare-pid "$network" --new-session --die-with-parent \
     --ro-bind / / \
     --dev-bind /dev /dev \
     --bind /tmp /tmp \
