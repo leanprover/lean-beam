@@ -24,6 +24,8 @@ private def withBrokerErrorContext
   match ← action with
   | .ok value => pure value
   | .error failure =>
+      if ← foreignNetworkNamespaceOnRefusal client.networkNamespace? failure then
+        throw { networkNamespaceFailure root client.identity.daemonId with clientRequestId? }
       let message ← daemonFailureMessage root failure (some client.controlDir)
       -- Only failed connection establishment is known to precede request submission.
       if let .transport .connect _ := failure.cause then

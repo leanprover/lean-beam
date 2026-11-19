@@ -12,6 +12,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Fixed
 
+- Tell CLI callers whose Linux sandbox cannot reach the owner’s loopback endpoint to retry where
+  `lean-beam serve` started, before considering recovery
+  ([#434](https://github.com/leanprover/lean-beam/pull/434), @ejgallego).
+
 - Retain significant speculative profiling spans across the visited trace forest instead of
   filling the response from its first subtree. Shallow-first traversal and duration-ranked
   ancestor closure preserve later costly work within bounded traversal and output budgets

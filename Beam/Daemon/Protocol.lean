@@ -82,6 +82,7 @@ structure SessionDescriptor where
   capability : String
   pid : Nat
   ownerPid : Nat
+  networkNamespace? : Option Nat := none
   port : UInt16
   workspace : WorkspaceBinding
   /-- Hash of the complete frozen session configuration. -/
@@ -95,7 +96,7 @@ structure SessionDescriptor where
 instance : FromJson SessionDescriptor where
   fromJson? json := do
     Beam.requireOnlyJsonFields "session descriptor" #[
-      "schemaVersion", "lifecycle", "daemonId", "capability", "pid", "ownerPid", "port",
+      "schemaVersion", "lifecycle", "daemonId", "capability", "pid", "ownerPid", "networkNamespace", "port",
       "workspace", "configHash", "daemonBin", "installationRoot", "startedAt"
     ] json
     pure {
@@ -105,6 +106,7 @@ instance : FromJson SessionDescriptor where
       capability := ← Beam.requiredField json "capability"
       pid := ← Beam.requiredField json "pid"
       ownerPid := ← Beam.requiredField json "ownerPid"
+      networkNamespace? := ← fromJson? (json.getObjValD "networkNamespace")
       port := ← Beam.requiredField json "port"
       workspace := ← Beam.requiredField json "workspace"
       configHash := ← Beam.requiredField json "configHash"

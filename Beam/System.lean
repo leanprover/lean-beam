@@ -20,6 +20,13 @@ native implementation borrows it. Remove this declaration once every supported S
 @[extern "lean_io_process_child_pid"]
 opaque processChildPid {cfg : @& IO.Process.StdioConfig} : @& IO.Process.Child cfg → UInt32
 
+/-- Linux network namespace inode, when procfs exposes it to this process. -/
+@[extern "lean_beam_network_namespace"]
+opaque networkNamespace? : BaseIO (Option Nat)
+
+@[extern "lean_beam_is_connection_refused"]
+opaque isLinuxConnectionRefused (osCode : UInt32) : Bool
+
 /-- A non-following leaf observation. Unknown Windows reparse tags remain distinct from files. -/
 inductive EntryKind where
   | absent

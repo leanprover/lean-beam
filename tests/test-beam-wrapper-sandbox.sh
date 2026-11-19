@@ -70,15 +70,44 @@ mkdir -p "$project_root" "$control_root"
 rsync -a --exclude='.beam/' tests/save_olean_project/ "$project_root"/
 
 sandbox_beam() {
-  bwrap --new-session --die-with-parent \
+  local -a net_args=()
+  if [ "$1" = "--unshare-net" ]; then
+    net_args+=(--unshare-net)
+    shift
+  fi
+  bwrap --unshare-pid "${net_args[@]}" --new-session --die-with-parent \
     --ro-bind / / \
     --dev-bind /dev /dev \
     --bind /tmp /tmp \
     --proc /proc \
-    --unshare-pid \
     --chdir "$project_root" \
     -- /usr/bin/env BEAM_SESSION_ROOT="$control_root" \
       "$beam_script" --root "$project_root" "$@"
+}
+
+assert_network_namespace_mismatch() {
+  local generation="$1" out="$tmp_root/netns.out" err="$tmp_root/netns.err"
+  shift
+  local status=0
+  sandbox_beam --unshare-net "$@" >"$out" 2>"$err" || status=$?
+  if [ "$status" -ne 1 ]; then
+    cat "$out" "$err" >&2
+    return 1
+  fi
+  python3 - "$out" "$generation" "$project_root" <<'PYNET'
+import json, sys
+from pathlib import Path
+
+error = json.loads(Path(sys.argv[1]).read_text())["error"]
+assert error["code"] == "sessionNetworkNamespaceMismatch", error
+assert error["data"] == {"generation": sys.argv[2], "root": sys.argv[3]}, error
+assert "liveness is unknown" in error["message"], error
+assert "outside the sandbox" in error["message"], error
+PYNET
+  if find "$control_root" -path '*/daemon-failures/*.json' -print -quit | grep -q .; then
+    echo "a caller namespace mismatch must not record a daemon incident" >&2
+    return 1
+  fi
 }
 
 wait_for_registry() {
@@ -209,6 +238,9 @@ fi
 daemon_id_1="$(read_json_field "$registry" daemonId)"
 port_1="$(read_json_field "$registry" port)"
 
+assert_network_namespace_mismatch "$daemon_id_1" update GoalSmoke.lean
+sandbox_beam update GoalSmoke.lean >"$tmp_root/update.out"
+assert_network_namespace_mismatch "$daemon_id_1" status
 doctor_out="$(sandbox_beam doctor)"
 if ! printf '%s\n' "$doctor_out" | grep -q 'daemon status: live'; then
   echo "expected a separate PID namespace to observe the owned daemon endpoint" >&2
@@ -309,6 +341,8 @@ if [ "$owner_status" -eq 0 ]; then
 fi
 sleep 4
 
+# The stale live descriptor looks the same from the isolated network as before the owner died.
+assert_network_namespace_mismatch "$daemon_id_2" stats
 after_kill_out="$tmp_root/after-kill.out"
 after_kill_err="$tmp_root/after-kill.err"
 if sandbox_beam stats >"$after_kill_out" 2>"$after_kill_err"; then
