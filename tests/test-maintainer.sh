@@ -11,10 +11,6 @@ cd "$(dirname "$0")/.."
 python3 tests/test-extended-ci.py
 python3 tests/test-toolchain-compat-owner.py
 
-if [ -n "$(git status --short --untracked-files=no)" ]; then
-  echo "[maintainer] skipping tests/test-codex-harness.sh because the current checkout has tracked edits" >&2
-else
-  bash tests/test-codex-harness.sh
-fi
+bash tests/test-codex-harness.sh
 
 bash tests/test-validate-defensive.sh

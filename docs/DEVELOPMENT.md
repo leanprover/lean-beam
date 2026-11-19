@@ -55,9 +55,32 @@ Start from the repo root and prefer dedicated worktrees for new tasks:
 ./scripts/codex-harness.sh session start <task-id>
 ```
 
-That keeps new work off the primary checkout and matches the repository's default Codex workflow.
-By default, the harness uses `.codex-worktrees/lean-beam` inside the repo rather than `/tmp` or a
-home-global worktree root.
+That keeps new work off the primary checkout and matches the repository's default agent workflow
+for both Codex and Claude Code. By default, the harness uses `.codex-worktrees/lean-beam` inside the
+repo rather than `/tmp` or a home-global worktree root.
+
+Harness behavior that agents and humans can rely on:
+
+- a new task branch starts from a freshly fetched `origin/main`, not from the local `main`; pass an
+  explicit base ref as the last argument to start elsewhere. If the fetch fails, for example in a
+  sandbox without network access, the harness uses the last fetched `origin/main` and names its
+  commit on stderr. Remote commands never wait on terminal prompts, and unless `GIT_SSH_COMMAND`,
+  `GIT_SSH`, or `core.sshCommand` is set, ssh runs with `BatchMode` and a 15-second connect timeout.
+- task branches do not track their base, so a plain `git push` cannot target `main`
+- tasks always live under the primary checkout's `.codex-worktrees/lean-beam`, also when the harness
+  runs from a task worktree
+- tracked edits in the primary checkout block new tasks but not `--resume`
+- an existing task worktree or task branch is refused unless `--resume` is passed:
+  `./scripts/codex-harness.sh session start --resume <task-id>`
+- `./scripts/codex-harness.sh worktree drop <task-id>` deletes a task branch only when every commit is
+  on a branch that `origin` has right now (asked with `git ls-remote`, so local remote-tracking refs
+  are neither trusted nor changed), or when merging the branch into a freshly fetched `origin/main`
+  would change nothing, as after a squash merge (Git 2.38 or newer). Otherwise it refuses, for
+  example once `main` has changed lines next to a squash merge, and `--force` deletes the branch
+  anyway. Uncommitted or untracked changes always block `drop`; ignored files such as `.lake` and
+  `.beam` are deleted with the worktree.
+- stdout carries the worktree path (after the session summary for `session start`); errors and
+  warnings go to stderr
 
 Important local scripts:
 
