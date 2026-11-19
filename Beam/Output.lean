@@ -173,16 +173,20 @@ private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Id.r
     -- Equal displayed text (possibly clipped) does not make the two measurements equivalent.
     if chain.inner == chain.outer then [] else
       [("inner_span", Json.mkObj <| fields chain.inner profile.spans[chain.outer]!.label?)]
-  return Json.mkObj [
+  return Json.mkObj <| [
     ("elapsed_ms", milliseconds (tenths profile.elapsedNs)), ("initial_threshold_ms", toJson profile.initialThresholdMs),
     ("summary", Json.mkObj [
       ("top_spans", Json.arr <| selection.top.map chainEntry),
       ("phase_spans", Json.arr <| selection.phases.map entry),
+      ("top_self_spans", Json.arr <| selection.topSelf.map fun i =>
+        let span := profile.spans[i]!
+        let ticks := tenths (span.startNs + span.selfNs) - tenths span.startNs
+        (entry i).setObjVal! "self_ms" (milliseconds ticks)),
       ("collapsed_spans", toJson (selection.represented - selection.top.size)),
       ("omitted_from_top", toJson (profile.spans.size - selection.represented))]),
     ("spans", Json.arr raw),
     ("truncated", toJson profile.truncated)
-  ]
+  ] ++ (if profile.truncated then [("truncation_reasons", toJson profile.truncationReasons)] else [])
 
 private def runAtResultJson (result : RunAtBrokerResult) : Json := Json.mkObj <|
   [

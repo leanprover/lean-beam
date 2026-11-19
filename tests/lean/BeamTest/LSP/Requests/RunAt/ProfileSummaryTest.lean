@@ -64,13 +64,13 @@ private def checkChains : IO Unit := do
     many := many.push (span (100 - i).toFloat)
     many := many.push (span 1 (some (2 * i)))
   let bounded := select many
-  require (bounded.top.size == 10 && bounded.represented == 20)
+  require (bounded.top.size == 8 && bounded.represented == 16)
     "top budget counts raw spans rather than retained paths"
-  require (many.size - bounded.represented == 4 && bounded.represented - bounded.top.size == 10)
+  require (many.size - bounded.represented == 8 && bounded.represented - bounded.top.size == 8)
     "omitted paths and collapsed members were conflated"
   -- A projection may stop mid-path. Group only retained evidence, without inventing the tail.
   let partialTree := many.extract 0 23
-  require ((select partialTree).represented == 20 && partialTree.size - (select partialTree).represented == 3)
+  require ((select partialTree).represented == 16 && partialTree.size - (select partialTree).represented == 7)
     "a partial retained path changed exact omission accounting"
 
   let calls ← IO.mkRef (Array.replicate 3 0)
@@ -84,14 +84,43 @@ private def checkChains : IO Unit := do
     tid := 0
     traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := root } }
   let result ← collectWithLabels (pure () : IO Unit) 1000000000 2000000000 #[state] ""
-  require ((← calls.get) == #[1, 1, 0])
-    "selected middle header was not rendered exactly once or a tiny leaf header was evaluated"
-  require (result.spans[1]!.label? == some "endpoint 1" && result.spans[2]!.label?.isNone)
+  require ((← calls.get) == #[1, 1, 1])
+    "a shared top/self header or self-only leaf was not rendered exactly once"
+  require (result.spans[1]!.label? == some "endpoint 1" && result.spans[2]!.label? == some "endpoint 2")
     "labels did not follow the selected inner member"
   require (!result.truncated && result.spans.size == 3) "grouping altered the raw projection"
 
+private def checkDominance : IO Unit := do
+  let tree := fun duration => #[span 100, span duration (some 0), span 1 (some 0)]
+  require ((select (tree 90)).top.map (·.outer) == #[1, 2])
+    "a descendant covering exactly 90% must suppress its enclosing group"
+  require ((select (tree 89.99)).top.map (·.outer) == #[0, 1, 2])
+    "a descendant just under 90% must preserve its enclosing group"
+  let header := { span 80 none "Elab.definition.header" with selfNs := 55_000_000 }
+  let selection := select #[{ span 90 with selfNs := 54_000_000 }, header]
+  require (selection.phases == #[1] && selection.topSelf == #[0])
+    "the header phase must be shown independently and skipped in the self list"
+
+private def checkSelfCoverage : IO Unit := do
+  let timed := fun cls start stop children => MessageData.trace
+    {cls, startTime := start, stopTime := stop} "" children
+  -- Only the root and long fillers fit. Its short children overlap, arrive out of order,
+  -- and extend beyond both endpoints. Their union within the root covers 3/4 second.
+  let root := timed `target 1.25 2.25 #[
+    timed `right 2.0 2.5 #[], timed `left 1.0 1.625 #[], timed `overlap 1.375 1.75 #[]]
+  let filler := { ref := Syntax.missing, msg := timed `filler 1.0 1.875 #[] : TraceElem }
+  let mut traces := ({} : PersistentArray TraceElem).push {ref := .missing, msg := root}
+  for _ in [:maxSpans] do traces := traces.push filler
+  let result := collect 1000000000 3000000000 #[{tid := 0, traces}] ""
+  require (result.truncationReasons == #[.retention] && result.spans.size == maxSpans)
+    "losing visited spans should report only retention"
+  require (result.spans[0]!.selfNs == 250_000_000 && result.spans.all (·.parent?.isNone))
+    "dropped children must still cover their clipped union exactly once"
+
 def run : IO Unit := do
   checkChains
+  checkDominance
+  checkSelfCoverage
   let calls ← IO.mkRef (Array.replicate 13 0)
   let env ← mkEmptyEnvironment
   let context : MessageDataContext := { env, mctx := {}, lctx := {}, opts := {} }
@@ -117,10 +146,10 @@ def run : IO Unit := do
   let pureResult := collect 1000000000 2000000000 states ""
   require ((← calls.get).all (· == 0)) "pure profile collector evaluated a header"
   let selection := select pureResult.spans
-  require (selection.top.map (·.outer) == #[12, 11, 10, 9, 8, 7, 6, 5, 4, 3]) "top spans not ranked by inclusive duration"
+  require (selection.top.map (·.outer) == #[12, 11, 10, 9, 8, 7, 6, 5]) "top spans not ranked by inclusive duration"
   require (selection.phases == #[1, 2]) "phase selection did not select the largest observed span"
-  require (selection.indices.size == 12) "phase/top selection omitted or duplicated an index"
-  require (pureResult.spans.size - selection.top.size == 3) "top omission count changed"
+  require (selection.indices.size == 10) "phase/top selection omitted or duplicated an index"
+  require (pureResult.spans.size - selection.top.size == 5) "top omission count changed"
 
   let renderStarted ← IO.monoNanosNow
   let (output, result) ← IO.FS.withIsolatedStreams do
@@ -129,7 +158,7 @@ def run : IO Unit := do
   require output.isEmpty "label rendering escaped isolated streams"
   require (result.elapsedNs == 1_000_000_000) "label rendering changed measured elaboration time"
   let observed ← calls.get
-  require (observed[0]! == 0 && (observed.extract 1 13).all (· == 1))
+  require (observed == #[0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1])
     "unselected header evaluated or selected header rendered more than once"
   require result.spans[0]!.label?.isNone "unselected span gained a label"
   require (result.spans[1]!.label? == some "LabelScope: step 1") "renderer lost its naming context"

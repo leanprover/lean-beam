@@ -412,13 +412,15 @@ and inspect elaboration costs. To include kernel checking and expression sharing
 declaration at its first doc comment or attribute, or at the declaration keyword if neither is present.
 Tactic-only probes do not measure those later declaration phases. The result includes
 `profile` when execution reaches elaboration, even if the Lean text fails; parse failures and
-unrequested profiling omit it. The object contains `elapsed_ms`, `initial_threshold_ms`, `summary`,
+unrequested profiling omit it. Unprofiled probes return no timing. The object contains `elapsed_ms`, `initial_threshold_ms`, `summary`,
 `spans`, and `truncated`. Known-empty `spans` is `[]`; that does not mean the execution took no time.
 
 Start with `elapsed_ms` and `summary`:
 
 - `top_spans` groups maximal paths of single-child edges in the retained tree into entries, then
-  lists up to ten entries by the outer span's **inclusive** duration; ties use its original index.
+  lists up to eight entries by the outer span's **inclusive** duration; ties use its original index.
+  A group is skipped when a descendant group covers at least 90% of its positive inclusive
+  duration. For example, the async proof wrapper can cover almost the same interval as the proof itself.
   A grouped entry keeps the outer span's fields. Optional `inner_span` shows the deepest member
   of that path whose duration is at least half the positive outer duration, with that member's
   own index, category, duration, and optional tag/label. It is omitted when no descendant qualifies.
@@ -428,24 +430,32 @@ Start with `elapsed_ms` and `summary`:
   does not establish complete coverage of its parent. Grouping neither subtracts costs nor
   attributes the outer duration to the inner label. All members remain accessible through the
   raw parent links.
+- `top_self_spans` lists up to five retained spans with positive `self_ms`, largest first.
+  Skip the individual entries already shown in `phase_spans`. A step can appear in both top lists.
+  Self time measures uncovered wall time. Beam clips each visited direct same-thread child's
+  interval to its parent's interval, then subtracts their union once. Children dropped during
+  retention still count. Below-threshold and unvisited work stays in the balance. Other threads
+  can run concurrently, so this measure cannot establish CPU cost.
 - `phase_spans` lists the largest retained span in each observed category among `Kernel`,
-  `Elab.def.maxSharing`, `addDecl`, `Elab.definition.value` and `Elab.lint`, in that order. These are
+  `Elab.def.maxSharing`, `addDecl`, `Elab.definition.value`, `Elab.lint`, and `Elab.definition.header`, in that order. These are
   individual observations, not phase totals. Missing categories are omitted, never reported as zero.
 - Each entry has `span` (its zero-based index in `profile.spans`), `category`, and `duration_ms`.
   Nonempty `tag` and available `label` are included, except that an `inner_span.label` identical
   to its outer entry's displayed label is omitted. The inner span's index, tag and own duration
   remain: equal text, including equal clipped previews, does not establish equivalent operations.
-  The same index can appear in both views;
-  it is the same observation and its label is rendered once.
+  An index shared by multiple views identifies one observation. Lean renders its label once.
 - `collapsed_spans` counts members of the shown paths that do not get separate top-level entries,
   including tails beyond the displayed inner members. `omitted_from_top` counts retained spans in paths outside the
   top list. Exactly `top_spans.length + collapsed_spans + omitted_from_top == spans.length`.
-  Both counts exclude the independent phase view; neither counts events Lean discarded.
+  Both counts describe only the inclusive top list and exclude events Lean discarded.
 
 `initial_threshold_ms` remains beside the summary as the starting collection setting. Retained
 spans give a lower bound on recorded events; Beam does not walk excluded subtrees to count them.
 `truncated: true` reports projection bounds or incompatible clocks, including clipping raw
-category/tag identifiers. It does not establish an exact count of missing spans.
+category/tag identifiers. Only truncated profiles contain `truncation_reasons`, listing each applicable cause:
+`retention` (span cap), `visits` (traversal budget), `depth` (nesting limit), `identifier`
+(clipped raw category or tag), or `clock` (incompatible clock). These reasons do not establish
+an exact count of missing spans.
 
 Labels use Lean's ordinary context-aware message renderer on only the selected headers. They
 describe trace nodes, may contain expanded tactic syntax, and are neither source identifiers nor
@@ -480,6 +490,7 @@ response. The `category` and optional nonempty `tag` are raw Lean trace identifi
 field provides a stable source identifier or a proof-goal name. Beam rounds `elapsed_ms` and span
 endpoints to 0.1 ms relative to the start of the request interval. `start_ms` is the rounded start.
 In raw spans and summary entries, `duration_ms` is the difference between the rounded endpoints.
+Beam displays `self_ms` on the same grid, measuring the uncovered duration from the span’s start.
 Entries are ranked by unrounded durations, so equal displayed values may appear in either order.
 Optional `parent` is the index in this response's `spans` array of the nearest retained ancestor.
 Optional `range` is a half-open range in the submitted text, using zero-based lines and zero-based
@@ -490,7 +501,7 @@ Beam omits span ranges.
 Profiling returns at most 128 spans, limits traversal visits to 16384 (including trace-state entries),
 and limits `MessageData` nesting to 256. Traversal considers roots and shallow message nodes before
 deeper descendants. Among visited timed nodes, retention first reserves the largest observation of
-each existing summary phase (Kernel, maxSharing, addDecl, definition value, lint), in that order,
+each reserved phase (Kernel, maxSharing, addDecl, definition value, lint), in that order,
 then fills by inclusive duration. Ties use original trace-tree order. Every reservation and later
 admission includes all timed ancestors and is charged to the same cap, only when the group fits
 the remaining span budget. Results retain their original parent-before-child order with remapped

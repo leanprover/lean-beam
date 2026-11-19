@@ -802,6 +802,7 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   require "elapsed wall clock preserved" ((← requireObjVal "profile" "elapsed_ms" profile).compress == "35.5")
   requireJsonInt "initial profiling threshold" "initial_threshold_ms" 1 profile
   requireJsonBool "profile boundedness" "truncated" false profile
+  requireFieldAbsent "complete profile" "truncation_reasons" profile
   let spans ← IO.ofExcept <| profile.getObjValAs? (Array Json) "spans"
   require "profile spans preserved including the small tail" (spans.size == 3)
   requireFieldAbsent "root span" "parent" spans[0]!
@@ -880,10 +881,10 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   let manySummary ← requireObjVal "many spans" "summary" manyProfile
   let manyTop ← IO.ofExcept <| manySummary.getObjValAs? (Array Json) "top_spans"
   let manyPhases ← IO.ofExcept <| manySummary.getObjValAs? (Array Json) "phase_spans"
-  require "top list bounded independently of phase list" (manyTop.size == 10 && manyPhases.size == 1)
+  require "top list bounded independently of phase list" (manyTop.size == 8 && manyPhases.size == 1)
   requireJsonInt "largest span first" "span" 12 manyTop[0]!
   requireJsonInt "small phase remains available outside top list" "span" 0 manyPhases[0]!
-  requireJsonInt "exact retained omission count excludes phase view" "omitted_from_top" 3 manySummary
+  requireJsonInt "exact retained omission count excludes phase view" "omitted_from_top" 5 manySummary
   requireJsonInt "independent spans are not collapsed" "collapsed_spans" 0 manySummary
   requireFieldAbsent "unavailable header is not invented" "label" manyTop[0]!
   requireJsonBool "top selection alone does not imply truncated evidence" "truncated" false manyProfile
@@ -974,8 +975,8 @@ private def checkProfileWireRoundTrip : IO Unit := do
     require "span starts at request origin" ((← requireObjVal "span" "start_ms" spans[0]!).compress == "0")
     require "span ends at request stop" ((← requireObjVal "span" "duration_ms" spans[0]!) == elapsed)
 
-  -- Eleven equally long roots cross the top-ten cutoff. Only the last is a phase.
-  -- Float JSON used to change which ten roots won the tie after labels had been rendered.
+  -- Eleven equally long roots cross the top-eight cutoff. Only the last is a phase.
+  -- Float JSON used to change which roots won the tie after labels had been rendered.
   let mut traces : PersistentArray TraceElem := {}
   for i in [:11] do
     let start := i * 5_000_000
@@ -988,10 +989,12 @@ private def checkProfileWireRoundTrip : IO Unit := do
   let top ← IO.ofExcept (summary.getObjValAs? (Array Json) "top_spans")
   let phases ← IO.ofExcept (summary.getObjValAs? (Array Json) "phase_spans")
   let index := fun (entry : Json) => IO.ofExcept (entry.getObjValAs? Nat "span")
-  require "top tie uses original trace order" ((← top.mapM index) == Array.range 10)
+  require "top tie uses original trace order" ((← top.mapM index) == Array.range 8)
   require "phase outside the top list" ((← phases.mapM index) == #[10])
   let mut publicLabels := Array.replicate worker.spans.size (none : Option String)
-  for entry in top ++ phases do
+  let bySelf ← IO.ofExcept (summary.getObjValAs? (Array Json) "top_self_spans")
+  require "positive self ties follow trace order" ((← bySelf.mapM index) == Array.range 5)
+  for entry in top ++ phases ++ bySelf do
     let i ← index entry
     let label ← IO.ofExcept (entry.getObjValAs? String "label")
     require "public label identifies the selected trace" (label == s!"step {i}")
