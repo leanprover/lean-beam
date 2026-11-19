@@ -132,14 +132,14 @@ def checkProjection : IO Unit := do
   let deep := (List.range (Beam.LSP.RunAt.Profile.maxDepth + 1)).foldl (fun msg _ => .group msg) root
   let depthBounded := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := deep } }] ""
-  require depthBounded.truncated "deep profile did not report truncation"
+  require (depthBounded.truncationReasons == #[.depth]) "deep profile did not report truncation"
   let longLabels : MessageData := .trace {
     cls := Name.mkSimple ("".pushn 'c' 200), tag := "".pushn 't' 300
     startTime := 1.1, stopTime := 1.9
   } label #[]
   let clipped := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := longLabels } }] ""
-  require (clipped.truncated && clipped.spans.size == 1 &&
+  require (clipped.truncationReasons == #[.identifier] && clipped.spans.size == 1 &&
       clipped.spans[0]!.category.length == 160 && clipped.spans[0]!.tag.length == 256)
     "label clipping was not bounded and reported independently of the span budget"
   let old : MessageData := .trace { cls := `inherited, startTime := 0.1, stopTime := 0.2 } label #[]
@@ -174,7 +174,7 @@ def checkProjection : IO Unit := do
     manyTraces := manyTraces.push { ref := .missing, msg := label }
   let visitBounded := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := manyTraces }] ""
-  require (visitBounded.truncated && visitBounded.spans.isEmpty)
+  require (visitBounded.truncationReasons == #[.visits] && visitBounded.spans.isEmpty)
     "projection exceeded its visited-node budget"
   require (!(← forced.get)) "visited-node bounding evaluated a lazy trace label"
 
@@ -192,7 +192,7 @@ def checkProjection : IO Unit := do
     |>.push { ref := .missing, msg := .withContext wallContext root }
   let clockFiltered := Beam.LSP.RunAt.Profile.collect 1000000000 2000000000
     #[{ state with traces := clocks }] ""
-  require (clockFiltered.truncated && clockFiltered.spans.map (·.category) == #["child", "root", "child"])
+  require (clockFiltered.truncationReasons == #[.clock] && clockFiltered.spans.map (·.category) == #["child", "root", "child"])
     "projection interpreted heartbeat values as seconds or lost a wall-clock descendant"
   require (clockFiltered.spans[0]!.parent?.isNone && clockFiltered.spans[2]!.parent? == some 1)
     "an omitted clock scope changed retained parent relationships"

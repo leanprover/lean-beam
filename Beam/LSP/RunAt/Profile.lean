@@ -27,6 +27,10 @@ structure Span where
 
 def Span.durationNs (span : Span) : Nat := span.stopNs - span.startNs
 
+inductive TruncationReason where
+  | retention | visits | depth | identifier | clock
+  deriving BEq, FromJson, ToJson, Repr
+
 /-- Wall-clock evidence from one speculative execution in its already-loaded environment.
 Span durations overlap and must not be summed to obtain `elapsedNs`. -/
 structure Result where
@@ -34,18 +38,21 @@ structure Result where
   /-- The collection threshold installed at request start; nested Lean scopes can override it. -/
   initialThresholdMs : Nat := 1
   spans : Array Span := #[]
-  truncated : Bool := false
+  truncationReasons : Array TruncationReason := #[]
   deriving FromJson, ToJson
+
+def Result.truncated (result : Result) : Bool := !result.truncationReasons.isEmpty
 
 def initialThresholdMs : Nat := 1
 def maxSpans : Nat := 128
 def maxVisited : Nat := 16384
 def maxDepth : Nat := 256
-def maxTopSpans : Nat := 10
+def maxTopSpans : Nat := 8
+def maxUncoveredSpans : Nat := 5
 def maxLabelChars : Nat := 160
 private def maxSnippetSourceBytes : Nat := 8192
 
-private def phaseCategories : Array String :=
+private def reservedPhaseCategories : Array String :=
   #["Kernel", "Elab.def.maxSharing", "addDecl", "Elab.definition.value", "Elab.lint"]
 
 /-- A maximal single-child path in the retained forest. `inner` is its displayed descendant,
@@ -58,12 +65,33 @@ structure Chain where
   size : Nat
   deriving BEq
 
+private def summaryPhaseCategories := reservedPhaseCategories.push "Elab.definition.header"
+
+structure UncoveredSpan where
+  index : Nat
+  uncoveredNs : Nat
+  deriving BEq, Inhabited
+
 /-- Summary views refer to retained spans. Top entries group paths; a phase entry is the largest
 observed span of its category, not a sum or a claim that the entire phase was recorded. -/
 structure Selection where
   top : Array Chain := #[]
   phases : Array Nat := #[]
+  uncovered : Array UncoveredSpan := #[]
   deriving BEq
+
+/-- Walk returned same-thread children in start order. Clip their intervals to the parent
+and count overlaps once, including when siblings arrive out of order. -/
+private def uncoveredDuration (parent : Span) (spans : Array Span) (children : Array Nat) : Nat := Id.run do
+  let mut covered := 0
+  let mut cursor := parent.startNs
+  for i in children.qsort (fun a b => spans[a]!.startNs < spans[b]!.startNs) do
+    let child := spans[i]!
+    if child.thread != parent.thread then continue
+    let stop := min child.stopNs parent.stopNs
+    covered := covered + (stop - max cursor child.startNs)
+    cursor := max cursor stop
+  return parent.durationNs - covered
 
 def select (spans : Array Span) : Selection := Id.run do
   let ranked := (Array.range spans.size).qsort fun i j =>
@@ -74,6 +102,16 @@ def select (spans : Array Span) : Selection := Id.run do
     if let some parent := spans[i]!.parent? then
       if parent < i then
         children := children.modify parent (·.push i)
+  -- Only a branch starts new descendant groups. Propagate their largest outer duration up
+  -- through every intermediate node, including wrappers within the same group.
+  let mut below := Array.replicate spans.size 0
+  for offset in [:spans.size] do
+    let i := spans.size - 1 - offset
+    if let some parent := spans[i]!.parent? then
+      if parent < i then
+        let largest := if children[parent]!.size == 1 then below[i]!
+          else max below[i]! spans[i]!.durationNs
+        below := below.modify parent (max largest)
   let mut top : Array Chain := #[]
   for i in ranked do
     if top.size == maxTopSpans then break
@@ -83,6 +121,7 @@ def select (spans : Array Span) : Selection := Id.run do
     let mut cursor := i
     let mut size := 1
     let outerDuration := spans[i]!.durationNs
+    if outerDuration > 0 && 10 * below[i]! >= 9 * outerDuration then continue
     -- Edges go forward, so a path visits at most spans.size nodes.
     for _ in [:spans.size] do
       if children[cursor]!.size != 1 then break
@@ -92,22 +131,30 @@ def select (spans : Array Span) : Selection := Id.run do
         inner := cursor
     top := top.push { outer := i, inner, size }
   let mut phases := #[]
-  for category in phaseCategories do
+  for category in summaryPhaseCategories do
     if let some index := ranked.find? (fun i => spans[i]!.category == category) then
       phases := phases.push index
-  return { top, phases }
+  let mut candidates : Array UncoveredSpan := #[]
+  for i in [:spans.size] do
+    let span := spans[i]!
+    if summaryPhaseCategories.contains span.category then continue
+    let ns := uncoveredDuration span spans children[i]!
+    if ns > 0 then candidates := candidates.push ⟨i, ns⟩
+  let byUncovered := candidates.qsort fun a b =>
+    a.uncoveredNs > b.uncoveredNs || (a.uncoveredNs == b.uncoveredNs && a.index < b.index)
+  return { top, phases, uncovered := byUncovered.extract 0 maxUncoveredSpans }
 
 /-- The number of raw spans represented by top paths, including their intermediate nodes. -/
 def Selection.represented (selection : Selection) : Nat :=
   selection.top.foldl (fun count chain => count + chain.size) 0
 
-/-- Render an entry shared by the two views only once. -/
+/-- Render an entry shared by multiple views only once. -/
 def Selection.indices (selection : Selection) : Array Nat := Id.run do
   let mut indices := #[]
   for chain in selection.top do
     indices := indices.push chain.outer
     if chain.inner != chain.outer then indices := indices.push chain.inner
-  return selection.phases.foldl (fun indices index =>
+  return (selection.phases ++ selection.uncovered.map (·.index)).foldl (fun indices index =>
     if indices.contains index then indices else indices.push index) indices
 
 /-- Retain structured trace data in memory. An explicitly present empty export path is Lean's
@@ -145,7 +192,7 @@ private structure Projection where
   spans : Array Span := #[]
   /-- Temporary references only, bounded with spans and dropped before publishing a result. -/
   headers : Array MessageData := #[]
-  truncated : Bool := false
+  truncationReasons : Array TruncationReason := #[]
 
 private def boundedNameString (name : Name) (limit : Nat) : String × Bool := Id.run do
   let mut current := name
@@ -235,8 +282,6 @@ private structure Explored where
   clipped : Bool := false
   pendingAtStop : Nat := 0
   deriving Inhabited
-
-private def Explored.complete (e : Explored) : Bool := e.pendingAtStop == 0 && e.depthStops == 0
 
 private def dispatch (origin stop : Float) (elapsedNs : Nat) (msg : MessageData) (f : Frame)
     (e : Explored) : Explored × Array Work := Id.run do
@@ -349,7 +394,7 @@ private def retain (e : Explored) (cap : Nat) : Array Nat := Id.run do
     let y := e.observations[b]!
     x.span.durationNs > y.span.durationNs ||
       (x.span.durationNs == y.span.durationNs && sourceLT x y)
-  let phases := phaseCategories.filterMap fun category =>
+  let phases := reservedPhaseCategories.filterMap fun category =>
     ranked.find? (fun i => e.observations[i]!.span.category == category)
   let mut selected := #[]
   let mut kept := Array.replicate e.observations.size false
@@ -372,8 +417,13 @@ private def retain (e : Explored) (cap : Nat) : Array Nat := Id.run do
 private def materialize (explored : Explored) (cap : Nat) : Projection := Id.run do
   let selected := retain explored cap
   let mut indices : Array (Option Nat) := Array.replicate explored.observations.size none
-  let mut result : Projection := {truncated := !explored.complete || explored.incompatible > 0 ||
-    explored.clipped || selected.size < explored.observations.size}
+  let mut reasons : Array TruncationReason := #[]
+  if selected.size < explored.observations.size then reasons := reasons.push .retention
+  if explored.pendingAtStop > 0 then reasons := reasons.push .visits
+  if explored.depthStops > 0 then reasons := reasons.push .depth
+  if explored.clipped then reasons := reasons.push .identifier
+  if explored.incompatible > 0 then reasons := reasons.push .clock
+  let mut result : Projection := {truncationReasons := reasons}
   for i in selected do
     let observation := explored.observations[i]!
     let parent? := observation.span.parent?.bind (indices[·]!)
@@ -390,7 +440,7 @@ private def Projection.result (projection : Projection) (startNs stopNs : Nat) :
     elapsedNs := stopNs - startNs
     initialThresholdMs
     spans := projection.spans
-    truncated := projection.truncated
+    truncationReasons := projection.truncationReasons
 }
 
 /-- Project a bounded forest without evaluating lazy labels or pretty-printing expressions.
