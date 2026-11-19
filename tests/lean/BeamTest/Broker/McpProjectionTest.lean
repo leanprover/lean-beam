@@ -996,7 +996,7 @@ private def checkProfileWireRoundTrip : IO Unit := do
   require "positive uncovered ties follow trace order" ((← uncovered.mapM index) == Array.range Beam.LSP.RunAt.Profile.maxUncoveredSpans)
   for entry in uncovered do
     requireFieldAbsent "label already displayed for this span in top_spans" "label" entry
-    requireJsonInt "full leaf interval uncovered" "uncovered_ms" 2 entry
+    require "full leaf interval uncovered" ((← requireObjVal "leaf" "uncovered_ms" entry).compress == "2")
   for entry in top ++ phases do
     let i ← index entry
     let label ← IO.ofExcept (entry.getObjValAs? String "label")

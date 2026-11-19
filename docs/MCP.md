@@ -439,8 +439,8 @@ Start with `elapsed_ms` and `summary`:
   When `top_spans` already displays a label for the same span index, including in an
   `inner_span`, look up the label there. Parallel work prevents attributing CPU time from this list.
 - `phase_spans` lists the largest retained span in each observed category among `Kernel`,
-  `Elab.def.maxSharing`, `addDecl`, `Elab.definition.value`, `Elab.lint`, and `Elab.definition.header`, in that order. These are
-  individual observations, not phase totals. Missing categories are omitted, never reported as zero.
+  `Elab.def.maxSharing`, `addDecl`, `Elab.definition.value`, `Elab.lint`, and
+  `Elab.definition.header`, in that order. These are individual observations, not phase totals. Missing categories are omitted, never reported as zero.
 - Each entry has `span` (its zero-based index in `profile.spans`), `category`, and `duration_ms`.
   Nonempty `tag` and available `label` are included, except that an `inner_span.label` identical
   to its outer entry's displayed label is omitted. The inner span's index, tag and own duration
