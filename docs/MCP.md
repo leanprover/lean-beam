@@ -430,12 +430,14 @@ Start with `elapsed_ms` and `summary`:
   does not establish complete coverage of its parent. Grouping neither subtracts costs nor
   attributes the outer duration to the inner label. All members remain accessible through the
   raw parent links.
-- `top_self_spans` lists up to five retained spans with positive `self_ms`, largest first.
-  Skip the individual entries already shown in `phase_spans`. A step can appear in both top lists.
-  Self time measures uncovered wall time. Beam clips each visited direct same-thread child's
-  interval to its parent's interval, then subtracts their union once. Children dropped during
-  retention still count. Below-threshold and unvisited work stays in the balance. Other threads
-  can run concurrently, so this measure cannot establish CPU cost.
+- `top_uncovered_spans` ranks up to five elaboration steps by positive `uncovered_ms`.
+  This measures wall time in a span not covered by its returned children: its own work plus
+  any descendants omitted from the profile. Beam subtracts the union of direct same-thread
+  child intervals clipped to the parent. Below-threshold work stays in the balance.
+  You can derive this measure from `spans` up to display rounding. The summary supplies
+  the ranking and labels. It excludes every span in a phase category listed below.
+  When `top_spans` already displays a label for the same span index, including in an
+  `inner_span`, look up the label there. Parallel work prevents attributing CPU time from this list.
 - `phase_spans` lists the largest retained span in each observed category among `Kernel`,
   `Elab.def.maxSharing`, `addDecl`, `Elab.definition.value`, `Elab.lint`, and `Elab.definition.header`, in that order. These are
   individual observations, not phase totals. Missing categories are omitted, never reported as zero.
@@ -490,7 +492,7 @@ response. The `category` and optional nonempty `tag` are raw Lean trace identifi
 field provides a stable source identifier or a proof-goal name. Beam rounds `elapsed_ms` and span
 endpoints to 0.1 ms relative to the start of the request interval. `start_ms` is the rounded start.
 In raw spans and summary entries, `duration_ms` is the difference between the rounded endpoints.
-Beam displays `self_ms` on the same grid, measuring the uncovered duration from the span’s start.
+Beam displays `uncovered_ms` on the same grid, measuring the uncovered duration from the span’s start.
 Entries are ranked by unrounded durations, so equal displayed values may appear in either order.
 Optional `parent` is the index in this response's `spans` array of the nearest retained ancestor.
 Optional `range` is a half-open range in the submitted text, using zero-based lines and zero-based

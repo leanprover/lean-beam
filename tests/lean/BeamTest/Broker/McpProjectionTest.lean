@@ -992,9 +992,12 @@ private def checkProfileWireRoundTrip : IO Unit := do
   require "top tie uses original trace order" ((← top.mapM index) == Array.range 8)
   require "phase outside the top list" ((← phases.mapM index) == #[10])
   let mut publicLabels := Array.replicate worker.spans.size (none : Option String)
-  let bySelf ← IO.ofExcept (summary.getObjValAs? (Array Json) "top_self_spans")
-  require "positive self ties follow trace order" ((← bySelf.mapM index) == Array.range 5)
-  for entry in top ++ phases ++ bySelf do
+  let uncovered ← IO.ofExcept (summary.getObjValAs? (Array Json) "top_uncovered_spans")
+  require "positive uncovered ties follow trace order" ((← uncovered.mapM index) == Array.range Beam.LSP.RunAt.Profile.maxUncoveredSpans)
+  for entry in uncovered do
+    requireFieldAbsent "label already displayed for this span in top_spans" "label" entry
+    requireJsonInt "full leaf interval uncovered" "uncovered_ms" 2 entry
+  for entry in top ++ phases do
     let i ← index entry
     let label ← IO.ofExcept (entry.getObjValAs? String "label")
     require "public label identifies the selected trace" (label == s!"step {i}")
@@ -1040,6 +1043,11 @@ private def checkProfileLabelOmission : IO Unit := do
       match expectedInnerLabel? with
       | some label => requireJsonString "distinct or only available inner label retained" "label" label child
       | none => requireFieldAbsent "repeated or unavailable inner label omitted" "label" child
+      let uncovered ← IO.ofExcept <| s.getObjValAs? (Array Json) "top_uncovered_spans"
+      requireJsonInt "inner step has largest uncovered time" "span" 1 uncovered[0]!
+      match innerLabel?, expectedInnerLabel? with
+      | some label, none => requireJsonString "inner label available at its own index" "label" label uncovered[0]!
+      | _, _ => requireFieldAbsent "unavailable or already displayed inner label" "label" uncovered[0]!
       requireJsonInt "distinct inner index retained" "span" 1 child
       requireJsonString "distinct inner tag retained" "tag" "Lean.Parser.Tactic.grind" child
       require "distinct inner duration retained" ((← requireObjVal "inner" "duration_ms" child).compress == "60")

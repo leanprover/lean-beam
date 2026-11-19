@@ -37,7 +37,7 @@ private def jsonFieldPriority : String -> Nat
   | "initial_threshold_ms" => 18
   | "summary" => 19
   | "top_spans" => 20
-  | "top_self_spans" => 21
+  | "top_uncovered_spans" => 21
   | "phase_spans" => 22
   | "collapsed_spans" => 23
   | "omitted_from_top" => 24

@@ -85,7 +85,7 @@ private def checkChains : IO Unit := do
     traces := ({} : PersistentArray TraceElem).push { ref := .missing, msg := root } }
   let result ← collectWithLabels (pure () : IO Unit) 1000000000 2000000000 #[state] ""
   require ((← calls.get) == #[1, 1, 1])
-    "a shared top/self header or self-only leaf was not rendered exactly once"
+    "a shared inclusive/uncovered header or uncovered-only leaf was not rendered exactly once"
   require (result.spans[1]!.label? == some "endpoint 1" && result.spans[2]!.label? == some "endpoint 2")
     "labels did not follow the selected inner member"
   require (!result.truncated && result.spans.size == 3) "grouping altered the raw projection"
@@ -96,12 +96,20 @@ private def checkDominance : IO Unit := do
     "a descendant covering exactly 90% must suppress its enclosing group"
   require ((select (tree 89.99)).top.map (·.outer) == #[0, 1, 2])
     "a descendant just under 90% must preserve its enclosing group"
-  let header := { span 80 none "Elab.definition.header" with selfNs := 55_000_000 }
-  let selection := select #[{ span 90 with selfNs := 54_000_000 }, header]
-  require (selection.phases == #[1] && selection.topSelf == #[0])
-    "the header phase must be shown independently and skipped in the self list"
+  let selection := select #[span 90, span 80 none "Elab.definition.header",
+    span 70 none "Elab.definition.header", span 60 none "Elab.lint", span 50 none "Elab.lint"]
+  require (selection.phases == #[3, 1] && selection.uncovered.map (·.index) == #[0])
+    "all phase-category spans must be skipped, including smaller observations"
 
-private def checkSelfCoverage : IO Unit := do
+private def checkUncovered : IO Unit := do
+  -- Children overlap, arrive out of order and cross both parent endpoints. A different
+  -- thread's child overlaps the remaining gap and must not cover it.
+  let child := fun start stop thread => { span 0 (some 0) with
+    startNs := start, stopNs := stop, thread }
+  let tree := #[{ span 0 with startNs := 100, stopNs := 200 },
+    child 180 210 0, child 80 120 0, child 110 150 0, child 150 180 1]
+  require ((select tree).uncovered.any fun u => u.index == 0 && u.uncoveredNs == 30)
+    "only the clipped union of same-thread children covers the parent"
   let timed := fun cls start stop children => MessageData.trace
     {cls, startTime := start, stopTime := stop} "" children
   -- Only the root and long fillers fit. Its short children overlap, arrive out of order,
@@ -114,13 +122,13 @@ private def checkSelfCoverage : IO Unit := do
   let result := collect 1000000000 3000000000 #[{tid := 0, traces}] ""
   require (result.truncationReasons == #[.retention] && result.spans.size == maxSpans)
     "losing visited spans should report only retention"
-  require (result.spans[0]!.selfNs == 250_000_000 && result.spans.all (·.parent?.isNone))
-    "dropped children must still cover their clipped union exactly once"
+  require (((select result.spans).uncovered[0]! == ⟨0, 1_000_000_000⟩) && result.spans.all (·.parent?.isNone))
+    "omitted child intervals must remain in their returned parent’s balance"
 
 def run : IO Unit := do
   checkChains
   checkDominance
-  checkSelfCoverage
+  checkUncovered
   let calls ← IO.mkRef (Array.replicate 13 0)
   let env ← mkEmptyEnvironment
   let context : MessageDataContext := { env, mctx := {}, lctx := {}, opts := {} }

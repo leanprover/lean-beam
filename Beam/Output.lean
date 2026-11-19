@@ -162,26 +162,29 @@ private def profileJson (profile : Beam.LSP.RunAt.Profile.Result) : Json := Id.r
     raw := raw.push <| Json.mkObj <| fields ++ [("thread", toJson thread), ("start_ms", milliseconds start)] ++
       (match span.parent? with | some parent => [("parent", toJson parent)] | none => []) ++
       (match span.range? with | some range => [("range", toJson range)] | none => [])
-  let fields := fun index (outerLabel? : Option String) =>
+  let fields := fun index (omitLabel : Bool) =>
     let span := profile.spans[index]!
     [("span", toJson index)] ++ common[index]! ++
       (match span.label? with
-      | some label => if outerLabel? == some label then [] else [("label", toJson label)]
+      | some label => if omitLabel then [] else [("label", toJson label)]
       | none => [])
-  let entry := fun index => Json.mkObj (fields index none)
-  let chainEntry := fun (chain : Beam.LSP.RunAt.Profile.Chain) => Json.mkObj <| fields chain.outer none ++
+  let entry := fun index => Json.mkObj (fields index false)
+  let chainEntry := fun (chain : Beam.LSP.RunAt.Profile.Chain) => Json.mkObj <| fields chain.outer false ++
     -- Equal displayed text (possibly clipped) does not make the two measurements equivalent.
     if chain.inner == chain.outer then [] else
-      [("inner_span", Json.mkObj <| fields chain.inner profile.spans[chain.outer]!.label?)]
+      [("inner_span", Json.mkObj <| fields chain.inner (profile.spans[chain.inner]!.label? == profile.spans[chain.outer]!.label?))]
   return Json.mkObj <| [
     ("elapsed_ms", milliseconds (tenths profile.elapsedNs)), ("initial_threshold_ms", toJson profile.initialThresholdMs),
     ("summary", Json.mkObj [
       ("top_spans", Json.arr <| selection.top.map chainEntry),
       ("phase_spans", Json.arr <| selection.phases.map entry),
-      ("top_self_spans", Json.arr <| selection.topSelf.map fun i =>
+      ("top_uncovered_spans", Json.arr <| selection.uncovered.map fun observation =>
+        let i := observation.index
         let span := profile.spans[i]!
-        let ticks := tenths (span.startNs + span.selfNs) - tenths span.startNs
-        (entry i).setObjVal! "self_ms" (milliseconds ticks)),
+        let ticks := tenths (span.startNs + observation.uncoveredNs) - tenths span.startNs
+        let labeledInTop := selection.top.any fun chain =>
+          chain.outer == i || (chain.inner == i && profile.spans[chain.outer]!.label? != span.label?)
+        Json.mkObj (("uncovered_ms", milliseconds ticks) :: fields i labeledInTop)),
       ("collapsed_spans", toJson (selection.represented - selection.top.size)),
       ("omitted_from_top", toJson (profile.spans.size - selection.represented))]),
     ("spans", Json.arr raw),

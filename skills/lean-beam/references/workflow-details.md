@@ -134,11 +134,13 @@ duration, with its own index, duration and available label; it is omitted if no 
 display heuristic does not identify a cause or guarantee a tactic node. The entire path remains
 grouped, including any smaller tail; the outer duration is not the inner step's cost.
 
-`summary.top_self_spans` lists up to five positive uncovered wall times (`self_ms`), largest first.
-Beam subtracts the union of visited direct same-thread child intervals inside the parent, including
-children dropped during retention. Below-threshold and unvisited work stays in the balance.
-Use this list to locate costly steps. Parallel work means `self_ms` cannot measure CPU cost.
-Exact phase entries have their own list and are skipped here.
+`summary.top_uncovered_spans` ranks up to five elaboration steps by positive `uncovered_ms`.
+This is wall time in the span not covered by its returned children: its own work plus any
+descendants omitted from the profile. Beam subtracts the union of direct same-thread child
+intervals clipped to the parent. Below-threshold work stays in the balance. You can derive
+this measure from `profile.spans` up to display rounding. Use the summary for ranking and labels.
+If the same span index already has a label in `top_spans` or its `inner_span`, read it there.
+Every phase category listed below is excluded. Parallel work prevents inferring CPU cost.
 
 `summary.phase_spans`
 shows the largest observed span for each known declaration-phase category, not totals or zeros for
@@ -175,7 +177,7 @@ Span `thread` numbers start at zero in first-seen order within each response. Th
 and optional nonempty `tag` are raw Lean trace identifiers. Neither field provides a stable source
 identifier or a proof-goal name. Beam rounds `elapsed_ms` and span endpoints to 0.1 ms relative to
 the start of the request interval. `start_ms` is the rounded start. In raw spans and summaries,
-`duration_ms` is the difference between the rounded endpoints. Beam displays `self_ms` on that grid from the span’s start. Entries are ranked by unrounded
+`duration_ms` is the difference between the rounded endpoints. Beam displays `uncovered_ms` on that grid from the span’s start. Entries are ranked by unrounded
 durations, so equal displayed values may appear in either order.
 `parent`, when present, indexes the nearest retained ancestor in this response's `spans` array.
 `range`, when present, is a half-open range in the submitted text,

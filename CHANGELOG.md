@@ -19,6 +19,10 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 
 ### Added
 
+- Rank speculative profiling steps by wall time uncovered by their returned children, identify
+  declaration header cost, and report why a profile was truncated
+  ([#435](https://github.com/leanprover/lean-beam/pull/435), @ejgallego).
+
 - Add inclusive summaries and Lean trace labels to CLI/MCP speculative profiling results.
   Summary entries group retained single-child paths and show an inner member only when it
   retains at least half the outer duration, preserving each displayed span's own measurements,

@@ -20,8 +20,6 @@ structure Span where
   /-- Canonical offsets in nanoseconds from the request origin. JSON preserves both exactly. -/
   startNs : Nat
   stopNs : Nat
-  /-- Wall time uncovered by all visited direct same-thread children, before retention. -/
-  selfNs : Nat := 0
   range? : Option Lean.Lsp.Range := none
   /-- Lean-rendered header for a selected summary entry. Never retains the message context. -/
   label? : Option String := none
@@ -50,7 +48,7 @@ def maxSpans : Nat := 128
 def maxVisited : Nat := 16384
 def maxDepth : Nat := 256
 def maxTopSpans : Nat := 8
-def maxSelfSpans : Nat := 5
+def maxUncoveredSpans : Nat := 5
 def maxLabelChars : Nat := 160
 private def maxSnippetSourceBytes : Nat := 8192
 
@@ -67,13 +65,33 @@ structure Chain where
   size : Nat
   deriving BEq
 
+private def summaryPhaseCategories := reservedPhaseCategories.push "Elab.definition.header"
+
+structure UncoveredSpan where
+  index : Nat
+  uncoveredNs : Nat
+  deriving BEq, Inhabited
+
 /-- Summary views refer to retained spans. Top entries group paths; a phase entry is the largest
 observed span of its category, not a sum or a claim that the entire phase was recorded. -/
 structure Selection where
   top : Array Chain := #[]
   phases : Array Nat := #[]
-  topSelf : Array Nat := #[]
+  uncovered : Array UncoveredSpan := #[]
   deriving BEq
+
+/-- Walk returned same-thread children in start order. Clip their intervals to the parent
+and count overlaps once, including when siblings arrive out of order. -/
+private def uncoveredDuration (parent : Span) (spans : Array Span) (children : Array Nat) : Nat := Id.run do
+  let mut covered := 0
+  let mut cursor := parent.startNs
+  for i in children.qsort (fun a b => spans[a]!.startNs < spans[b]!.startNs) do
+    let child := spans[i]!
+    if child.thread != parent.thread then continue
+    let stop := min child.stopNs parent.stopNs
+    covered := covered + (stop - max cursor child.startNs)
+    cursor := max cursor stop
+  return parent.durationNs - covered
 
 def select (spans : Array Span) : Selection := Id.run do
   let ranked := (Array.range spans.size).qsort fun i j =>
@@ -113,25 +131,30 @@ def select (spans : Array Span) : Selection := Id.run do
         inner := cursor
     top := top.push { outer := i, inner, size }
   let mut phases := #[]
-  for category in reservedPhaseCategories.push "Elab.definition.header" do
+  for category in summaryPhaseCategories do
     if let some index := ranked.find? (fun i => spans[i]!.category == category) then
       phases := phases.push index
-  let candidates := (Array.range spans.size).filter fun i => spans[i]!.selfNs > 0 && !phases.contains i
-  let bySelf := candidates.qsort fun i j =>
-    spans[i]!.selfNs > spans[j]!.selfNs || (spans[i]!.selfNs == spans[j]!.selfNs && i < j)
-  return { top, phases, topSelf := bySelf.extract 0 maxSelfSpans }
+  let mut candidates : Array UncoveredSpan := #[]
+  for i in [:spans.size] do
+    let span := spans[i]!
+    if summaryPhaseCategories.contains span.category then continue
+    let ns := uncoveredDuration span spans children[i]!
+    if ns > 0 then candidates := candidates.push ⟨i, ns⟩
+  let byUncovered := candidates.qsort fun a b =>
+    a.uncoveredNs > b.uncoveredNs || (a.uncoveredNs == b.uncoveredNs && a.index < b.index)
+  return { top, phases, uncovered := byUncovered.extract 0 maxUncoveredSpans }
 
 /-- The number of raw spans represented by top paths, including their intermediate nodes. -/
 def Selection.represented (selection : Selection) : Nat :=
   selection.top.foldl (fun count chain => count + chain.size) 0
 
-/-- Render an entry shared by the two views only once. -/
+/-- Render an entry shared by multiple views only once. -/
 def Selection.indices (selection : Selection) : Array Nat := Id.run do
   let mut indices := #[]
   for chain in selection.top do
     indices := indices.push chain.outer
     if chain.inner != chain.outer then indices := indices.push chain.inner
-  return (selection.phases ++ selection.topSelf).foldl (fun indices index =>
+  return (selection.phases ++ selection.uncovered.map (·.index)).foldl (fun indices index =>
     if indices.contains index then indices else indices.push index) indices
 
 /-- Retain structured trace data in memory. An explicitly present empty export path is Lean's
@@ -391,29 +414,9 @@ private def retain (e : Explored) (cap : Nat) : Array Nat := Id.run do
         kept := kept.set! j true
   return selected.qsort (fun a b => sourceLT e.observations[a]! e.observations[b]!)
 
-/-- Subtract the union once even when siblings overlap, arrive out of order, or cross a
-parent endpoint. Children from another thread cannot cover the parent's wall interval. -/
-private def uncoveredNs (parent : Span) (intervals : Array (Nat × Nat)) : Nat := Id.run do
-  let mut covered := 0
-  let mut cursor := parent.startNs
-  for (start, stop) in intervals.qsort (fun a b => a.1 < b.1) do
-    let stop := min stop parent.stopNs
-    covered := covered + (stop - max cursor start)
-    cursor := max cursor stop
-  return parent.durationNs - covered
-
 private def materialize (explored : Explored) (cap : Nat) : Projection := Id.run do
   let selected := retain explored cap
   let mut indices : Array (Option Nat) := Array.replicate explored.observations.size none
-  for i in [:selected.size] do
-    indices := indices.set! selected[i]! (some i)
-  let mut intervals : Array (Array (Nat × Nat)) := Array.replicate selected.size #[]
-  for observation in explored.observations do
-    let child := observation.span
-    if let some p := child.parent? then
-      if let some retained := indices[p]! then
-        if child.thread == explored.observations[p]!.span.thread then
-          intervals := intervals.modify retained (·.push (child.startNs, child.stopNs))
   let mut reasons : Array TruncationReason := #[]
   if selected.size < explored.observations.size then reasons := reasons.push .retention
   if explored.pendingAtStop > 0 then reasons := reasons.push .visits
@@ -421,12 +424,12 @@ private def materialize (explored : Explored) (cap : Nat) : Projection := Id.run
   if explored.clipped then reasons := reasons.push .identifier
   if explored.incompatible > 0 then reasons := reasons.push .clock
   let mut result : Projection := {truncationReasons := reasons}
-  for i in [:selected.size] do
-    let observation := explored.observations[selected[i]!]!
+  for i in selected do
+    let observation := explored.observations[i]!
     let parent? := observation.span.parent?.bind (indices[·]!)
-    let selfNs := uncoveredNs observation.span intervals[i]!
+    indices := indices.set! i (some result.spans.size)
     result := {result with
-      spans := result.spans.push {observation.span with parent?, selfNs}
+      spans := result.spans.push {observation.span with parent?}
       headers := result.headers.push observation.header}
   return result
 
