@@ -12,7 +12,7 @@ namespace Beam.Cli.ClientDoctor
 open Lean
 
 def usage : String :=
-  "usage: lean-beam [--pretty] [--root PATH] doctor clients [codex|claude|pi|opencode|vibe] [--config PATH] [--json | --verbose]"
+  s!"usage: lean-beam [--pretty] [--root PATH] doctor clients [{Client.pipeList}] [--config PATH] [--json | --verbose]"
 
 structure Options where
   client? : Option Client := none
@@ -41,7 +41,7 @@ def parseOptions (args : List String) : Except String Options := do
     | ["--config"] => throw "--config requires a file path."
     | arg :: rest =>
         let some client := Client.parse? arg
-          | throw "Unknown client or option. Choose codex, claude, pi, opencode, or vibe."
+          | throw s!"Unknown client or option. Choose {Client.proseList}."
         if options.client?.isSome then throw "Select at most one client."
         parse rest { options with client? := some client }
   parse args {}
@@ -66,9 +66,10 @@ def captureContext (opts : CliOptions) : CliM Context := do
   unless (System.FilePath.mk userHome).isAbsolute do
     throw <| CliFailure.setup "The client discovery home must be an absolute path."
   let mut variables := #[]
-  for name in ["CODEX_HOME", "CLAUDE_HOME", "CLAUDE_CONFIG_DIR", "BEAM_CLAUDE_MCP_CONFIG", "PI_CODING_AGENT_DIR",
-      "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "VIBE_HOME"] do
-    if let some value ← IO.getEnv name then variables := variables.push (name, value)
+  for client in Client.all do
+    for name in client.envVars do
+      if !variables.any (·.1 == name) then
+        if let some value ← IO.getEnv name then variables := variables.push (name, value)
   return { workspace, userHome := System.FilePath.mk userHome, variables }
 
 /-- Keep unexpected parser/filesystem failures local to one client and redact exception text. -/

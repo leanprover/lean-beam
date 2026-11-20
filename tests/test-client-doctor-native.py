@@ -57,7 +57,8 @@ def main():
         env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
         for key in ["CODEX_HOME", "CLAUDE_HOME", "CLAUDE_CONFIG_DIR", "BEAM_CLAUDE_MCP_CONFIG",
                     "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR",
-                    "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "VIBE_HOME", "BEAM_SESSION_ROOT"]:
+                    "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "VIBE_HOME",
+                    "BEAM_AGY_HOME", "BEAM_SESSION_ROOT"]:
             env.pop(key, None)
 
         def inspect(*args, expected=0, environment=None, report=True):
@@ -113,6 +114,16 @@ def main():
         vibe.write_text("[[mcp_servers]]\nname = 'lean-beam'\ntransport = 'stdio'\ndisabled = true\n"
                         "command = " + json.dumps(str(launcher)) + "\n", encoding="utf-8")
         result = inspect("vibe", expected=1)
+        assert any(f["code"] == "mcp.disabled" for f in result["clients"][0]["findings"]), result
+        agy = home / ".gemini/config/mcp_config.json"
+        agy.parent.mkdir(parents=True)
+        agy.write_text(json.dumps({"mcpServers": {"lean-beam": {
+            "command": str(launcher), "disabled": False}}}), encoding="utf-8")
+        result = inspect("agy", expected=expected)
+        assert any(f["code"] == "launch.file" for f in result["clients"][0]["findings"]), result
+        agy.write_text(json.dumps({"mcpServers": {"lean-beam": {
+            "command": str(launcher), "disabled": True}}}), encoding="utf-8")
+        result = inspect("agy", expected=1)
         assert any(f["code"] == "mcp.disabled" for f in result["clients"][0]["findings"]), result
         if os.name == "nt":
             no_home = {key: value for key, value in env.items() if key != "HOME"}

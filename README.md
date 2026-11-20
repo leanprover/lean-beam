@@ -103,7 +103,7 @@ own pinned toolchain, which may differ from your project's version.
 
 The standalone installer puts commands in `~/.local/bin`; make sure that directory is on `PATH`.
 Beam is installed once for your agent tools; you do not add it to each project's lakefile.
-For OpenCode, Mistral Vibe, manual MCP registration, additional toolchains, and offline setup, use
+For OpenCode, Mistral Vibe, Antigravity, manual MCP registration, additional toolchains, and offline setup, use
 [the setup guide](docs/SETUP.md). Toolchains are selected when installing; runtime requests do not
 build missing Beam components.
 

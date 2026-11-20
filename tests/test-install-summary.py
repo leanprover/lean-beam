@@ -63,15 +63,17 @@ bin_home="$HOME/bin"
     def test_current_run_actions_and_manual_instructions_are_distinct(self):
         output = self.summary('''
 installed_skill_targets=("Codex: fixture" "Claude Code: fixture" "Pi Agent: fixture"
-                         "OpenCode: fixture" "Mistral Vibe: fixture")
-registered_mcp_targets=("Codex: lean-beam" "Claude Code: lean-beam" "Mistral Vibe: lean-beam")
+                         "OpenCode: fixture" "Mistral Vibe: fixture" "Antigravity: fixture")
+registered_mcp_targets=("Codex: lean-beam" "Claude Code: lean-beam" "Mistral Vibe: lean-beam"
+                        "Antigravity: lean-beam")
 manual_mcp_targets=("OpenCode: lean-beam")
 ''')
-        self.assertEqual(output.count("MCP: registered this run"), 3)
-        self.assertEqual(output.count("skills: lean-beam installed this run"), 5)
+        self.assertEqual(output.count("MCP: registered this run"), 4)
+        self.assertEqual(output.count("skills: lean-beam installed this run"), 6)
         self.assertIn("MCP: opencode mcp add shown this run", output)
         self.assertIn("MCP: unsupported", output)
         self.assertNotIn("--codex-mcp", output)
+        self.assertNotIn("--agy-mcp", output)
 
     def test_mixed_client_actions_keep_rows_and_hints_independent(self):
         output = self.summary('''
@@ -85,10 +87,12 @@ manual_mcp_targets=("OpenCode: lean-beam")
             "Pi Agent": "skills: lean-beam installed this run; MCP: unsupported",
             "OpenCode": "skills: not installed this run; MCP: opencode mcp add shown this run",
             "Mistral Vibe": "skills: not installed this run; MCP: not registered this run",
+            "Antigravity": "skills: not installed this run; MCP: not registered this run",
             "Codex MCP": "./scripts/install-beam.sh --codex-mcp",
             "Claude Lean skill": "./scripts/install-beam.sh --claude",
             "OpenCode Lean skill": "./scripts/install-beam.sh --opencode",
             "Mistral Vibe setup": "./scripts/install-beam.sh --vibe --vibe-mcp",
+            "Antigravity setup": "./scripts/install-beam.sh --agy --agy-mcp",
         }
         for label, value in expected.items():
             with self.subTest(label=label):
