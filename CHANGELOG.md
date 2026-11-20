@@ -20,7 +20,7 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 ### Added
 
 - Antigravity (`agy`) skill installation, MCP registration (`--agy`, `--agy-mcp`,
-  `--agy-config-dir`, `BEAM_AGY_CONFIG_DIR`), and `lean-beam doctor clients agy` inspection.
+  `--agy-home`, `BEAM_AGY_HOME`), and `lean-beam doctor clients agy` inspection.
 - Add inclusive summaries and Lean trace labels to CLI/MCP speculative profiling results.
   Summary entries group retained single-child paths and show an inner member only when it
   retains at least half the outer duration, preserving each displayed span's own measurements,

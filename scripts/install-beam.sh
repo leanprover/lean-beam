@@ -28,10 +28,10 @@ opencode_skills_home=""
 vibe_home=""
 vibe_skills_home=""
 vibe_mcp_config=""
+agy_home=""
 agy_config_dir=""
 agy_skills_home=""
 agy_mcp_config=""
-agy_mcp_home=""
 bin_home=""
 install_root=""
 versions_root=""
@@ -130,11 +130,11 @@ set_vibe_home() {
   vibe_mcp_config="$vibe_home/config.toml"
 }
 
-set_agy_config_dir() {
-  agy_config_dir="$1"
+set_agy_home() {
+  agy_home="$1"
+  agy_config_dir="$agy_home/.gemini/config"
   agy_skills_home="$agy_config_dir/skills"
   agy_mcp_config="$agy_config_dir/mcp_config.json"
-  agy_mcp_home="$(dirname "$(dirname "$agy_config_dir")")"
 }
 
 set_bin_home "${BEAM_BIN_HOME:-$HOME/.local/bin}"
@@ -145,7 +145,7 @@ set_claude_mcp_user_config "${BEAM_CLAUDE_MCP_CONFIG:-$HOME/.claude.json}"
 set_pi_home "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 set_opencode_config_dir "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
 set_vibe_home "${VIBE_HOME:-$HOME/.vibe}"
-set_agy_config_dir "${BEAM_AGY_CONFIG_DIR:-$HOME/.gemini/config}"
+set_agy_home "${BEAM_AGY_HOME:-$HOME}"
 
 runtime_payload_spec=(
   "required|rootFiles|LICENSE|LICENSE"
@@ -203,8 +203,7 @@ Optional flags:
   --vibe-mcp    register lean-beam-mcp in the Mistral Vibe config
   --vibe-home   Mistral Vibe home for --vibe and --vibe-mcp
   --agy-mcp     register lean-beam-mcp with Antigravity
-  --agy-config-dir
-                Antigravity config directory for --agy and --agy-mcp
+  --agy-home    Antigravity home directory (contains .gemini/config) for --agy and --agy-mcp
   --all-mcp     register Codex/Claude/Mistral Vibe/Antigravity MCP and show OpenCode MCP setup
   -h, --help    show this help
 
@@ -217,7 +216,7 @@ Environment:
   XDG_CONFIG_HOME      base directory for the default OpenCode config directory
   OPENCODE_CONFIG_DIR  override the OpenCode config directory used by --opencode
   VIBE_HOME            override the Mistral Vibe home used by --vibe and --vibe-mcp
-  BEAM_AGY_CONFIG_DIR  override the Antigravity config directory used by --agy and --agy-mcp
+  BEAM_AGY_HOME        override the Antigravity home directory used by --agy and --agy-mcp
   BEAM_CLAUDE_MCP_CONFIG
                         override the Claude Code user .claude.json path used by --claude-mcp
 
@@ -734,11 +733,11 @@ parse_args() {
         mcp_registration_explicit=1
         register_agy_mcp=1
         ;;
-      --agy-config-dir)
+      --agy-home)
         if [ "$#" -lt 2 ]; then
-          die "missing value for --agy-config-dir"
+          die "missing value for --agy-home"
         fi
-        set_agy_config_dir "$2"
+        set_agy_home "$2"
         shift
         ;;
       --all-mcp)

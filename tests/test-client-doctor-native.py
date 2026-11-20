@@ -58,7 +58,7 @@ def main():
         for key in ["CODEX_HOME", "CLAUDE_HOME", "CLAUDE_CONFIG_DIR", "BEAM_CLAUDE_MCP_CONFIG",
                     "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR",
                     "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "VIBE_HOME",
-                    "BEAM_AGY_CONFIG_DIR", "BEAM_SESSION_ROOT"]:
+                    "BEAM_AGY_HOME", "BEAM_SESSION_ROOT"]:
             env.pop(key, None)
 
         def inspect(*args, expected=0, environment=None, report=True):

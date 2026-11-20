@@ -58,23 +58,15 @@ validate_vibe_home() {
   require_path_within "$vibe_mcp_config" "$vibe_home" "Mistral Vibe MCP config"
 }
 
-validate_agy_config_dir() {
+validate_agy_home() {
+  require_absolute_path "$agy_home" "Antigravity home"
+  require_not_root "$agy_home" "Antigravity home"
   require_absolute_path "$agy_config_dir" "Antigravity config dir"
-  require_not_root "$agy_config_dir" "Antigravity config dir"
+  require_path_within "$agy_config_dir" "$agy_home" "Antigravity config dir"
   require_absolute_path "$agy_skills_home" "Antigravity skills home"
   require_path_within "$agy_skills_home" "$agy_config_dir" "Antigravity skills home"
   require_absolute_path "$agy_mcp_config" "Antigravity MCP config"
   require_path_within "$agy_mcp_config" "$agy_config_dir" "Antigravity MCP config"
-}
-
-validate_agy_mcp_config_path() {
-  validate_agy_config_dir
-  require_absolute_path "$agy_mcp_home" "Antigravity MCP home"
-  require_not_root "$agy_mcp_home" "Antigravity MCP home"
-  if [ "$(basename "$agy_config_dir")" != "config" ] \
-    || [ "$(basename "$(dirname "$agy_config_dir")")" != ".gemini" ]; then
-    die "Antigravity MCP config dir must end in .gemini/config so agy mcp add writes to it: $agy_config_dir"
-  fi
 }
 
 validate_requested_location_config() {
@@ -97,10 +89,8 @@ validate_requested_location_config() {
   if [ "$install_vibe_skills" -eq 1 ] || [ "$register_vibe_mcp" -eq 1 ]; then
     validate_vibe_home
   fi
-  if [ "$register_agy_mcp" -eq 1 ]; then
-    validate_agy_mcp_config_path
-  elif [ "$install_agy_skills" -eq 1 ]; then
-    validate_agy_config_dir
+  if [ "$install_agy_skills" -eq 1 ] || [ "$register_agy_mcp" -eq 1 ]; then
+    validate_agy_home
   fi
 }
 
@@ -162,8 +152,8 @@ prompt_install_location_changes() {
     set_vibe_home "$selected_path"
   fi
   if [ "$install_agy_skills" -eq 1 ] || [ "$register_agy_mcp" -eq 1 ]; then
-    selected_path="$(prompt_optional_path_override "Antigravity config dir" "$agy_config_dir")"
-    set_agy_config_dir "$selected_path"
+    selected_path="$(prompt_optional_path_override "Antigravity home" "$agy_home")"
+    set_agy_home "$selected_path"
   fi
 
   validate_requested_location_config
@@ -217,7 +207,7 @@ print_write_locations() {
       printf '    - Mistral Vibe config: %s\n' "$vibe_mcp_config" >&2
     fi
     if [ "$register_agy_mcp" -eq 1 ]; then
-      printf '    - Antigravity config dir: %s\n' "$agy_config_dir" >&2
+      printf '    - Antigravity home: %s\n' "$agy_home" >&2
       printf '    - Antigravity config: %s\n' "$agy_mcp_config" >&2
     fi
   fi

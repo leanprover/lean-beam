@@ -68,7 +68,7 @@ verify_requested_mcp_clients() {
     ensure_vibe_mcp_config_replaceable
   fi
   if [ "$register_agy_mcp" -eq 1 ]; then
-    validate_agy_mcp_config_path
+    validate_agy_home
     ensure_agy_mcp_config_replaceable
     if ! command -v agy >/dev/null 2>&1; then
       die "cannot register Antigravity MCP server because agy is not on PATH"
@@ -287,7 +287,7 @@ register_vibe_mcp_server() {
 register_agy_mcp_server() {
   ensure_mcp_config_dir "$agy_config_dir" "Antigravity config dir"
   ensure_agy_mcp_config_replaceable
-  HOME="$agy_mcp_home" agy mcp add lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
+  HOME="$agy_home" agy mcp add lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
   registered_mcp_targets+=("Antigravity: lean-beam")
 }
 

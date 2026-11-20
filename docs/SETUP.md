@@ -928,7 +928,9 @@ entry under `mcpServers`:
 ```
 
 Global skills live under `~/.gemini/config/skills/lean-beam`, and workspace skills are discovered
-under `.agents/skills/lean-beam`.
+under `.agents/skills/lean-beam` (as well as `.agent/`, `_agents/`, and `_agent/`). If `skills.json`,
+`plugins.json`, or a Beam-referencing plugin under `plugins/` is present, `lean-beam doctor clients agy`
+reports those layers as unverified rather than claiming full plugin evaluation.
 
 ## Before An Upgrade
 
@@ -1195,9 +1197,9 @@ is managed by that toolchain's distributor.
 | Mistral Vibe home | `$HOME/.vibe` | interactive `change`, `VIBE_HOME`, or `--vibe-home` |
 | Mistral Vibe skill home | `$HOME/.vibe/skills` | derived from the Mistral Vibe home |
 | Mistral Vibe MCP config | `$HOME/.vibe/config.toml` | derived from the Mistral Vibe home |
-| Antigravity config directory | `$HOME/.gemini/config` | interactive `change`, `BEAM_AGY_CONFIG_DIR`, or `--agy-config-dir` |
-| Antigravity skill home | `$HOME/.gemini/config/skills` | derived from the Antigravity config directory |
-| Antigravity MCP config | `$HOME/.gemini/config/mcp_config.json` | derived from the Antigravity config directory (`--agy-mcp` requires a `.gemini/config` suffix) |
+| Antigravity home | `$HOME` | interactive `change`, `BEAM_AGY_HOME`, or `--agy-home` |
+| Antigravity skill home | `$HOME/.gemini/config/skills` | derived from the Antigravity home |
+| Antigravity MCP config | `$HOME/.gemini/config/mcp_config.json` | derived from the Antigravity home |
 
 For sandboxed config locations, pass the target paths explicitly:
 
@@ -1205,11 +1207,11 @@ For sandboxed config locations, pass the target paths explicitly:
 ./scripts/install-beam.sh --codex-mcp --codex-home /path/to/sandbox/.codex
 ./scripts/install-beam.sh --claude-mcp --claude-mcp-config /path/to/sandbox/.claude.json
 ./scripts/install-beam.sh --vibe-mcp --vibe-home /path/to/sandbox/.vibe
-./scripts/install-beam.sh --agy-mcp --agy-config-dir /path/to/sandbox/.gemini/config
+./scripts/install-beam.sh --agy-mcp --agy-home /path/to/sandbox
 ```
 
 The same Codex, Claude, Mistral Vibe, and Antigravity overrides are available as `CODEX_HOME`,
-`BEAM_CLAUDE_MCP_CONFIG`, `VIBE_HOME`, and `BEAM_AGY_CONFIG_DIR`. Interactive installs can also choose `change` at the
+`BEAM_CLAUDE_MCP_CONFIG`, `VIBE_HOME`, and `BEAM_AGY_HOME`. Interactive installs can also choose `change` at the
 write-location prompt before approving writes.
 
 ## Slow Or Offline Installs

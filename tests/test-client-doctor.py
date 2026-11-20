@@ -41,7 +41,7 @@ class ClientDoctorTest(unittest.TestCase):
         for key in (
             "BEAM_HOME", "CODEX_HOME", "CLAUDE_HOME", "CLAUDE_CONFIG_DIR", "BEAM_CLAUDE_MCP_CONFIG",
             "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR",
-            "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "VIBE_HOME", "BEAM_AGY_CONFIG_DIR",
+            "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "VIBE_HOME", "BEAM_AGY_HOME",
         ):
             self.env.pop(key, None)
         self.env["HOME"] = str(self.home)
@@ -1315,12 +1315,39 @@ class ClientDoctorTest(unittest.TestCase):
         self.has_code(report, "launch.file", "ok")
         self.has_code(report, "skill.readable", "ok")
 
-        # Workspace .agents/skills discovery works independently of global skill.
+        # Workspace .agents/.agent/_agents/_agent skill discovery works independently of global skill.
         (self.home / ".gemini/config/skills/lean-beam/SKILL.md").unlink()
-        self.write(self.workspace / ".agents/skills/lean-beam/SKILL.md", "Workspace skill\n")
-        report = self.run_doctor("agy")
-        self.assertEqual(report["clients"][0]["skill"], "checked")
-        self.has_code(report, "skill.readable", "ok")
+        for root_name in (".agents", ".agent", "_agents", "_agent"):
+            with self.subTest(workspace_root=root_name):
+                skill_path = self.workspace / root_name / "skills/lean-beam/SKILL.md"
+                self.write(skill_path, "Workspace skill\n")
+                report = self.run_doctor("agy")
+                self.assertEqual(report["clients"][0]["skill"], "checked")
+                self.has_code(report, "skill.readable", "ok")
+                skill_path.unlink()
+
+        # Unrelated plugins do not trigger false positives; Beam plugins, skills.json, and plugins.json report unverified.
+        self.json_file(self.home / ".gemini/config/plugins/other/mcp_config.json", {
+            "mcpServers": {"other": {"command": "/bin/echo"}},
+        })
+        self.assertEqual(self.run_doctor("agy")["clients"][0]["mcp"], "checked")
+
+        beam_plugin = self.home / ".gemini/config/plugins/lean-beam-plugin/mcp_config.json"
+        self.json_file(beam_plugin, {
+            "mcpServers": {"lean-beam": {"command": str(self.executable)}},
+        })
+        self.has_code(self.run_doctor("agy", expected=2), "agy.pluginLayer", "unknown")
+        beam_plugin.unlink()
+
+        skills_json = self.home / ".gemini/config/skills.json"
+        self.json_file(skills_json, {"entries": [{"path": "~/extra-skills"}]})
+        self.has_code(self.run_doctor("agy", expected=2), "agy.skillsConfig", "unknown")
+        skills_json.unlink()
+
+        plugins_json = self.workspace / ".agents/plugins.json"
+        self.json_file(plugins_json, {"entries": [{"path": "tools/plugins"}]})
+        self.has_code(self.run_doctor("agy", expected=2), "agy.pluginsConfig", "unknown")
+        plugins_json.unlink()
 
         # Disabled server is reported as an error.
         self.json_file(config_path, {
@@ -1340,10 +1367,10 @@ class ClientDoctorTest(unittest.TestCase):
                 })
                 self.has_code(self.run_doctor("agy", expected=1), "mcp.invalidEntry", "error")
 
-        # BEAM_AGY_CONFIG_DIR override and explicit --config path.
-        custom_dir = self.root / "custom-agy/.gemini/config"
-        self.env["BEAM_AGY_CONFIG_DIR"] = str(custom_dir)
-        self.json_file(custom_dir / "mcp_config.json", {
+        # BEAM_AGY_HOME override and explicit --config path.
+        custom_home = self.root / "custom-agy-home"
+        self.env["BEAM_AGY_HOME"] = str(custom_home)
+        self.json_file(custom_home / ".gemini/config/mcp_config.json", {
             "mcpServers": {
                 "lean-beam": {"command": str(self.executable), "disabled": False},
             }

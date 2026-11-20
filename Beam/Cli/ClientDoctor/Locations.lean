@@ -28,7 +28,20 @@ def clientHome (context : Context) : Client → System.FilePath
   | .opencode => context.location "OPENCODE_CONFIG_DIR" (
       context.location "XDG_CONFIG_HOME" (context.userHome / ".config") / "opencode")
   | .vibe => context.location "VIBE_HOME" (context.userHome / ".vibe")
-  | .agy => context.location "BEAM_AGY_CONFIG_DIR" (context.userHome / ".gemini" / "config")
+  | .agy => context.location "BEAM_AGY_HOME" context.userHome / ".gemini" / "config"
+
+/-- Workspace customization dot-directories scanned by Antigravity. -/
+def agyWorkspaceRootNames : Array String := #[".agents", ".agent", "_agents", "_agent"]
+
+/-- Global and workspace customization roots checked for Antigravity layers. -/
+def agyCustomizationRoots (context : Context) (dirs : Array System.FilePath) : Array System.FilePath := Id.run do
+  let mut roots := #[clientHome context .agy]
+  for dir in dirs do
+    for rootName in agyWorkspaceRootNames do
+      let root := dir / rootName
+      if !roots.contains root then
+        roots := roots.push root
+  return roots
 
 /-- A bounded ancestor walk, stopping at the nearest Git boundary or the user's home. -/
 def workspaceDirectories (context : Context) : IO (Array System.FilePath) := do
@@ -138,8 +151,9 @@ def locations (context : Context) (client : Client)
   | .agy =>
       result := { result with configs := #[config (home / "mcp_config.json") .json] }
       for dir in dirs do
-        result := { result with skills := result.skills.push (
-          dir / ".agents" / "skills" / "lean-beam" / "SKILL.md") }
+        for rootName in agyWorkspaceRootNames do
+          result := { result with skills := result.skills.push (
+            dir / rootName / "skills" / "lean-beam" / "SKILL.md") }
   -- The same file can be both a home and workspace candidate. Inspect it only once.
   result := { result with
     configs := result.configs.foldl (fun acc source =>
