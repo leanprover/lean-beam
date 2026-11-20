@@ -10,7 +10,7 @@ namespace Beam.Cli.ClientDoctor
 open Lean
 
 inductive Client where
-  | codex | claude | pi | opencode | vibe
+  | codex | claude | pi | opencode | vibe | agy
   deriving BEq, Repr, Inhabited
 
 def Client.name : Client → String
@@ -19,8 +19,9 @@ def Client.name : Client → String
   | .pi => "pi"
   | .opencode => "opencode"
   | .vibe => "vibe"
+  | .agy => "agy"
 
-def Client.all : Array Client := #[.codex, .claude, .pi, .opencode, .vibe]
+def Client.all : Array Client := #[.codex, .claude, .pi, .opencode, .vibe, .agy]
 
 def Client.parse? (name : String) : Option Client :=
   Client.all.find? (·.name == name)

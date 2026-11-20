@@ -58,6 +58,25 @@ validate_vibe_home() {
   require_path_within "$vibe_mcp_config" "$vibe_home" "Mistral Vibe MCP config"
 }
 
+validate_agy_config_dir() {
+  require_absolute_path "$agy_config_dir" "Antigravity config dir"
+  require_not_root "$agy_config_dir" "Antigravity config dir"
+  require_absolute_path "$agy_skills_home" "Antigravity skills home"
+  require_path_within "$agy_skills_home" "$agy_config_dir" "Antigravity skills home"
+  require_absolute_path "$agy_mcp_config" "Antigravity MCP config"
+  require_path_within "$agy_mcp_config" "$agy_config_dir" "Antigravity MCP config"
+}
+
+validate_agy_mcp_config_path() {
+  validate_agy_config_dir
+  require_absolute_path "$agy_mcp_home" "Antigravity MCP home"
+  require_not_root "$agy_mcp_home" "Antigravity MCP home"
+  if [ "$(basename "$agy_config_dir")" != "config" ] \
+    || [ "$(basename "$(dirname "$agy_config_dir")")" != ".gemini" ]; then
+    die "Antigravity MCP config dir must end in .gemini/config so agy mcp add writes to it: $agy_config_dir"
+  fi
+}
+
 validate_requested_location_config() {
   validate_install_config
   if [ "$install_codex_skills" -eq 1 ] || [ "$register_codex_mcp" -eq 1 ]; then
@@ -77,6 +96,11 @@ validate_requested_location_config() {
   fi
   if [ "$install_vibe_skills" -eq 1 ] || [ "$register_vibe_mcp" -eq 1 ]; then
     validate_vibe_home
+  fi
+  if [ "$register_agy_mcp" -eq 1 ]; then
+    validate_agy_mcp_config_path
+  elif [ "$install_agy_skills" -eq 1 ]; then
+    validate_agy_config_dir
   fi
 }
 
@@ -137,6 +161,10 @@ prompt_install_location_changes() {
     selected_path="$(prompt_optional_path_override "Mistral Vibe home" "$vibe_home")"
     set_vibe_home "$selected_path"
   fi
+  if [ "$install_agy_skills" -eq 1 ] || [ "$register_agy_mcp" -eq 1 ]; then
+    selected_path="$(prompt_optional_path_override "Antigravity config dir" "$agy_config_dir")"
+    set_agy_config_dir "$selected_path"
+  fi
 
   validate_requested_location_config
 }
@@ -151,7 +179,7 @@ print_write_locations() {
 
   if [ "$install_codex_skills" -eq 1 ] || [ "$install_claude_skills" -eq 1 ] \
     || [ "$install_pi_skills" -eq 1 ] || [ "$install_opencode_skills" -eq 1 ] \
-    || [ "$install_vibe_skills" -eq 1 ]; then
+    || [ "$install_vibe_skills" -eq 1 ] || [ "$install_agy_skills" -eq 1 ]; then
     printf '\n  Agent skills\n' >&2
     if [ "$install_codex_skills" -eq 1 ]; then
       printf '    - Codex skills: %s (%s)\n' "$codex_skills_home" "$(skill_install_names)" >&2
@@ -168,10 +196,13 @@ print_write_locations() {
     if [ "$install_vibe_skills" -eq 1 ]; then
       printf '    - Mistral Vibe skills: %s (%s)\n' "$vibe_skills_home" "$(skill_install_names)" >&2
     fi
+    if [ "$install_agy_skills" -eq 1 ]; then
+      printf '    - Antigravity skills: %s (%s)\n' "$agy_skills_home" "$(skill_install_names)" >&2
+    fi
   fi
 
   if [ "$register_codex_mcp" -eq 1 ] || [ "$register_claude_mcp" -eq 1 ] \
-    || [ "$register_vibe_mcp" -eq 1 ]; then
+    || [ "$register_vibe_mcp" -eq 1 ] || [ "$register_agy_mcp" -eq 1 ]; then
     printf '\n  MCP registration\n' >&2
     if [ "$register_codex_mcp" -eq 1 ]; then
       printf '    - Codex home: %s\n' "$codex_home" >&2
@@ -184,6 +215,10 @@ print_write_locations() {
     if [ "$register_vibe_mcp" -eq 1 ]; then
       printf '    - Mistral Vibe home: %s\n' "$vibe_home" >&2
       printf '    - Mistral Vibe config: %s\n' "$vibe_mcp_config" >&2
+    fi
+    if [ "$register_agy_mcp" -eq 1 ]; then
+      printf '    - Antigravity config dir: %s\n' "$agy_config_dir" >&2
+      printf '    - Antigravity config: %s\n' "$agy_mcp_config" >&2
     fi
   fi
 
@@ -236,6 +271,9 @@ approve_current_write_locations() {
   if [ "$install_vibe_skills" -eq 1 ]; then
     remember_approved_write_home "$vibe_skills_home"
   fi
+  if [ "$install_agy_skills" -eq 1 ]; then
+    remember_approved_write_home "$agy_skills_home"
+  fi
   if [ "$register_codex_mcp" -eq 1 ]; then
     remember_approved_write_home "$codex_home"
   fi
@@ -244,6 +282,9 @@ approve_current_write_locations() {
   fi
   if [ "$register_vibe_mcp" -eq 1 ]; then
     remember_approved_write_home "$vibe_home"
+  fi
+  if [ "$register_agy_mcp" -eq 1 ]; then
+    remember_approved_write_home "$agy_config_dir"
   fi
   runtime_writes_approved=1
   bin_writes_approved=1

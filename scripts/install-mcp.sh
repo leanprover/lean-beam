@@ -19,11 +19,13 @@ prompt_mcp_registration_selection() {
     "codex|Codex|c" \
     "claude|Claude Code|claude-code" \
     "opencode|OpenCode|o open-code" \
-    "vibe|Mistral Vibe|v mistral mistral-vibe")"
+    "vibe|Mistral Vibe|v mistral mistral-vibe" \
+    "agy|Antigravity|a antigravity")"
   register_codex_mcp=0
   register_claude_mcp=0
   register_opencode_mcp=0
   register_vibe_mcp=0
+  register_agy_mcp=0
   for target in $selection; do
     case "$target" in
       none)
@@ -39,6 +41,9 @@ prompt_mcp_registration_selection() {
         ;;
       vibe)
         register_vibe_mcp=1
+        ;;
+      agy)
+        register_agy_mcp=1
         ;;
     esac
   done
@@ -61,6 +66,22 @@ verify_requested_mcp_clients() {
   if [ "$register_vibe_mcp" -eq 1 ]; then
     validate_vibe_home
     ensure_vibe_mcp_config_replaceable
+  fi
+  if [ "$register_agy_mcp" -eq 1 ]; then
+    validate_agy_mcp_config_path
+    ensure_agy_mcp_config_replaceable
+    if ! command -v agy >/dev/null 2>&1; then
+      die "cannot register Antigravity MCP server because agy is not on PATH"
+    fi
+  fi
+}
+
+ensure_agy_mcp_config_replaceable() {
+  if [ -L "$agy_mcp_config" ]; then
+    die "refusing to edit symlinked Antigravity MCP config at $agy_mcp_config"
+  fi
+  if [ -e "$agy_mcp_config" ] && [ ! -f "$agy_mcp_config" ]; then
+    die "refusing to edit non-file Antigravity MCP config at $agy_mcp_config"
   fi
 }
 
@@ -263,6 +284,13 @@ register_vibe_mcp_server() {
   registered_mcp_targets+=("Mistral Vibe: lean-beam")
 }
 
+register_agy_mcp_server() {
+  ensure_mcp_config_dir "$agy_config_dir" "Antigravity config dir"
+  ensure_agy_mcp_config_replaceable
+  HOME="$agy_mcp_home" agy mcp add lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
+  registered_mcp_targets+=("Antigravity: lean-beam")
+}
+
 register_requested_mcp_servers() {
   if [ "$register_codex_mcp" -eq 1 ]; then
     register_codex_mcp_server
@@ -275,5 +303,8 @@ register_requested_mcp_servers() {
   fi
   if [ "$register_vibe_mcp" -eq 1 ]; then
     register_vibe_mcp_server
+  fi
+  if [ "$register_agy_mcp" -eq 1 ]; then
+    register_agy_mcp_server
   fi
 }

@@ -41,7 +41,7 @@ class ClientDoctorTest(unittest.TestCase):
         for key in (
             "BEAM_HOME", "CODEX_HOME", "CLAUDE_HOME", "CLAUDE_CONFIG_DIR", "BEAM_CLAUDE_MCP_CONFIG",
             "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR",
-            "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "VIBE_HOME",
+            "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "VIBE_HOME", "BEAM_AGY_CONFIG_DIR",
         ):
             self.env.pop(key, None)
         self.env["HOME"] = str(self.home)
@@ -51,7 +51,7 @@ class ClientDoctorTest(unittest.TestCase):
         self.write(self.executable, f"#!/bin/sh\ntouch '{self.marker}'\nexit 99\n")
         self.executable.chmod(0o755)
         sentinel_bin = self.root / "client-sentinels"
-        for name in ["codex", "claude", "pi", "opencode", "vibe", "lean", "lake", "elan"]:
+        for name in ["codex", "claude", "pi", "opencode", "vibe", "agy", "lean", "lake", "elan"]:
             sentinel = sentinel_bin / name
             self.write(sentinel, self.executable.read_text())
             sentinel.chmod(0o755)
@@ -141,7 +141,8 @@ class ClientDoctorTest(unittest.TestCase):
         for client, command in [("codex", "codex mcp add lean-beam"),
                                 ("claude", "claude mcp add --scope user lean-beam"),
                                 ("opencode", "opencode mcp add"),
-                                ("vibe", "[[mcp_servers]]")]:
+                                ("vibe", "[[mcp_servers]]"),
+                                ("agy", "agy mcp add lean-beam")]:
             with self.subTest(client=client):
                 report = self.run_doctor(client)
                 finding = next(f for f in self.findings(report) if f["code"] == "mcp.notConfigured")
@@ -1299,6 +1300,65 @@ class ClientDoctorTest(unittest.TestCase):
         report = self.run_doctor("codex", expected=1)
         self.has_code(report, "runtime.invalid", "error")
         self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
+
+    def test_agy_configuration_skills_and_overrides(self):
+        config_path = self.home / ".gemini/config/mcp_config.json"
+        self.json_file(config_path, {
+            "mcpServers": {
+                "lean-beam": {"command": str(self.executable), "disabled": False},
+            }
+        })
+        self.write(self.home / ".gemini/config/skills/lean-beam/SKILL.md", "Lean skill\n")
+        report = self.run_doctor("agy")
+        self.assertEqual(report["clients"][0]["mcp"], "checked")
+        self.assertEqual(report["clients"][0]["skill"], "checked")
+        self.has_code(report, "launch.file", "ok")
+        self.has_code(report, "skill.readable", "ok")
+
+        # Workspace .agents/skills discovery works independently of global skill.
+        (self.home / ".gemini/config/skills/lean-beam/SKILL.md").unlink()
+        self.write(self.workspace / ".agents/skills/lean-beam/SKILL.md", "Workspace skill\n")
+        report = self.run_doctor("agy")
+        self.assertEqual(report["clients"][0]["skill"], "checked")
+        self.has_code(report, "skill.readable", "ok")
+
+        # Disabled server is reported as an error.
+        self.json_file(config_path, {
+            "mcpServers": {
+                "lean-beam": {"command": str(self.executable), "disabled": True},
+            }
+        })
+        self.has_code(self.run_doctor("agy", expected=1), "mcp.disabled", "error")
+
+        # HTTP url and legacy serverUrl transports are rejected for local stdio inspection.
+        for url_key in ("url", "serverUrl"):
+            with self.subTest(url_key=url_key):
+                self.json_file(config_path, {
+                    "mcpServers": {
+                        "lean-beam": {url_key: "https://example.invalid/mcp"},
+                    }
+                })
+                self.has_code(self.run_doctor("agy", expected=1), "mcp.invalidEntry", "error")
+
+        # BEAM_AGY_CONFIG_DIR override and explicit --config path.
+        custom_dir = self.root / "custom-agy/.gemini/config"
+        self.env["BEAM_AGY_CONFIG_DIR"] = str(custom_dir)
+        self.json_file(custom_dir / "mcp_config.json", {
+            "mcpServers": {
+                "lean-beam": {"command": str(self.executable), "disabled": False},
+            }
+        })
+        self.has_code(self.run_doctor("agy"), "launch.file", "ok")
+
+        explicit = self.root / "explicit-agy.json"
+        self.json_file(explicit, {
+            "mcpServers": {
+                "lean-beam": {"command": str(self.executable), "disabled": False},
+            }
+        })
+        explicit_report = self.run_doctor("agy", "--config", str(explicit))
+        self.assertEqual(explicit_report["scope"], "explicitConfigFile")
+        self.has_code(explicit_report, "launch.file", "ok")
 
 
 if __name__ == "__main__":

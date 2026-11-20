@@ -18,8 +18,9 @@ For a standalone installation, run from a matching Beam source checkout:
 ./scripts/install-beam.sh --codex
 ```
 
-Use `--claude`, `--pi`, `--opencode`, or `--vibe` instead when installing for Claude Code, Pi
-Agent, OpenCode, or Mistral Vibe; `--all-skills` installs every supported agent skill target.
+Use `--claude`, `--pi`, `--opencode`, `--vibe`, or `--agy` instead when installing for Claude
+Code, Pi Agent, OpenCode, Mistral Vibe, or Antigravity; `--all-skills` installs every supported
+agent skill target.
 
 The installer puts `lean-beam`, `lean-beam-search`, and `lean-beam-mcp` in `~/.local/bin`, stages
 the self-contained runtime under `BEAM_INSTALL_ROOT` (default `~/.local/share/beam`), requires

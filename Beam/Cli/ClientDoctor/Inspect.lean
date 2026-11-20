@@ -177,6 +177,10 @@ private def entries (context : Context) (client : Client) (source : ConfigSource
                 conditional := source.conditional
               }
           return result
+  | .agy =>
+      match field? value "mcpServers" with
+      | none => return #[]
+      | some servers => namedEntries source "mcpServers" servers
 
 private partial def mentionsBeam : Json → Bool
   | .str text => text.contains "lean-beam"
@@ -479,7 +483,7 @@ private def decodeLaunch (client : Client) (value : Json) : Except Unit (String 
     let command ← decodeOpenCodeSource value
     let some executable := command[0]? | throw ()
     return (executable, command.extract 1 command.size)
-  let disabledKey := if client == .vibe then "disabled" else "enabled"
+  let disabledKey := if client == .vibe || client == .agy then "disabled" else "enabled"
   let _ ← object value
   if let some enabled := field? value disabledKey then
     let _ ← enabled.getBool? |>.mapError (fun _ => ())
@@ -501,12 +505,12 @@ private def decodeLaunch (client : Client) (value : Json) : Except Unit (String 
     if let some env := field? value key then
       for (_, setting) in ← object env do
         let _ ← string setting
-  let transportKey := match client with | .vibe => "transport" | .codex => "" | _ => "type"
+  let transportKey := match client with | .vibe => "transport" | .codex | .agy => "" | _ => "type"
   if let some transport := field? value transportKey then
     let transport ← string transport
     unless transport == "stdio" do throw ()
   else if client == .vibe then throw ()
-  if (field? value "url").isSome then throw ()
+  if (field? value "url").isSome || (client == .agy && (field? value "serverUrl").isSome) then throw ()
   if let some parallel := field? value "supports_parallel_tool_calls" then
     let _ ← parallel.getBool? |>.mapError (fun _ => ())
   if client == .vibe then
@@ -553,8 +557,8 @@ private def inspectEntry (client : Client) (entry : Entry)
     return add report .mcp "mcp.definition" .ok
       "A Beam registration was found; its launch settings were not verified."
       entry.source entry.key
-  let disabledKey := if client == .vibe then "disabled" else "enabled"
-  let disabledValue := client == .vibe
+  let disabledKey := if client == .vibe || client == .agy then "disabled" else "enabled"
+  let disabledValue := client == .vibe || client == .agy
   if field? value disabledKey == some (.bool disabledValue) then
     return add report .mcp "mcp.disabled" .error
       "Beam's MCP registration is explicitly disabled." entry.source entry.key
@@ -709,6 +713,7 @@ private def mcpSetupRemediation? (client : Client) (explicitConfig : Bool) : Opt
     | .claude => some "run `claude mcp add --scope user lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`"
     | .opencode => some "run `opencode mcp add` with name lean-beam, type local, and your installed MCP server's absolute path"
     | .vibe => some "add the documented `[[mcp_servers]]` entry to your Vibe configuration"
+    | .agy => some "run `agy mcp add lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`"
     | .pi => none
   action?.map fun action =>
     if explicitConfig then

@@ -59,6 +59,7 @@ export CLAUDE_HOME="$tmp_root/claude"
 export PI_CODING_AGENT_DIR="$tmp_root/pi-agent"
 export OPENCODE_CONFIG_DIR="$tmp_root/opencode"
 export VIBE_HOME="$tmp_root/vibe"
+export BEAM_AGY_CONFIG_DIR="$tmp_root/agy-home/.gemini/config"
 export BEAM_INSTALL_ROOT="$tmp_root/install-root"
 
 mkdir -p "$HOME" "$BEAM_INSTALL_ROOT"
@@ -931,10 +932,11 @@ assert_not_exists "$CLAUDE_HOME"
 assert_not_exists "$PI_CODING_AGENT_DIR"
 assert_not_exists "$OPENCODE_CONFIG_DIR"
 assert_not_exists "$VIBE_HOME"
+assert_not_exists "$BEAM_AGY_CONFIG_DIR"
 
 run_step "install Lean skills" run_install_from_source --toolchain "$toolchain" --all-skills
 
-for skills_home in "$CODEX_HOME/skills" "$CLAUDE_HOME/skills" "$PI_CODING_AGENT_DIR/skills" "$OPENCODE_CONFIG_DIR/skills" "$VIBE_HOME/skills"; do
+for skills_home in "$CODEX_HOME/skills" "$CLAUDE_HOME/skills" "$PI_CODING_AGENT_DIR/skills" "$OPENCODE_CONFIG_DIR/skills" "$VIBE_HOME/skills" "$BEAM_AGY_CONFIG_DIR/skills"; do
   assert_file "$skills_home/lean-beam/SKILL.md"
   assert_file "$skills_home/lean-beam/.lean-beam-skill"
   assert_not_exists "$skills_home/rocq-beam"
@@ -972,6 +974,16 @@ assert_contains_literal "$VIBE_HOME/config.toml" 'transport = "stdio"'
 assert_contains_literal "$VIBE_HOME/config.toml" "command = [\"$installed_mcp\"]"
 assert_contains_literal "$VIBE_HOME/config.toml" 'args = []'
 assert_contains_literal "$VIBE_HOME/config.toml" 'tool_timeout_sec = 600'
+assert_contains_literal "$mcp_stub_log" "agy|mcp|add|lean-beam|--|$installed_mcp|HOME=$tmp_root/agy-home"
+assert_file "$BEAM_AGY_CONFIG_DIR/mcp_config.json"
+python3 - "$BEAM_AGY_CONFIG_DIR/mcp_config.json" "$installed_mcp" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    config = json.load(f)
+server = config["mcpServers"]["lean-beam"]
+assert server["command"] == sys.argv[2], server
+assert server["disabled"] is False, server
+PY
 
 run_step "inspect installed client configuration" \
   python3 tests/test-client-doctor-installed.py "$installed_lean_beam" "$tmp_root"
@@ -1125,6 +1137,44 @@ fi
 assert_contains "$inline_vibe_err" "inline mcp_servers entries"
 assert_contains_literal "$inline_vibe_home/config.toml" 'name = "other-server"'
 remove_tmp_file "$inline_vibe_err"
+
+custom_agy_home="$tmp_root/agy-sandbox"
+custom_agy_config_dir="$custom_agy_home/.gemini/config"
+custom_agy_mcp_stub_log="$tmp_root/mcp-stubs-custom-agy.log"
+run_step "register Antigravity MCP with custom config dir" \
+  beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$custom_agy_mcp_stub_log" \
+    --toolchain "$toolchain" --agy-mcp --agy-config-dir "$custom_agy_config_dir"
+assert_contains_literal "$custom_agy_mcp_stub_log" \
+  "agy|mcp|add|lean-beam|--|$installed_mcp|HOME=$custom_agy_home"
+assert_file "$custom_agy_config_dir/mcp_config.json"
+
+bad_agy_dir_err="$(mktemp "$tmp_root/agy-bad-dir-XXXXXX")"
+if beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$tmp_root/mcp-stubs-bad-agy.log" \
+    --toolchain "$toolchain" --agy-mcp --agy-config-dir "$tmp_root/not-gemini-config" \
+    2>"$bad_agy_dir_err"; then
+  echo "expected --agy-mcp to require a .gemini/config suffix" >&2
+  remove_tmp_file "$bad_agy_dir_err"
+  exit 1
+fi
+assert_contains "$bad_agy_dir_err" "must end in .gemini/config"
+remove_tmp_file "$bad_agy_dir_err"
+
+symlink_agy_dir="$tmp_root/agy-symlink/.gemini/config"
+symlink_agy_target="$tmp_root/agy-symlink-target.json"
+symlink_agy_err="$tmp_root/agy-symlink.err"
+symlink_agy_stub_log="$tmp_root/mcp-stubs-symlink-agy.log"
+mkdir -p "$symlink_agy_dir"
+printf '{"sentinel":"preserve"}\n' >"$symlink_agy_target"
+ln -s "$symlink_agy_target" "$symlink_agy_dir/mcp_config.json"
+if beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$symlink_agy_stub_log" \
+    --toolchain "$toolchain" --agy-mcp --agy-config-dir "$symlink_agy_dir" \
+    2>"$symlink_agy_err"; then
+  echo "expected Antigravity MCP registration to reject a symlinked config" >&2
+  exit 1
+fi
+assert_contains "$symlink_agy_err" "refusing to edit symlinked Antigravity MCP config"
+assert_contains_literal "$symlink_agy_target" '"sentinel":"preserve"'
+assert_not_exists "$symlink_agy_stub_log"
 
 opencode_mcp_transcript="$tmp_root/opencode-mcp-manual-transcript"
 preseed_elan_home "$HOME/.elan" "$toolchain"
