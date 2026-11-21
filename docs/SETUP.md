@@ -763,6 +763,9 @@ matching server independently of its working directory and `PATH`.
 To change how many unfinished tool calls the server admits at once (default 32), append
 `--max-unfinished-requests N` to the registered command; see
 [MCP transport lifetime](MCP.md#transport-lifetime).
+To expose only the compact authoring toolset (10 tools instead of 24) and reduce per-turn schema
+token overhead in clients that load all tool schemas eagerly, append `--toolset core`; see
+[MCP runtime setup](MCP.md#runtime-setup).
 
 ```bash
 codex mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"

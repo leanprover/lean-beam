@@ -137,6 +137,11 @@ It forwards its arguments. `--max-unfinished-requests N` sets the ordinary execu
 (default 32) described under [Transport Lifetime](#transport-lifetime); `N` must be a decimal integer
 from 1 to 1024, and any other value is rejected at startup, before the server reads stdin.
 This is unrelated to Lean's thread count and to the output byte budgets.
+`--toolset <full|core>` selects the exposed MCP tool profile at startup (default `full`). `core`
+exposes the compact authoring set (`lean_update`, `lean_sync`, `lean_refresh`, `lean_run_at`,
+`lean_goals`, `lean_todo`, `lean_save`, `lean_close_save`, `lean_close`, `lean_drop_workspace`)
+to reduce per-turn schema token overhead in clients that load all tool schemas eagerly; calls to
+tools outside the active toolset return JSON-RPC `-32602`.
 Both standalone and bundled MCP use
 [Beam/Installation/Lookup.lean](../Beam/Installation/Lookup.lean) to select a complete runtime
 from the installation's published component set. A standalone set may contain several targets;

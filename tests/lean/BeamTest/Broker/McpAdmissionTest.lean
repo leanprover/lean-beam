@@ -91,6 +91,16 @@ private def checkLimitParsing : IO Unit := do
       require "rejection names the flag and range"
         ((message.splitOn "--max-unfinished-requests expects an integer from 1 to 1024").length > 1)
   | .ok _ => throw <| IO.userError "zero limit was accepted"
+  require "default toolset is full"
+    ((parseOptions {} []).toOption.map (·.toolset) == some .full)
+  require "accepts --toolset full"
+    ((parseOptions {} ["--toolset", "full"]).toOption.map (·.toolset) == some .full)
+  require "accepts --toolset core"
+    ((parseOptions {} ["--toolset", "core"]).toOption.map (·.toolset) == some .core)
+  require "rejects missing --toolset value"
+    (!(parseOptions {} ["--toolset"]).isOk)
+  require "rejects unknown --toolset value"
+    (!(parseOptions {} ["--toolset", "minimal"]).isOk)
 
 def run : IO Unit := do
   checkClassification

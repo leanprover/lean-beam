@@ -156,11 +156,9 @@ def serverInstructions : String :=
 
 def beamFeedbackReportDescription : String :=
   String.intercalate " " [
-    "Beam does not upload or submit feedback. This tool creates and returns a pasteable feedback report for one explicit workspace.",
-    "Non-confidential output may contain project context and caller payloads, so review it before posting.",
-    "Set confidential for non-public workspaces; confidential results retain caller-authored narrative",
-    "except for HOME-path redaction and do not scan it for other secrets; never post them publicly.",
-    "A local evidence bundle is optional."
+    "Beam does not upload or submit feedback. Builds a pasteable local feedback report for one workspace.",
+    "Non-confidential output may include project context and payloads; review it before posting.",
+    "Confidential results retain caller-authored narrative except HOME-path redaction and never scan for other secrets; do not post them publicly."
   ]
 
 open Beam.JsonSchema in
@@ -182,12 +180,11 @@ private def arraySchema (description : String) (items : Json) : Json :=
 private def evidenceInputSchema : Json :=
   Json.mkObj [
     ("type", toJson "object"),
-    ("description", toJson "Optional inline or file evidence to copy into a feedback bundle."),
+    ("description", toJson "Evidence entry to copy into a bundle."),
     ("properties", Json.mkObj [
-      ("name", Beam.JsonSchema.string "Simple evidence filename, without path separators."),
-      ("content", anyJsonSchema "Inline JSON or text evidence to write into the bundle."),
-      ("path", Beam.JsonSchema.string
-        "Path to a local evidence file under the known root or selected Beam session directory.")
+      ("name", Beam.JsonSchema.string "Evidence filename (no path separators)."),
+      ("content", anyJsonSchema "Inline JSON or text content."),
+      ("path", Beam.JsonSchema.string "Local file path under root or Beam session dir.")
     ]),
     ("required", toJson (#[("name" : String)] : Array String)),
     ("additionalProperties", toJson false)
@@ -196,9 +193,9 @@ private def evidenceInputSchema : Json :=
 private def workspaceDescriptorSchema : Json :=
   Json.mkObj [
     ("type", toJson "object"),
-    ("description", toJson "Explicit local Lean workspace descriptor."),
+    ("description", toJson "Local Lean workspace."),
     ("properties", Json.mkObj [
-      ("root", Beam.JsonSchema.string "Absolute Lean/Lake project root path.")
+      ("root", Beam.JsonSchema.string "Absolute project root path.")
     ]),
     ("required", toJson (#["root"] : Array String)),
     ("additionalProperties", toJson false)
@@ -208,31 +205,28 @@ open Beam.JsonSchema in
 def feedbackReportInputSchema : Json :=
   inputObject [
     ("workspace", workspaceDescriptorSchema),
-    ("title", string "Short report title."),
-    ("summary", string "What went wrong or what feedback should be reviewed."),
-    ("reproduction", string "Concrete steps or commands needed to reproduce the behavior."),
+    ("title", string "Report title."),
+    ("summary", string "Issue or feedback summary."),
+    ("reproduction", string "Reproduction steps or commands."),
     ("expected", string "Expected behavior."),
     ("actual", string "Observed behavior."),
-    ("kind", enumString "Optional triage category." Beam.Feedback.reportKindKeys),
-    ("severity", enumString "Optional triage severity." Beam.Feedback.reportSeverityKeys),
-    ("impact", string "Optional user impact."),
-    ("workaround", string "Optional workaround."),
-    ("tags", arraySchema "Optional short labels for routing the report." (string "Feedback tag.")),
-    ("client_request_id", string "Optional caller-side correlation id."),
-    ("request", object "Optional request payload relevant to the report."),
-    ("response", object "Optional response payload relevant to the report."),
-    ("evidence", arraySchema "Optional evidence entries to include in a bundle." evidenceInputSchema),
-    ("bundle", enumString "Optional evidence bundle mode. Defaults to none." Beam.Feedback.bundleModeKeys),
-    ("redact", bool "Whether to redact the user's home directory from the rendered report. Defaults to true."),
-    ("confidential", bool "Set true for a non-public workspace. Forces HOME-path redaction; omits automatically collected project debug context, caller-supplied request, response, evidence, and the echoed workspace descriptor; retains other caller-authored narrative without scanning it for arbitrary secrets; and marks the report as confidential. Defaults to false."),
-    ("include_collected", bool "When true, include collected Beam debug context inline in the MCP result. In confidential mode, include only the restricted runtime identity. Defaults to false.")
+    ("kind", enumString "Triage category." Beam.Feedback.reportKindKeys),
+    ("severity", enumString "Triage severity." Beam.Feedback.reportSeverityKeys),
+    ("impact", string "User impact."),
+    ("workaround", string "Workaround."),
+    ("tags", arraySchema "Routing tags." (Json.mkObj [("type", toJson "string")])),
+    ("client_request_id", string "Caller correlation id."),
+    ("request", object "Relevant request payload."),
+    ("response", object "Relevant response payload."),
+    ("evidence", arraySchema "Evidence entries for bundle." evidenceInputSchema),
+    ("bundle", enumString "Bundle mode (default none)." Beam.Feedback.bundleModeKeys),
+    ("redact", bool "Redact HOME path (default true)."),
+    ("confidential", bool "For non-public workspaces (default false). Forces HOME-path redaction; omits auto-collected debug context, request, response, evidence, and echoed workspace descriptor; retains other caller-authored narrative without scanning it for arbitrary secrets."),
+    ("include_collected", bool "Include collected debug context inline (default false; in confidential mode, only the restricted runtime identity).")
   ] (Beam.Feedback.requiredInputFields.push "workspace")
 
 def dropWorkspaceDescription : String :=
-  String.intercalate " " [
-    "Evict one local Lean workspace cache and invalidate its retained proof handles.",
-    "A later request recreates it lazily."
-  ]
+  "Evict one local Lean workspace cache and invalidate its handles; recreated lazily on next call."
 
 open Beam.JsonSchema in
 def dropWorkspaceInputSchema : Json :=
@@ -244,6 +238,45 @@ private def schemaWithWorkspace (schema : Json) : Json :=
   match Beam.JsonSchema.withRequiredProperty schema "workspace" workspaceDescriptorSchema with
   | .ok schema => schema
   | .error err => panic! s!"invalid generated Lean operation schema: {err}"
+
+/-- MCP tool-exposure profile selected at server startup. -/
+inductive Toolset where
+  | full
+  | core
+  deriving BEq, Repr
+
+namespace Toolset
+
+def key : Toolset → String
+  | .full => "full"
+  | .core => "core"
+
+def parse? : String → Option Toolset
+  | "full" => some .full
+  | "core" => some .core
+  | _ => none
+
+def coreTools : Array ToolName := #[
+  .leanDropWorkspace,
+  .leanOperation .runAt,
+  .leanOperation .goals,
+  .leanOperation .todo,
+  .leanOperation .update,
+  .leanOperation .sync,
+  .leanOperation .refresh,
+  .leanOperation .save,
+  .leanOperation .closeSave,
+  .leanOperation .close
+]
+
+def tools : Toolset → Array ToolName
+  | .full => ToolName.all
+  | .core => coreTools
+
+def contains (toolset : Toolset) (tool : ToolName) : Bool :=
+  toolset.tools.contains tool
+
+end Toolset
 
 /-- Minimal descriptor for the MCP tool list. -/
 structure ToolDescriptor where
@@ -273,8 +306,11 @@ def ToolName.descriptor (tool : ToolName) : ToolDescriptor :=
     | .leanDropWorkspace => (dropWorkspaceDescription, dropWorkspaceInputSchema)
   { name := tool, description, inputSchema, annotations := tool.annotations }
 
+def toolDescriptorsFor (toolset : Toolset) : Array ToolDescriptor :=
+  toolset.tools.map ToolName.descriptor
+
 def toolDescriptors : Array ToolDescriptor :=
-  toolNames.map ToolName.descriptor
+  toolDescriptorsFor .full
 
 /-- Reject fields outside the closed schema advertised for one MCP tool. -/
 def ToolName.validateInputFields (tool : ToolName) (input : Json) : Except String Unit :=
