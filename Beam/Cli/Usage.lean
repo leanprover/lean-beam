@@ -81,7 +81,7 @@ def usage (maintenance : List String) : String :=
     "Optional --profile adds request-local re-elaboration timing; spans may overlap or be partial.",
     "Handles created with --profile require it on every continuation. Profiling #guard_msgs is unsupported.",
     "Place --profile before --stdin, --text-file, or --; a stray standalone --profile is a usage error when profiling is off.",
-    "See skills/lean-beam/references/workflow-details.md for timing scope and interpretation.",
+    "See skills/lean-beam/references/profiling.md for timing scope and interpretation.",
     "For multiline text-carrying Lean probes, prefer --stdin or --text-file <path>; use -- before",
     "text that itself starts with --.",
     "JSON output is compact by default. --pretty is a global option; place it before the command",

@@ -95,7 +95,8 @@ lean-beam save MyPkg/Sub/Module.lean
 
 Open only when needed:
 
-- [Workflow details](references/workflow-details.md): positions, profiling, handles, code actions, batch fallback
+- [Workflow details](references/workflow-details.md): positions, handles, code actions, batch fallback
+- [Profiling](references/profiling.md): `--profile` / `profile: true` timing scope and span summaries
 - [Run-at examples](references/lean-run-at-semantics.md): common mistakes, local recursion
 - [Commit a probe](references/commit-speculative.md): turning a probe into a saved edit
 - [Handle search](references/mcts-search.md): branching, linear playouts, release patterns
