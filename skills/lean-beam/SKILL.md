@@ -16,7 +16,7 @@ MCP owns its sessions; do not start `lean-beam serve` for MCP calls.
 
 ```bash
 lean-beam serve                  # keep one owner running
-lean-beam --root ROOT stop       # when finished (or interrupt serve)
+lean-beam --root ROOT stop       # closes docs and stops owner
 ```
 
 - Document commands attach to a live `serve` owner and never start one implicitly.
