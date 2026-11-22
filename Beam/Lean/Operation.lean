@@ -195,7 +195,7 @@ private def saveDiagnosticScopeField : String × Json :=
 
 private def diagnosticsInResultField : String × Json :=
   ("diagnostics_in_result", Beam.JsonSchema.bool
-    "Include selected current diagnostics in the final sync result.")
+    "Replay diagnostics in diagnostics.items (default false; blocking errors are already in readiness.blocking_diagnostics; set true only when you also need warnings/info).")
 
 private def codeActionField : String × Json :=
   ("code_action", Beam.JsonSchema.object

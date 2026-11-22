@@ -29,11 +29,12 @@ lean-beam --root ROOT stop       # when finished (or interrupt serve)
 Beam only reads saved `.lean` files and never edits them.
 
 1. Edit and save the file with your own tools.
-2. Run `lean-beam sync Foo.lean` (MCP: `lean_sync`) — one call updates the mirror, waits for
-   diagnostics, and returns `version` plus `readiness.save_ready`.
-3. When stuck on a proof or exploring tactics, probe against that `version` with `run-at`, `goals`,
-   or `todo`. Use `update` only when you need a fresh `version` *without* waiting for diagnostics.
-4. Optionally `lean-beam save MyPkg/Sub/Module.lean` to checkpoint a synced workspace module.
+2. Run `lean-beam sync Foo.lean` (MCP: `lean_sync`) — updates the mirror, waits for diagnostics, and
+   returns `version`, `readiness.save_ready`, and `blocking_diagnostics` (omit MCP
+   `diagnostics_in_result` unless you also need warnings/info).
+3. When stuck on a proof, probe against that `version` with `run-at`, `goals`, or `todo`. Use
+   `update` only to grab a fresh `version` without waiting for diagnostics.
+4. Optionally `lean-beam save MyPkg/Sub/Module.lean` to checkpoint one synced module.
 
 ```bash
 lean-beam sync Foo.lean                    # returns result.version and readiness; add +all-diagnostics for warnings
