@@ -148,7 +148,7 @@ def serverInstructions : String :=
   String.intercalate " " [
     "Use an explicit local workspace descriptor on every workspace-bound Beam tool call.",
     Beam.Lean.sourceFileInvariant,
-    "Edit and save files with your own tools, then call lean_update or lean_sync before version-bound queries.",
+    "Edit and save files with your own tools, then call lean_sync (or lean_update only to grab a version without waiting for diagnostics). Leave diagnostics_in_result unset while fixing errors; readiness.blocking_diagnostics already reports them.",
     "For detailed live updates, clients can pass `tools/call` `_meta.progressToken`; without one,",
     "Beam emits at most one `beam.status` notice when setup or a slow call is detected and the",
     "request's logging policy admits notice-level events."

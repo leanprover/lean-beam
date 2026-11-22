@@ -30,8 +30,8 @@ Beam only reads saved `.lean` files and never edits them.
 
 1. Edit and save the file with your own tools.
 2. Run `lean-beam sync Foo.lean` (MCP: `lean_sync`) — updates the mirror, waits for diagnostics, and
-   returns `version`, `readiness.save_ready`, and `blocking_diagnostics` (omit MCP
-   `diagnostics_in_result` unless you also need warnings/info).
+   returns `version`, `save_ready`, and `blocking_diagnostics` (omit MCP `diagnostics_in_result`
+   while fixing errors; set `true` only for warnings).
 3. When stuck on a proof, probe against that `version` with `run-at`, `goals`, or `todo`. Use
    `update` only to grab a fresh `version` without waiting for diagnostics.
 4. Optionally `lean-beam save MyPkg/Sub/Module.lean` to checkpoint one synced module.
