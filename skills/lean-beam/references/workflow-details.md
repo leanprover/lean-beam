@@ -1,39 +1,29 @@
 # Lean Workflow Details
 
-Use this reference when the task needs more than the default loop in `SKILL.md`.
+Use this reference when a task needs details beyond the default loop in `SKILL.md`.
 
-Error paths use CLI notation (`error.data`). For an MCP tool failure with `isError: true`, read
+Error paths below use CLI notation (`error.data`). For MCP tool failures with `isError: true`, read
 the same fields under `structuredContent.data`; JSON-RPC transport errors use a separate envelope.
 
 ## Position Semantics
 
-- `lean-beam run-at` and `lean-beam run-at-handle` take the broker document version before
-  Lean/LSP `Position` coordinates: `<version> <line> <character>`; use the version from `update`
-- line `0` is the first line, and character `0` is the first UTF-16 code unit on that line
-- on a truly empty line, only character `0` is valid; character `1` is already out of range
-- on an indented blank line, either probe after the existing spaces using that exact character
-  offset, or probe at character `0` and include the indentation in the text yourself
-- `position ... is outside the document` means the requested coordinate is not a valid Lean/LSP
-  position for the current on-disk file
-- `no command or tactic snapshot` means the coordinate is in the document, but Lean has no usable
-  execution basis there
-- valid probe positions are not arbitrary file coordinates; `lean-beam run-at` needs a command basis or
-  proof/tactic snapshot at that position, or one Lean can recover from nearby syntax
-- for a tactic replacement, select its first character after indentation to use its before-state;
-  inside a simple tactic or at its end, Lean generally selects the after-state
-- on a `sorry`, `_`, or `?x` term that the command left unfilled, the text is tactics run against
-  a goal with that placeholder's type and local context, like the tactics of a `by ...` block there;
-  use `exact t` for a term. Only the placeholder's type is checked, not later parts of the
-  enclosing term
-- a successful probe is not proof that the edit elaborates: probes check the text against its goal
-  only and do not run Lean's termination checking, so text that uses the declaration being proved
-  can succeed; confirm with a real edit and `sync`
-- standalone comments, blank lines, and many declaration headers often do not have a usable basis
-- nearby whitespace/comments may still work when Lean can recover a neighboring basis, but do not
-  assume that from arbitrary file positions
-- those errors do not by themselves mean the Beam daemon is unhealthy
+- `run-at` and `run-at-handle` take `<version> <line> <character>` using the version returned by
+  `sync`, `update`, or `refresh`.
+- `line` is 0-based; `character` is a 0-based UTF-16 code unit offset.
+- Empty lines allow only character `0`. On an indented blank line, either probe at the existing
+  column offset or probe at character `0` and include the indentation in the text.
+- `position ... is outside the document` means the coordinate is out of bounds for the saved file;
+  `no command or tactic snapshot` means Lean has no usable execution basis there (common on
+  standalone comments, blank lines, and declaration headers). Neither implies an unhealthy daemon.
+- To replace a tactic, probe at its first character after indentation (before-state); inside or at
+  the end of a simple tactic, Lean usually selects the after-state.
+- At an unfilled `sorry`, `_`, or `?x`, the probe runs tactics against that placeholder's goal
+  (use `exact t` for a term). Only that placeholder's type is checked.
+- Probes check text against the selected goal without running declaration-level termination checks,
+  so a probe referencing the enclosing declaration can succeed even when the real edit fails; always
+  confirm with a real edit and `sync`.
 
-For `BeamRunAtProbe.lean` containing exactly these three lines:
+Example `BeamRunAtProbe.lean`:
 
 ```lean
 example (a b : Nat) (h : a = b) : 0 + a = b := by
@@ -41,490 +31,150 @@ example (a b : Nat) (h : a = b) : 0 + a = b := by
   exact h
 ```
 
-| Position (line, character) | Selected state | Probe `exact h` |
+| Position `(line, char)` | Selected state | Probe `exact h` |
 | --- | --- | --- |
-| `1 2`: start of `simp` | Before `simp`: `0 + a = b` | Fails |
-| `1 3`: inside `simp` | After `simp`: `a = b` | Succeeds |
-| `2 2`: start of `exact h` | Before `exact h`: `a = b` | Succeeds |
+| `1 2` (start of `simp`) | Before `simp`: `0 + a = b` | Fails |
+| `1 3` (inside `simp`) | After `simp`: `a = b` | Succeeds |
+| `2 2` (start of `exact h`) | Before `exact h`: `a = b` | Succeeds |
 
-After updating the file, this replacement probe correctly returns `result.success=false`:
-
-```bash
-lean-beam run-at "BeamRunAtProbe.lean" <version-from-update> 1 2 -- "exact h"
-```
-
-Nested tactics and whitespace may select an enclosing or neighboring tactic. `goals before` and
-`goals after` inspect both sides of the selected tactic; they do not configure a later `run-at`.
+`goals before` / `goals after` inspect both sides of a tactic without affecting later `run-at` calls.
 
 ### Todo ranges and point queries
 
-`todo FILE VERSION` queries the whole file. Supply `SL SC EL EC` to restrict the query to a range.
-For a goal-bearing item with both `run_at_position` and `proof_state`, a probe there selects those
-goals. Diagnostics and code actions can have a position without a proof state. If Beam omits the
-position for reported goals, none of the positions it checked selected them; another source
-position may still work. Edit the source when you need to expose those goals for a probe.
-
-For sorries, holes, diagnostics, and incomplete proofs, a nonempty `todo` query uses half-open
-range overlap: its end is excluded. An empty range is a point query. It matches items containing
-that point, including an item's end, so a `run_at_position` immediately after a tactic, when
-supplied, can be used for inspection.
-
-Code actions require an explicit range and use Lean's provider selection: Lean chooses one command
-snapshot using the query's end. A range across several commands does not enumerate actions for every command. Query
-a point inside the relevant tactic, hole, or diagnostic, or use a range within one command. An empty
-code-action result does not establish that the whole file has no actions.
+- `todo FILE VERSION` inspects the whole file; `todo FILE VERSION SL SC EL EC` restricts to a range.
+- Goal-bearing items with both `run_at_position` and `proof_state` can be probed directly at
+  `run_at_position`. When `run_at_position` is omitted, edit the source to expose those goals.
+- Nonempty ranges use half-open overlap (end excluded). An empty range (`SL SC == EL EC`) is a point
+  query matching items containing that point, including their end.
+- Code actions require an explicit range: Lean selects one command snapshot from the range end.
+  Query a point inside the relevant syntax or a range within one command; an empty result does not
+  prove whole-file completeness.
 
 ## Command Details
 
-Continue from a stored handle:
+Handles (for exact speculative continuation; see [mcts-search.md](mcts-search.md)):
 
 ```bash
-# `--handle-file` avoids inlining handle json and frees stdin for continuation text
 lean-beam run-with "Foo.lean" --handle-file handle.json "exact trivial"
 lean-beam run-with-linear "Foo.lean" --handle-file handle.json "exact trivial"
 lean-beam release "Foo.lean" --handle-file handle.json
-
-# stdin handle flow remains supported when it fits your shell loop better
-printf '%s\n' "$HANDLE_JSON" | lean-beam run-with "Foo.lean" - "exact trivial"
-printf '%s\n' "$HANDLE_JSON" | lean-beam run-with-linear "Foo.lean" - "exact trivial"
-printf '%s\n' "$HANDLE_JSON" | lean-beam release "Foo.lean" -
+# or pipe handle JSON on stdin with `-`
 ```
 
-For opt-in elaboration timing, place `--profile` immediately before the text selector. When profiling
-is off, a standalone `--profile` argument after the text selector, including `--`, is a usage error.
-Beam does not scan occurrences inside a complete Lean text argument, stdin, or file contents.
-
-```bash
-lean-beam run-at "Foo.lean" <version> <line> <character> --profile -- "simp"
-lean-beam run-at-handle "Foo.lean" <version> <line> <character> --profile --text-file proof.txt
-lean-beam run-with "Foo.lean" --handle-file handle.json --profile -- "exact trivial"
-```
-
-`run-with-linear` accepts the same flag; MCP uses `profile: true`. To profile a complete declaration,
-select its leading doc comment or first attribute, whichever comes first; if neither is present,
-select the declaration start. Submit the comment, attributes, and full declaration so their work is
-included. Selecting the theorem keyword after its attribute may be too late: Lean can report that the
-declaration “has already been declared.” For proof-only timing, select the first tactic's before-state
-and submit the tactic block without `by`.
-
-A handle created with `--profile` requires `--profile` on every continuation and successor.
-An unprofiled continuation returns `invalidParams` without consuming the handle, including for
-`run-with-linear`; retry with `--profile`. For an unprofiled comparison, start from the document or
-an ordinary handle. Lean retains instrumentation options in deferred declaration contexts, even
-though Beam restores visible options. Do not profile `#guard_msgs`: trace retention can change its
-verdict. Beam returns `invalidParams` for direct guards and guards recorded during command execution;
-a rejection discovered after execution does not undo external IO.
-
-For example, select the first `/` below and submit the entire block to include its documentation,
-attribute, header, and proof:
-
-```lean
-/-- Right addition of zero. -/
-@[simp]
-theorem demo_add_zero (n : Nat) : n + 0 = n := by
-  rfl
-```
-
-Inspect `success` and ordinary warnings/errors first, then `profile.elapsed_ms` and `profile.summary`.
-`summary.top_spans` groups retained single-child paths and ranks up to ten by outer inclusive
-duration. Optional `inner_span` gives the deepest member retaining at least half the positive outer
-duration, with its own index, duration and available label; it is omitted if no descendant qualifies. This
-display heuristic does not identify a cause or guarantee a tactic node. The entire path remains
-grouped, including any smaller tail; the outer duration is not the inner step's cost. `summary.phase_spans`
-shows the largest observed span for each known declaration-phase category, not totals or zeros for
-missing phases. Entries have `span` indices into `profile.spans`, plus category, duration and
-available Lean-rendered labels. An entry in both views is the same observation.
-An inner label identical to its outer entry's displayed label is omitted; the inner index, tag
-and own duration remain. Equal labels, including clipped previews, do not imply equivalent operations.
-`summary.collapsed_spans` counts members folded into shown top entries; `summary.omitted_from_top`
-counts retained spans in paths outside the top list. Together with the top entry count they equal
-the raw span count; neither counts unrecorded work.
-Use `profile.spans` for the retained tree; do not sum overlapping durations.
-Parse failures have no profile; a Lean failure after elaboration can have one. `elapsed_ms` is wall
-time for speculative re-elaboration in the loaded environment, not the original file, a cold build,
-or native CPU time. It starts after parsing and ends after synchronous execution and the elaboration
-tasks still registered in the final Lean snapshot state settle. Tasks whose registrations a custom
-tactic discarded by backtracking, and unregistered tasks, are not covered and may still be running.
-Summary labels render after the elapsed interval. Lean renders only selected headers; labels may show expanded
-syntax rather than a source tactic and are clipped to 160 characters with `…`. Rendering can
-evaluate deferred Lean descriptions, so these output limits are not a time bound. Cancellation
-waits for an active formatter to settle. Labels are not proof verdicts or inferred source locations.
-`initial_threshold_ms` is Beam's initial 1 ms trace threshold, not a guarantee of the effective
-threshold: submitted Lean code or metaprograms may change profiler options. Span data can therefore
-be partial even when `truncated` is false. `truncated: true` means projection hit a bound or excluded
-incompatible-clock nodes; raw category/tag clipping also sets it. Summary label clipping is marked
-only by a final `…`, and grouping does not change this flag. False does not
-prove complete trace coverage.
-
-Span `thread` numbers start at zero in first-seen order within each response. The `category`
-and optional nonempty `tag` are raw Lean trace identifiers. Neither field provides a stable source
-identifier or a proof-goal name. Beam rounds `elapsed_ms` and span endpoints to 0.1 ms relative to
-the start of the request interval. `start_ms` is the rounded start. In raw spans and summaries,
-`duration_ms` is the difference between the rounded endpoints. Entries are ranked by unrounded
-durations, so equal displayed values may appear in either order.
-`parent`, when present, indexes the nearest retained ancestor in this response's `spans` array.
-`range`, when present, is a half-open range in the submitted text,
-using zero-based lines and zero-based UTF-16 character offsets. Its end is exclusive. A range is not
-a document position or a guaranteed mapping to a source occurrence. If the source snippet exceeds
-8192 UTF-8 bytes, ranges are omitted. Do not invent ranges for child spans that lack them.
-
-Profiled results retain ordinary warnings and errors, but suppress ordinary Lean trace text from
-both `messages` and `traces`; `traces` is `[]`. Each continuation profile measures only that call,
-not earlier work represented by its handle. Nested and parallel spans overlap, so do not sum their
-durations. The profile has at most 128 spans, 16384 traversal visits (including trace-state entries),
-and `MessageData` nesting depth 256. Shallow nodes are visited before deep descendants; retained
-spans first reserve the largest observation of each summary phase with its ancestors, then fill by
-inclusive duration within the same cap and return in original tree order.
-This favors significant work across the visited forest, but neither complete traversal nor retention
-of every phase is guaranteed. Context and formatting wrappers count, so span depth can be lower.
-These limits do not bound Lean's trace allocation. Profiling adds overhead. For candidate comparisons, keep the
-same snapshot or handle and loaded environment, repeat the comparison, and check the candidate from
-the document or an ordinary handle with profiling disabled before treating a speed difference as an optimization.
-
-Short search helper:
-
-```bash
-lean-beam-search mint "Foo.lean" <version-from-update> 10 2 "constructor"
-printf '%s\n' "$HANDLE_JSON" | lean-beam-search branch "Foo.lean" "constructor"
-printf '%s\n' "$HANDLE_JSON" | lean-beam-search playout "Foo.lean" "exact trivial" "exact trivial"
-printf '%s\n' "$HANDLE_JSON" | lean-beam-search release "Foo.lean"
-```
-
-Inspect Lean type/term information at a specific position:
-
-```bash
-lean-beam hover "Foo.lean" <version-from-update> 10 2
-lean-beam signature-help "Foo.lean" <version-from-update> 10 2
-```
-
-Follow semantic navigation and symbol information:
-
-```bash
-lean-beam definition "Foo.lean" <version-from-update> 10 2
-lean-beam references "Foo.lean" <version-from-update> 10 2
-lean-beam document-symbols "Foo.lean" <version-from-update>
-lean-beam workspace-symbols "Foo.bar"
-```
-
-Inspect Lean proof goals at an existing tactic position:
-
-```bash
-lean-beam goals before "Foo.lean" <version-from-update> 10 2
-lean-beam goals after "Foo.lean" <version-from-update> 10 2
-```
-
-These commands return structured goals in `result.goals`. A solved state uses
-`result.goals = []`.
-
-Checkpoint one synced workspace module without a full project build:
-
-```bash
-lean-beam save "MyPkg/Sub/Module.lean"
-lean-beam close-save "MyPkg/Sub/Module.lean"
-```
-
-These commands require a synced file that belongs to the current Lake workspace and resolves to a
-module in the package graph. A standalone `.lean` file that the daemon can open but Lake cannot map
-to a module is a valid `lean-beam sync` target, but not a valid `lean-beam save` target.
-
-The checkpoint contains the environment accepted by the Lean server. It avoids a batch
-re-elaboration during the inner loop, so it is a development artifact rather than final build
-evidence. An elaborator that observes server mode can behave differently under `lake build`.
-Structured Lake options, dynamic libraries, and plugins are supported when the file worker has
-already applied them. Modules with batch-only `moreLeanArgs` fail with `saveUnsupportedSetup`; move
-shared `-D` settings to `leanOptions`, or use `lake build` when the arguments are intentionally
-batch-only, after the [cleanup order](#before-a-local-batch-build). If an import changed on disk
-after the file worker loaded it, for example through an external `lake build`, saving fails with
-`saveImportsChanged`; run `lean-beam refresh FILE` so the worker reloads its imports, then save
-again.
-
-Beam assumes Lake workspace configuration remains unchanged while the Lean server is running. After
-editing a lakefile, manifest, package override, `lean-toolchain`, Lean options, plugins, or dynamic
-libraries, run `lean-beam --root ROOT stop` before the next command that uses the Lean server.
-`lean-beam refresh` only reopens a file within the current server and is not sufficient. Runtime-selection checks can reject a changed `lean-toolchain`, but Beam does not reload workspace
-configuration in an existing server.
+- Profiling (`--profile` / MCP `profile: true`): see [profiling.md](profiling.md).
+- Search helper: `lean-beam-search mint|branch|playout|release` wraps handle commands for shell loops.
+- Read-only inspection & navigation: `goals before|after`, `hover`, `signature-help`, `definition`,
+  `references` (waits for full elaboration like `sync`), `document-symbols`, and `workspace-symbols`
+  (no document version).
+- Checkpoints: `lean-beam save "MyPkg/Sub/Module.lean"` and `lean-beam close-save "MyPkg/Sub/Module.lean"`.
+  Structured Lake options, dynamic libraries, and plugins applied by the file worker are supported.
+  Batch-only `moreLeanArgs` fail with `saveUnsupportedSetup` (move shared `-D` flags to
+  `leanOptions`, or use `lake build` after [cleanup](#before-a-local-batch-build)). If an import
+  changed on disk after the worker loaded it, `save` fails with `saveImportsChanged`; run `refresh`
+  and retry `save`.
+- Lake workspace config changes (lakefile, manifest, `lean-toolchain`, options, plugins, dylibs)
+  are not reloaded by `refresh`; stop the owner (or drop the MCP workspace) and restart.
 
 ## Save Eligibility
 
-When `lean-beam save` is valid:
+Valid `save` / `close-save` targets:
+- synced successfully and belongs to the current Lake workspace package graph (resolves to a module).
+- `save` writes Lean/Lake build artifacts for that module; it never edits `.lean` source.
 
-- the file has already been synced successfully
-- the file belongs to the current Lake workspace package graph
-- Lake resolves that path to a module
-- `lean-beam save` means checkpointing a synced Lake module; it does not mean saving editor buffers or
-  writing source text to disk
-
-What is not a valid checkpoint target:
-
-- a standalone `.lean` file at repo root that is outside the package module graph
-- any file the daemon can open but Lake cannot map to a workspace module
+Not valid: standalone `.lean` files outside the Lake package module graph (valid for `sync`, not `save`).
 
 ## Source-File And Execution Model
 
-- `lean-beam run-at` does not edit `Foo.lean`
-- `lean-beam hover` and `lean-beam signature-help` are normal read-only semantic inspection
-  commands for an existing position
-- `lean-beam definition`, `lean-beam references`, and `lean-beam document-symbols` are normal
-  read-only semantic navigation commands against a specific document version
-- `lean-beam references` waits for the whole document version to elaborate, so its first call after
-  an edit can take as long as `sync`
-- `lean-beam workspace-symbols` is a read-only workspace query and does not take a document version
-- `lean-beam goals before` and `lean-beam goals after` are the normal read-only proof-state
-  inspection commands for an existing tactic position
-- `lean-beam goals before` / `lean-beam goals after` return `result.goals`, not speculative execution output,
-  and do not accept speculative text
-- `lean-beam` only sees the on-disk file, not unsaved editor buffers
-- actual source edits happen through the normal file-edit workflow
-- after every real source edit to a Lean file, save the file in the normal editor/file sense and
-  then run `lean-beam update "Foo.lean"` before the next version-bound probe; use
-  `lean-beam sync "Foo.lean"` when the workflow needs a diagnostics/readiness barrier
-- use `lean-beam refresh "Foo.lean"` to refresh a tracked document from saved source, especially after
-  saving an upstream dependency; see the [refresh contract](https://github.com/leanprover/lean-beam/blob/main/docs/SYNC_AND_DIAGNOSTICS.md#command-model)
-- treat `lean-beam sync` as the explicit supported boundary between real file edits and Beam daemon
-  session state
-- after a completed broker operation, `lean-beam sync` returns compact machine-readable JSON (`--pretty` adds indentation only) on
-  stdout with the current diagnostic counts and readiness result and streams human diagnostics on
-  stderr; automated callers must check the process exit status before parsing stdout
-- if imported targets are stale or the Lean worker cannot finish that diagnostics barrier,
-  `lean-beam sync` fails; do not treat a failed sync as safe to follow with `lean-beam save`
-- `lean-beam sync` prints one final JSON response on stdout for completed operations and ordinary
-  CLI failures; diagnostics and progress go to stderr. Check the exit status before parsing stdout.
-  For failure codes, exact remedies, shutdown confirmation, or generation mismatches, read
-  [CLI troubleshooting](troubleshooting.md#cli-transport-and-session-recovery) before recovery
-- `--text-file` and `--handle-file` require regular-file targets and allow ordinary symlinks;
-  directories, devices, FIFOs, and symlink loops observed at admission fail with
-  `invalidParams`/exit `2` before dispatch. The target check and later open are separate operations,
-  so concurrent path replacement remains possible. Use `--stdin` or handle `-` for streaming. Input is read to EOF before the broker interrupt watcher
-  starts; on POSIX, SIGINT in this phase may exit `130` without JSON
-- local argument previews identify their field and omitted-character count in `error.data.argument`.
-  CLI error stderr escapes terminal controls. Control-bearing remedies are labelled escaped
-  displays; execute the exact argument vector from `error.data.remedy_command`, not that display
-- every `lean-beam run-at` request probes one on-disk document version without changing its real
-  elaboration state; Lean code can still perform external IO
-- `lean-beam run-at-handle` is the same style of isolated probe, but asks Lean to retain follow-up
-  state
-- `lean-beam run-with` preserves the current handle and branches from it
-- `lean-beam run-with-linear` consumes the current handle and returns a successor handle for linear
-  continuation
-- `lean-beam release` explicitly drops a preserved handle
-- `lean-beam-search` is a small convenience wrapper around these same commands
-- the request may wait for the Lean snapshot at the requested position to finish elaborating; this
-  is normal
-- the probe does not mutate the document's real elaboration state and does not create hidden state
-  for the next probe
-- the Beam daemon may implicitly open or update the file from disk before a probe, but that is not
-  the supported diagnostics/readiness barrier after edits
-- use `lean-beam sync` when the workflow needs an explicit diagnostics/readiness boundary;
-  `lean-beam run-at` only waits for the snapshot it needs
-- if the same document changes while a request or stored handle is pending, expect
-  `contentModified` or handle invalidation instead of hidden reuse
-- when `contentModified` includes `error.data.reason = "documentVersionMismatch"`,
-  `error.data.accepted_version` names the broker-accepted version to retry with, and
-  `error.data.current_version` may echo the current tracked document version
-- `lean-beam save` / `lean-beam close-save` checkpoint the current synced Lake module only; they do not
-  rebuild reverse dependencies or make downstream files fresh by themselves
+- Beam reads only saved `.lean` files on disk and never edits source.
+- Default inner loop: edit & save → `sync` (returns diagnostics, readiness, and `version`); probe
+  with `run-at` / `goals` / `todo` against that `version`. Use `update` only when you want a fresh
+  `version` without waiting for diagnostics.
+- `--text-file` and `--handle-file` require regular files (symlinks to regular files allowed); use
+  `--stdin` or `-` for streaming. Input is read to EOF before the interrupt watcher starts.
+- Local argument errors report omitted character counts in `error.data.argument`; control-bearing
+  remedies on stderr are escaped displays—execute the exact argv from `error.data.remedy_command`.
+- Same-document edits invalidate pending requests/handles (`contentModified` with
+  `documentVersionMismatch` gives `error.data.accepted_version`).
+- For transport/session/document-state errors, read
+  [CLI troubleshooting](troubleshooting.md#cli-transport-and-session-recovery).
 
 ## Diagnostics, Progress, And Request IDs
 
-- `lean-beam sync`, `lean-beam refresh`, `lean-beam save`, and `lean-beam close-save` always stream
-  fresh diagnostics for the current request
-- by default they stream only errors
-- add `+all-diagnostics` to widen the current request to warnings, info, and hints
-- the final JSON reports the current synced-state verdict rather than replaying streamed
-  diagnostics
-- streamed diagnostics are request events, not a since-last-sync diff
-- successful `lean-beam save` includes the sync verdict it established in `result.sync`
-- successful `lean-beam close-save` includes the sync verdict in `result.saved.sync`
-- use `result.readiness.save_ready` for sync/refresh decisions,
-  `result.sync.readiness.save_ready` for save, and `result.saved.sync.readiness.save_ready` for
-  close-save; use the corresponding `blocking_error_count` and blocking evidence to explain blocked
-  verdicts
-- when `lean-beam save` or `lean-beam close-save` returns `invalidParams` for document errors, the transport
-  `error.message` includes a compact preview of underlying diagnostics and/or command messages, and
-  `error.data.sync` contains the blocking sync verdict
-- wrapper `stderr` is the human-facing diagnostic surface
-- use MCP when a client requires structured live diagnostics or progress
-- streamed diagnostics are request-scoped observations; they may carry `completion_blocking=true`,
-  but save-blocking evidence is attached to the final sync/save verdict
-- additional field-level progress, diagnostic, and readiness details are documented in the optional
-  [online sync and save contract](https://github.com/leanprover/lean-beam/blob/main/docs/SYNC_AND_DIAGNOSTICS.md)
-- do not parse wrapper `stderr` in tooling
-- `BEAM_PROGRESS` controls stderr progress output for slow calls
-- by default, progress prints when stderr is a TTY
-- set `BEAM_PROGRESS=1` to force progress output in scripts or CI
-- `serve` reports elapsed preparation time when progress is enabled; its stdout readiness result
-  appears only after workspace preparation completes
-- `BEAM_REQUEST_ID=<id>` attaches optional request metadata to the broker request
-- the final stdout JSON echoes it as `client_request_id`
-- streamed stderr progress/diagnostic lines are annotated as `beam[<id>]: ...`
-- a second live request using the same id is rejected with `invalidParams`
-- `lean-beam cancel <id>` cancels an in-flight broker request by that request ID
-- `Ctrl-C` interrupts the owning one-request connection, and the daemon cancels that exact admitted
-  request when it observes the disconnect; this does not require `BEAM_REQUEST_ID`, exits nonzero,
-  and does not fabricate a terminal stdout response after the connection is gone
+- `sync`, `refresh`, `save`, and `close-save` stream fresh request-scoped diagnostics on CLI stderr
+  (errors by default; add `+all-diagnostics` for warnings/info/hints). Do not parse stderr.
+- Check `result.readiness.save_ready` (`result.sync.readiness.save_ready` for `save`,
+  `result.saved.sync.readiness.save_ready` for `close-save`). Failed `save` / `close-save` due to
+  document errors returns `invalidParams` with `error.data.sync`.
+- Use MCP when structured live diagnostics (`lean.diagnostic`) or progress (`_meta.progressToken`)
+  are needed. See the
+  [online sync and save contract](https://github.com/leanprover/lean-beam/blob/main/docs/SYNC_AND_DIAGNOSTICS.md).
+- `BEAM_PROGRESS=0|1` overrides TTY-based stderr progress lines.
+- `BEAM_REQUEST_ID=<id>` tags a CLI request (`client_request_id` in stdout JSON; `beam[<id>]:` on
+  stderr) and enables `lean-beam cancel <id>`. `Ctrl-C` cancels the active one-request connection
+  without requiring `BEAM_REQUEST_ID`.
 
 ## File Progress And Readiness
 
-Treat `document_progress` as observability, not as proof that every call is a full barrier.
+Treat `document_progress` as observability, not proof of a full barrier:
 
-```bash
-# with `lean-beam serve` running in another process
-sync_out="$(lean-beam sync "Foo.lean")"
-printf '%s\n' "$sync_out"
-version="$(printf '%s\n' "$sync_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["version"])')"
-
-probe_out="$(lean-beam run-at "Foo.lean" "$version" 10 2 "exact trivial")"
-printf '%s\n' "$probe_out"
-```
-
-Interpretation:
-
-- after `lean-beam sync`, expect `result.document_progress.done = true`
-- successful `lean-beam sync` transport does not mean the file is error-free; inspect
-  `result.readiness.save_ready` for current save-readiness; use `blocking_error_count` and blocking
-  evidence to explain blocked verdicts
-- if you need to know whether Lean published error-severity diagnostics, inspect
-  `result.diagnostics.counts.error`; do not use that field as the save/checkpoint
-  decision
-- when `lean-beam sync` returns `syncBarrierIncomplete`, its dependency hints come from direct
-  imports in Lean's accepted header snapshot and broker sync/save history. Entries in
-  `completion_blocking_diagnostics` carry `completion_blocking=true`. Follow
-  [sync barrier recovery](troubleshooting.md#sync-barrier-recovery).
-- after `lean-beam run-at`, `result.document_progress` may exist with `done = false`; that is normal
-  because the request only waited for its own target snapshot
-- use `lean-beam hover` or `lean-beam signature-help` for semantic inspection and
-  `lean-beam goals before` / `lean-beam goals after` for existing proof state; use
-  `lean-beam run-at` only when you need speculative execution
-- if you need a real ready/fresh boundary after edits, use `lean-beam sync`, not a successful probe
+- After `sync`, expect `result.document_progress.done = true`. Successful transport does not mean
+  error-free: inspect `result.readiness.save_ready`, `blocking_error_count`, and blocking diagnostics
+  (use `result.diagnostics.counts.error` only if you specifically need error-severity counts).
+- After `run-at`, `document_progress.done = false` is normal (it waits only for its target snapshot).
+- On `syncBarrierIncomplete`, entries in `completion_blocking_diagnostics` mark `completion_blocking=true`;
+  follow [sync barrier recovery](troubleshooting.md#sync-barrier-recovery).
 
 ## Cost Model
 
-For agent workflows, distinguish fixed startup cost from marginal probe cost.
-
-Detached scratch files, including temporary files outside the workspace module graph, pay the cost
-of constructing an artificial Lean context and often reload imports from a colder basis. They are
-useful for context-free syntax checks, but they are the wrong default for questions whose answer
-depends on the real module, imports, options, notation, instances, or proof state.
-
-Beam is designed for the opposite loop. Once the per-root daemon and target document are warm,
-`run-at`, `hover`, `signature-help`, `definition`, `references`, `document-symbols`, and `goals`
-are cheap local questions against the saved source snapshot. The intended agent style is therefore
-small, source-position probes, not large detached experiments.
-High-bandwidth clients do not need to wait for a batch API to exploit this shape: they can keep many
-independent `run-at` probes or handle-rooted search sequences in flight concurrently. Future
-batching can reduce per-call overhead and simplify client code, but it is a minor gain compared with
-parallelizing independent probes against a warm daemon. Coordinate only the cases that truly share
-state, such as a linear handle that is consumed by its next step.
-
-Write the on-disk document as `prefix ++ E ++ suffix`.
-
-- `N := |prefix| + |E| + |suffix|` is the full document length
-- `C := |E|` is the changed region length
-- the wrapper is cheap only after the per-root daemon and matching bundle already exist
-- `lean-beam run-at`, `lean-beam run-at-handle`, `lean-beam run-with`, and `lean-beam release` do not edit the file;
-  they are speculative checks on one current snapshot, so their cost is not a workspace rebuild cost
-- independent speculative checks can be launched in parallel by the client; batching is an
-  ergonomics and per-call-overhead improvement, not the main scaling mechanism for clients that can
-  already keep requests in flight
-- `lean-beam sync` always transmits the full current file text to Lean, so the wire/update cost is
-  `O(N)`, not `O(C)`, even when `C << N`
-- `lake build Foo.lean` is also at least `O(N)` in the target file length for that file
-- the intended win is avoiding repeated `lake build` loops and repeated cold starts, not making
-  one-file rebuild asymptotically sublinear
-- `lean-beam save` and `lean-beam close-save` checkpoint one synced module after a completed barrier; they do
-  not rebuild reverse dependencies and they do not turn workspace freshness into an `O(C)` problem
-- runtime lookup never builds missing components; an unavailable project target requires explicit
-  installer work before normal execution can resume
-- initial Lake setup may build missing or stale imports. A retained worker can instead report
-  stale direct dependencies; follow its recovery plan before relying on downstream probes
+- Once a per-root daemon (or MCP workspace) and target document are warm, `run-at`, `goals`, and
+  navigation probes are cheap local checks against the saved snapshot and can run in parallel.
+- Avoid detached `/tmp` scratch files for module-context questions: they reload imports from cold
+  state and miss local options/instances/proof context.
+- `sync` sends the full document text (`O(N)`), not just the diff (`O(C)`), and `save` checkpoints
+  one module without rebuilding reverse dependencies. The win is avoiding repeated cold `lake build`
+  loops and isolating proof exploration.
 
 ## Dependency Edits And Rebuild Boundary
 
-If `B.lean` imports `A.lean`, checkpoint the edited dependency before refreshing the importer.
-Run these through the same CLI installation, root, and session selection:
+If `B.lean` imports `A.lean`, checkpoint the dependency before refreshing the importer in the same
+CLI session or MCP workspace:
 
 ```bash
 lean-beam sync "A.lean"
+# confirm ok=true and readiness.save_ready=true, then:
+lean-beam save "A.lean" && lean-beam refresh "B.lean"
 ```
 
-Inspect the sync result. Stop if it failed or `readiness.save_ready` is false. Only then checkpoint
-the dependency and refresh the importer:
-
-```bash
-lean-beam save "A.lean" &&
-  lean-beam refresh "B.lean"
-```
-
-Stop on any failure. After refresh succeeds, inspect `B.lean`'s diagnostics and readiness and use
-its returned version for later probes. Refresh reads saved source, so save any edits to `B.lean`
-first. A checkpoint alone does not reload an already-open importer.
-
-For MCP, use `lean_sync` and `lean_save` for `A.lean`, then `lean_refresh` for `B.lean`, passing
-that server's same `workspace` on every call. Inspect each result before continuing. CLI commands
-operate on a different runtime and cannot update the MCP workspace's retained state.
-
-This checks the chosen importer, not the whole dependency cone. Repeat in dependency order for
-other affected files you intend to use. For full project evidence, prefer a clean CI `lake build`;
-if a local batch check is needed, follow the cleanup procedure below. Do not start an external
-build while Beam retains the affected workspace.
+Stop on any failure, then inspect `B.lean`'s diagnostics, readiness, and new `version`. Save any
+edits to `B.lean` before `refresh`. Repeat in dependency order for other importers you use; CLI and
+MCP runtimes are separate and do not share checkpoints until saved and refreshed.
 
 ### Before a local batch build
 
-Before an external build, request shutdown through the original owning installation, using
-the same root and session-directory selection:
+Do not run `lake build` while Beam retains the affected workspace. First stop every affected CLI
+owner (from its original installation, with matching `--root` and `--session-dir`) and drop every
+affected MCP workspace:
 
 ```bash
 "/path/to/original/installation/bin/lean-beam" --root ROOT stop
 ```
 
-Repeat any `--session-dir DIR` selection on that command. A successful `stop` response acknowledges
-the shutdown request; it does not establish completed cleanup. Before continuing, have the original
-`serve` owner or its supervisor confirm that the owner, daemon, and all backend/helper producers
-have stopped and cleanup completed successfully. For MCP, drop the workspace and establish cleanup
-completion through the owning server or its supervisor instead.
+`stop` only acknowledges shutdown; before building, have the original owner or supervisor confirm
+that the owner, daemon, and all backend/helper processes have stopped and cleaned up (do not rely on
+cancellation, elapsed time, or `recover` to bypass cleanup).
 
-Repeat this for every affected CLI owner and MCP workspace. They have separate runtimes;
-completion in one does not establish cleanup of the others.
-
-If cleanup is pending, failed, or cannot be confirmed, stop and coordinate with the owner. Do not
-clean or rebuild. A stop acknowledgement, cancellation, or elapsed time is not evidence of
-settlement; do not recover a descriptor to bypass this prerequisite.
-
-Once cleanup is confirmed, choose the build that fits the task. For ordinary recovery, including
-builds required by batch-only `moreLeanArgs`, run `lake build` from the project root and keep
-existing Lake artifacts.
-
-For clean batch-build evidence, prefer CI running `lake build` from clean artifacts. If a local
-clean build is needed, run this sequence once, after the same confirmed cleanup:
-
-```bash
-lake clean && lake build
-```
-
-Successful checkpoints are normally sufficient during the inner loop. For independent proof
-confirmation, see [the separate validation workflow](trust-and-validation.md).
-Recreate the affected sessions after the build.
+Once cleanup is confirmed:
+- For ordinary recovery (including batch-only `moreLeanArgs`), run `lake build` from the project root.
+- For clean batch evidence, prefer CI `lake build`; if a local clean build is required, run
+  `lake clean && lake build` once, then recreate the affected sessions afterward.
+- For independent proof confirmation, see [trust-and-validation.md](trust-and-validation.md).
 
 ## Stats And Signs Of Good Use
 
-Use:
+`lean-beam open-files` and `lean-beam stats` (MCP: `beam_stats`) are debugging/telemetry tools—do
+not call them during routine authoring turns.
 
-```bash
-lean-beam open-files
-lean-beam stats
-```
-
-`lean-beam open-files` shows the files currently tracked by the Beam daemon for the current project,
-along with on-disk `disk_status`, the daemon-recorded `checkpointed` marker, and the last compact
-`document_progress` observed for that tracked version. `disk_status` is `matches_tracked`,
-`differs_from_tracked`, `missing`, or `unknown`. `checkpointed` means this daemon successfully saved
-the unchanged tracked version; it does not revalidate Lake artifacts. Run `lean-beam save` to
-perform the authoritative Lake module, readiness, trace, and setup checks.
-
-Stats are in-memory only and scoped to the current project Beam daemon.
-
-The Beam daemon is helping if:
-
-- many local probes happen before one edit
-- `lake build` is not the inner loop
-- stats show more `lean-beam run-at` / `lean-beam save` than full builds
+- `open-files` reports each tracked file's `disk_status` (`matches_tracked`, `differs_from_tracked`,
+  `missing`, `unknown`), `checkpointed` marker (daemon-recorded, not a Lake trace check), and last
+  `document_progress`.
+- `stats` reports in-memory per-daemon request counts and latencies.
