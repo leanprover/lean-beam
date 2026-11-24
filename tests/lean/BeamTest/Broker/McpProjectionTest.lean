@@ -156,8 +156,8 @@ private def checkToolDescriptors : IO Unit := do
   require s!"full MCP tools/list JSON is {fullListBytes} bytes, over its 23500-byte budget"
     (fullListBytes ≤ 23500)
   let coreListBytes := (Beam.Mcp.toolsListResultFor .core).compress.utf8ByteSize
-  require s!"core MCP tools/list JSON is {coreListBytes} bytes, over its 9500-byte budget"
-    (coreListBytes ≤ 9500)
+  require s!"core MCP tools/list JSON is {coreListBytes} bytes, over its 9800-byte budget"
+    (coreListBytes ≤ 9800)
   require "core toolset is a strict subset of the full toolset"
     (Beam.Mcp.Toolset.core.tools.size < Beam.Mcp.Toolset.full.tools.size &&
       Beam.Mcp.Toolset.core.tools.all Beam.Mcp.Toolset.full.contains)

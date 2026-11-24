@@ -133,7 +133,7 @@ private def pathField : String × Json :=
   ("path", Beam.JsonSchema.string "Path to a .lean file inside the workspace.")
 
 private def versionField : String × Json :=
-  ("version", Beam.JsonSchema.natural "Document version from update or sync.")
+  ("version", Beam.JsonSchema.natural "Document version from sync, update, or refresh.")
 
 private def lineField : String × Json :=
   ("line", Beam.JsonSchema.natural "0-based LSP line.")
@@ -161,7 +161,7 @@ private def continuationTextField : String × Json :=
 
 private def profileField : String × Json :=
   ("profile", Beam.JsonSchema.bool
-    "Return elapsed_ms, labeled inclusive summary, and spans (adds overhead; required on continuations of profiled handles; #guard_msgs unsupported).")
+    "Return elapsed_ms, labeled inclusive summary, and spans (spans may overlap or be partial; parse failures return no profile; adds overhead; required on continuations of profiled handles; #guard_msgs unsupported).")
 
 private def handleField : String × Json :=
   ("handle", Beam.JsonSchema.object "Opaque handle from a prior Beam result.")
@@ -195,7 +195,7 @@ private def saveDiagnosticScopeField : String × Json :=
 
 private def diagnosticsInResultField : String × Json :=
   ("diagnostics_in_result", Beam.JsonSchema.bool
-    "Replay diagnostics in diagnostics.items (default false). Leave false while fixing errors (already in readiness.blocking_diagnostics); set true only to inspect warnings/info once errors clear.")
+    "Replay diagnostics in diagnostics.items (default false). Leave false for routine error fixes (already in readiness.blocking_diagnostics); set true for warnings/info or multiline formatting.")
 
 private def codeActionField : String × Json :=
   ("code_action", Beam.JsonSchema.object

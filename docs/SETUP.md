@@ -754,11 +754,8 @@ command without reinstalling, use the manual instructions below.
 ```
 
 Add `--mcp-toolset core` (for example `./scripts/install-beam.sh --codex-mcp --mcp-toolset core`) to
-register the compact 10-tool authoring profile instead of the default 24-tool `full` profile; see
-[MCP runtime setup](MCP.md#runtime-setup). For MCP-only setups, you do not need to install the
-CLI-oriented `lean-beam` skill (`--codex`, `--claude`, etc.): MCP server instructions and tool
-descriptions already cover the MCP edit-sync-probe loop without adding CLI session docs to every
-turn.
+register the compact 11-tool authoring profile instead of the default 24-tool `full` profile; see
+[MCP runtime setup](MCP.md#runtime-setup).
 
 To register either installation manually, use the absolute path to its MCP command:
 
@@ -770,7 +767,7 @@ matching server independently of its working directory and `PATH`.
 To change how many unfinished tool calls the server admits at once (default 32), append
 `--max-unfinished-requests N` to the registered command; see
 [MCP transport lifetime](MCP.md#transport-lifetime).
-To expose only the compact authoring toolset (10 tools instead of 24) and reduce per-turn schema
+To expose only the compact authoring toolset (11 tools instead of 24) and reduce per-turn schema
 token overhead in clients that load all tool schemas eagerly, append `--toolset core`; see
 [MCP runtime setup](MCP.md#runtime-setup).
 
@@ -782,18 +779,16 @@ opencode mcp add
 
 ### Verify The MCP Server
 
-After registering the server, use your client's connected MCP tools to call `lean_sync` for an
-existing Lean file (and, in the default `full` toolset, `beam_version` to check the running
-server's installation identity). Supply the absolute project root in `workspace` and the file path
-relative to that root, as shown below. The project's Lean target must already belong to the
-installed component set.
+After registering the server, use your client's connected MCP tools to call `beam_version` and
+check the running server's installation identity. Then call `lean_sync` for an existing Lean file.
+Supply the absolute project root in `workspace` and the file path relative to that root,
+as shown below. The project's Lean target must already belong to the installed component set.
 A successful call verifies the configured client, stdio transport, runtime selection, and Lean
 request path together. A successful `lean_sync` has completed its diagnostics barrier and sets
 `document_progress.done` to `true`; Lean errors or restrictions on saving can remain. Inspect the
 diagnostics and readiness separately.
 
-For executable and installation identity (especially with `--toolset core`, which omits
-`beam_version`), run:
+For executable and installation identity, run:
 
 ```bash
 "/absolute/path/to/lean-beam-mcp" --version
@@ -801,7 +796,7 @@ For executable and installation identity (especially with `--toolset core`, whic
 
 This reports identity and runtime paths without starting Lean or sending a tool request. It
 identifies the newly launched executable, not an already-running server retained by the client;
-use the connected `beam_version` result (in the `full` toolset) for that server.
+use the connected `beam_version` result for that server.
 
 ### Workspaces And Server Identity
 

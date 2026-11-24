@@ -99,6 +99,8 @@ private def checkLimitParsing : IO Unit := do
     ((parseOptions {} ["--toolset", "core"]).toOption.map (·.toolset) == some .core)
   require "rejects missing --toolset value"
     (!(parseOptions {} ["--toolset"]).isOk)
+  require "rejects --toolset equals spelling"
+    (!(parseOptions {} ["--toolset=core"]).isOk)
   require "rejects unknown --toolset value"
     (!(parseOptions {} ["--toolset", "minimal"]).isOk)
 

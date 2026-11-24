@@ -1834,14 +1834,16 @@ private def checkCoreToolset : IO Unit := do
   let coreToolsResult := Beam.Mcp.toolsListResultFor .core
   let coreToolsJson ← requireObjVal "core tools/list result" "tools" coreToolsResult
   let coreTools ← requireJsonArray "core tools/list tools" coreToolsJson
-  require "core toolset exposes 10 authoring tools" (coreTools.size == 10)
+  require "core toolset exposes 11 core tools" (coreTools.size == 11)
   let hasCoreTool (name : String) : Bool :=
     coreTools.any fun tool => (tool.getObjValAs? String "name").toOption == some name
-  for expected in #["lean_sync", "lean_update", "lean_refresh", "lean_run_at", "lean_goals",
-      "lean_todo", "lean_save", "lean_close_save", "lean_close", "lean_drop_workspace"] do
+  for expected in #["beam_version", "lean_sync", "lean_update", "lean_refresh", "lean_run_at",
+      "lean_goals", "lean_todo", "lean_save", "lean_close_save", "lean_close",
+      "lean_drop_workspace"] do
     require s!"core toolset exposes {expected}" (hasCoreTool expected)
-  for excluded in #["beam_feedback_report", "beam_stats", "beam_version", "lean_run_at_handle",
-      "lean_run_with", "lean_run_with_linear", "lean_release", "lean_hover"] do
+  for excluded in #["beam_feedback_report", "beam_stats", "lean_code_action_resolve",
+      "lean_run_at_handle", "lean_run_with", "lean_run_with_linear", "lean_release",
+      "lean_hover"] do
     require s!"core toolset omits {excluded}" (!hasCoreTool excluded)
 
   let state ← Beam.Mcp.Server.ServerState.create

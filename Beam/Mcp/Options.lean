@@ -27,7 +27,7 @@ def usage : String :=
     "Every workspace-bound tool call carries {\"workspace\":{\"root\":\"/absolute/project\"}}.",
     "--version prints the MCP server version, protocol revision, and available resolved identity paths.",
     "--max-unfinished-requests bounds queued, running, and cancelled-but-unsettled ordinary requests.",
-    "--toolset core exposes only the compact authoring toolset (sync/update/refresh/run_at/goals/todo/save/close_save/close/drop_workspace).",
+    "--toolset core exposes only the compact authoring toolset (beam_version/sync/update/refresh/run_at/goals/todo/save/close_save/close/drop_workspace).",
     "Runtime components come exclusively from this installation's recorded target set.",
     "Only curated Lean tools are exposed; raw LSP and broker escape hatches are intentionally absent."
   ]

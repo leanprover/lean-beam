@@ -190,7 +190,7 @@ Optional flags:
   --vibe-home   Mistral Vibe home for --vibe and --vibe-mcp
   --all-mcp     register Codex/Claude/Mistral Vibe MCP and show OpenCode MCP setup
   --mcp-toolset <full|core>
-                MCP toolset to register (default: full; core exposes 10 authoring tools)
+                MCP toolset to register (default: full; core exposes 11 core tools)
   -h, --help    show this help
 
 Environment:

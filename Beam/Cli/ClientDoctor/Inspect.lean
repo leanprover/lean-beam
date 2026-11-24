@@ -542,9 +542,7 @@ private def prepareOpenCodeEntry (entry : Entry) (report : ClientReport) : Optio
 private def isSupportedBeamMcpArgs (args : Array String) : Bool :=
   args.isEmpty ||
     args == #["--toolset", "full"] ||
-    args == #["--toolset", "core"] ||
-    args == #["--toolset=full"] ||
-    args == #["--toolset=core"]
+    args == #["--toolset", "core"]
 
 private def inspectEntry (client : Client) (entry : Entry)
     (report : ClientReport) (checkLaunch : Bool) : IO ClientReport := do
