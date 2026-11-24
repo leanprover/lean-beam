@@ -1357,6 +1357,19 @@ class ClientDoctorTest(unittest.TestCase):
         })
         self.has_code(self.run_doctor("agy", expected=1), "mcp.disabled", "error")
 
+        # Pre-created empty or whitespace-only mcp_config.json counts as unconfigured rather than corrupt JSON.
+        for empty_text in ("", "  \n\t\n"):
+            with self.subTest(empty_text=repr(empty_text)):
+                self.write(config_path, empty_text)
+                report = self.run_doctor("agy")
+                self.assertEqual(report["clients"][0]["mcp"], "notConfigured")
+                self.assertTrue(report["clients"][0]["discovered"])
+                self.has_code(report, "mcp.notConfigured", "notConfigured")
+
+        # Non-empty malformed JSON still fails with config.syntax.
+        self.write(config_path, "{not json\n")
+        self.has_code(self.run_doctor("agy", expected=1), "config.syntax", "error")
+
         # HTTP url and legacy serverUrl transports are rejected for local stdio inspection.
         for url_key in ("url", "serverUrl"):
             with self.subTest(url_key=url_key):

@@ -88,7 +88,7 @@ import sys
 
 path = Path(sys.argv[1])
 try:
-    raw = path.read_text(encoding="utf-8")
+    raw = path.read_text(encoding="utf-8-sig")
 except (OSError, UnicodeDecodeError) as exc:
     raise SystemExit(str(exc))
 if not raw.strip():
@@ -334,18 +334,19 @@ tmp_path = Path(sys.argv[2])
 mcp_command = sys.argv[3]
 
 if config_path.exists():
-    raw = config_path.read_text(encoding="utf-8")
+    raw = config_path.read_text(encoding="utf-8-sig")
     config = json.loads(raw) if raw.strip() else {}
 else:
     config = {}
 if not isinstance(config, dict):
     raise SystemExit("root JSON value must be an object")
-servers = config.get("mcpServers")
-if servers is None:
+if "mcpServers" not in config:
     servers = {}
     config["mcpServers"] = servers
-elif not isinstance(servers, dict):
-    raise SystemExit("'mcpServers' must be a JSON object")
+else:
+    servers = config["mcpServers"]
+    if not isinstance(servers, dict):
+        raise SystemExit("'mcpServers' must be a JSON object")
 servers["lean-beam"] = {
     "command": mcp_command,
     "disabled": False,
