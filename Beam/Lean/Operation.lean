@@ -90,25 +90,25 @@ instance : ToJson Operation where
   toJson op := toJson op.key
 
 private def operationDescription (syncOperation : String) : Operation → String
-  | .runAt => s!"Speculatively run one Lean command or tactic block at a file position. The text is not persisted as source and no follow-up state is kept. To keep a result, first edit and save the Lean file yourself, then call {syncOperation}."
-  | .runAtHandle => s!"Speculatively run one Lean command or tactic block at a file position. A successful result may include next_handle for exact follow-up execution. The text is not persisted as source. To keep a result, first edit and save the Lean file yourself, then call {syncOperation}."
-  | .hover => "Inspect Lean hover information at a file position."
+  | .runAt => s!"Speculatively run one Lean command or tactic block at a file position (not persisted as source; no handle kept). To keep a result, first edit and save the Lean file, then call {syncOperation}."
+  | .runAtHandle => s!"Speculatively run one Lean command or tactic block at a file position (not persisted as source). A successful result may include next_handle for follow-up execution. To keep a result, first edit and save the Lean file, then call {syncOperation}."
+  | .hover => "Inspect Lean hover info at a file position."
   | .signatureHelp => "Inspect Lean signature help at a file position."
-  | .definition => "Find Lean definitions for the symbol at a file position."
-  | .references => "Find Lean references for the symbol at a file position."
+  | .definition => "Find Lean definitions at a file position."
+  | .references => "Find Lean references at a file position."
   | .documentSymbols => "List Lean document symbols for one synced file."
-  | .workspaceSymbols => "Search Lean workspace symbols by query string."
+  | .workspaceSymbols => "Search Lean workspace symbols by query."
   | .goals => "Inspect Lean goals before or after a file position."
-  | .todo => "Inspect agent-actionable Lean todo items in a file, or in an optional range. Sorry, hole, and incomplete-proof items carry the goal that run_at sees at their run_at_position; run_at_position is omitted when no source position selects that goal. Code actions use one command snapshot selected by the range end; prefer a point inside the relevant syntax or a range within one command. An empty code-action result does not establish whole-range or whole-file completeness."
-  | .codeActionResolve => "Resolve and return a Lean code action payload from the todo result. If it contains an LSP WorkspaceEdit, the client must apply it."
-  | .runWith => s!"Speculatively continue from a stored handle without consuming it. The continuation is not persisted as source. To keep a result, first edit and save the Lean file so it contains the complete accepted source, then call {syncOperation}."
-  | .runWithLinear => s!"Speculatively continue from a stored handle and consume it on success or failure. The continuation is not persisted as source. To keep a result, first edit and save the Lean file so it contains the complete accepted source, then call {syncOperation}."
+  | .todo => "List actionable Lean todo items (sorries, holes, errors, incomplete proofs, code actions) in a file or range. Goal-bearing items include the goal run_at sees at run_at_position when selectable. Code actions inspect one command at the range end; empty code actions do not establish file-wide completeness."
+  | .codeActionResolve => "Resolve a Lean code action payload from todo. If it contains an LSP WorkspaceEdit, the client must apply it."
+  | .runWith => s!"Speculatively continue from a stored handle without consuming it (not persisted as source). To keep a result, first edit and save the Lean file with the full source, then call {syncOperation}."
+  | .runWithLinear => s!"Speculatively continue from a stored handle and consume it on success or failure (not persisted as source). To keep a result, first edit and save the Lean file with the full source, then call {syncOperation}."
   | .release => "Release a stored Lean follow-up handle."
-  | .update => "Read the current on-disk Lean source into the broker's LSP mirror and return its document version without waiting for diagnostics."
-  | .sync => "Read the current on-disk Lean source into the broker's LSP mirror, wait for diagnostics and readiness, and return its document version. This never applies or recovers speculative text."
-  | .refresh => "Refresh the tracked document from the current on-disk Lean source and wait for fresh diagnostics."
-  | .save => "Read and synchronize the current on-disk Lean source, then write Lean/Lake build artifacts as a zero-build development checkpoint when possible."
-  | .closeSave => "Read and synchronize the current on-disk Lean source, write the same Lean/Lake build artifacts when possible, and close the tracked LSP document."
+  | .update => "Read the current on-disk Lean source into the LSP mirror and return its version without waiting for diagnostics."
+  | .sync => "Read the current on-disk Lean source into the LSP mirror, wait for diagnostics and readiness, and return its version; never applies or recovers speculative text."
+  | .refresh => "Reopen the tracked document from the current on-disk Lean source and wait for fresh diagnostics."
+  | .save => "Read and sync the current on-disk Lean source, then write Lean/Lake build artifacts as a zero-build checkpoint when possible."
+  | .closeSave => "Read and sync the current on-disk Lean source, write Lean/Lake build artifacts when possible, and close the tracked document."
   | .close => "Close the tracked LSP document."
 
 /-- Transport-wide rule; MCP states it once in its server instructions. -/
@@ -120,7 +120,7 @@ private def executesSuppliedLeanText : Operation → Bool
   | _ => false
 
 private def speculativeCaveat : String :=
-  "Tactic probes reject new local `let rec` definitions, even valid ones; save the enclosing declaration and sync instead. Probes are not an OS sandbox: Lean code may perform IO."
+  "Tactic probes reject new local `let rec` (save and sync instead); not an OS sandbox (Lean code may perform IO)."
 
 /-- Describe an operation, naming the transport's sync operation in the keep-a-result guidance. -/
 def Operation.description (operation : Operation) (syncOperation : String := "the sync operation") :
@@ -130,78 +130,76 @@ def Operation.description (operation : Operation) (syncOperation : String := "th
       (if executesSuppliedLeanText operation then [speculativeCaveat] else [])
 
 private def pathField : String × Json :=
-  ("path", Beam.JsonSchema.string
-    "Absolute or relative path to a regular .lean source inside the workspace root.")
+  ("path", Beam.JsonSchema.string "Path to a .lean file inside the workspace.")
 
 private def versionField : String × Json :=
-  ("version", Beam.JsonSchema.natural "Document version returned by a successful update or sync operation for this file.")
+  ("version", Beam.JsonSchema.natural "Document version from update or sync.")
 
 private def lineField : String × Json :=
-  ("line", Beam.JsonSchema.natural "Zero-based LSP line.")
+  ("line", Beam.JsonSchema.natural "0-based LSP line.")
 
 private def characterField : String × Json :=
-  ("character", Beam.JsonSchema.natural "Zero-based UTF-16 LSP character.")
+  ("character", Beam.JsonSchema.natural "0-based UTF-16 LSP character.")
 
 private def rangeStartLineField : String × Json :=
-  ("start_line", Beam.JsonSchema.natural "Zero-based LSP start line. Pass all four range fields, or none for the whole file without code actions.")
+  ("start_line", Beam.JsonSchema.natural "0-based start line. Pass all four range fields, or omit all for whole file (no code actions).")
 
 private def rangeStartCharacterField : String × Json :=
-  ("start_character", Beam.JsonSchema.natural "Zero-based UTF-16 LSP start character.")
+  ("start_character", Beam.JsonSchema.natural "0-based UTF-16 start character.")
 
 private def rangeEndLineField : String × Json :=
-  ("end_line", Beam.JsonSchema.natural "Zero-based LSP end line.")
+  ("end_line", Beam.JsonSchema.natural "0-based end line.")
 
 private def rangeEndCharacterField : String × Json :=
-  ("end_character", Beam.JsonSchema.natural "Zero-based UTF-16 LSP end character.")
+  ("end_character", Beam.JsonSchema.natural "0-based UTF-16 end character.")
 
 private def runAtTextField : String × Json :=
-  ("text", Beam.JsonSchema.string "One Lean command or tactic block to run at the selected position. Top-level command sequences are not accepted by one runAt call.")
+  ("text", Beam.JsonSchema.string "One Lean command or tactic block to run (not multiple top-level commands).")
 
 private def continuationTextField : String × Json :=
-  ("text", Beam.JsonSchema.string "One Lean continuation command or tactic block to run from the stored handle.")
+  ("text", Beam.JsonSchema.string "One Lean command or tactic block to continue from the handle.")
 
 private def profileField : String × Json :=
   ("profile", Beam.JsonSchema.bool
-    "Set true to compare proof candidates with `elapsed_ms` and labeled inclusive costs in `summary`; retained `spans` remain available. For kernel and sharing costs, use `lean_run_at` on a complete declaration at its first doc comment, attribute, or keyword. Required on continuations of profiled handles; `#guard_msgs` unsupported. Lean failures may include profiles; parse failures do not. Spans may overlap or be partial. Profiling and label rendering add overhead.")
+    "Return elapsed_ms, labeled inclusive summary, and spans (adds overhead; required on continuations of profiled handles; #guard_msgs unsupported).")
 
 private def handleField : String × Json :=
-  ("handle", Beam.JsonSchema.object "Opaque broker-wrapped Lean handle from a previous tool result.")
+  ("handle", Beam.JsonSchema.object "Opaque handle from a prior Beam result.")
 
 private def releaseHandleField : String × Json :=
-  ("handle", Beam.JsonSchema.object "Opaque broker-wrapped Lean handle to release.")
+  ("handle", Beam.JsonSchema.object "Opaque Beam handle to release.")
 
 private def kindsField : String × Json :=
-  ("kinds", Beam.JsonSchema.enumStringArray "Todo kinds to include. Omit or pass [] for all kinds."
+  ("kinds", Beam.JsonSchema.enumStringArray "Todo kinds to include (omit or [] for all)."
     Beam.LSP.Todo.TodoKind.allKeys)
 
 private def includeDeclarationField : String × Json :=
-  ("include_declaration", Beam.JsonSchema.bool
-    "When true, include the declaration location in reference results. Defaults to true.")
+  ("include_declaration", Beam.JsonSchema.bool "Include declaration location (default true).")
 
 private def workspaceSymbolQueryField : String × Json :=
   ("query", Beam.JsonSchema.string "Workspace symbol search query.")
 
 private def goalsModeField : String × Json :=
-  ("mode", Beam.JsonSchema.enumString "Whether to inspect goals before or after the file position."
+  ("mode", Beam.JsonSchema.enumString "Inspect goals before or after the position."
     #["before", "after"])
 
 private def syncDiagnosticScopeField : String × Json :=
   ("diagnostic_scope", Beam.JsonSchema.enumString
-    "Select user-facing diagnostic severities for live logging or final replay. Defaults to errors. This setting does not control Lake setup status or silent editor-only messages."
+    "Diagnostic severities for logs/replay: errors (default) or all."
     #["errors", "all"])
 
 private def saveDiagnosticScopeField : String × Json :=
   ("diagnostic_scope", Beam.JsonSchema.enumString
-    "Select user-facing diagnostic severities for live logging. Defaults to errors. This setting does not control Lake setup status or silent editor-only messages."
+    "Diagnostic severities for live logs: errors (default) or all."
     #["errors", "all"])
 
 private def diagnosticsInResultField : String × Json :=
   ("diagnostics_in_result", Beam.JsonSchema.bool
-    "When true, include selected current diagnostics in the final sync result; diagnostic_scope controls the severity filter.")
+    "Replay diagnostics in diagnostics.items (default false). Leave false while fixing errors (already in readiness.blocking_diagnostics); set true only to inspect warnings/info once errors clear.")
 
 private def codeActionField : String × Json :=
   ("code_action", Beam.JsonSchema.object
-    "Raw Lean LSP CodeAction payload returned by the todo operation. The action must include its data field so Lean can resolve it against this document version.")
+    "Raw LSP CodeAction (with data) from todo.")
 
 private def positionFields : List (String × Json) :=
   [pathField, versionField, lineField, characterField]

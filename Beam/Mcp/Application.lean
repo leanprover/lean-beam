@@ -19,7 +19,7 @@ private def readIdentity (installation : Beam.Installation) : IO Beam.Version.Id
   }
 
 /-- Both installation adapters use exact membership lookup and retain the startup generation. -/
-def serverOptions (installation : Beam.Installation) : Server.Options := Id.run do
+def serverOptions (installation : Beam.Installation) (toolset : Toolset := .full) : Server.Options := Id.run do
   let resolve := fun (context : Beam.Runtime.Admission) (root : System.FilePath) => do
     if ← context.isCancelled then
       return .error <| runtimeSetupError "request was cancelled before runtime lookup"
@@ -36,6 +36,7 @@ def serverOptions (installation : Beam.Installation) : Server.Options := Id.run 
             return .error <| runtimeSetupError "workspace target changed; call lean_drop_workspace before selecting another installed target"
           pure (.ok ())
     identity := readIdentity installation
+    toolset
   }
 
 def main (args : List String) : IO Unit := do
@@ -44,6 +45,6 @@ def main (args : List String) : IO Unit := do
   if opts.showVersion then
     IO.println (← readIdentity installation).text
     return
-  Server.runStdio (serverOptions installation) { ordinary := opts.maxUnfinishedRequests }
+  Server.runStdio (serverOptions installation opts.toolset) { ordinary := opts.maxUnfinishedRequests }
 
 end Beam.Mcp.Application

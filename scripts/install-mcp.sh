@@ -160,7 +160,11 @@ set_codex_parallel_tool_calls() {
 register_codex_mcp_server() {
   ensure_mcp_config_dir "$codex_home" "Codex home"
   ensure_codex_mcp_config_replaceable
-  CODEX_HOME="$codex_home" codex mcp add lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
+  if [ "$mcp_toolset" = "core" ]; then
+    CODEX_HOME="$codex_home" codex mcp add lean-beam -- "$bin_home/lean-beam-mcp" --toolset core >/dev/null
+  else
+    CODEX_HOME="$codex_home" codex mcp add lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
+  fi
   set_codex_parallel_tool_calls
   registered_mcp_targets+=("Codex: lean-beam")
 }
@@ -168,7 +172,11 @@ register_codex_mcp_server() {
 register_claude_mcp_server() {
   ensure_mcp_config_dir "$claude_mcp_home" "Claude Code MCP config home"
   HOME="$claude_mcp_home" claude mcp remove --scope user lean-beam >/dev/null 2>&1 || true
-  HOME="$claude_mcp_home" claude mcp add --scope user lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
+  if [ "$mcp_toolset" = "core" ]; then
+    HOME="$claude_mcp_home" claude mcp add --scope user lean-beam -- "$bin_home/lean-beam-mcp" --toolset core >/dev/null
+  else
+    HOME="$claude_mcp_home" claude mcp add --scope user lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
+  fi
   registered_mcp_targets+=("Claude Code: lean-beam")
 }
 
@@ -256,7 +264,11 @@ register_vibe_mcp_server() {
     printf 'name = "lean-beam"\n'
     printf 'transport = "stdio"\n'
     printf 'command = ["%s"]\n' "$mcp_command"
-    printf 'args = []\n'
+    if [ "$mcp_toolset" = "core" ]; then
+      printf 'args = ["--toolset", "core"]\n'
+    else
+      printf 'args = []\n'
+    fi
     printf 'tool_timeout_sec = 600\n'
   } >>"$tmp_config"
   mv "$tmp_config" "$vibe_mcp_config"

@@ -1139,6 +1139,49 @@ assert_contains_literal "$opencode_mcp_transcript" "command            $installe
 assert_not_exists "$OPENCODE_CONFIG_DIR/opencode.json"
 remove_tmp_file "$opencode_mcp_transcript"
 
+core_codex_home="$tmp_root/codex-core-sandbox"
+core_codex_stub_log="$tmp_root/mcp-stubs-core-codex.log"
+run_step "register Codex MCP with --mcp-toolset core" \
+  beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$core_codex_stub_log" \
+    --toolchain "$toolchain" --codex-mcp --mcp-toolset core --codex-home "$core_codex_home"
+assert_contains_literal "$core_codex_stub_log" \
+  "codex|mcp|add|lean-beam|--|$installed_mcp|--toolset|core|CODEX_HOME=$core_codex_home"
+assert_contains_literal "$core_codex_home/config.toml" 'supports_parallel_tool_calls = true'
+
+core_claude_home="$tmp_root/claude-core-sandbox"
+core_claude_config="$core_claude_home/.claude.json"
+core_claude_stub_log="$tmp_root/mcp-stubs-core-claude.log"
+run_step "register Claude MCP with --mcp-toolset core" \
+  beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$core_claude_stub_log" \
+    --toolchain "$toolchain" --claude-mcp --mcp-toolset core --claude-mcp-config "$core_claude_config"
+assert_contains_literal "$core_claude_stub_log" \
+  "claude|mcp|add|--scope|user|lean-beam|--|$installed_mcp|--toolset|core|HOME=$core_claude_home"
+
+core_vibe_home="$tmp_root/vibe-core-sandbox"
+run_step "register Mistral Vibe MCP with --mcp-toolset core" \
+  bash "$source_checkout/scripts/install-beam.sh" --dont-ask --toolchain "$toolchain" \
+    --vibe-mcp --mcp-toolset core --vibe-home "$core_vibe_home"
+assert_contains_literal "$core_vibe_home/config.toml" 'args = ["--toolset", "core"]'
+
+core_opencode_transcript="$tmp_root/opencode-mcp-core-transcript"
+run_step "show OpenCode MCP setup with --mcp-toolset core" \
+  bash "$source_checkout/scripts/install-beam.sh" --dont-ask --toolchain "$toolchain" \
+    --opencode-mcp --mcp-toolset core >"$core_opencode_transcript" 2>&1
+assert_contains_literal "$core_opencode_transcript" "command            $installed_mcp --toolset core"
+remove_tmp_file "$core_opencode_transcript"
+
+invalid_toolset_err="$(mktemp "$tmp_root/invalid-mcp-toolset-XXXXXX")"
+if (
+  cd "$source_checkout"
+  bash scripts/install-beam.sh --dont-ask --codex-mcp --mcp-toolset bogus >/dev/null 2>"$invalid_toolset_err"
+); then
+  echo "expected invalid --mcp-toolset value to fail" >&2
+  remove_tmp_file "$invalid_toolset_err"
+  exit 1
+fi
+assert_contains "$invalid_toolset_err" "invalid value for --mcp-toolset: bogus"
+remove_tmp_file "$invalid_toolset_err"
+
 relative_codex_home_err="$(mktemp "$tmp_root/codex-mcp-relative-home-XXXXXX")"
 if (
   cd "$source_checkout"

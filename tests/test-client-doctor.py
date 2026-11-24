@@ -373,8 +373,19 @@ class ClientDoctorTest(unittest.TestCase):
                        f"command={json.dumps(command)}\nargs={json.dumps(list(args))}\n")
         write_command([str(self.executable)])
         self.assertEqual(self.run_doctor("vibe")["clients"][0]["mcp"], "checked")
+        for command, args in [([str(self.executable)], ["--toolset", "core"]),
+                              ([str(self.executable)], ["--toolset", "full"]),
+                              ([str(self.executable)], ["--toolset=core"]),
+                              ([str(self.executable), "--toolset", "core"], [])]:
+            with self.subTest(supported_command=command, supported_args=args):
+                write_command(command, args)
+                report = self.run_doctor("vibe")
+                self.assertEqual(report["clients"][0]["mcp"], "checked")
+                self.assertNotIn("launch.arguments", {f["code"] for f in self.findings(report)})
         for command, args in [([str(self.executable), "DOCTOR_SECRET_SENTINEL"], []),
-                              ([str(self.executable)], ["DOCTOR_SECRET_SENTINEL"])]:
+                              ([str(self.executable)], ["DOCTOR_SECRET_SENTINEL"]),
+                              ([str(self.executable)], ["--toolset", "DOCTOR_SECRET_SENTINEL"]),
+                              ([str(self.executable)], ["--toolset", "core", "DOCTOR_SECRET_SENTINEL"])]:
             with self.subTest(command=command, args=args):
                 write_command(command, args)
                 report = self.run_doctor("vibe", expected=2)

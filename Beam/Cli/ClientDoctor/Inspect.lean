@@ -539,6 +539,13 @@ private def prepareOpenCodeEntry (entry : Entry) (report : ClientReport) : Optio
     "This OpenCode source must define a complete local server or an enabled boolean override."
     entry.source entry.key "Use type = local and a command array, or an enabled-only override.")
 
+private def isSupportedBeamMcpArgs (args : Array String) : Bool :=
+  args.isEmpty ||
+    args == #["--toolset", "full"] ||
+    args == #["--toolset", "core"] ||
+    args == #["--toolset=full"] ||
+    args == #["--toolset=core"]
+
 private def inspectEntry (client : Client) (entry : Entry)
     (report : ClientReport) (checkLaunch : Bool) : IO ClientReport := do
   let value := entry.value
@@ -586,7 +593,8 @@ private def inspectEntry (client : Client) (entry : Entry)
           report := add report .mcp "launch.overrides" .unknown
             "Tool filters, environment, or working-directory overrides are configured; their effect is not verified."
             entry.source (entry.key ++ "." ++ key)
-      if !args.isEmpty then
+      if !args.isEmpty &&
+          !(isMcpExecutable (System.FilePath.mk command) && isSupportedBeamMcpArgs args) then
         report := add report .mcp "launch.arguments" .unknown
           "Additional launch arguments are configured; their behavior is not verified." entry.source entry.key
       -- Vibe splits string commands (POSIX shlex; Windows preserves backslashes).
