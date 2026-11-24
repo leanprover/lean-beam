@@ -70,9 +70,40 @@ verify_requested_mcp_clients() {
   if [ "$register_agy_mcp" -eq 1 ]; then
     validate_agy_home
     ensure_agy_mcp_config_replaceable
-    if ! command -v agy >/dev/null 2>&1; then
-      die "cannot register Antigravity MCP server because agy is not on PATH"
-    fi
+  fi
+}
+
+require_agy_mcp_config_editable() {
+  local validation_error=""
+  if ! command -v python3 >/dev/null 2>&1; then
+    die "cannot register Antigravity MCP server because neither agy nor python3 is on PATH"
+  fi
+  if [ ! -f "$agy_mcp_config" ]; then
+    return 0
+  fi
+  if ! validation_error="$(python3 - "$agy_mcp_config" 2>&1 <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+try:
+    raw = path.read_text(encoding="utf-8")
+except (OSError, UnicodeDecodeError) as exc:
+    raise SystemExit(str(exc))
+if not raw.strip():
+    raise SystemExit(0)
+try:
+    config = json.loads(raw)
+except json.JSONDecodeError as exc:
+    raise SystemExit(str(exc))
+if not isinstance(config, dict):
+    raise SystemExit("root JSON value must be an object")
+if "mcpServers" in config and not isinstance(config["mcpServers"], dict):
+    raise SystemExit("'mcpServers' must be a JSON object")
+PY
+)"; then
+    die "refusing to edit invalid Antigravity MCP config at $agy_mcp_config: $validation_error"
   fi
 }
 
@@ -82,6 +113,9 @@ ensure_agy_mcp_config_replaceable() {
   fi
   if [ -e "$agy_mcp_config" ] && [ ! -f "$agy_mcp_config" ]; then
     die "refusing to edit non-file Antigravity MCP config at $agy_mcp_config"
+  fi
+  if ! command -v agy >/dev/null 2>&1; then
+    require_agy_mcp_config_editable
   fi
 }
 
@@ -284,10 +318,55 @@ register_vibe_mcp_server() {
   registered_mcp_targets+=("Mistral Vibe: lean-beam")
 }
 
+write_agy_mcp_config_direct() {
+  local tmp_config=""
+  local mcp_command="$bin_home/lean-beam-mcp"
+  local write_error=""
+  confirm_path_edit "register lean-beam MCP server in the Antigravity config" "$agy_mcp_config"
+  tmp_config="$(mktemp "$agy_config_dir/.mcp_config.json.lean-beam-XXXXXX")"
+  if ! write_error="$(python3 - "$agy_mcp_config" "$tmp_config" "$mcp_command" 2>&1 <<'PY'
+import json
+from pathlib import Path
+import sys
+
+config_path = Path(sys.argv[1])
+tmp_path = Path(sys.argv[2])
+mcp_command = sys.argv[3]
+
+if config_path.exists():
+    raw = config_path.read_text(encoding="utf-8")
+    config = json.loads(raw) if raw.strip() else {}
+else:
+    config = {}
+if not isinstance(config, dict):
+    raise SystemExit("root JSON value must be an object")
+servers = config.get("mcpServers")
+if servers is None:
+    servers = {}
+    config["mcpServers"] = servers
+elif not isinstance(servers, dict):
+    raise SystemExit("'mcpServers' must be a JSON object")
+servers["lean-beam"] = {
+    "command": mcp_command,
+    "disabled": False,
+}
+tmp_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+PY
+)"; then
+    rm -f -- "$tmp_config"
+    die "failed to update Antigravity MCP config at $agy_mcp_config: $write_error"
+  fi
+  mv "$tmp_config" "$agy_mcp_config"
+}
+
 register_agy_mcp_server() {
   ensure_mcp_config_dir "$agy_config_dir" "Antigravity config dir"
   ensure_agy_mcp_config_replaceable
-  HOME="$agy_home" agy mcp add lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
+  if command -v agy >/dev/null 2>&1; then
+    HOME="$agy_home" agy mcp add lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
+  else
+    write_agy_mcp_config_direct
+  fi
   registered_mcp_targets+=("Antigravity: lean-beam")
 }
 

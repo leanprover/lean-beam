@@ -728,6 +728,9 @@ workflow does not require MCP.
 Both installation paths provide the experimental stdio MCP server as `lean-beam-mcp`.
 The checkout installer can register its server automatically for Codex, Claude Code, Mistral Vibe,
 or Antigravity (`agy`).
+For Antigravity, the installer runs `agy mcp add` when `agy` is on `PATH` and otherwise edits
+`~/.gemini/config/mcp_config.json` directly (preserving existing servers and refusing symlinks or
+invalid JSON).
 For Mistral Vibe, the installer edits `~/.vibe/config.toml` directly: it replaces any existing `lean-beam` entry in
 `[[mcp_servers]]`, removes Vibe's default empty `mcp_servers = []` line (TOML forbids extending an
 inline array with `[[mcp_servers]]` tables), and leaves other entries untouched. If the config
@@ -912,9 +915,15 @@ tool_timeout_sec = 600
 
 ### Antigravity (`agy`)
 
-`agy mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"` registers the server in
-`~/.gemini/config/mcp_config.json`. To configure it manually instead, add or update the `lean-beam`
-entry under `mcpServers`:
+`./scripts/install-beam.sh --agy --agy-mcp` installs the Antigravity skill and registers
+`lean-beam-mcp` for both the Antigravity Desktop App / IDE (no `agy` CLI required) and the `agy`
+CLI. When `agy` is on `PATH`, the installer runs
+`agy mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"`; otherwise it updates
+`~/.gemini/config/mcp_config.json` directly.
+
+MCP stdio (`lean-beam-mcp`) is recommended in Antigravity so agent sessions avoid terminal-sandbox
+loopback TCP restrictions. To configure `~/.gemini/config/mcp_config.json` manually instead, add or
+update the `lean-beam` entry under `mcpServers`:
 
 ```json
 {

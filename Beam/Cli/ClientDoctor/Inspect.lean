@@ -750,7 +750,7 @@ private def mcpSetupRemediation? (client : Client) (explicitConfig : Bool) : Opt
     | .claude => some "run `claude mcp add --scope user lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`"
     | .opencode => some "run `opencode mcp add` with name lean-beam, type local, and your installed MCP server's absolute path"
     | .vibe => some "add the documented `[[mcp_servers]]` entry to your Vibe configuration"
-    | .agy => some "run `agy mcp add lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`"
+    | .agy => some "run `agy mcp add lean-beam -- \"/absolute/path/to/lean-beam-mcp\"` or add the documented `mcpServers.lean-beam` entry to `~/.gemini/config/mcp_config.json`"
     | .pi => none
   action?.map fun action =>
     if explicitConfig then
