@@ -1308,6 +1308,31 @@ assert config == {
 }, config
 PY
 
+bom_agy_home="$tmp_root/agy-bom"
+mkdir -p "$bom_agy_home/.gemini/config"
+python3 - "$bom_agy_home/.gemini/config/mcp_config.json" <<'PY'
+from pathlib import Path
+import sys
+Path(sys.argv[1]).write_bytes(b'\xef\xbb\xbf{"mcpServers": {"other": {"command": "/bin/echo"}}}\n')
+PY
+run_step "register Antigravity MCP when mcp_config.json has UTF-8 BOM" \
+  env PATH="$path_no_agy" bash "$source_checkout/scripts/install-beam.sh" --dont-ask \
+    --toolchain "$toolchain" --agy-mcp --agy-home "$bom_agy_home" > /dev/null
+python3 - "$bom_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    config = json.load(f)
+assert config == {
+    "mcpServers": {
+        "other": {"command": "/bin/echo"},
+        "lean-beam": {
+            "command": sys.argv[2],
+            "disabled": False,
+        },
+    }
+}, config
+PY
+
 bad_json_agy_home="$tmp_root/agy-bad-json"
 bad_json_agy_err="$tmp_root/agy-bad-json.err"
 mkdir -p "$bad_json_agy_home/.gemini/config"
@@ -1339,6 +1364,22 @@ fi
 assert_contains "$bad_servers_agy_err" "refusing to edit invalid Antigravity MCP config"
 assert_contains_literal "$bad_servers_agy_home/.gemini/config/mcp_config.json" '{"mcpServers": []}'
 remove_tmp_file "$bad_servers_agy_err"
+
+null_servers_agy_home="$tmp_root/agy-null-servers"
+null_servers_agy_err="$tmp_root/agy-null-servers.err"
+mkdir -p "$null_servers_agy_home/.gemini/config"
+printf '{"mcpServers": null}\n' >"$null_servers_agy_home/.gemini/config/mcp_config.json"
+if (
+  cd "$source_checkout"
+  PATH="$path_no_agy" bash scripts/install-beam.sh --dont-ask --toolchain "$toolchain" \
+    --agy-mcp --agy-home "$null_servers_agy_home" >/dev/null 2>"$null_servers_agy_err"
+); then
+  echo "expected direct Antigravity MCP registration to refuse null mcpServers" >&2
+  exit 1
+fi
+assert_contains "$null_servers_agy_err" "refusing to edit invalid Antigravity MCP config"
+assert_contains_literal "$null_servers_agy_home/.gemini/config/mcp_config.json" '{"mcpServers": null}'
+remove_tmp_file "$null_servers_agy_err"
 
 direct_symlink_agy_home="$tmp_root/agy-direct-symlink"
 direct_symlink_agy_dir="$direct_symlink_agy_home/.gemini/config"

@@ -859,7 +859,12 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
         report := { report with
           discovered := true
           sources := report.sources.push { path := source.path.toString, role := source.role, conditional := source.conditional, state := .ok } }
-        match ← parseConfig source.format text with
+        let parsed ←
+          if client == .agy && text.trimAscii.toString.isEmpty then
+            pure <| .ok (Json.mkObj [])
+          else
+            parseConfig source.format text
+        match parsed with
         | .error () =>
             sourcesComplete := false
             report := add report configArea "config.syntax" .error
