@@ -237,6 +237,39 @@ path_without_elan() {
   )
 }
 
+path_without_agy() {
+  local old_ifs="$IFS"
+  local dir=""
+  local filtered=()
+  local shadow_idx=0
+  local shadow_dir=""
+  local entry=""
+  IFS=':'
+  for dir in $PATH; do
+    [ -n "$dir" ] || dir="."
+    if [ -x "$dir/agy" ]; then
+      if [ -x "$dir/elan" ] || [ -x "$dir/python3" ] || [ -x "$dir/bash" ] || [ -x "$dir/sh" ]; then
+        shadow_dir="$tmp_root/no-agy-bin-$shadow_idx"
+        shadow_idx=$((shadow_idx + 1))
+        mkdir -p "$shadow_dir"
+        for entry in "$dir"/*; do
+          [ -e "$entry" ] || continue
+          [ "$(basename "$entry")" = "agy" ] && continue
+          ln -s "$entry" "$shadow_dir/$(basename "$entry")"
+        done
+        filtered+=("$shadow_dir")
+      fi
+      continue
+    fi
+    filtered+=("$dir")
+  done
+  IFS="$old_ifs"
+  (
+    IFS=':'
+    printf '%s' "${filtered[*]}"
+  )
+}
+
 assert_no_construction_state() {
   local install_root="$1"
   local version=""
@@ -1203,6 +1236,128 @@ fi
 assert_contains "$symlink_agy_err" "refusing to edit symlinked Antigravity MCP config"
 assert_contains_literal "$symlink_agy_target" '"sentinel":"preserve"'
 assert_not_exists "$symlink_agy_stub_log"
+
+path_no_agy="$(path_without_agy)"
+if PATH="$path_no_agy" command -v agy >/dev/null 2>&1; then
+  echo "failed to construct a PATH without agy for direct Antigravity MCP tests" >&2
+  exit 1
+fi
+
+direct_agy_home="$tmp_root/agy-direct"
+preseed_elan_home "$HOME/.elan" ${validated_toolchains[@]+"${validated_toolchains[@]}"}
+run_step "register Antigravity MCP directly without agy CLI" \
+  env PATH="$path_no_agy" bash "$source_checkout/scripts/install-beam.sh" --dont-ask \
+    --toolchain "$toolchain" --agy-mcp --agy-home "$direct_agy_home" > /dev/null
+assert_file "$direct_agy_home/.gemini/config/mcp_config.json"
+python3 - "$direct_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    config = json.load(f)
+assert config["mcpServers"]["lean-beam"] == {
+    "command": sys.argv[2],
+    "disabled": False,
+}, config
+PY
+
+cat >"$direct_agy_home/.gemini/config/mcp_config.json" <<'EOF'
+{
+  "custom": 1,
+  "mcpServers": {
+    "other": {
+      "command": "/bin/echo"
+    },
+    "lean-beam": {
+      "command": "/old",
+      "disabled": true
+    }
+  }
+}
+EOF
+run_step "re-register Antigravity MCP directly preserving existing entries" \
+  env PATH="$path_no_agy" bash "$source_checkout/scripts/install-beam.sh" --dont-ask \
+    --toolchain "$toolchain" --agy-mcp --agy-home "$direct_agy_home" > /dev/null
+python3 - "$direct_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    config = json.load(f)
+assert config["custom"] == 1, config
+assert config["mcpServers"]["other"] == {"command": "/bin/echo"}, config
+assert config["mcpServers"]["lean-beam"] == {
+    "command": sys.argv[2],
+    "disabled": False,
+}, config
+PY
+
+empty_agy_home="$tmp_root/agy-empty"
+mkdir -p "$empty_agy_home/.gemini/config"
+: >"$empty_agy_home/.gemini/config/mcp_config.json"
+run_step "register Antigravity MCP when mcp_config.json is 0-byte empty" \
+  env PATH="$path_no_agy" bash "$source_checkout/scripts/install-beam.sh" --dont-ask \
+    --toolchain "$toolchain" --agy-mcp --agy-home "$empty_agy_home" > /dev/null
+python3 - "$empty_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    config = json.load(f)
+assert config == {
+    "mcpServers": {
+        "lean-beam": {
+            "command": sys.argv[2],
+            "disabled": False,
+        }
+    }
+}, config
+PY
+
+bad_json_agy_home="$tmp_root/agy-bad-json"
+bad_json_agy_err="$tmp_root/agy-bad-json.err"
+mkdir -p "$bad_json_agy_home/.gemini/config"
+printf '{not json\n' >"$bad_json_agy_home/.gemini/config/mcp_config.json"
+if (
+  cd "$source_checkout"
+  PATH="$path_no_agy" bash scripts/install-beam.sh --dont-ask --toolchain "$toolchain" \
+    --agy-mcp --agy-home "$bad_json_agy_home" >/dev/null 2>"$bad_json_agy_err"
+); then
+  echo "expected direct Antigravity MCP registration to refuse malformed JSON" >&2
+  exit 1
+fi
+assert_contains "$bad_json_agy_err" "refusing to edit invalid Antigravity MCP config"
+assert_contains_literal "$bad_json_agy_home/.gemini/config/mcp_config.json" '{not json'
+remove_tmp_file "$bad_json_agy_err"
+
+bad_servers_agy_home="$tmp_root/agy-bad-servers"
+bad_servers_agy_err="$tmp_root/agy-bad-servers.err"
+mkdir -p "$bad_servers_agy_home/.gemini/config"
+printf '{"mcpServers": []}\n' >"$bad_servers_agy_home/.gemini/config/mcp_config.json"
+if (
+  cd "$source_checkout"
+  PATH="$path_no_agy" bash scripts/install-beam.sh --dont-ask --toolchain "$toolchain" \
+    --agy-mcp --agy-home "$bad_servers_agy_home" >/dev/null 2>"$bad_servers_agy_err"
+); then
+  echo "expected direct Antigravity MCP registration to refuse non-object mcpServers" >&2
+  exit 1
+fi
+assert_contains "$bad_servers_agy_err" "refusing to edit invalid Antigravity MCP config"
+assert_contains_literal "$bad_servers_agy_home/.gemini/config/mcp_config.json" '{"mcpServers": []}'
+remove_tmp_file "$bad_servers_agy_err"
+
+direct_symlink_agy_home="$tmp_root/agy-direct-symlink"
+direct_symlink_agy_dir="$direct_symlink_agy_home/.gemini/config"
+direct_symlink_agy_target="$tmp_root/agy-direct-symlink-target.json"
+direct_symlink_agy_err="$tmp_root/agy-direct-symlink.err"
+mkdir -p "$direct_symlink_agy_dir"
+printf '{"sentinel":"preserve"}\n' >"$direct_symlink_agy_target"
+ln -s "$direct_symlink_agy_target" "$direct_symlink_agy_dir/mcp_config.json"
+if (
+  cd "$source_checkout"
+  PATH="$path_no_agy" bash scripts/install-beam.sh --dont-ask --toolchain "$toolchain" \
+    --agy-mcp --agy-home "$direct_symlink_agy_home" >/dev/null 2>"$direct_symlink_agy_err"
+); then
+  echo "expected direct Antigravity MCP registration to reject a symlinked config" >&2
+  exit 1
+fi
+assert_contains "$direct_symlink_agy_err" "refusing to edit symlinked Antigravity MCP config"
+assert_contains_literal "$direct_symlink_agy_target" '"sentinel":"preserve"'
+remove_tmp_file "$direct_symlink_agy_err"
 
 opencode_mcp_transcript="$tmp_root/opencode-mcp-manual-transcript"
 preseed_elan_home "$HOME/.elan" "$toolchain"
