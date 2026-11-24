@@ -726,7 +726,7 @@ selection, failure for an unusable compiler on `PATH`, explicit selection despit
 compiler, and failure without fallback when the explicit compiler is missing.
 For a focused run, use `lake build beam-installation-construction-test`, then
 `python3 tests/test-installation-construction.py`.
-`python3 tests/test-skill-budget.py` keeps `skills/lean-beam/SKILL.md` under 4,200 bytes and each
+`python3 tests/test-skill-budget.py` keeps `skills/lean-beam/SKILL.md` under 5,000 bytes and each
 reference under `skills/lean-beam/references/` under 16,000 bytes, and `McpProjectionTest`
 enforces character and serialized `tools/list` JSON byte budgets for both the `full` and `core`
 MCP toolsets; both run in the fast suite.

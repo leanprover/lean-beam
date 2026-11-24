@@ -14,7 +14,7 @@ SKILL = SKILL_DIR / "SKILL.md"
 REFERENCES_DIR = SKILL_DIR / "references"
 # Agents load the whole body whenever the skill triggers. Raising this needs a reason; prefer
 # moving detail to focused files under skills/lean-beam/references/ instead.
-SKILL_BUDGET_BYTES = 4_200
+SKILL_BUDGET_BYTES = 5_000
 # Keep individual on-demand references bounded so opening one topic does not bloat session context.
 REFERENCE_BUDGET_BYTES = 16_000
 

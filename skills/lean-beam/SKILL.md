@@ -29,17 +29,20 @@ Beam only reads saved `.lean` files and never edits them.
 2. Sync to update the mirror, wait for diagnostics, and get `version`, `save_ready`, and
    `blocking_diagnostics`:
    ```bash
-   lean-beam sync Foo.lean                  # add +all-diagnostics for warnings
-   lean-beam run-at Foo.lean 1 10 2 "omega" # or --stdin / --text-file / --profile
-   lean-beam save MyPkg/Sub/Module.lean     # optional zero-build checkpoint (one module)
+   lean-beam sync Foo.lean                        # add +all-diagnostics for warnings
+   lean-beam run-at Foo.lean VERSION 10 2 "omega" # or --stdin / --text-file / --profile
+   lean-beam save MyPkg/Sub/Module.lean           # optional zero-build checkpoint (one module)
    ```
-   (MCP: call `lean_sync` without `diagnostics_in_result` while fixing errors; set `true` only to
-   check warnings.)
-3. Always pass the `version` returned by the latest `sync`, `update`, or `refresh` (use `update`
-   only to get a version without waiting for diagnostics; `refresh` after upstream dependency edits).
-4. Other commands when needed: `goals before|after`, `todo`, `close-save`, `hover`,
-   `signature-help`, `definition`, `references`, `document-symbols`, `workspace-symbols`, handles
-   (`run-at-handle`, `run-with`, `run-with-linear`, `release`, `lean-beam-search`).
+   (MCP: leave `diagnostics_in_result` unset for routine error fixes; set `true` for warnings/info
+   or multiline formatting.)
+3. Always pass the `version` returned by the latest `sync`, `update`, or `refresh` — never guess a
+   version. Use `update` only to grab a version without waiting for diagnostics. Across files:
+   `save` the dependency, then `refresh` its importers in dependency order (`save` alone neither
+   reloads nor validates importers).
+4. Other commands when needed: `goals before|after`, `todo` (code actions require an explicit
+   range), `close-save`, `hover`, `signature-help`, `definition`, `references`, `document-symbols`,
+   `workspace-symbols`, handles (`run-at-handle`, `run-with`, `run-with-linear`, `release`,
+   `lean-beam-search`; handles are invalidated by same-document edits, close, or restart).
 5. Do not call `stats`, `doctor`, or `open-files` during routine work; use only for failure triage.
 
 ## `run-at` Rules
@@ -51,9 +54,10 @@ Beam only reads saved `.lean` files and never edits them.
   `todo` item's `run_at_position`), `run-at` starts from that goal.
 - Isolated in elaboration state (safe in parallel), not an OS sandbox (Lean code may run IO).
   Returns no file diagnostics; edit and `sync` to commit.
-- Command positions take one command; tactic positions take a tactic sequence (same column or `;`,
-  no leading `by`, no re-indent — use `--stdin` for multiline). Tactic probes reject new local
-  `let rec` (save and `sync` instead).
+- Command positions take one command; tactic positions take a tactic sequence (no leading `by`).
+  The first line of probe text is column `0`, and continuation lines also start at column `0` — not
+  the file's indentation (use `;` or column-0 lines, and `--stdin` for multiline). Tactic probes
+  reject new local `let rec` (save and `sync` instead).
 
 ## Output, Cancellation & Stop Rules
 
@@ -63,7 +67,8 @@ Beam only reads saved `.lean` files and never edits them.
 - Cancellation is soft: client exit does not prove backend settlement or undo a committed save.
 - Before `lake build`, stop CLI owners / drop MCP workspaces, confirm cleanup, then recreate
   afterward. Prefer clean CI `lake build` over rebuilding after every checkpoint.
-- `save_ready` can include `sorry` warnings and is not adversarial proof confirmation.
+- `save_ready` can include `sorry` warnings and is not adversarial proof confirmation. When probes
+  stop clarifying, change approach rather than retrying small variations.
 
 ## References (open only when needed)
 
