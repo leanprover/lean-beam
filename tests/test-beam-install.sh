@@ -1146,6 +1146,7 @@ run_step "register Codex MCP with --mcp-toolset core" \
     --toolchain "$toolchain" --codex-mcp --mcp-toolset core --codex-home "$core_codex_home"
 assert_contains_literal "$core_codex_stub_log" \
   "codex|mcp|add|lean-beam|--|$installed_mcp|--toolset|core|CODEX_HOME=$core_codex_home"
+assert_contains_literal "$core_codex_home/config.toml" 'args = ["--toolset", "core"]'
 assert_contains_literal "$core_codex_home/config.toml" 'supports_parallel_tool_calls = true'
 
 core_claude_home="$tmp_root/claude-core-sandbox"
@@ -1156,6 +1157,7 @@ run_step "register Claude MCP with --mcp-toolset core" \
     --toolchain "$toolchain" --claude-mcp --mcp-toolset core --claude-mcp-config "$core_claude_config"
 assert_contains_literal "$core_claude_stub_log" \
   "claude|mcp|add|--scope|user|lean-beam|--|$installed_mcp|--toolset|core|HOME=$core_claude_home"
+assert_contains_literal "$core_claude_config" '"args": ["--toolset", "core"]'
 
 core_vibe_home="$tmp_root/vibe-core-sandbox"
 run_step "register Mistral Vibe MCP with --mcp-toolset core" \
