@@ -33,8 +33,8 @@ Beam only reads saved `.lean` files and never edits them.
    lean-beam run-at Foo.lean VERSION 10 2 "omega" # or --stdin / --text-file / --profile
    lean-beam save MyPkg/Sub/Module.lean           # optional zero-build checkpoint (one module)
    ```
-   (MCP: leave `diagnostics_in_result` unset for routine error fixes; set `true` for warnings/info
-   or multiline formatting.)
+   (MCP: leave `diagnostics_in_result` unset for routine error fixes; set `true` for multiline
+   errors, plus `diagnostic_scope: "all"` for warnings/info.)
 3. Always pass the `version` returned by the latest `sync`, `update`, or `refresh` — never guess a
    version. Use `update` only to grab a version without waiting for diagnostics. Across files:
    `save` the dependency, then `refresh` its importers in dependency order (`save` alone neither
@@ -55,9 +55,9 @@ Beam only reads saved `.lean` files and never edits them.
 - Isolated in elaboration state (safe in parallel), not an OS sandbox (Lean code may run IO).
   Returns no file diagnostics; edit and `sync` to commit.
 - Command positions take one command; tactic positions take a tactic sequence (no leading `by`).
-  The first line of probe text is column `0`, and continuation lines also start at column `0` — not
-  the file's indentation (use `;` or column-0 lines, and `--stdin` for multiline). Tactic probes
-  reject new local `let rec` (save and `sync` instead).
+  The probe's first line is column `0`; align sibling tactics at column `0` (not the file's
+  indentation) and preserve nested indentation for sub-blocks such as `have ... := by` (use `;`
+  or `--stdin` for multiline). Tactic probes reject new local `let rec` (save and `sync` instead).
 
 ## Output, Cancellation & Stop Rules
 
