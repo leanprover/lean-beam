@@ -153,29 +153,8 @@ exit 0
 SH
   cat > "$stub_bin/agy" <<'SH'
 #!/usr/bin/env bash
-{
-  printf 'agy'
-  for arg in "$@"; do
-    printf '|%s' "$arg"
-  done
-  printf '|HOME=%s' "${HOME:-}"
-  printf '\n'
-} >> "$BEAM_TEST_MCP_STUB_LOG"
-if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "add" ] && [ "${3:-}" = "lean-beam" ]; then
-  python3 - "$HOME/.gemini/config/mcp_config.json" "${5:?}" <<'PY_AGY'
-import json
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-config = json.loads(path.read_text()) if path.exists() else {}
-config.setdefault("mcpServers", {})["lean-beam"] = {
-    "command": sys.argv[2], "disabled": False,
-}
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(config))
-PY_AGY
-fi
-exit 0
+printf 'agy must not be invoked\n' >> "$BEAM_TEST_MCP_STUB_LOG"
+exit 1
 SH
   chmod +x "$stub_bin/codex" "$stub_bin/claude" "$stub_bin/agy"
 }

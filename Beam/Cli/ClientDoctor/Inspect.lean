@@ -226,11 +226,15 @@ private def splitClaudePermissions (value : Json) : Json × Json := Id.run do
     tools := tools.push (key, setting)
   return (Json.mkObj tools.toList, .arr skills)
 
+private def toolFilterKeys (client : Client) : List String :=
+  ["enabled_tools", "disabled_tools"] ++
+    (if client == .agy then ["enabledTools", "disabledTools"] else [])
+
 private def collectPolicies (client : Client) (source : ConfigSource) (value : Json) : Array PolicySetting := Id.run do
   let setting (key : String) (value : Json) (area : CheckArea := .mcp) : PolicySetting :=
     { source := source.path.toString, key, value, area, conditional := source.conditional }
   let mut result := #[]
-  for key in ["permissions", "permission", "tools", "enabled_tools", "disabled_tools", "skills"] do
+  for key in ["permissions", "permission", "tools"] ++ toolFilterKeys client ++ ["skills"] do
     if client == .pi && key == "skills" then continue
     let some raw := field? value key | continue
     if key == "skills" then
@@ -622,7 +626,7 @@ private def inspectEntry (client : Client) (entry : Entry)
         report := add report .mcp "codex.parallelCalls" .warning
           "supports_parallel_tool_calls is not true; Beam's documented Codex adapter recommends it for independent probes."
           entry.source (entry.key ++ ".supports_parallel_tool_calls")
-      for key in ["enabled_tools", "disabled_tools", "env", "environment", "cwd"] do
+      for key in toolFilterKeys client ++ ["env", "environment", "cwd"] do
         if (field? value key).any (fun setting => setting != Json.mkObj [] && setting != .arr #[]) then
           report := add report .mcp "launch.overrides" .unknown
             "Tool filters, environment, or working-directory overrides are configured; their effect is not verified."
@@ -744,13 +748,17 @@ private def mergeOpenCode (entries : Array OpenCodeSourceEntry) : Array Entry :=
     else result := result.push entry
   return result
 
-private def mcpSetupRemediation? (client : Client) (explicitConfig : Bool) : Option String :=
+private def mcpSetupRemediation? (context : Context) (client : Client) (explicitConfig : Bool) : Option String :=
   let action? := match client with
     | .codex => some "run `codex mcp add lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`"
     | .claude => some "run `claude mcp add --scope user lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`"
     | .opencode => some "run `opencode mcp add` with name lean-beam, type local, and your installed MCP server's absolute path"
     | .vibe => some "add the documented `[[mcp_servers]]` entry to your Vibe configuration"
-    | .agy => some "run `agy mcp add lean-beam -- \"/absolute/path/to/lean-beam-mcp\"` or add the documented `mcpServers.lean-beam` entry to `~/.gemini/config/mcp_config.json`"
+    | .agy =>
+      let path := if !((context.env? "BEAM_AGY_HOME").getD "").isEmpty then
+        (clientHome context .agy / "mcp_config.json").toString
+      else "~/.gemini/config/mcp_config.json"
+      some s!"run `agy mcp add lean-beam -- \"/absolute/path/to/lean-beam-mcp\"` or add the documented `mcpServers.lean-beam` entry to `{path}`"
     | .pi => none
   action?.map fun action =>
     if explicitConfig then
@@ -812,6 +820,8 @@ private def inspectAgyCustomLayers (context : Context) (dirs : Array System.File
 
 def inspectClient (context : Context) (client : Client) (dirs : Array System.FilePath)
     (configOverride? : Option System.FilePath := none) : IO ClientReport := do
+  let dirs ← if client == .agy && configOverride?.isNone then workspaceDirectories context (agy := true)
+    else pure dirs
   let mut plan := locations context client dirs
   if client == .vibe && configOverride?.isNone && (clientHome context .vibe).isAbsolute then
     if let some path ← vibeProjectConfig? context then
@@ -859,11 +869,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
         report := { report with
           discovered := true
           sources := report.sources.push { path := source.path.toString, role := source.role, conditional := source.conditional, state := .ok } }
-        let parsed ←
-          if client == .agy && text.trimAscii.toString.isEmpty then
-            pure <| .ok (Json.mkObj [])
-          else
-            parseConfig source.format text
+        let parsed ← if client == .agy then parseAgyConfig text else parseConfig source.format text
         match parsed with
         | .error () =>
             sourcesComplete := false
@@ -960,7 +966,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
     report := add report .general (if client == .pi then "mcp.notApplicable" else "mcp.notConfigured") .notConfigured
       (if client == .pi then "Beam uses Pi's CLI skill; no native Pi MCP configuration is inspected."
        else "No Beam MCP registration found. Optional for CLI/skill use.")
-      (remediation? := mcpSetupRemediation? client configOverride?.isSome)
+      (remediation? := mcpSetupRemediation? context client configOverride?.isSome)
   for path in plan.skills do report ← inspectSkill path report
   if report.skill == .notConfigured && configOverride?.isNone then
     report := add report .general "skill.notConfigured" .notConfigured

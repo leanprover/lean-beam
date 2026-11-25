@@ -237,39 +237,6 @@ path_without_elan() {
   )
 }
 
-path_without_agy() {
-  local old_ifs="$IFS"
-  local dir=""
-  local filtered=()
-  local shadow_idx=0
-  local shadow_dir=""
-  local entry=""
-  IFS=':'
-  for dir in $PATH; do
-    [ -n "$dir" ] || dir="."
-    if [ -x "$dir/agy" ]; then
-      if [ -x "$dir/elan" ] || [ -x "$dir/python3" ] || [ -x "$dir/bash" ] || [ -x "$dir/sh" ]; then
-        shadow_dir="$tmp_root/no-agy-bin-$shadow_idx"
-        shadow_idx=$((shadow_idx + 1))
-        mkdir -p "$shadow_dir"
-        for entry in "$dir"/*; do
-          [ -e "$entry" ] || continue
-          [ "$(basename "$entry")" = "agy" ] && continue
-          ln -s "$entry" "$shadow_dir/$(basename "$entry")"
-        done
-        filtered+=("$shadow_dir")
-      fi
-      continue
-    fi
-    filtered+=("$dir")
-  done
-  IFS="$old_ifs"
-  (
-    IFS=':'
-    printf '%s' "${filtered[*]}"
-  )
-}
-
 assert_no_construction_state() {
   local install_root="$1"
   local version=""
@@ -505,6 +472,331 @@ assert_contains "$change_alias_transcript" 'cancelled before: Write Locations'
 assert_not_exists "$change_alias_install_root"
 remove_tmp_file "$change_alias_transcript"
 
+test_agy_selection_aliases() {
+  local choice=""
+  local transcript="$tmp_root/agy-selection-transcript"
+  local selection_home="$tmp_root/agy-selection-home"
+  local selection_root="$tmp_root/agy-selection-root"
+  mkdir -p "$selection_home"
+  for choice in agy antigravity a all; do
+    if beam_install_run_interactive_from_source "$transcript" "$selection_home" "$selection_root" \
+        $'\n'"$choice"$'\n'"$choice"$'\nN\n'; then
+      echo "expected interactive install to stop when write permission is denied" >&2
+      return 1
+    fi
+    assert_contains "$transcript" 'cancelled before: Write Locations'
+    python3 - "$transcript" "$choice" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+transcript = Path(sys.argv[1]).read_text()
+plan = transcript.split("Install Plan", 1)[1].split("Write Locations", 1)[0]
+labels = set(re.findall(r"^  (\w+(?: \w+)* (?:skills|MCP))\s+", plan, re.MULTILINE))
+skills = {"Codex", "Claude", "Pi Agent", "OpenCode", "Mistral Vibe", "Antigravity"}
+clients = skills - {"Pi Agent"}
+expected = {"Antigravity skills", "Antigravity MCP"}
+if sys.argv[2] in ("a", "all"):
+    expected = {f"{agent} skills" for agent in skills} | {f"{agent} MCP" for agent in clients}
+assert labels == expected, (sys.argv[2], labels, expected)
+PY
+  done
+  assert_not_exists "$selection_root"
+}
+
+test_agy_mcp_config() {
+  local agy_stub_bin="$tmp_root/agy-mcp-stubs"
+  local agy_stub_log="$tmp_root/agy-mcp-stubs.log"
+  beam_install_setup_mcp_cli_stubs "$agy_stub_bin" "$agy_stub_log"
+  (
+    cd "$source_checkout" || exit
+    python3 - "$tmp_root" "$agy_stub_bin" "$agy_stub_log" <<'PY'
+from decimal import Decimal
+import json
+import os
+from pathlib import Path
+import pty
+import select
+import shutil
+import stat
+import subprocess
+import sys
+
+root, stub_bin, stub_log = map(Path, sys.argv[1:])
+root = root.resolve()
+bin_home = root / "bin with spaces"
+command = str(bin_home / "lean-beam-mcp")
+new_entry = {"command": command, "disabled": False}
+expected_config = {"mcpServers": {"lean-beam": new_entry}}
+bash = shutil.which("bash")
+essential_bin = root / "agy-essential-bin"
+essential_bin.mkdir()
+for name in ("dirname", "uname", "python3"):
+    (essential_bin / name).symlink_to(shutil.which(name))
+env_no_agy = dict(os.environ, PATH=str(essential_bin), BEAM_TEST_MCP_STUB_LOG=str(stub_log))
+env_with_agy = dict(env_no_agy, PATH=f"{stub_bin}:{essential_bin}")
+
+
+def argv(home, interactive=False, action="write"):
+    return [
+        bash, "-c",
+        """
+        . scripts/install-beam.sh
+        set_agy_home "$1"
+        set_bin_home "$2"
+        dont_ask="$3"
+        if [ "$4" = write ]; then
+          register_agy_mcp_server
+        else
+          register_agy_mcp=1
+          verify_requested_mcp_clients
+        fi
+        """,
+        "agy-mcp-config", str(home), str(bin_home), "0" if interactive else "1", action,
+    ]
+
+
+def run(home, action="write", env=env_with_agy):
+    return subprocess.run(
+        argv(home, action=action), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, env=env, text=True, timeout=20,
+    )
+
+
+def fixture(label, raw=None, mode=0o640):
+    home = root / f"agy-{label}"
+    path = home / ".gemini/config/mcp_config.json"
+    if raw is not None:
+        path.parent.mkdir(parents=True)
+        path.write_bytes(raw)
+        path.chmod(mode)
+    return home, path
+
+
+def read(path):
+    return json.loads(path.read_bytes(), parse_float=Decimal, parse_int=Decimal)
+
+
+def assert_no_staging(path):
+    assert not list(path.parent.glob(".mcp_config.json.lean-beam-*")), path
+
+
+def refuse(result, message, path):
+    assert result.returncode != 0, (message, result.stdout)
+    assert message in result.stdout and str(path) in result.stdout, result.stdout
+    assert_no_staging(path)
+
+
+valid = b"""{
+  "user": 1e400,
+  "precise": 0.123456789012345678901234567890123456789,
+  "mcpServers": {
+    "other": {"command": "/bin/echo", "env": {"API_KEY": "secret-do-not-print"}},
+    "lean-beam": {
+      "command": "/old",
+      "disabled": false,
+      "enabledTools": ["lean_goal"],
+      "disabledTools": ["lean_run_code"],
+      "env": {"LABEL": "caf\\u00e9"},
+      "timeout": 2.5,
+      "args": [],
+      "cwd": "/workspace",
+      "custom": {"nested": [true, null]}
+    }
+  }
+}
+"""
+expected = json.loads(valid, parse_float=Decimal)
+expected["mcpServers"]["lean-beam"].update(new_entry)
+patched_bytes = []
+for label, env in (("without-cli", env_no_agy), ("with-cli", env_with_agy)):
+    home, path = fixture(label, valid)
+    result = run(home, action="preflight", env=env)
+    assert result.returncode == 0 and not result.stdout, result.stdout
+    assert path.read_bytes() == valid
+    result = run(home, env=env)
+    assert result.returncode == 0 and not result.stdout, result.stdout
+    assert read(path) == expected
+    assert b"Infinity" not in path.read_bytes()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    patched_bytes.append(path.read_bytes())
+    assert_no_staging(path)
+assert patched_bytes[0] == patched_bytes[1]
+assert not stub_log.exists()
+
+for label, raw in (
+    ("absent", None),
+    ("zero-byte", b""),
+    ("whitespace", b" \t\r\n"),
+    ("bom", b'\xef\xbb\xbf{"user": "kept"}\n'),
+):
+    home, path = fixture(label, raw)
+    result = run(home)
+    assert result.returncode == 0 and not result.stdout, result.stdout
+    expected = {**expected_config, "user": "kept"} if label == "bom" else expected_config
+    assert read(path) == expected
+    assert stat.S_IMODE(path.stat().st_mode) == (0o600 if raw is None else 0o640)
+
+home, path = fixture("missing-command", b'{"mcpServers":{"lean-beam":{"timeout":60}}}')
+result = run(home)
+assert result.returncode == 0 and not result.stdout, result.stdout
+assert read(path) == {"mcpServers": {"lean-beam": {**new_entry, "timeout": 60}}}
+
+for label, raw, message in (
+    ("malformed", b"{not json\n", "invalid Antigravity MCP config"),
+    ("root", b"[]", "root JSON value must be an object"),
+    ("servers-array", b'{"mcpServers":[]}', "'mcpServers' must be a JSON object"),
+    ("servers-null", b'{"mcpServers":null}', "'mcpServers' must be a JSON object"),
+    ("duplicate", b'{"mcpServers":{"other":{"nested":{"key":1,"key":2}}}}', "duplicate JSON object key"),
+    ("nan", b'{"value":NaN}', "non-finite JSON constant NaN"),
+    ("infinity", b'{"value":Infinity}', "non-finite JSON constant Infinity"),
+    ("negative-infinity", b'{"value":-Infinity}', "non-finite JSON constant -Infinity"),
+    ("surrogate", b'{"value":"\\ud800"}', "cannot serialize as UTF-8 JSON"),
+):
+    home, path = fixture(label, raw)
+    for action in ("preflight", "write"):
+        refuse(run(home, action=action), message, path)
+        assert path.read_bytes() == raw, label
+
+for label, entry, reason in (
+    ("entry-null", None, "must be a JSON object"),
+    ("disabled", {"disabled": True}, "'disabled' must be false or absent"),
+    ("disabled-number", {"disabled": 0}, "'disabled' must be false or absent"),
+    ("url", {"url": "https://example.invalid"}, "remote transport"),
+    ("server-url", {"serverUrl": "https://example.invalid"}, "remote transport"),
+    ("http-url", {"httpUrl": None}, "remote transport"),
+    ("args", {"args": ["--custom"]}, "'args' must be an empty list or absent"),
+    ("args-object", {"args": {}}, "'args' must be an empty list or absent"),
+    ("command-array", {"command": ["/old"]}, "'command' must be a string or absent"),
+    ("transport", {"transport": "http"}, "'type' and 'transport' must specify stdio"),
+    ("cwd", {"cwd": 7}, "'cwd' must be a string or absent"),
+):
+    raw = json.dumps({"mcpServers": {"lean-beam": entry}}, indent=2).encode()
+    home, path = fixture(label, raw)
+    for action in ("preflight", "write"):
+        result = run(home, action=action)
+        refuse(result, "conflicting 'mcpServers.lean-beam'", path)
+        assert reason in result.stdout, result.stdout
+        assert path.read_bytes() == raw, label
+
+home, path = fixture("physical-parent", valid)
+alias_home = root / "agy-alias"
+alias_home.symlink_to(home, target_is_directory=True)
+result = run(alias_home)
+assert result.returncode == 0 and not result.stdout, result.stdout
+assert path.read_bytes() == patched_bytes[0]
+
+target = root / "agy-link-target.json"
+target.write_bytes(valid)
+for label, message in (
+    ("symlink", "symlinked Antigravity MCP config"),
+    ("directory", "non-regular Antigravity MCP config"),
+    ("read-only", "read-only Antigravity MCP config"),
+):
+    home, path = fixture(label, valid if label == "read-only" else None, 0o444)
+    if label == "symlink":
+        path.parent.mkdir(parents=True)
+        path.symlink_to(target)
+    elif label == "directory":
+        path.mkdir(parents=True)
+    for action in ("preflight", "write"):
+        refuse(run(home, action=action), message, path)
+    if label == "symlink":
+        assert path.is_symlink() and target.read_bytes() == valid
+    elif label == "directory":
+        assert path.is_dir()
+    else:
+        assert path.read_bytes() == valid and stat.S_IMODE(path.stat().st_mode) == 0o444
+
+# Inject a failure at the replacement boundary and check that staging is cleaned up.
+injection = root / "agy-replace-injection"
+injection.mkdir()
+(injection / "sitecustomize.py").write_text(
+    "import os\n"
+    "def fail_replace(*args, **kwargs):\n"
+    "    raise OSError('injected replacement failure')\n"
+    "os.replace = fail_replace\n"
+)
+home, path = fixture("replace-failure", valid)
+refuse(run(home, env=dict(env_with_agy, PYTHONPATH=str(injection))), "injected replacement failure", path)
+assert path.read_bytes() == valid
+
+
+def interactive(home, reply, before_reply=lambda: None):
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        argv(home, interactive=True), stdin=slave, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, env=env_with_agy,
+    )
+    os.close(slave)
+    try:
+        preview = b""
+        while b"Allow this edit? [y/N]" not in preview:
+            ready, _, _ = select.select([proc.stdout], [], [], 10)
+            assert ready, preview
+            chunk = os.read(proc.stdout.fileno(), 4096)
+            assert chunk, preview
+            preview += chunk
+        before_reply()
+        os.write(master, reply)
+        output, _ = proc.communicate(timeout=10)
+        return proc.returncode, preview.decode(), (preview + output).decode()
+    finally:
+        os.close(master)
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+
+home, path = fixture("interactive", valid)
+interactive_alias = root / "agy-interactive-alias"
+interactive_alias.symlink_to(home, target_is_directory=True)
+rc, preview, transcript = interactive(interactive_alias, b"n\n")
+assert rc != 0 and "cancelled before editing" in transcript, transcript
+assert str(path) in preview, preview
+assert "--- mcpServers.lean-beam (before)" in preview, preview
+assert "+++ mcpServers.lean-beam (after)" in preview, preview
+assert '-  "command": "/old"' in preview and f'+  "command": "{command}"' in preview, preview
+assert all(secret not in transcript for secret in ("secret-do-not-print", "API_KEY", "/bin/echo"))
+assert path.read_bytes() == valid
+assert_no_staging(path)
+
+home, path = fixture("interactive-new")
+rc, preview, transcript = interactive(home, b"y\n")
+assert rc == 0 and '"mcpServers": {' in preview and command in preview, transcript
+assert read(path) == expected_config
+
+home, path = fixture("interactive-empty", b" \n")
+rc, preview, transcript = interactive(home, b"n\n")
+assert rc != 0 and '"mcpServers": {' in preview, transcript
+assert path.read_bytes() == b" \n"
+assert_no_staging(path)
+
+concurrent = b'{"changed": true}\n'
+home, path = fixture("interactive-concurrent", valid)
+rc, _, transcript = interactive(home, b"y\n", lambda: path.write_bytes(concurrent))
+assert rc != 0 and "changed before writing" in transcript, transcript
+assert path.read_bytes() == concurrent
+assert_no_staging(path)
+
+
+def introduce_symlink():
+    path.unlink()
+    path.symlink_to(target)
+
+
+rc, _, transcript = interactive(home, b"y\n", introduce_symlink)
+assert rc != 0 and "symlinked Antigravity MCP config" in transcript, transcript
+assert path.is_symlink() and target.read_bytes() == valid
+assert_no_staging(path)
+assert not stub_log.exists()
+PY
+  )
+}
+
+run_step "Antigravity selection aliases" test_agy_selection_aliases
+run_step "Antigravity MCP config validation, writes, and approvals" test_agy_mcp_config
+
 interactive_home="$tmp_root/interactive-home"
 interactive_install_root="$tmp_root/interactive-install-root"
 interactive_transcript="$tmp_root/install-interactive-transcript"
@@ -672,7 +964,8 @@ assert_contains_literal "$interactive_agy_transcript" "Command directory [$inter
 assert_contains_literal "$interactive_agy_transcript" "Runtime install root [$interactive_agy_install_root]"
 assert_contains_literal "$interactive_agy_transcript" "Antigravity home [$BEAM_AGY_HOME]"
 assert_contains_literal "$interactive_agy_transcript" "Antigravity home: $interactive_agy_custom_home"
-assert_contains_literal "$interactive_agy_transcript" "Antigravity config: $interactive_agy_custom_home/.gemini/config/mcp_config.json"
+assert_contains_literal "$interactive_agy_transcript" \
+  "Antigravity config: $(cd -P "$tmp_root" && pwd)/interactive-agy-sandbox/.gemini/config/mcp_config.json"
 assert_contains "$interactive_agy_transcript" 'cancelled before: Write Locations'
 assert_not_exists "$interactive_agy_custom_bin"
 assert_not_exists "$interactive_agy_custom_runtime"
@@ -1035,7 +1328,7 @@ assert_contains_literal "$VIBE_HOME/config.toml" 'transport = "stdio"'
 assert_contains_literal "$VIBE_HOME/config.toml" "command = [\"$installed_mcp\"]"
 assert_contains_literal "$VIBE_HOME/config.toml" 'args = []'
 assert_contains_literal "$VIBE_HOME/config.toml" 'tool_timeout_sec = 600'
-assert_contains_literal "$mcp_stub_log" "agy|mcp|add|lean-beam|--|$installed_mcp|HOME=$BEAM_AGY_HOME"
+assert_not_contains "$mcp_stub_log" "agy must not be invoked"
 assert_file "$BEAM_AGY_HOME/.gemini/config/mcp_config.json"
 python3 - "$BEAM_AGY_HOME/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
 import json, sys
@@ -1204,8 +1497,7 @@ custom_agy_mcp_stub_log="$tmp_root/mcp-stubs-custom-agy.log"
 run_step "register Antigravity MCP with custom home" \
   beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$custom_agy_mcp_stub_log" \
     --toolchain "$toolchain" --agy-mcp --agy-home "$custom_agy_home"
-assert_contains_literal "$custom_agy_mcp_stub_log" \
-  "agy|mcp|add|lean-beam|--|$installed_mcp|HOME=$custom_agy_home"
+assert_not_exists "$custom_agy_mcp_stub_log"
 assert_file "$custom_agy_home/.gemini/config/mcp_config.json"
 
 relative_agy_home_err="$(mktemp "$tmp_root/agy-relative-home-XXXXXX")"
@@ -1218,187 +1510,6 @@ if beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$tmp_root/mcp-stubs-relative
 fi
 assert_contains "$relative_agy_home_err" "Antigravity home must be an absolute path"
 remove_tmp_file "$relative_agy_home_err"
-
-symlink_agy_home="$tmp_root/agy-symlink"
-symlink_agy_dir="$symlink_agy_home/.gemini/config"
-symlink_agy_target="$tmp_root/agy-symlink-target.json"
-symlink_agy_err="$tmp_root/agy-symlink.err"
-symlink_agy_stub_log="$tmp_root/mcp-stubs-symlink-agy.log"
-mkdir -p "$symlink_agy_dir"
-printf '{"sentinel":"preserve"}\n' >"$symlink_agy_target"
-ln -s "$symlink_agy_target" "$symlink_agy_dir/mcp_config.json"
-if beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$symlink_agy_stub_log" \
-    --toolchain "$toolchain" --agy-mcp --agy-home "$symlink_agy_home" \
-    2>"$symlink_agy_err"; then
-  echo "expected Antigravity MCP registration to reject a symlinked config" >&2
-  exit 1
-fi
-assert_contains "$symlink_agy_err" "refusing to edit symlinked Antigravity MCP config"
-assert_contains_literal "$symlink_agy_target" '"sentinel":"preserve"'
-assert_not_exists "$symlink_agy_stub_log"
-
-path_no_agy="$(path_without_agy)"
-if PATH="$path_no_agy" command -v agy >/dev/null 2>&1; then
-  echo "failed to construct a PATH without agy for direct Antigravity MCP tests" >&2
-  exit 1
-fi
-
-direct_agy_home="$tmp_root/agy-direct"
-preseed_elan_home "$HOME/.elan" ${validated_toolchains[@]+"${validated_toolchains[@]}"}
-run_step "register Antigravity MCP directly without agy CLI" \
-  env PATH="$path_no_agy" bash "$source_checkout/scripts/install-beam.sh" --dont-ask \
-    --toolchain "$toolchain" --agy-mcp --agy-home "$direct_agy_home" > /dev/null
-assert_file "$direct_agy_home/.gemini/config/mcp_config.json"
-python3 - "$direct_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
-import json, sys
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    config = json.load(f)
-assert config["mcpServers"]["lean-beam"] == {
-    "command": sys.argv[2],
-    "disabled": False,
-}, config
-PY
-
-cat >"$direct_agy_home/.gemini/config/mcp_config.json" <<'EOF'
-{
-  "custom": 1,
-  "mcpServers": {
-    "other": {
-      "command": "/bin/echo"
-    },
-    "lean-beam": {
-      "command": "/old",
-      "disabled": true
-    }
-  }
-}
-EOF
-run_step "re-register Antigravity MCP directly preserving existing entries" \
-  env PATH="$path_no_agy" bash "$source_checkout/scripts/install-beam.sh" --dont-ask \
-    --toolchain "$toolchain" --agy-mcp --agy-home "$direct_agy_home" > /dev/null
-python3 - "$direct_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
-import json, sys
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    config = json.load(f)
-assert config["custom"] == 1, config
-assert config["mcpServers"]["other"] == {"command": "/bin/echo"}, config
-assert config["mcpServers"]["lean-beam"] == {
-    "command": sys.argv[2],
-    "disabled": False,
-}, config
-PY
-
-empty_agy_home="$tmp_root/agy-empty"
-mkdir -p "$empty_agy_home/.gemini/config"
-: >"$empty_agy_home/.gemini/config/mcp_config.json"
-run_step "register Antigravity MCP when mcp_config.json is 0-byte empty" \
-  env PATH="$path_no_agy" bash "$source_checkout/scripts/install-beam.sh" --dont-ask \
-    --toolchain "$toolchain" --agy-mcp --agy-home "$empty_agy_home" > /dev/null
-python3 - "$empty_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
-import json, sys
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    config = json.load(f)
-assert config == {
-    "mcpServers": {
-        "lean-beam": {
-            "command": sys.argv[2],
-            "disabled": False,
-        }
-    }
-}, config
-PY
-
-bom_agy_home="$tmp_root/agy-bom"
-mkdir -p "$bom_agy_home/.gemini/config"
-python3 - "$bom_agy_home/.gemini/config/mcp_config.json" <<'PY'
-from pathlib import Path
-import sys
-Path(sys.argv[1]).write_bytes(b'\xef\xbb\xbf{"mcpServers": {"other": {"command": "/bin/echo"}}}\n')
-PY
-run_step "register Antigravity MCP when mcp_config.json has UTF-8 BOM" \
-  env PATH="$path_no_agy" bash "$source_checkout/scripts/install-beam.sh" --dont-ask \
-    --toolchain "$toolchain" --agy-mcp --agy-home "$bom_agy_home" > /dev/null
-python3 - "$bom_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
-import json, sys
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    config = json.load(f)
-assert config == {
-    "mcpServers": {
-        "other": {"command": "/bin/echo"},
-        "lean-beam": {
-            "command": sys.argv[2],
-            "disabled": False,
-        },
-    }
-}, config
-PY
-
-bad_json_agy_home="$tmp_root/agy-bad-json"
-bad_json_agy_err="$tmp_root/agy-bad-json.err"
-mkdir -p "$bad_json_agy_home/.gemini/config"
-printf '{not json\n' >"$bad_json_agy_home/.gemini/config/mcp_config.json"
-if (
-  cd "$source_checkout"
-  PATH="$path_no_agy" bash scripts/install-beam.sh --dont-ask --toolchain "$toolchain" \
-    --agy-mcp --agy-home "$bad_json_agy_home" >/dev/null 2>"$bad_json_agy_err"
-); then
-  echo "expected direct Antigravity MCP registration to refuse malformed JSON" >&2
-  exit 1
-fi
-assert_contains "$bad_json_agy_err" "refusing to edit invalid Antigravity MCP config"
-assert_contains_literal "$bad_json_agy_home/.gemini/config/mcp_config.json" '{not json'
-remove_tmp_file "$bad_json_agy_err"
-
-bad_servers_agy_home="$tmp_root/agy-bad-servers"
-bad_servers_agy_err="$tmp_root/agy-bad-servers.err"
-mkdir -p "$bad_servers_agy_home/.gemini/config"
-printf '{"mcpServers": []}\n' >"$bad_servers_agy_home/.gemini/config/mcp_config.json"
-if (
-  cd "$source_checkout"
-  PATH="$path_no_agy" bash scripts/install-beam.sh --dont-ask --toolchain "$toolchain" \
-    --agy-mcp --agy-home "$bad_servers_agy_home" >/dev/null 2>"$bad_servers_agy_err"
-); then
-  echo "expected direct Antigravity MCP registration to refuse non-object mcpServers" >&2
-  exit 1
-fi
-assert_contains "$bad_servers_agy_err" "refusing to edit invalid Antigravity MCP config"
-assert_contains_literal "$bad_servers_agy_home/.gemini/config/mcp_config.json" '{"mcpServers": []}'
-remove_tmp_file "$bad_servers_agy_err"
-
-null_servers_agy_home="$tmp_root/agy-null-servers"
-null_servers_agy_err="$tmp_root/agy-null-servers.err"
-mkdir -p "$null_servers_agy_home/.gemini/config"
-printf '{"mcpServers": null}\n' >"$null_servers_agy_home/.gemini/config/mcp_config.json"
-if (
-  cd "$source_checkout"
-  PATH="$path_no_agy" bash scripts/install-beam.sh --dont-ask --toolchain "$toolchain" \
-    --agy-mcp --agy-home "$null_servers_agy_home" >/dev/null 2>"$null_servers_agy_err"
-); then
-  echo "expected direct Antigravity MCP registration to refuse null mcpServers" >&2
-  exit 1
-fi
-assert_contains "$null_servers_agy_err" "refusing to edit invalid Antigravity MCP config"
-assert_contains_literal "$null_servers_agy_home/.gemini/config/mcp_config.json" '{"mcpServers": null}'
-remove_tmp_file "$null_servers_agy_err"
-
-direct_symlink_agy_home="$tmp_root/agy-direct-symlink"
-direct_symlink_agy_dir="$direct_symlink_agy_home/.gemini/config"
-direct_symlink_agy_target="$tmp_root/agy-direct-symlink-target.json"
-direct_symlink_agy_err="$tmp_root/agy-direct-symlink.err"
-mkdir -p "$direct_symlink_agy_dir"
-printf '{"sentinel":"preserve"}\n' >"$direct_symlink_agy_target"
-ln -s "$direct_symlink_agy_target" "$direct_symlink_agy_dir/mcp_config.json"
-if (
-  cd "$source_checkout"
-  PATH="$path_no_agy" bash scripts/install-beam.sh --dont-ask --toolchain "$toolchain" \
-    --agy-mcp --agy-home "$direct_symlink_agy_home" >/dev/null 2>"$direct_symlink_agy_err"
-); then
-  echo "expected direct Antigravity MCP registration to reject a symlinked config" >&2
-  exit 1
-fi
-assert_contains "$direct_symlink_agy_err" "refusing to edit symlinked Antigravity MCP config"
-assert_contains_literal "$direct_symlink_agy_target" '"sentinel":"preserve"'
-remove_tmp_file "$direct_symlink_agy_err"
 
 opencode_mcp_transcript="$tmp_root/opencode-mcp-manual-transcript"
 preseed_elan_home "$HOME/.elan" "$toolchain"

@@ -160,6 +160,7 @@ prompt_install_location_changes() {
 }
 
 print_write_locations() {
+  local agy_physical_config=""
   print_section "$style_yellow" "Write Locations"
   printf 'Lean Beam will create or update the following locations:\n' >&2
   printf '\n  Core install\n' >&2
@@ -208,7 +209,8 @@ print_write_locations() {
     fi
     if [ "$register_agy_mcp" -eq 1 ]; then
       printf '    - Antigravity home: %s\n' "$agy_home" >&2
-      printf '    - Antigravity config: %s\n' "$agy_mcp_config" >&2
+      agy_physical_config="$(edit_agy_mcp_config location)"
+      printf '    - Antigravity config: %s\n' "$agy_physical_config" >&2
     fi
   fi
 
@@ -272,9 +274,6 @@ approve_current_write_locations() {
   fi
   if [ "$register_vibe_mcp" -eq 1 ]; then
     remember_approved_write_home "$vibe_home"
-  fi
-  if [ "$register_agy_mcp" -eq 1 ]; then
-    remember_approved_write_home "$agy_config_dir"
   fi
   runtime_writes_approved=1
   bin_writes_approved=1

@@ -106,4 +106,14 @@ def parseConfig (format : Format) (text : String) : IO (Except Unit Json) := do
       | .ok table => return .ok <| tomlJson (.table .missing table)
       | .error _ => return .error ()
 
+/-- Match RFC 8259 JSON whitespace for empty Antigravity config files (same as `install-mcp.sh`). -/
+private def agyConfigWhitespace (ch : Char) : Bool :=
+  ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+
+/-- Apply the installer's UTF-8 BOM and empty-file conventions before parsing JSON. -/
+def parseAgyConfig (text : String) : IO (Except Unit Json) := do
+  let text := if text.startsWith "\uFEFF" then (text.drop 1).toString else text
+  if text.all agyConfigWhitespace then return .ok (Json.mkObj [])
+  parseConfig .json text
+
 end Beam.Cli.ClientDoctor

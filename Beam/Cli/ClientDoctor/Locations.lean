@@ -43,17 +43,21 @@ def agyCustomizationRoots (context : Context) (dirs : Array System.FilePath) : A
         roots := roots.push root
   return roots
 
-/-- A bounded ancestor walk, stopping at the nearest Git boundary or the user's home. -/
-def workspaceDirectories (context : Context) : IO (Array System.FilePath) := do
+/-- Antigravity walks up to the nearest Git root (bounded by the user's home), or uses only
+    the workspace outside Git. Other clients use the same bounded ancestor walk without collapsing
+    non-Git workspaces. -/
+def workspaceDirectories (context : Context) (agy := false) : IO (Array System.FilePath) := do
   let mut dirs := #[]
   let mut dir := context.workspace
-  for _ in [:64] do
+  let limit := if agy then context.workspace.components.length + 1 else 64
+  for _ in [:limit] do
     dirs := dirs.push dir
-    if dir == context.userHome || (← (dir / ".git").pathExists) then break
+    if (← (dir / ".git").pathExists) then return dirs.reverse
+    if dir == context.userHome then break
     let parent := dir.parent.getD dir
     if parent == dir then break
     dir := parent
-  return dirs.reverse
+  return if agy then #[context.workspace] else dirs.reverse
 
 /-- Vibe searches nearest-first, stopping before VIBE_HOME's parent, independently of Git.
     https://github.com/mistralai/mistral-vibe/blob/v3.0.3/vibe/core/config/layers/project.py -/
@@ -151,6 +155,8 @@ def locations (context : Context) (client : Client)
   | .agy =>
       result := { result with configs := #[config (home / "mcp_config.json") .json] }
       for dir in dirs do
+        result := { result with configs := result.configs.push (
+          config (dir / ".agents" / "mcp_config.json") .json .projectConfig) }
         for rootName in agyWorkspaceRootNames do
           result := { result with skills := result.skills.push (
             dir / rootName / "skills" / "lean-beam" / "SKILL.md") }

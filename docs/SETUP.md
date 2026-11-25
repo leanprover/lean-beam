@@ -151,8 +151,9 @@ From a Lean Beam checkout, run one installer command that matches how you plan t
 ```
 
 The default installer is interactive: it asks which Lean toolchains, agent skills, and
-MCP client registrations to set up. It then shows a compact write summary and asks once for the Beam
-runtime/wrapper install area, selected skill locations, and selected MCP config locations. For
+MCP client registrations to set up. It then asks for approval of the Beam runtime and wrapper
+directories, selected skill locations, and selected MCP config locations. Antigravity config
+edits have a separate preview and approval. For
 non-interactive scripts, pass `--dont-ask`; this only skips prompts for requested Beam-owned
 install/config paths and does not allow replacing unrelated user files.
 
@@ -728,9 +729,7 @@ workflow does not require MCP.
 Both installation paths provide the experimental stdio MCP server as `lean-beam-mcp`.
 The checkout installer can register its server automatically for Codex, Claude Code, Mistral Vibe,
 or Antigravity (`agy`).
-For Antigravity, the installer runs `agy mcp add` when `agy` is on `PATH` and otherwise edits
-`~/.gemini/config/mcp_config.json` directly (preserving existing servers and refusing symlinks or
-invalid JSON).
+For Antigravity, the installer updates `~/.gemini/config/mcp_config.json` directly.
 For Mistral Vibe, the installer edits `~/.vibe/config.toml` directly: it replaces any existing `lean-beam` entry in
 `[[mcp_servers]]`, removes Vibe's default empty `mcp_servers = []` line (TOML forbids extending an
 inline array with `[[mcp_servers]]` tables), and leaves other entries untouched. If the config
@@ -916,14 +915,20 @@ tool_timeout_sec = 600
 ### Antigravity (`agy`)
 
 `./scripts/install-beam.sh --agy --agy-mcp` installs the Antigravity skill and registers
-`lean-beam-mcp` for both the Antigravity Desktop App / IDE (no `agy` CLI required) and the `agy`
-CLI. When `agy` is on `PATH`, the installer runs
-`agy mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"`; otherwise it updates
-`~/.gemini/config/mcp_config.json` directly.
+`lean-beam-mcp` for the Antigravity app, IDE, and CLI. Registration requires `python3` and
+atomically updates the [global Antigravity MCP config](https://antigravity.google/docs/cli/mcp/)
+at `~/.gemini/config/mcp_config.json`. The installer preserves other servers and user settings
+such as environment variables, timeouts, and tool filters. It refuses invalid JSON, symlinked or
+read-only config files, and existing `lean-beam` entries that are disabled or have conflicting
+launch settings, such as a remote URL or nonempty arguments. Interactive installs show the planned
+`lean-beam` change before asking for permission to edit the file.
 
 MCP stdio (`lean-beam-mcp`) is recommended in Antigravity so agent sessions avoid terminal-sandbox
-loopback TCP restrictions. To configure `~/.gemini/config/mcp_config.json` manually instead, add or
-update the `lean-beam` entry under `mcpServers`:
+loopback TCP restrictions. With Remote-SSH, install and configure Beam on the host running the
+agent and use an executable path valid on that host.
+
+For manual registration, run `agy mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"` or edit
+the `lean-beam` entry under `mcpServers` in `~/.gemini/config/mcp_config.json`.
 
 ```json
 {

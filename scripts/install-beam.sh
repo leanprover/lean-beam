@@ -987,7 +987,7 @@ prompt_skill_selection() {
     "pi|Pi Agent ($pi_skills_home)|p pi-agent" \
     "vibe|Mistral Vibe ($vibe_skills_home)|v mistral mistral-vibe" \
     "opencode|OpenCode ($opencode_skills_home)|o open-code" \
-    "agy|Antigravity ($agy_skills_home)|a antigravity")"
+    "agy|Antigravity ($agy_skills_home)|antigravity")"
   install_codex_skills=0
   install_claude_skills=0
   install_pi_skills=0
@@ -1180,6 +1180,9 @@ print_install_plan() {
   print_field "source build" "$repo_root/.lake"
   if [ "$dont_ask" -eq 0 ]; then
     print_field "approval" "one grouped write-permission prompt"
+    if [ "$register_agy_mcp" -eq 1 ]; then
+      print_field "" "separate preview and approval for Antigravity config edits"
+    fi
   else
     print_field "approval" "--dont-ask supplied; safety checks still apply"
   fi
