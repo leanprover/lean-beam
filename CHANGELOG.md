@@ -22,7 +22,9 @@ This project keeps a lightweight, reverse-chronological changelog. Dates use `YY
 - Antigravity (`agy`) skill installation, MCP registration (`--agy`, `--agy-mcp`,
   `--agy-home`, `BEAM_AGY_HOME`), and `lean-beam doctor clients agy` inspection.
   Registration updates `mcp_config.json` atomically, preserves user settings, refuses
-  disabled or conflicting entries, and previews changes before interactive approval.
+  disabled or conflicting entries, and previews changed keys before publishing the runtime.
+  Remove JSON comments and trailing commas or use `agy mcp add` to edit those configs.
+  Client Doctor can inspect JSONC configs with comments and trailing commas.
 - Add inclusive summaries and Lean trace labels to CLI/MCP speculative profiling results.
   Summary entries group retained single-child paths and show an inner member only when it
   retains at least half the outer duration, preserving each displayed span's own measurements,

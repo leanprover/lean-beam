@@ -43,17 +43,21 @@ def agyCustomizationRoots (context : Context) (dirs : Array System.FilePath) : A
         roots := roots.push root
   return roots
 
+def physicalUserHome (context : Context) : IO System.FilePath := do
+  try IO.FS.realPath context.userHome catch _ => pure context.userHome
+
 /-- Antigravity walks up to the nearest Git root (bounded by the user's home), or uses only
     the workspace outside Git. Other clients use the same bounded ancestor walk without collapsing
     non-Git workspaces. -/
 def workspaceDirectories (context : Context) (agy := false) : IO (Array System.FilePath) := do
+  let userHome ← physicalUserHome context
   let mut dirs := #[]
   let mut dir := context.workspace
   let limit := if agy then context.workspace.components.length + 1 else 64
   for _ in [:limit] do
     dirs := dirs.push dir
     if (← (dir / ".git").pathExists) then return dirs.reverse
-    if dir == context.userHome then break
+    if dir == userHome then break
     let parent := dir.parent.getD dir
     if parent == dir then break
     dir := parent
@@ -155,9 +159,9 @@ def locations (context : Context) (client : Client)
   | .agy =>
       result := { result with configs := #[config (home / "mcp_config.json") .json] }
       for dir in dirs do
-        result := { result with configs := result.configs.push (
-          config (dir / ".agents" / "mcp_config.json") .json .projectConfig) }
         for rootName in agyWorkspaceRootNames do
+          result := { result with configs := result.configs.push (
+            config (dir / rootName / "mcp_config.json") .json .projectConfig) }
           result := { result with skills := result.skills.push (
             dir / rootName / "skills" / "lean-beam" / "SKILL.md") }
   -- The same file can be both a home and workspace candidate. Inspect it only once.

@@ -32,6 +32,9 @@ agy_home=""
 agy_config_dir=""
 agy_skills_home=""
 agy_mcp_config=""
+agy_physical_config=""
+agy_plan_state=""
+agy_plan_fingerprint=""
 bin_home=""
 install_root=""
 versions_root=""
@@ -1398,6 +1401,7 @@ prepare_install_environment() {
   ensure_install_root_ready
   acquire_install_lock
   ensure_runtime_artifacts
+  plan_agy_mcp_registration
   ensure_dir_for_install "$bin_home" "bin home"
   ensure_dir_for_install "$versions_root" "versions root"
 }
@@ -1520,11 +1524,11 @@ skill_state_for_summary() {
 }
 
 mcp_state_for_summary() {
-  if [ "$1" -eq 1 ]; then
-    printf 'registered this run\n'
-  else
-    printf 'not registered this run\n'
-  fi
+  case "$1" in
+    1) printf 'registered this run\n' ;;
+    2) printf 'already registered\n' ;;
+    *) printf 'not registered this run\n' ;;
+  esac
 }
 
 print_codex_followup_hint() {
@@ -1644,12 +1648,14 @@ print_agent_setup_summary() {
   if target_list_contains_prefix "Mistral Vibe" ${registered_mcp_targets[@]+"${registered_mcp_targets[@]}"}; then
     vibe_mcp_registered=1
   fi
-  if target_list_contains_prefix "Antigravity" ${registered_mcp_targets[@]+"${registered_mcp_targets[@]}"}; then
+  if [ "$agy_plan_state" = noop ]; then
+    agy_mcp_registered=2
+  elif target_list_contains_prefix "Antigravity" ${registered_mcp_targets[@]+"${registered_mcp_targets[@]}"}; then
     agy_mcp_registered=1
   fi
 
   print_section "$style_green" "Agent Setup This Run"
-  print_field "scope" "only this run; existing client setup is not checked here"
+  print_field "scope" "changes and registration checks performed this run"
   print_field "Codex" "skills: $(skill_state_for_summary "$codex_skill_installed"); MCP: $(mcp_state_for_summary "$codex_mcp_registered")"
   print_field "Claude Code" "skills: $(skill_state_for_summary "$claude_skill_installed"); MCP: $(mcp_state_for_summary "$claude_mcp_registered")"
   print_field "Pi Agent" "skills: $(skill_state_for_summary "$pi_skill_installed"); MCP: unsupported"

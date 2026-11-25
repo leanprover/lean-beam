@@ -5,84 +5,15 @@ Released under Apache 2.0 license as described in the file LICENSE.
 
 import Lean
 import Lake.Toml.Load
+import Beam.Config.StrictJson
 
 namespace Beam.Cli.ClientDoctor
 
-open Lean
+open Lean Beam.Config.StrictJson
 
 inductive Format where
   | json | jsonc | toml
   deriving BEq
-
-/-- Preserve strings and line breaks while removing JSONC comments. No source text escapes errors. -/
-private def withoutComments (text : String) : Except Unit String := do
-  let mut result := ""
-  let mut quoted := false
-  let mut escaped := false
-  let mut lineComment := false
-  let mut blockComment := false
-  let mut chars := text.toList
-  while !chars.isEmpty do
-    let ch := chars.head!
-    chars := chars.tail!
-    if lineComment then
-      result := result.push (if ch == '\n' then '\n' else ' ')
-      if ch == '\n' then lineComment := false
-    else if blockComment then
-      if ch == '*' && chars.head? == some '/' then
-        chars := chars.tail!
-        result := result ++ "  "
-        blockComment := false
-      else
-        result := result.push (if ch == '\n' then '\n' else ' ')
-    else if quoted then
-      result := result.push ch
-      if escaped then escaped := false
-      else if ch == '\\' then escaped := true
-      else if ch == '"' then quoted := false
-    else if ch == '"' then
-      result := result.push ch
-      quoted := true
-    else if ch == '/' && chars.head? == some '/' then
-      chars := chars.tail!
-      result := result ++ "  "
-      lineComment := true
-    else if ch == '/' && chars.head? == some '*' then
-      chars := chars.tail!
-      result := result ++ "  "
-      blockComment := true
-    else
-      result := result.push ch
-  if blockComment then throw ()
-  return result
-
-private def withoutTrailingCommas (text : String) : String := Id.run do
-  let mut result := ""
-  let mut quoted := false
-  let mut escaped := false
-  let mut previous := ' '
-  let mut chars := text.toList
-  while !chars.isEmpty do
-    let ch := chars.head!
-    chars := chars.tail!
-    if quoted then
-      result := result.push ch
-      if escaped then escaped := false
-      else if ch == '\\' then escaped := true
-      else if ch == '"' then quoted := false
-    else if ch == '"' then
-      result := result.push ch
-      quoted := true
-    else
-      -- Look ahead only at commas, keeping long whitespace runs linear.
-      let trailing := if ch != ',' then false else
-        let next := (chars.dropWhile Char.isWhitespace).head?
-        -- Do not turn invalid missing-value constructs such as [,] into JSON.
-        (next == some ']' || next == some '}') &&
-          !(['[', '{', ':', ','].contains previous)
-      result := result.push (if trailing then ' ' else ch)
-    if !ch.isWhitespace then previous := ch
-  return result
 
 private partial def tomlJson : Lake.Toml.Value → Json
   | .string _ s => toJson s
@@ -106,14 +37,8 @@ def parseConfig (format : Format) (text : String) : IO (Except Unit Json) := do
       | .ok table => return .ok <| tomlJson (.table .missing table)
       | .error _ => return .error ()
 
-/-- Match RFC 8259 JSON whitespace for empty Antigravity config files (same as `install-mcp.sh`). -/
-private def agyConfigWhitespace (ch : Char) : Bool :=
-  ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
-
-/-- Apply the installer's UTF-8 BOM and empty-file conventions before parsing JSON. -/
-def parseAgyConfig (text : String) : IO (Except Unit Json) := do
-  let text := if text.startsWith "\uFEFF" then (text.drop 1).toString else text
-  if text.all agyConfigWhitespace then return .ok (Json.mkObj [])
-  parseConfig .json text
+/-- Antigravity accepts JSONC, with the same bounded value parser as the installer. -/
+def parseAgyConfig (text : String) : Except Unit Value :=
+  (parse text (jsonc := true)).mapError (fun _ => ())
 
 end Beam.Cli.ClientDoctor

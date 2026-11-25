@@ -69,6 +69,41 @@ validate_agy_home() {
   require_path_within "$agy_mcp_config" "$agy_config_dir" "Antigravity MCP config"
 }
 
+# Resolve the nearest existing directory physically, keeping the config leaf out of cd.
+preflight_agy_mcp_config() {
+  local ancestor="${agy_mcp_config%/*}"
+  local suffix="/mcp_config.json"
+  local name="" physical=""
+  while [ ! -d "$ancestor" ]; do
+    if [ -e "$ancestor" ] || [ -L "$ancestor" ]; then
+      die "cannot resolve the Antigravity MCP config parent directory at $ancestor"
+    fi
+    name="${ancestor##*/}"
+    case "$name" in
+      ''|.) ;;
+      *) suffix="/$name$suffix" ;;
+    esac
+    ancestor="${ancestor%/*}"
+    ancestor="${ancestor:-/}"
+  done
+  physical="$(cd -P -- "$ancestor" && pwd -P && printf '.')" ||
+    die "cannot resolve the Antigravity MCP config parent directory at $ancestor"
+  physical="${physical%$'\n.'}"
+  agy_physical_config="${physical%/}$suffix"
+  if [ -L "$agy_physical_config" ]; then
+    die "refusing to edit symlinked Antigravity MCP config at $agy_physical_config"
+  fi
+  if [ -e "$agy_physical_config" ] && [ ! -f "$agy_physical_config" ]; then
+    die "refusing to edit non-regular Antigravity MCP config at $agy_physical_config"
+  fi
+  if [ -f "$agy_physical_config" ] && [ ! -w "$agy_physical_config" ]; then
+    die "refusing to edit read-only Antigravity MCP config at $agy_physical_config; make it writable first"
+  fi
+  if [ ! -w "$physical" ] || [ ! -x "$physical" ]; then
+    die "Antigravity MCP config parent is not writable and searchable at $physical"
+  fi
+}
+
 validate_requested_location_config() {
   validate_install_config
   if [ "$install_codex_skills" -eq 1 ] || [ "$register_codex_mcp" -eq 1 ]; then
@@ -91,6 +126,9 @@ validate_requested_location_config() {
   fi
   if [ "$install_agy_skills" -eq 1 ] || [ "$register_agy_mcp" -eq 1 ]; then
     validate_agy_home
+  fi
+  if [ "$register_agy_mcp" -eq 1 ]; then
+    preflight_agy_mcp_config
   fi
 }
 
@@ -160,7 +198,6 @@ prompt_install_location_changes() {
 }
 
 print_write_locations() {
-  local agy_physical_config=""
   print_section "$style_yellow" "Write Locations"
   printf 'Lean Beam will create or update the following locations:\n' >&2
   printf '\n  Core install\n' >&2
@@ -209,7 +246,6 @@ print_write_locations() {
     fi
     if [ "$register_agy_mcp" -eq 1 ]; then
       printf '    - Antigravity home: %s\n' "$agy_home" >&2
-      agy_physical_config="$(edit_agy_mcp_config location)"
       printf '    - Antigravity config: %s\n' "$agy_physical_config" >&2
     fi
   fi
@@ -289,6 +325,7 @@ remember_approved_write_home() {
 }
 
 approve_requested_writes() {
+  local shown_agy_config=""
   if [ "$dont_ask" -eq 1 ]; then
     verify_requested_install_targets
     return 0
@@ -306,7 +343,11 @@ approve_requested_writes() {
     prompt_write_approval
     case "$write_approval_action" in
       approve)
+        shown_agy_config="$agy_physical_config"
         verify_requested_install_targets
+        if [ "$shown_agy_config" != "$agy_physical_config" ]; then
+          die "Antigravity MCP config location changed after Write Locations; rerun the installer"
+        fi
         approve_current_write_locations
         return 0
         ;;

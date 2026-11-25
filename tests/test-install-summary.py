@@ -40,7 +40,7 @@ bin_home="$HOME/bin"
                  for p in self.home.rglob("*") if p.is_file()}
         self.assertEqual(before, after, "summary must not rewrite or create client configuration")
         self.assertIn("Agent Setup This Run", result.stderr)
-        self.assertIn("only this run; existing client setup is not checked here", result.stderr)
+        self.assertIn("changes and registration checks performed this run", result.stderr)
         self.assertIn("optional; existing client setup may already be complete", result.stderr)
         return result.stderr
 
@@ -73,6 +73,12 @@ manual_mcp_targets=("OpenCode: lean-beam")
         self.assertIn("MCP: opencode mcp add shown this run", output)
         self.assertIn("MCP: unsupported", output)
         self.assertNotIn("--codex-mcp", output)
+        self.assertNotIn("--agy-mcp", output)
+
+    def test_agy_noop_reports_already_registered(self):
+        output = self.summary("agy_plan_state=noop")
+        self.assertRegex(output, r"(?m)^ +Antigravity +skills: not installed this run; MCP: already registered$")
+        self.assertIn("./scripts/install-beam.sh --agy", output)
         self.assertNotIn("--agy-mcp", output)
 
     def test_mixed_client_actions_keep_rows_and_hints_independent(self):

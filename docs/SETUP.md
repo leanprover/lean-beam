@@ -153,8 +153,7 @@ From a Lean Beam checkout, run one installer command that matches how you plan t
 The default installer is interactive: it asks which Lean toolchains, agent skills, and
 MCP client registrations to set up. It then asks for approval of the Beam runtime and wrapper
 directories, selected skill locations, and selected MCP config locations. Antigravity config
-edits have a separate preview and approval. For
-non-interactive scripts, pass `--dont-ask`; this only skips prompts for requested Beam-owned
+edits have a separate preview and approval. For non-interactive scripts, pass `--dont-ask`; this only skips prompts for requested Beam-owned
 install/config paths and does not allow replacing unrelated user files.
 
 The final **Agent Setup This Run** summary reports only actions performed by that invocation.
@@ -915,13 +914,19 @@ tool_timeout_sec = 600
 ### Antigravity (`agy`)
 
 `./scripts/install-beam.sh --agy --agy-mcp` installs the Antigravity skill and registers
-`lean-beam-mcp` for the Antigravity app, IDE, and CLI. Registration requires `python3` and
-atomically updates the [global Antigravity MCP config](https://antigravity.google/docs/cli/mcp/)
+`lean-beam-mcp` for the Antigravity app, IDE, and CLI. The installer atomically updates the
+[global Antigravity MCP config](https://antigravity.google/docs/cli/mcp/)
 at `~/.gemini/config/mcp_config.json`. The installer preserves other servers and user settings
 such as environment variables, timeouts, and tool filters. It refuses invalid JSON, symlinked or
 read-only config files, and existing `lean-beam` entries that are disabled or have conflicting
-launch settings, such as a remote URL or nonempty arguments. Interactive installs show the planned
-`lean-beam` change before asking for permission to edit the file.
+launch settings, such as a remote URL or nonempty arguments. The installer refuses JSON comments
+and trailing commas because it cannot preserve them. Remove them or use `agy mcp add`.
+`lean-beam doctor clients agy` can inspect JSONC with comments and trailing commas.
+
+Before publishing the runtime, interactive installs show only changed keys in an existing
+`mcpServers.lean-beam` entry, or the full new config for a missing or blank file. The installer
+asks for approval when an edit is needed. An existing entry with the requested command and
+`"disabled": false` is reported as already registered.
 
 MCP stdio (`lean-beam-mcp`) is recommended in Antigravity so agent sessions avoid terminal-sandbox
 loopback TCP restrictions. With Remote-SSH, install and configure Beam on the host running the
@@ -942,7 +947,8 @@ the `lean-beam` entry under `mcpServers` in `~/.gemini/config/mcp_config.json`.
 ```
 
 Global skills live under `~/.gemini/config/skills/lean-beam`, and workspace skills are discovered
-under `.agents/skills/lean-beam` (as well as `.agent/`, `_agents/`, and `_agent/`). If `skills.json`,
+under `.agents/skills/lean-beam` (as well as `.agent/`, `_agents/`, and `_agent/`). The doctor
+also checks `mcp_config.json` in all four workspace customization roots. If `skills.json`,
 `plugins.json`, or a Beam-referencing plugin under `plugins/` is present, `lean-beam doctor clients agy`
 reports those layers as unverified rather than claiming full plugin evaluation.
 

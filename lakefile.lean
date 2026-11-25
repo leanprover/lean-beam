@@ -131,6 +131,7 @@ private def buildNativeObject (pkg : Package) (name : String) : FetchM (Job File
 
 target beamControlDirObj (pkg) : FilePath := buildNativeObject pkg "control_dir"
 target beamProcessJobObj (pkg) : FilePath := buildNativeObject pkg "process_job"
+target beamSafeConfigWriteObj (pkg) : FilePath := buildNativeObject pkg "safe_config_write"
 
 lean_lib Beam.LSP where
   globs := #[.andSubmodules `Beam.LSP]
@@ -316,6 +317,7 @@ lean_exe "beam-mcp-protocol-test" where
 
 lean_exe "beam-install-runtime" where
   root := `Beam.Install.Main
+  moreLinkObjs := #[beamSafeConfigWriteObj]
 
 lean_exe "beam-installation-construction-test" where
   srcDir := "tests/lean"
