@@ -35,8 +35,14 @@ private def field? (value : Lean.Json) (key : String) : Option Lean.Json :=
 private def stringArray (value : Lean.Json) : Option (Array String) := do
   (← value.getArr?.toOption).mapM (·.getStr?.toOption)
 
-/-- The installer refuses launch arguments so it cannot silently redirect an invoker. Doctor can
-    inspect a command with arguments and separately report that their behavior is unverified. -/
+def isSupportedToolsetArgs (args : Array String) : Bool :=
+  args.isEmpty ||
+    args == #["--toolset", "full"] ||
+    args == #["--toolset", "core"]
+
+/-- The installer refuses unrelated launch arguments so it cannot silently redirect an invoker,
+    while permitting Beam's own `--toolset full|core` arguments. Doctor can inspect a command
+    with arguments and separately report that unknown arguments are unverified. -/
 def validateEntry (value : Lean.Json) (install := false) : Except EntryError Launch := do
   unless value.getObj?.isOk do throw (.invalid "must be a JSON object")
   match field? value "disabled" with
@@ -57,7 +63,8 @@ def validateEntry (value : Lean.Json) (install := false) : Except EntryError Lau
     | none => pure #[]
     | some raw =>
         let some args := stringArray raw | throw (.invalid "'args' must be an array of strings")
-        if install && !args.isEmpty then throw (.invalid "'args' must be an empty array or absent")
+        if install && !isSupportedToolsetArgs args then
+          throw (.invalid "'args' must be an empty array, Beam's --toolset flag, or absent")
         pure args
   if (field? value "cwd").any (! ·.getStr?.isOk) then
     throw (.invalid "'cwd' must be a string or absent")

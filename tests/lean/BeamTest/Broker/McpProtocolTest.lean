@@ -1830,6 +1830,42 @@ private def checkDiagnosticLogForwarding : IO Unit := do
     catch _ =>
       pure ()
 
+private def checkCoreToolset : IO Unit := do
+  let coreToolsResult := Beam.Mcp.toolsListResultFor .core
+  let coreToolsJson ← requireObjVal "core tools/list result" "tools" coreToolsResult
+  let coreTools ← requireJsonArray "core tools/list tools" coreToolsJson
+  require "core toolset exposes 11 core tools" (coreTools.size == 11)
+  let hasCoreTool (name : String) : Bool :=
+    coreTools.any fun tool => (tool.getObjValAs? String "name").toOption == some name
+  for expected in #["beam_version", "lean_sync", "lean_update", "lean_refresh", "lean_run_at",
+      "lean_goals", "lean_todo", "lean_save", "lean_close_save", "lean_close",
+      "lean_drop_workspace"] do
+    require s!"core toolset exposes {expected}" (hasCoreTool expected)
+  for excluded in #["beam_feedback_report", "beam_stats", "lean_code_action_resolve",
+      "lean_run_at_handle", "lean_run_with", "lean_run_with_linear", "lean_release",
+      "lean_hover"] do
+    require s!"core toolset omits {excluded}" (!hasCoreTool excluded)
+
+  let state ← Beam.Mcp.Server.ServerState.create
+  let opts : Beam.Mcp.Server.Options := { toolset := .core }
+  let listResp ← handleRpcRequest state opts "modern core tools/list" 201 "tools/list" <|
+    some modernParams
+  let listResult ← requireObjVal "modern core tools/list response" "result" listResp
+  let modernCoreJson ← requireObjVal "modern core tools/list result" "tools" listResult
+  let modernCore ← requireJsonArray "modern core tools/list tools" modernCoreJson
+  require "modern core tools/list matches core toolset size" (modernCore.size == coreTools.size)
+
+  let rejectedStats ← handleRpcRequest state opts "core rejects beam_stats" 202 "tools/call" <|
+    some <| modernParams [
+      ("name", toJson "beam_stats"),
+      ("arguments", Json.mkObj [])
+    ]
+  let statsErr ← requireObjVal "core rejects beam_stats" "error" rejectedStats
+  requireJsonInt "core rejects beam_stats" "code" (-32602) statsErr
+  let statsMsg ← IO.ofExcept <| statsErr.getObjValAs? String "message"
+  require "core rejection explains active toolset"
+    (statsMsg.contains "not enabled in the 'core' MCP toolset")
+
 def main (args : List String) : IO Unit := do
   match args with
   | ["--drop-failure-tests"] => return ← BeamTest.Broker.McpDropFailureTest.run
@@ -1842,6 +1878,7 @@ def main (args : List String) : IO Unit := do
   checkVersionIdentityJson
   checkIncoming
   checkToolsListShape
+  checkCoreToolset
   checkWorkspaceDescriptor
   checkWorkspaceRootValidation
   checkProgressProtocol

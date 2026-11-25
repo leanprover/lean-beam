@@ -53,6 +53,7 @@ register_claude_mcp=0
 register_opencode_mcp=0
 register_vibe_mcp=0
 register_agy_mcp=0
+mcp_toolset="full"
 install_all_validated=0
 dont_ask=0
 toolchain_selection_explicit=0
@@ -208,6 +209,8 @@ Optional flags:
   --agy-mcp     register lean-beam-mcp with Antigravity
   --agy-home    Antigravity home directory (contains .gemini/config) for --agy and --agy-mcp
   --all-mcp     register Codex/Claude/Mistral Vibe/Antigravity MCP and show OpenCode MCP setup
+  --mcp-toolset <full|core>
+                MCP toolset to register (default: full; core exposes 11 core tools)
   -h, --help    show this help
 
 Environment:
@@ -751,6 +754,20 @@ parse_args() {
         register_vibe_mcp=1
         register_agy_mcp=1
         ;;
+      --mcp-toolset)
+        if [ "$#" -lt 2 ]; then
+          die "missing value for --mcp-toolset"
+        fi
+        case "$2" in
+          full|core)
+            mcp_toolset="$2"
+            ;;
+          *)
+            die "invalid value for --mcp-toolset: $2 (expected full or core)"
+            ;;
+        esac
+        shift
+        ;;
       -h|--help|help)
         usage
         exit 0
@@ -1164,20 +1181,24 @@ print_install_plan() {
     && [ "$register_agy_mcp" -eq 0 ]; then
     print_field "MCP setup" "none"
   else
+    local mcp_plan_target="$bin_home/lean-beam-mcp"
+    if [ "$mcp_toolset" = "core" ]; then
+      mcp_plan_target="$mcp_plan_target --toolset core"
+    fi
     if [ "$register_codex_mcp" -eq 1 ]; then
-      print_field "Codex MCP" "lean-beam -> $bin_home/lean-beam-mcp"
+      print_field "Codex MCP" "lean-beam -> $mcp_plan_target"
     fi
     if [ "$register_claude_mcp" -eq 1 ]; then
-      print_field "Claude MCP" "lean-beam -> $bin_home/lean-beam-mcp"
+      print_field "Claude MCP" "lean-beam -> $mcp_plan_target"
     fi
     if [ "$register_opencode_mcp" -eq 1 ]; then
       print_field "OpenCode MCP" "manual: opencode mcp add"
     fi
     if [ "$register_vibe_mcp" -eq 1 ]; then
-      print_field "Mistral Vibe MCP" "lean-beam -> $bin_home/lean-beam-mcp"
+      print_field "Mistral Vibe MCP" "lean-beam -> $mcp_plan_target"
     fi
     if [ "$register_agy_mcp" -eq 1 ]; then
-      print_field "Antigravity MCP" "lean-beam -> $bin_home/lean-beam-mcp"
+      print_field "Antigravity MCP" "lean-beam -> $mcp_plan_target"
     fi
   fi
   print_field "source build" "$repo_root/.lake"
@@ -1692,7 +1713,11 @@ print_manual_mcp_steps() {
     print_field "run" "opencode mcp add"
     print_field "name" "lean-beam"
     print_field "type" "local"
-    print_field "command" "$bin_home/lean-beam-mcp"
+    if [ "$mcp_toolset" = "core" ]; then
+      print_field "command" "$bin_home/lean-beam-mcp --toolset core"
+    else
+      print_field "command" "$bin_home/lean-beam-mcp"
+    fi
   fi
 }
 

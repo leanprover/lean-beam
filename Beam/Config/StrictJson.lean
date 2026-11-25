@@ -30,6 +30,9 @@ def Fields.set (fields : Fields) (key : String) (value : Value) : Fields :=
   | some i => fields.set! i (key, value)
   | none => fields.push (key, value)
 
+def Fields.erase (fields : Fields) (key : String) : Fields :=
+  fields.filter (·.1 != key)
+
 def isWhitespace (ch : Char) : Bool :=
   ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
 

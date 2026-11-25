@@ -538,13 +538,19 @@ def toolDescriptorJson (desc : ToolDescriptor) : Json :=
       | some annotations => [("annotations", annotations)]
       | none => []
 
-def toolsListResult : Json :=
+def toolsListResultFor (toolset : Toolset) : Json :=
   Json.mkObj [
-    ("tools", toJson <| toolDescriptors.map toolDescriptorJson)
+    ("tools", toJson <| (toolDescriptorsFor toolset).map toolDescriptorJson)
   ]
 
+def toolsListResult : Json :=
+  toolsListResultFor .full
+
+def modernToolsListResultFor (toolset : Toolset) : Json :=
+  publicCacheResult (toolsListResultFor toolset)
+
 def modernToolsListResult : Json :=
-  publicCacheResult toolsListResult
+  modernToolsListResultFor .full
 
 structure CallToolParams where
   name : ToolName

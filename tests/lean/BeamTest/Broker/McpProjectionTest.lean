@@ -147,11 +147,20 @@ private def checkToolDescriptors : IO Unit := do
       tool == .leanOperation op)
     require s!"Lean operation {repr op} should have exactly one MCP tool"
       (matchingTools.size == 1)
-  -- Bound discovery text independently of how a client selects or caches tools. Shared guidance
-  -- belongs in the server instructions; raising this budget needs a reason.
+  -- Bound discovery text and serialized schema size independently of how a client selects or
+  -- caches tools. Shared guidance belongs in server instructions; raising these budgets needs a reason.
   let descriptionChars := Beam.Mcp.toolDescriptors.foldl (· + ·.description.length) 0
-  require s!"MCP tool descriptions total {descriptionChars} characters, over their 4500 budget"
-    (descriptionChars ≤ 4500)
+  require s!"MCP tool descriptions total {descriptionChars} characters, over their 3600 budget"
+    (descriptionChars ≤ 3600)
+  let fullListBytes := (Beam.Mcp.toolsListResultFor .full).compress.utf8ByteSize
+  require s!"full MCP tools/list JSON is {fullListBytes} bytes, over its 23500-byte budget"
+    (fullListBytes ≤ 23500)
+  let coreListBytes := (Beam.Mcp.toolsListResultFor .core).compress.utf8ByteSize
+  require s!"core MCP tools/list JSON is {coreListBytes} bytes, over its 9800-byte budget"
+    (coreListBytes ≤ 9800)
+  require "core toolset is a strict subset of the full toolset"
+    (Beam.Mcp.Toolset.core.tools.size < Beam.Mcp.Toolset.full.tools.size &&
+      Beam.Mcp.Toolset.core.tools.all Beam.Mcp.Toolset.full.contains)
   let some versionDesc := Beam.Mcp.toolDescriptors.find? (·.name == .beamVersion)
     | throw <| IO.userError "beam version descriptor is missing"
   let versionSchemaProperties ← requireObjVal "beam version schema" "properties" versionDesc.inputSchema

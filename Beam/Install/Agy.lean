@@ -44,7 +44,12 @@ private def fieldDiff (key : String) (before after : Option Value) : String :=
     s!"{marker}  {(Lean.Json.str key).compress}: {value.compress}\n"
   (before.map (render "-")).getD "" ++ (after.map (render "+")).getD ""
 
-private def edit? (path command text : String) (showPreview : Bool) : IO (Option Edit) := do
+private def coreToolsetArgs : Value :=
+  .arr #[.str "--toolset", .str "core"]
+
+private def edit? (path command toolset text : String) (showPreview : Bool) : IO (Option Edit) := do
+  unless toolset == "full" || toolset == "core" do
+    throw <| IO.userError s!"invalid Antigravity MCP toolset: {toolset} (expected full or core)"
   let invalid (reason : String) := IO.userError
     s!"refusing to edit invalid Antigravity MCP config at {path}: {reason}"
   let root ← match StrictJson.parse text with
@@ -61,12 +66,23 @@ private def edit? (path command text : String) (showPreview : Bool) : IO (Option
   let launch ← IO.ofExcept ((Agy.validateEntry prior.forInspection (install := true)).mapError
     (fun error => conflict error.message))
   let oldDisabled := Fields.get? before "disabled"
+  let oldArgs := Fields.get? before "args"
   let commandChanged := launch.command? != some command
   let disabledChanged := oldDisabled.isNone
-  if !commandChanged && !disabledChanged then return none
+  let (argsChanged, newArgs?) :=
+    if toolset == "core" then
+      (launch.args != #["--toolset", "core"], some coreToolsetArgs)
+    else if !launch.args.isEmpty then
+      (true, none)
+    else
+      (false, oldArgs)
+  if !commandChanged && !disabledChanged && !argsChanged then return none
   let newCommand := Value.str command
   let newDisabled := Value.bool false
   let after := Fields.set (Fields.set before "command" newCommand) "disabled" newDisabled
+  let after := match newArgs? with
+    | some argsVal => if argsChanged then Fields.set after "args" argsVal else after
+    | none => if argsChanged then Fields.erase after "args" else after
   let servers := Fields.set servers "lean-beam" (.obj after)
   let updated := Value.obj (Fields.set root "mcpServers" (.obj servers))
   let blank := StrictJson.isBlank text
@@ -75,16 +91,17 @@ private def edit? (path command text : String) (showPreview : Bool) : IO (Option
     throw <| invalid "the updated file would exceed the 1 MiB size limit"
   let preview := if !showPreview then "" else if blank then output else
     (if commandChanged then fieldDiff "command" (Fields.get? before "command") (some newCommand) else "") ++
-    (if disabledChanged then fieldDiff "disabled" oldDisabled (some newDisabled) else "")
+    (if disabledChanged then fieldDiff "disabled" oldDisabled (some newDisabled) else "") ++
+    (if argsChanged then fieldDiff "args" oldArgs newArgs? else "")
   return some { output, preview }
 
-private def plan (requested command : String) (expectedPath : Option String)
+private def plan (requested command toolset : String) (expectedPath : Option String)
     (preview : Bool) : IO Unit := do
   let snapshot ← readRequested requested
   if expectedPath.any (· != snapshot.physical) then
     throw <| IO.userError "Antigravity MCP config location changed before planning; rerun the installer"
   let text ← snapshot.text
-  let edit ← edit? snapshot.physical command text preview
+  let edit ← edit? snapshot.physical command toolset text preview
   let fingerprint ← snapshot.fingerprint text
   if let some edit := edit then
     if preview then
@@ -95,24 +112,32 @@ private def plan (requested command : String) (expectedPath : Option String)
   -- The shell reads two fixed-format lines, then the entire physical path.
   IO.println s!"{if edit.isSome then "edit" else "noop"}\n{fingerprint}\n{snapshot.physical}"
 
-private def apply (requested command physical fingerprint : String) : IO Unit := do
+private def apply (requested command toolset physical fingerprint : String) : IO Unit := do
   let snapshot ← readRequested requested
   if snapshot.physical != physical then
     throw <| IO.userError "Antigravity MCP config location changed before writing; rerun the installer"
   let text ← snapshot.text
   if (← snapshot.fingerprint text) != fingerprint then
     throw <| IO.userError "Antigravity MCP config changed before writing; rerun the installer"
-  if let some edit ← edit? physical command text false then
+  if let some edit ← edit? physical command toolset text false then
     try replaceConfig requested physical snapshot.stamp snapshot.bytes edit.output.toUTF8
     catch error => throw <| IO.userError s!"{physical}: {error}"
 
 def run (args : List String) : IO Unit := do
   match args with
-  | ["plan", requested, command] => plan requested command none false
-  | ["plan", requested, command, physical] => plan requested command (some physical) false
-  | ["plan", requested, command, physical, "--preview"] => plan requested command (some physical) true
-  | ["apply", requested, command, physical, fingerprint] => apply requested command physical fingerprint
+  | ["plan", requested, command] => plan requested command "full" none false
+  | ["plan", requested, command, physical] => plan requested command "full" (some physical) false
+  | ["plan", requested, command, physical, "--preview"] =>
+      plan requested command "full" (some physical) true
+  | ["plan", requested, command, physical, "--toolset", toolset] =>
+      plan requested command toolset (some physical) false
+  | ["plan", requested, command, physical, "--toolset", toolset, "--preview"] =>
+      plan requested command toolset (some physical) true
+  | ["apply", requested, command, physical, fingerprint] =>
+      apply requested command "full" physical fingerprint
+  | ["apply", requested, command, physical, fingerprint, "--toolset", toolset] =>
+      apply requested command toolset physical fingerprint
   | _ => throw <| IO.userError (
-      "usage: beam-install-runtime agy-mcp plan PATH COMMAND [PHYSICAL [--preview]] | agy-mcp apply PATH COMMAND PHYSICAL FINGERPRINT")
+      "usage: beam-install-runtime agy-mcp plan PATH COMMAND [PHYSICAL [--toolset full|core] [--preview]] | agy-mcp apply PATH COMMAND PHYSICAL FINGERPRINT [--toolset full|core]")
 
 end Beam.Install.Agy
