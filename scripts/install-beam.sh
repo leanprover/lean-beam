@@ -1205,7 +1205,11 @@ print_install_plan() {
   fi
   print_field "source build" "$repo_root/.lake"
   if [ "$dont_ask" -eq 0 ]; then
-    print_field "approval" "one grouped write-permission prompt"
+    if [ "$register_vibe_mcp" -eq 1 ]; then
+      print_field "approval" "grouped write approval followed by a Mistral Vibe MCP diff"
+    else
+      print_field "approval" "one grouped write-permission prompt"
+    fi
     if [ "$register_agy_mcp" -eq 1 ]; then
       print_field "" "separate preview and approval for Antigravity config edits"
     fi
@@ -1346,44 +1350,78 @@ ensure_skill_target_replaceable() {
   fi
 }
 
+# Restore a moved previous skill directory on failure and remove the staging directory.
+# Avoid subshell EXIT traps: Bash 3.2 (macOS) drops function-local state on early exit.
+abort_skill_install() {
+  local parent="$1"
+  local staging_dir="$2"
+  local staged_skill="$3"
+  local previous_skill="$4"
+  local label="$5"
+  local target_dir="$6"
+  local message="$7"
+  if [ -d "$previous_skill" ]; then
+    if ! mv -n "$previous_skill" "$parent/" || [ -d "$previous_skill" ]; then
+      rm -rf -- "$staged_skill"
+      die "could not restore $label skill at $target_dir; previous skill retained at $previous_skill"
+    fi
+  fi
+  rm -rf -- "$staging_dir"
+  die "$message"
+}
+
 install_one_skill() {
   local source_dir="$1"
   local target_dir="$2"
   local label="$3"
-  local parent=""
-  local staging_dir=""
+  local parent="" staging_dir="" staged_skill="" previous_skill=""
   require_path_within "$source_dir" "$repo_root" "$label skill source"
   require_absolute_path "$target_dir" "$label skill target"
   parent="$(dirname "$target_dir")"
-  ensure_dir_for_install "$parent" "$label skill parent"
+  ensure_dir_for_install "$parent" "$label skill parent" || return
   ensure_skill_target_replaceable "$target_dir" "$label"
-  confirm_path_edit "install $label skill" "$target_dir"
-  staging_dir="$(mktemp -d "$parent/.${label}.staging-XXXXXX")"
+  confirm_path_edit "install $label skill" "$target_dir" || return
+  staging_dir="$(mktemp -d "$parent/.${label}.staging-XXXXXX")" || return
   require_path_within "$staging_dir" "$parent" "$label skill staging directory"
-  cp -Rp "$source_dir/." "$staging_dir/"
-  {
-    printf 'schema=1\n'
-    printf 'owner=lean-beam\n'
-    printf 'skill=%s\n' "$label"
-  } >"$staging_dir/$skill_owner_marker"
-  if [ -e "$target_dir" ]; then
-    rm -rf -- "$target_dir"
-  fi
-  mv "$staging_dir" "$target_dir"
-}
+  staged_skill="$staging_dir/${target_dir##*/}"
+  previous_skill="$staging_dir/previous/${target_dir##*/}"
 
-install_skills() {
-  local skills_home="$1"
-  require_absolute_path "$skills_home" "skills home"
-  ensure_dir_for_install "$skills_home" "skills home"
-  install_one_skill "$repo_root/skills/lean-beam" "$skills_home/lean-beam" "lean-beam"
+  # Keep the previous directory until the staged directory has been published.
+  # Pass the parent to mv so a concurrent directory at the target cannot cause nesting.
+  if ! mkdir "$staged_skill" "$staging_dir/previous"; then
+    abort_skill_install "$parent" "$staging_dir" "$staged_skill" "$previous_skill" "$label" "$target_dir" \
+      "could not prepare staging directory for $label skill at $target_dir"
+  fi
+  if ! cp -Rp "$source_dir/." "$staged_skill/" || [ ! -f "$staged_skill/SKILL.md" ]; then
+    abort_skill_install "$parent" "$staging_dir" "$staged_skill" "$previous_skill" "$label" "$target_dir" \
+      "could not stage $label skill for $target_dir"
+  fi
+  if ! printf 'schema=1\nowner=lean-beam\nskill=%s\n' "$label" >"$staged_skill/$skill_owner_marker"; then
+    abort_skill_install "$parent" "$staging_dir" "$staged_skill" "$previous_skill" "$label" "$target_dir" \
+      "could not mark staged $label skill for $target_dir"
+  fi
+  if ! (ensure_skill_target_replaceable "$target_dir" "$label"); then
+    rm -rf -- "$staging_dir"
+    return 1
+  fi
+  if [ -e "$target_dir" ]; then
+    if ! mv "$target_dir" "$staging_dir/previous/"; then
+      abort_skill_install "$parent" "$staging_dir" "$staged_skill" "$previous_skill" "$label" "$target_dir" \
+        "could not move previous $label skill aside at $target_dir"
+    fi
+  fi
+  if ! mv -n "$staged_skill" "$parent/" || [ -d "$staged_skill" ]; then
+    abort_skill_install "$parent" "$staging_dir" "$staged_skill" "$previous_skill" "$label" "$target_dir" \
+      "could not publish $label skill at $target_dir"
+  fi
+  rm -rf -- "$staging_dir"
 }
 
 install_skill_target() {
   local label="$1"
   local skills_home="$2"
-  install_skills "$skills_home"
-  printf '%s: lean-beam: %s\n' "$label" "$skills_home"
+  install_one_skill "$repo_root/skills/lean-beam" "$skills_home/lean-beam" "lean-beam" || return
+  installed_skill_targets+=("$label: lean-beam: $skills_home")
 }
 
 verify_skill_home_targets() {
@@ -1465,30 +1503,23 @@ publish_runtime() {
 }
 
 install_requested_skills() {
-  local target=""
   if [ "$install_codex_skills" -eq 1 ]; then
-    target="$(install_skill_target "Codex" "$codex_skills_home")"
-    installed_skill_targets+=("$target")
+    install_skill_target "Codex" "$codex_skills_home" || return
   fi
   if [ "$install_claude_skills" -eq 1 ]; then
-    target="$(install_skill_target "Claude Code" "$claude_skills_home")"
-    installed_skill_targets+=("$target")
+    install_skill_target "Claude Code" "$claude_skills_home" || return
   fi
   if [ "$install_pi_skills" -eq 1 ]; then
-    target="$(install_skill_target "Pi Agent" "$pi_skills_home")"
-    installed_skill_targets+=("$target")
+    install_skill_target "Pi Agent" "$pi_skills_home" || return
   fi
   if [ "$install_opencode_skills" -eq 1 ]; then
-    target="$(install_skill_target "OpenCode" "$opencode_skills_home")"
-    installed_skill_targets+=("$target")
+    install_skill_target "OpenCode" "$opencode_skills_home" || return
   fi
   if [ "$install_vibe_skills" -eq 1 ]; then
-    target="$(install_skill_target "Mistral Vibe" "$vibe_skills_home")"
-    installed_skill_targets+=("$target")
+    install_skill_target "Mistral Vibe" "$vibe_skills_home" || return
   fi
   if [ "$install_agy_skills" -eq 1 ]; then
-    target="$(install_skill_target "Antigravity" "$agy_skills_home")"
-    installed_skill_targets+=("$target")
+    install_skill_target "Antigravity" "$agy_skills_home" || return
   fi
 }
 

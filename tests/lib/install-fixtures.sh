@@ -137,6 +137,7 @@ exit 0
 SH
   cat > "$stub_bin/claude" <<'SH'
 #!/usr/bin/env bash
+set -euo pipefail
 {
   printf 'claude'
   for arg in "$@"; do
@@ -145,16 +146,30 @@ SH
   printf '|HOME=%s' "${HOME:-}"
   printf '\n'
 } >> "$BEAM_TEST_MCP_STUB_LOG"
-if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "add" ]; then
-  python3 - "$HOME/.claude.json" "${7:?}" "${@:8}" <<'PY_CLAUDE'
+if [ "${1:-}" = "mcp" ]; then
+  if [ "${BEAM_TEST_FAIL_CLAUDE_MCP:-}" = "$2" ]; then
+    printf 'fixture Claude MCP %s failure\n' "$2" >&2
+    exit 73
+  fi
+  python3 - "$HOME/.claude.json" "$2" "${7:-}" "${@:8}" <<'PY_CLAUDE'
 import json
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
+operation, command = sys.argv[2], sys.argv[3]
+args = sys.argv[4:]
 config = json.loads(path.read_text()) if path.exists() else {}
-config.setdefault("mcpServers", {})["lean-beam"] = {
-    "type": "stdio", "command": sys.argv[2], "args": sys.argv[3:],
-}
+servers = config.setdefault("mcpServers", {})
+if operation == "remove":
+    if "lean-beam" not in servers:
+        raise SystemExit("lean-beam is absent from user scope")
+    del servers["lean-beam"]
+elif operation == "add":
+    if "lean-beam" in servers:
+        raise SystemExit("lean-beam already exists in user scope")
+    servers["lean-beam"] = {"type": "stdio", "command": command, "args": args}
+else:
+    raise SystemExit(f"unexpected Claude MCP operation: {operation}")
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(config))
 PY_CLAUDE

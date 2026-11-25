@@ -4,8 +4,9 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Author: Emilio J. Gallego Arias
 -/
 
-import Beam.Install.Construction
 import Beam.Install.Agy
+import Beam.Install.ClientConfig
+import Beam.Install.Construction
 import Beam.Installation.StandaloneLayout
 
 /-- Maintainer/installer construction tool. Deliberately absent from the installed artifact set. -/
@@ -22,4 +23,10 @@ def main (args : List String) : IO Unit := do
       discard <| Beam.Install.Construction.verify root
   | ["layout"] => IO.println (Lean.toJson Beam.Installation.standaloneLayout).compress
   | "agy-mcp" :: args => Beam.Install.Agy.run args
-  | _ => throw <| IO.userError "usage: beam-install-runtime construct SOURCE FRONTEND-SDK STAGING SOURCE-COMMIT|- TARGET... | verify ROOT | verify-installed ROOT | layout | agy-mcp ..."
+  | ["codex-mcp", path, snapshot] => Beam.Install.ClientConfig.codexParallelTools path snapshot
+  | ["vibe-mcp", path, snapshot, command, "--toolset", toolset] =>
+      Beam.Install.ClientConfig.vibeRegistration path snapshot command toolset false
+  | ["vibe-mcp", path, snapshot, command, "--toolset", toolset, "--preview"] =>
+      Beam.Install.ClientConfig.vibeRegistration path snapshot command toolset true
+  | ["claude-mcp", path] => Beam.Install.ClientConfig.claudeUserRegistration path
+  | _ => throw <| IO.userError "usage: beam-install-runtime construct SOURCE FRONTEND-SDK STAGING SOURCE-COMMIT|- TARGET... | verify ROOT | verify-installed ROOT | layout | agy-mcp ... | codex-mcp CONFIG SNAPSHOT | vibe-mcp CONFIG SNAPSHOT|- COMMAND --toolset full|core [--preview] | claude-mcp CONFIG"
