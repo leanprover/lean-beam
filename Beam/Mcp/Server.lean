@@ -133,6 +133,7 @@ structure Options where
     name := Beam.Version.mcpServerName
     mcpProtocol? := some Beam.Version.mcpProtocolVersion
   }
+  toolset : Toolset := .full
 
 def Internal.traceEnabled (envName : String) : IO Bool := do
   match ← IO.getEnv envName with
@@ -814,6 +815,9 @@ def Internal.handleToolCall
     match parsedParams with
     | .ok params => pure params
     | .error err => return .error <| RpcError.invalidParams err
+  unless opts.toolset.contains params.name do
+    return .error <| RpcError.invalidParams
+      s!"tool '{params.name.key}' is not enabled in the '{opts.toolset.key}' MCP toolset"
   let progress? ← ProgressEmitter.create? params.progressToken? notifier.progress initialProgress
   Internal.traceMcp
     s!"tools/call start id={req.id.label} tool={params.name.key} progressToken={params.progressToken?.isSome}"
@@ -943,8 +947,8 @@ private def handleReadyOperationRequest
           | .ok () => pure ()
       let result :=
         match admitted with
-        | .legacy => toolsListResult
-        | .modern _ => modernToolsListResult
+        | .legacy => toolsListResultFor opts.toolset
+        | .modern _ => modernToolsListResultFor opts.toolset
       pure <| successResponseForEra era req.id result
   | "tools/call" =>
       let parsedParams := parseCallToolParams req.params?

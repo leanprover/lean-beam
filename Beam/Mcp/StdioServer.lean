@@ -680,7 +680,10 @@ private def Coordinator.handleIncoming
   | .request req =>
       let parsedToolParams? :=
         if req.method == "tools/call" then some <| parseCallToolParams req.params? else none
-      let tool? := parsedToolParams?.bind fun parsed => parsed.toOption.map (·.name)
+      let tool? := parsedToolParams?.bind fun parsed =>
+        match parsed.toOption with
+        | some params => if opts.toolset.contains params.name then some params.name else none
+        | none => none
       let requestClass := Admission.classify req.method tool?
       -- Cancellation protection is independent of the admission class: non-tool requests such as
       -- `ping` stay protected once started, while observational tool calls stay cooperative.

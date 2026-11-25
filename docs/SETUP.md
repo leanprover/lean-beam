@@ -753,6 +753,10 @@ command without reinstalling, use the manual instructions below.
 ./scripts/install-beam.sh --all-mcp
 ```
 
+Add `--mcp-toolset core` (for example `./scripts/install-beam.sh --codex-mcp --mcp-toolset core`) to
+register the compact 11-tool authoring profile instead of the default 24-tool `full` profile; see
+[MCP runtime setup](MCP.md#runtime-setup).
+
 To register either installation manually, use the absolute path to its MCP command:
 
 - Checkout installation: `$HOME/.local/bin/lean-beam-mcp`, or your chosen wrapper location.
@@ -763,6 +767,9 @@ matching server independently of its working directory and `PATH`.
 To change how many unfinished tool calls the server admits at once (default 32), append
 `--max-unfinished-requests N` to the registered command; see
 [MCP transport lifetime](MCP.md#transport-lifetime).
+To expose only the compact authoring toolset (11 tools instead of 24) and reduce per-turn schema
+token overhead in clients that load all tool schemas eagerly, append `--toolset core`; see
+[MCP runtime setup](MCP.md#runtime-setup).
 
 ```bash
 codex mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"

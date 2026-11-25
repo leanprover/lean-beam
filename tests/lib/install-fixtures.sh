@@ -113,15 +113,25 @@ beam_install_setup_mcp_cli_stubs() {
 } >> "$BEAM_TEST_MCP_STUB_LOG"
 if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "add" ] && [ "${3:-}" = "lean-beam" ]; then
   mkdir -p "${CODEX_HOME:?}"
-  {
-    if [ -s "$CODEX_HOME/config.toml" ]; then
-      printf '\n'
-    fi
-    # Exercise a valid literal-quoted key so the installer cannot assume a bare key.
-    printf "[mcp_servers.'lean-beam']\n"
-    printf 'command = "%s"\n' "${5:?}"
-    printf 'supports_parallel_tool_calls = false\n'
-  } >> "$CODEX_HOME/config.toml"
+  python3 - "$CODEX_HOME/config.toml" "${5:?}" "${@:6}" <<'PY_CODEX'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+cmd = sys.argv[2]
+args = sys.argv[3:]
+prefix = "\n" if path.exists() and path.stat().st_size > 0 else ""
+# Exercise a valid literal-quoted key so the installer cannot assume a bare key.
+lines = [
+    "[mcp_servers.'lean-beam']",
+    f"command = {json.dumps(cmd)}",
+]
+if args:
+    lines.append(f"args = {json.dumps(args)}")
+lines.append("supports_parallel_tool_calls = false")
+with path.open("a", encoding="utf-8") as f:
+    f.write(prefix + "\n".join(lines) + "\n")
+PY_CODEX
 fi
 exit 0
 SH
@@ -136,14 +146,14 @@ SH
   printf '\n'
 } >> "$BEAM_TEST_MCP_STUB_LOG"
 if [ "${1:-}" = "mcp" ] && [ "${2:-}" = "add" ]; then
-  python3 - "$HOME/.claude.json" "${7:?}" <<'PY_CLAUDE'
+  python3 - "$HOME/.claude.json" "${7:?}" "${@:8}" <<'PY_CLAUDE'
 import json
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
 config = json.loads(path.read_text()) if path.exists() else {}
 config.setdefault("mcpServers", {})["lean-beam"] = {
-    "type": "stdio", "command": sys.argv[2], "args": [],
+    "type": "stdio", "command": sys.argv[2], "args": sys.argv[3:],
 }
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(config))
