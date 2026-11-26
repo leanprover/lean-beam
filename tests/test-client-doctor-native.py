@@ -144,11 +144,11 @@ def main():
                        for source in client["sources"]), client
             alternate.unlink()
 
-        jsonc = agy_config()[:-1] + b', "huge": 1e' + b"9" * 250_000 + b",}"
+        jsonc = agy_config()[:-1] + b",}"
         agy.write_bytes(b"\xef\xbb\xbf{/* header */ // comment\n" + jsonc[1:])
         client = inspect("agy", expected=expected)["clients"][0]
         assert any(f["code"] == "launch.file" for f in client["findings"]), client
-        for raw in (rb'{"key":1,"k\u0065y":2}', rb'{"key":"\uD800"}', rb'{"key":"\uDFFF"}'):
+        for raw in (b'{"key":NaN}', b'{"key":Infinity}'):
             agy.write_bytes(raw)
             client = inspect("agy", expected=1)["clients"][0]
             assert any(f["code"] == "config.syntax" for f in client["findings"]), client

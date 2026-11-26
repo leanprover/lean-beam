@@ -3,19 +3,26 @@ Copyright (c) 2026 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 -/
 
-import Beam.Config.StrictJson
+import Lean
 
 namespace Beam.Config.Agy
 
-open StrictJson
+def maxConfigBytes : Nat := 1024 * 1024
 
-/-- Decode the containers without losing the order or spelling of unrelated settings. -/
-def servers (value : Value) : Except String (Fields × Fields) := do
-  let .obj root := value | throw "root JSON value must be an object"
-  match Fields.get? root "mcpServers" with
-  | none => return (root, #[])
-  | some (.obj servers) => return (root, servers)
-  | _ => throw "'mcpServers' must be a JSON object"
+private def field? (value : Lean.Json) (key : String) : Option Lean.Json :=
+  (value.getObjVal? key).toOption
+
+private def stringArray (value : Lean.Json) : Option (Array String) := do
+  (← value.getArr?.toOption).mapM (·.getStr?.toOption)
+
+/-- Validate root and `mcpServers` container types using `Lean.Json`. -/
+def servers (value : Lean.Json) : Except String Lean.Json := do
+  unless value.getObj?.isOk do throw "root JSON value must be an object"
+  match field? value "mcpServers" with
+  | none => return Lean.Json.mkObj []
+  | some servers =>
+      unless servers.getObj?.isOk do throw "'mcpServers' must be a JSON object"
+      return servers
 
 structure Launch where
   command? : Option String
@@ -28,12 +35,6 @@ inductive EntryError where
 def EntryError.message : EntryError → String
   | .disabled => "'disabled' must be false or absent"
   | .invalid message => message
-
-private def field? (value : Lean.Json) (key : String) : Option Lean.Json :=
-  (value.getObjVal? key).toOption
-
-private def stringArray (value : Lean.Json) : Option (Array String) := do
-  (← value.getArr?.toOption).mapM (·.getStr?.toOption)
 
 def isSupportedToolsetArgs (args : Array String) : Bool :=
   args.isEmpty ||

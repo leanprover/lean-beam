@@ -532,7 +532,7 @@ essential_bin = root / "agy-essential-bin"
 essential_bin.mkdir()
 for name in ("awk", "basename", "cat", "chmod", "cmp", "cp", "date", "dirname", "elan",
              "env", "find", "grep", "ln", "mkdir", "mktemp", "mv", "readlink", "rm", "rmdir",
-             "sed", "sha256sum", "shasum", "sort", "tr", "uname"):
+             "sed", "sha256sum", "shasum", "sort", "stat", "tr", "uname"):
     if tool := shutil.which(name):
         (essential_bin / name).symlink_to(tool)
 env = dict(os.environ, PATH=str(essential_bin))
@@ -583,8 +583,7 @@ def refuse(result, message, path):
 
 
 valid = rb"""{
-  "user": 1e400,
-  "precise": 0.123456789012345678901234567890123456789,
+  "user": 42,
   "mcpServers": {
     "other": {"command": "/bin/echo", "env": {"API_KEY": "secret-do-not-print"}},
     "lean-beam": {
@@ -599,23 +598,17 @@ valid = rb"""{
       "custom": {"nested": [true, null]},
       "apiKey": "sk-SECRET-TRAILING"
     }
-  },
-  "hugeExponent": -9E+999999999999999999999999999999
+  }
 }
 """
 home, path = fixture("no-python-or-agy", valid)
-expected = json.loads(valid, parse_float=lambda _: None)
+expected = json.loads(valid)
 expected["mcpServers"]["lean-beam"].update(new_entry)
 result = run(registration(home))
 assert result.returncode == 0 and not result.stdout, result.stdout
 payload = path.read_bytes()
-assert payload.startswith(b"{\n  \"user\": ") and payload.endswith(b"\n}\n"), payload
-assert json.loads(payload, parse_float=lambda _: None) == expected
-assert list(json.loads(payload, parse_float=lambda _: None)) == list(expected)
-assert list(json.loads(payload, parse_float=lambda _: None)["mcpServers"]["lean-beam"]) == list(expected["mcpServers"]["lean-beam"])
-for number in (b"1e400", b"0.123456789012345678901234567890123456789",
-               b"-9E+999999999999999999999999999999"):
-    assert number in payload
+assert b"\n" in payload[:-1] and payload.endswith(b"\n"), payload
+assert json.loads(payload) == expected
 assert stat.S_IMODE(path.stat().st_mode) == 0o640
 assert_no_staging(path)
 installed = path.stat()
@@ -648,15 +641,12 @@ for label, raw, message in (
     ("root", b"[]", "root JSON value must be an object"),
     ("servers-array", b'{"mcpServers":[]}', "'mcpServers' must be a JSON object"),
     ("servers-null", b'{"mcpServers":null}', "'mcpServers' must be a JSON object"),
-    ("duplicate", rb'{"mcpServers":{"other":{"nested":{"key":1,"k\u0065y":2}}}}', "duplicate JSON object key"),
+    ("duplicate", rb'{"mcpServers":{"other":{"nested":{"key":1,"k\u0065y":2}}}}', "invalid Antigravity MCP config"),
     ("nan", b'{"value":NaN}', "invalid Antigravity MCP config"),
     ("infinity", b'{"value":Infinity}', "invalid Antigravity MCP config"),
     ("negative-infinity", b'{"value":-Infinity}', "invalid Antigravity MCP config"),
     ("leading-zero", b'{"value":01}', "invalid Antigravity MCP config"),
-    ("bad-exponent", b'{"value":1e+}', "invalid JSON exponent"),
-    ("surrogate-high", rb'{"value":"\ud800"}', "unpaired Unicode surrogate"),
-    ("surrogate-low", rb'{"value":"\udfff"}', "unpaired Unicode surrogate"),
-    ("deep", b"[" * 130 + b"0" + b"]" * 130, "JSON nesting exceeds"),
+    ("bad-exponent", b'{"value":1e+}', "invalid Antigravity MCP config"),
     ("oversized", b" " * (1024 * 1024 + 1), "1 MiB size limit"),
     ("double-bom", b"\xef\xbb\xbf\xef\xbb\xbf{}", "invalid Antigravity MCP config"),
     ("non-rfc-blank", b"\x0b", "invalid Antigravity MCP config"),
@@ -841,62 +831,18 @@ assert rc != 0 and "symlinked Antigravity MCP config" in transcript, transcript
 assert path.is_symlink() and target.read_bytes() == valid
 assert_no_staging(path)
 
-# Verify the actual metadata and byte hash passed across plan/apply.
-home, path = fixture("fingerprint", valid)
-plan = subprocess.run([runtime, "agy-mcp", "plan", path, command], env=env,
-                      capture_output=True, text=True, timeout=10, check=True)
-state, fingerprint, physical = plan.stdout.splitlines()
-assert state == "edit" and physical == str(path), plan
-assert fingerprint.endswith(":" + hashlib.sha256(valid).hexdigest()), fingerprint
-
-if sys.platform.startswith("linux"):
-    # Deterministically create a competing file at link, after every pre-publication check.
-    # A forced rename failure also exercises staged file cleanup at the write boundary.
-    injection = root / "agy-publication-fault.c"
-    injection.write_text(r"""
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <string.h>
-#include <unistd.h>
-
-static int is_leaf(const char *path) {
-  const char *slash = strrchr(path, '/');
-  return strcmp(slash ? slash + 1 : path, "mcp_config.json") == 0;
-}
-int link(const char *oldpath, const char *newpath) {
-  if (is_leaf(newpath)) {
-    int fd = open(newpath, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (fd < 0) _exit(88);
-    const char contents[] = "{\"competing\":true}\n";
-    if (write(fd, contents, sizeof contents - 1) != sizeof contents - 1) _exit(89);
-    close(fd);
-  }
-  int (*next)(const char *, const char *) = dlsym(RTLD_NEXT, "link");
-  return next(oldpath, newpath);
-}
-int rename(const char *oldpath, const char *newpath) {
-  if (is_leaf(newpath)) {
-    errno = EIO;
-    return -1;
-  }
-  int (*next)(const char *, const char *) = dlsym(RTLD_NEXT, "rename");
-  return next(oldpath, newpath);
-}
-""", encoding="utf-8")
-    library = injection.with_suffix(".so")
-    compiler = shutil.which("cc") or shutil.which("clang")
-    subprocess.run([compiler, "-shared", "-fPIC", injection, "-o", library, "-ldl"], check=True)
-    injected = dict(env, LD_PRELOAD=str(library))
-
-    home, path = fixture("concurrent-create")
-    refuse(run(registration(home), injected), "changed before writing", path)
-    assert path.read_bytes() == b'{"competing":true}\n'
-
-    home, path = fixture("replace-failure", valid)
-    refuse(run(registration(home), injected), "cannot replace the Antigravity MCP config", path)
-    assert path.read_bytes() == valid
+home, path = fixture("replace-failure", valid)
+result = run(shell(home, """
+    set_bin_home "$1"
+    dont_ask=1
+    register_agy_mcp=1
+    validate_requested_location_config
+    plan_agy_mcp_registration
+    mv() { return 1; }
+    register_agy_mcp_server
+""", bin_home))
+refuse(result, "cannot replace Antigravity MCP config", path)
+assert path.read_bytes() == valid
 PYTHON_AGY
   )
 }

@@ -282,21 +282,20 @@ register_vibe_mcp_server() {
 
 plan_agy_mcp_registration() {
   local plan=""
-  local details=""
   local reply=""
   local newline=$'\n'
   if [ "$register_agy_mcp" -eq 0 ]; then
     return 0
   fi
+  preflight_agy_mcp_config
   if [ "$dont_ask" -eq 1 ]; then
-    plan="$("$construction_tool" agy-mcp plan "$agy_mcp_config" "$bin_home/lean-beam-mcp" "$agy_physical_config" --toolset "$mcp_toolset")" || return
+    plan="$("$construction_tool" agy-mcp plan "$agy_physical_config" "$bin_home/lean-beam-mcp" --toolset "$mcp_toolset")" || return
   else
-    plan="$("$construction_tool" agy-mcp plan "$agy_mcp_config" "$bin_home/lean-beam-mcp" "$agy_physical_config" --toolset "$mcp_toolset" --preview)" || return
+    plan="$("$construction_tool" agy-mcp plan "$agy_physical_config" "$bin_home/lean-beam-mcp" --toolset "$mcp_toolset" --preview)" || return
   fi
   agy_plan_state="${plan%%"$newline"*}"
-  details="${plan#*"$newline"}"
-  agy_plan_fingerprint="${details%%"$newline"*}"
-  if [ "${details#*"$newline"}" != "$agy_physical_config" ] || [ -z "$agy_plan_fingerprint" ]; then
+  agy_plan_fingerprint="${plan#*"$newline"}"
+  if [ -z "$agy_plan_fingerprint" ]; then
     die "invalid Antigravity MCP registration plan"
   fi
   case "$agy_plan_state" in
@@ -318,11 +317,44 @@ plan_agy_mcp_registration() {
 }
 
 register_agy_mcp_server() {
+  local planned_path="$agy_physical_config"
+  local parent_dir=""
+  local tmp_config=""
+  local mode=""
   if [ "$agy_plan_state" = noop ]; then
     return 0
   fi
-  "$construction_tool" agy-mcp apply "$agy_mcp_config" "$bin_home/lean-beam-mcp" \
-    "$agy_physical_config" "$agy_plan_fingerprint" --toolset "$mcp_toolset" || return
+  preflight_agy_mcp_config
+  if [ "$agy_physical_config" != "$planned_path" ]; then
+    die "Antigravity MCP config location changed before writing $planned_path; rerun the installer"
+  fi
+  parent_dir="${agy_physical_config%/*}"
+  if [ ! -d "$parent_dir" ]; then
+    mkdir -p "$parent_dir" || die "cannot create Antigravity config dir at $parent_dir"
+  fi
+  if [ -f "$agy_physical_config" ]; then
+    mode="$(stat -c '%a' "$agy_physical_config" 2>/dev/null || stat -f '%Lp' "$agy_physical_config" 2>/dev/null || true)"
+  fi
+  tmp_config="$(mktemp "$parent_dir/.mcp_config.json.lean-beam-XXXXXX")"
+  if ! "$construction_tool" agy-mcp render "$agy_physical_config" "$bin_home/lean-beam-mcp" \
+      --toolset "$mcp_toolset" "$agy_plan_fingerprint" >"$tmp_config"; then
+    rm -f -- "$tmp_config"
+    return 1
+  fi
+  if [ -n "$mode" ]; then
+    if ! chmod "$mode" "$tmp_config"; then
+      rm -f -- "$tmp_config"
+      die "cannot preserve Antigravity MCP config mode at $agy_physical_config"
+    fi
+  fi
+  if [ -L "$agy_physical_config" ]; then
+    rm -f -- "$tmp_config"
+    die "refusing to edit symlinked Antigravity MCP config at $agy_physical_config"
+  fi
+  if ! mv "$tmp_config" "$agy_physical_config"; then
+    rm -f -- "$tmp_config"
+    die "cannot replace Antigravity MCP config at $agy_physical_config"
+  fi
   registered_mcp_targets+=("Antigravity: lean-beam")
 }
 

@@ -44,7 +44,7 @@ private def readFile (path : System.FilePath) : IO FileRead := do
   try
     let metadata ← path.metadata
     if metadata.type != .file then return .notFile
-    let limit := Beam.Config.StrictJson.maxBytes
+    let limit := 1024 * 1024
     if metadata.byteSize.toNat > limit then return .tooLarge
     let handle ← IO.FS.Handle.mk path .read
     let mut bytes := ByteArray.empty
@@ -819,7 +819,7 @@ private def inspectAgyCustomLayers (context : Context) (dirs : Array System.File
       let hasBeamMcp ← match ← readFile pluginMcp with
         | .text text =>
             match parseAgyConfig text with
-            | .ok value => pure (mentionsBeam value.forInspection)
+            | .ok value => pure (mentionsBeam value)
             | .error _ => pure (hasBeamSkill || entry.fileName.contains "lean-beam")
         | .missing => pure false
         | _ => pure (hasBeamSkill || entry.fileName.contains "lean-beam")
@@ -890,7 +890,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
           sources := report.sources.push { path := source.path.toString, role := source.role, conditional := source.conditional, state := .ok } }
         let parsed ← if client == .agy then
             pure ((parseAgyConfig text).map fun value =>
-              (value.forInspection, (Agy.servers value).isOk))
+              (value, (Agy.servers value).isOk))
           else
             pure ((← parseConfig source.format text).map fun value => (value, true))
         match parsed with

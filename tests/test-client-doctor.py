@@ -1536,17 +1536,16 @@ class ClientDoctorTest(unittest.TestCase):
                 self.assertIn(key, [f["key"] for f in self.findings(report)
                                     if f["code"] == "policy.notEvaluated" and f["status"] == "unknown"])
 
-    def test_agy_jsonc_and_bounded_strict_validation(self):
+    def test_agy_jsonc_and_syntax_validation(self):
         config = self.home / ".gemini/config/mcp_config.json"
         command = json.dumps(str(self.executable))
         self.write(config,
                    '\uFEFF{// line comment\r"mcpServers": {/* block comment */ "lean-beam": {'
                    f'"command": {command}, "args": [], "headers": {{"url": "https://example.invalid/*"}},'
-                   '},}, "huge": 1e' + "9" * 250_000 + ', "large": 1e400, "surrogate": "\\uD83D\\uDE00",}')
+                   '},}, "surrogate": "\\uD83D\\uDE00",}')
         self.assertEqual(self.run_doctor("agy")["clients"][0]["mcp"], "checked")
 
-        for value in (r'{"k":1,"\u006b":2}', r'"\ud800"', r'"\udfff"', "NaN", "Infinity",
-                      "-Infinity", "[" * 130 + "0" + "]" * 130, "[,]", "[1,,]"):
+        for value in ("NaN", "Infinity", "-Infinity", "[,]", "[1,,]"):
             with self.subTest(value=value):
                 self.write(config, '{"unused": ' + value + ', "mcpServers": {},}')
                 self.has_code(self.run_doctor("agy", expected=1), "config.syntax", "error")
