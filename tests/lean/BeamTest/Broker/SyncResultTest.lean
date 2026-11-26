@@ -116,7 +116,8 @@ private def checkDiagnosticErrorsDoNotOverrideReadiness : IO Unit := do
       result.readiness.blockingMessages.isEmpty)
 
 private def checkSaveBlockingEvidenceProjection : IO Unit := do
-  let blockingDiagnostic := diagnostic 0 0 1 (some .error) "save-blocking diagnostic"
+  let multilineMessage := "unsolved goals\nx y : Nat\n⊢ x = y"
+  let blockingDiagnostic := diagnostic 0 0 1 (some .error) multilineMessage
   let readiness : SyncSaveReadiness := {
     saveReady := false
     saveReadyReason := "documentErrors"
@@ -124,10 +125,20 @@ private def checkSaveBlockingEvidenceProjection : IO Unit := do
     blockingCommandMessages := #[commandEvidence "save-blocking command message"]
   }
   let result := mkSyncFileResult "Demo.lean" 7 #[blockingDiagnostic] readiness
+    (items? := some #[{
+      path := "Demo.lean"
+      uri := "file:///repo/Demo.lean"
+      version? := some 7
+      severity? := some .error
+      range := blockingDiagnostic.fullRange
+      message := multilineMessage
+    }])
 
   require "save-blocking evidence appears in readiness result"
     (result.readiness.blockingDiagnostics.size == 1 &&
       result.readiness.blockingDiagnostics[0]?.map (·.saveBlocking) == some true &&
+      result.readiness.blockingDiagnostics[0]?.map (·.message) == some multilineMessage &&
+      result.diagnostics.items?.bind (·[0]?.map (·.message)) == some multilineMessage &&
       result.readiness.blockingMessages.size == 1 &&
       result.readiness.blockingMessages[0]?.map (·.saveBlocking) == some true)
 

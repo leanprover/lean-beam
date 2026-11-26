@@ -33,8 +33,8 @@ Beam only reads saved `.lean` files and never edits them.
    lean-beam run-at Foo.lean VERSION 10 2 "omega" # or --stdin / --text-file / --profile
    lean-beam save MyPkg/Sub/Module.lean           # optional zero-build checkpoint (one module)
    ```
-   (MCP: leave `diagnostics_in_result` unset for routine error fixes; set `true` for multiline
-   errors, plus `diagnostic_scope: "all"` for warnings/info.)
+   (MCP: leave `diagnostics_in_result` unset while fixing errors; set `diagnostics_in_result: true`
+   with `diagnostic_scope: "all"` only to inspect warnings/info.)
 3. Always pass the `version` returned by the latest `sync`, `update`, or `refresh` — never guess a
    version. Use `update` only to grab a version without waiting for diagnostics. Across files:
    `save` the dependency, then `refresh` its importers in dependency order (`save` alone neither

@@ -195,7 +195,7 @@ private def saveDiagnosticScopeField : String × Json :=
 
 private def diagnosticsInResultField : String × Json :=
   ("diagnostics_in_result", Beam.JsonSchema.bool
-    "Replay selected diagnostics in diagnostics.items (default false). Leave false for routine error fixes (already in readiness.blocking_diagnostics); set true for multiline errors, plus diagnostic_scope \"all\" for warnings/info.")
+    "Replay selected diagnostics in diagnostics.items (default false). Leave false while fixing errors (already in readiness.blocking_diagnostics); set true with diagnostic_scope \"all\" to inspect warnings/info.")
 
 private def codeActionField : String × Json :=
   ("code_action", Beam.JsonSchema.object

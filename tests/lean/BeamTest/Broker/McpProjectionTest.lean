@@ -660,6 +660,13 @@ private def sampleSyncResult : Beam.Broker.SyncFileResult := {
     saveReady := false
     reason := "documentErrors"
     blockingErrorCount := 1
+    blockingDiagnostics := #[{
+      range := { start := { line := 2, character := 0 }, «end» := { line := 2, character := 4 } }
+      severity? := some .error
+      message := "unsolved goals\nx y : Nat\n⊢ x = y"
+      saveBlocking := true
+      completionBlocking := false
+    }]
     blockingMessages := #[{
       message := "declaration has errors"
       saveBlocking := true
@@ -722,6 +729,11 @@ private def checkCrossSurfaceResultParity : IO Unit := do
   requireFieldAbsent "shared readiness" "saveReady" readiness
   requireFieldAbsent "shared readiness" "blockingErrorCount" readiness
   requireJsonInt "shared readiness" "blocking_error_count" 1 readiness
+  let blockingDiagnostics ← IO.ofExcept <| readiness.getObjValAs? (Array Json) "blocking_diagnostics"
+  let some blockingDiag := blockingDiagnostics[0]?
+    | throw <| IO.userError "shared sync result lost its blocking diagnostic"
+  requireJsonString "shared blocking diagnostic preserves newlines" "message"
+    "unsolved goals\nx y : Nat\n⊢ x = y" blockingDiag
   let diagnostics ← requireObjVal "shared sync result" "diagnostics" cliSync
   let items ← IO.ofExcept <| diagnostics.getObjValAs? (Array Json) "items"
   let some item := items[0]?
