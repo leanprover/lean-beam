@@ -6,6 +6,7 @@ Author: Emilio J. Gallego Arias
 
 import BeamTest.LSP.Requests.Interference
 import BeamTest.LSP.Requests.Support
+import BeamTest.LSP.Requests.RunAt.CommandLinterSupport
 
 open Lean
 open BeamTest.LSP.Scenario
@@ -557,6 +558,60 @@ def checkRunAtPlaceholderContexts : ScenarioM Unit := do
 
   closeDoc doc
 
+def checkRunAtCommandLinters : ScenarioM Unit := do
+  let path := "tests/scenario/docs/RunAtCommandLinters.lean"
+  let source ← IO.FS.readFile path
+  let some (_, line) := source.splitOn "\n" |>.zipIdx |>.find? (fun (text, _) =>
+      text.endsWith " -- command")
+    | throw <| IO.userError "missing command linter anchor"
+  let doc ← openDoc path
+  syncDoc doc
+  let pos : Lean.Lsp.Position := { line, character := 0 }
+  let basic ← requireRunAtResponseSuccess "command probe suppresses header linter" <|
+    ← sendRunAt doc { line := pos.line, character := pos.character, text := "example : True := trivial", storeHandle := true }
+  unless basic.messages.isEmpty do
+    throw <| IO.userError s!"expected no header linter diagnostics on command probe: {(toJson basic).compress}"
+  let some handle := basic.handle?
+    | throw <| IO.userError "expected stored command handle after suppressed header linter"
+  let longLine :=
+    "example (a b c d e f g h i j k l m n o p q r s t : Nat) : a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p + q + r + s + t = a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p + q + r + s + t := rfl"
+  for req in [
+      ← sendRunAt doc { line := pos.line, character := pos.character, text := longLine },
+      ← runWithHandle doc handle { text := longLine }] do
+    let res ← requireRunAtResponseSuccess "command probe suppresses longLine linter" req
+    unless res.messages.isEmpty do
+      throw <| IO.userError s!"expected no longLine diagnostics on command probe: {(toJson res).compress}"
+  for req in [
+      ← sendRunAt doc { line := pos.line, character := pos.character, text := "#check Nat" },
+      ← runWithHandle doc handle { text := "#check Nat" }] do
+    let res ← requireRunAtResponseSuccess "command probe suppresses hashCommand linter" req
+    if res.messages.any (·.text.contains "hash command forbidden") then
+      throw <| IO.userError s!"unexpected hashCommand diagnostic on command probe: {(toJson res).compress}"
+  for (label, text) in [
+      ("indented command probe suppresses whitespace linter", "  example : True := trivial"),
+      ("blank-line command probe suppresses emptyLine linter", "example : True := by\n\n  trivial")] do
+    for req in [
+        ← sendRunAt doc { line := pos.line, character := pos.character, text },
+        ← runWithHandle doc handle { text }] do
+      let res ← requireRunAtResponseSuccess label req
+      unless res.messages.isEmpty do
+        throw <| IO.userError s!"{label}: unexpected diagnostics: {(toJson res).compress}"
+  -- Explicit opt-in inside the probe still runs the header linter, and unrelated semantic linters
+  -- remain active under warningAsError.
+  for (label, text, needle) in [
+      ("explicit header opt-in", "set_option linter.style.header true in\nexample : True := trivial",
+        "missing module docstring"),
+      ("semantic linter remains active", "def triggerSemanticLinter : Nat := 1",
+        "semantic probe lint")] do
+    for req in [
+        ← sendRunAt doc { line := pos.line, character := pos.character, text },
+        ← runWithHandle doc handle { text }] do
+      let res : Beam.LSP.RunAt.Result ← awaitResponseAs req
+      unless !res.success && res.messages.any (fun msg => msg.severity == .error && msg.text.contains needle) do
+        throw <| IO.userError s!"{label}: expected error containing '{needle}', got {(toJson res).compress}"
+  releaseHandle doc handle
+  closeDoc doc
+
 def checkRunAtWithStandardLspInterference : ScenarioM Unit := do
   let runAtDoc ← openDoc "tests/scenario/docs/SimpleProof.lean"
   let editDoc ← openDoc "tests/scenario/docs/SimpleProofB.lean"
@@ -577,6 +632,7 @@ def run : ScenarioM Unit := do
   checkRunAtElaborationAborts
   checkRunAtResourceLimits
   checkRunAtSilentDiagnostics
+  checkRunAtCommandLinters
   checkRunAtOneCommandOnly
   checkRunAtTheoremSuccessOmitsSilentMessages
   checkRunAtTheoremProofFailure

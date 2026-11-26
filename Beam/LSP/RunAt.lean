@@ -391,6 +391,38 @@ private def collectSnapshotTaskArtifacts
   let profileStates := if profile then snapshots.map (·.traces) else #[]
   return (messages, traces, profileStates)
 
+/-- File-level style linters that do not apply to standalone `<runAt>` command probes.
+In particular, `linter.style.header` inspects `fileMap.source` from byte 0 expecting imports and
+a module docstring before the first command, so it fires on every command probe in projects that
+enable Mathlib's standard linter set. -/
+private def suppressedCommandProbeLinterOptions : Array Name := #[
+  `linter.style.header,
+  `linter.style.longLine,
+  `linter.style.whitespace,
+  `linter.style.emptyLine,
+  `linter.hashCommand
+]
+
+private def suppressCommandProbeLinters (opts : Options) : Options :=
+  suppressedCommandProbeLinterOptions.foldl (init := opts) fun opts key =>
+    opts.setBool key false
+
+private def restoreBoolOption (key : Name) (before after : Options) : Options :=
+  match before.get? (α := Bool) key with
+  | some value => after.setBool key value
+  | none => after.erase key
+
+private def restoreCommandProbeLinterScopes (before after : List Elab.Command.Scope) :
+    List Elab.Command.Scope := Id.run do
+  let originals := before.reverse.toArray
+  let fallback := before.head?.map (·.opts) |>.getD {}
+  let restored := after.reverse.toArray.mapIdx fun i scope =>
+    let orig := (originals[i]?).map (·.opts) |>.getD fallback
+    let opts := suppressedCommandProbeLinterOptions.foldl (init := scope.opts) fun opts key =>
+      restoreBoolOption key orig opts
+    { scope with opts }
+  return restored.toList.reverse
+
 def runCommandText (snap : Snapshots.Snapshot) (text : String) (profile : Bool := false) :
     RequestM (Result × Option StoredHandleState) := do
   checkRequestCancelled
@@ -408,7 +440,11 @@ def runCommandText (snap : Snapshots.Snapshot) (text : String) (profile : Bool :
         runCommandElabMWithCancel snap stx text (some innerCancelTk) do
           -- The incoming snapshot can carry already-accounted-for async work from the saved file.
           -- A speculative command result should include only tasks spawned by this command.
-          modify fun state => { state with snapshotTasks := #[] }
+          modify fun state => { state with
+            snapshotTasks := #[]
+            scopes := state.scopes.map fun scope =>
+              { scope with opts := suppressCommandProbeLinters scope.opts }
+          }
           if profile then
             let tid ← IO.getTID
             modify fun state => { state with
@@ -445,10 +481,11 @@ def runCommandText (snap : Snapshots.Snapshot) (text : String) (profile : Bool :
                 (Elab.Command.liftCoreM Core.checkInterrupted) startNs stopNs
                 (#[state.traceState] ++ profileStates) text)
             else pure none
+          let scopes := restoreCommandProbeLinterScopes snap.cmdState.scopes state.scopes
           let state := if profile then { state with
-              scopes := Profile.restoreScopes snap.cmdState.scopes state.scopes
+              scopes := Profile.restoreScopes snap.cmdState.scopes scopes
               traceState := snap.cmdState.traceState
-            } else state
+            } else { state with scopes }
           return (
             error?,
             messages ++ snapshotMessages,
