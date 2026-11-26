@@ -77,6 +77,12 @@ def validateEntry (value : Lean.Json) (install := false) : Except EntryError Lau
   for key in ["enabledTools", "disabledTools"] do
     if (field? value key).any (fun setting => (stringArray setting).isNone) then
       throw (.invalid s!"'{key}' must be an array of strings")
+  if let some timeout := field? value "timeoutSeconds" then
+    match timeout with
+    | .num n =>
+        unless n.exponent == 0 do
+          throw (.invalid "'timeoutSeconds' must be an integer")
+    | _ => throw (.invalid "'timeoutSeconds' must be an integer")
   return { command?, args }
 
 end Beam.Config.Agy

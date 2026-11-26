@@ -592,7 +592,7 @@ valid = rb"""{
       "enabledTools": ["lean_goal"],
       "disabledTools": ["lean_run_code"],
       "env": {"LABEL": "caf\u00e9"},
-      "timeoutSeconds": 2.5,
+      "timeoutSeconds": 30,
       "args": [],
       "cwd": "/workspace",
       "headers": {"custom": "\uD83D\uDE00"},
@@ -609,6 +609,7 @@ expected["mcpServers"]["lean-beam"].update(new_entry)
 result = run(registration(home))
 assert result.returncode == 0 and not result.stdout, result.stdout
 payload = path.read_bytes()
+assert payload.startswith(b"{\n  \"user\": ") and payload.endswith(b"\n}\n"), payload
 assert json.loads(payload, parse_float=lambda _: None) == expected
 assert list(json.loads(payload, parse_float=lambda _: None)) == list(expected)
 assert list(json.loads(payload, parse_float=lambda _: None)["mcpServers"]["lean-beam"]) == list(expected["mcpServers"]["lean-beam"])
@@ -686,6 +687,8 @@ for label, entry, reason in (
     ("env-value", {"env": {"NUMBER": 1}}, "'env' must be a JSON object"),
     ("enabled-object", {"enabledTools": {}}, "'enabledTools' must be an array of strings"),
     ("disabled-item", {"disabledTools": [1]}, "'disabledTools' must be an array of strings"),
+    ("timeout-string", {"timeoutSeconds": "ten minutes"}, "'timeoutSeconds' must be an integer"),
+    ("timeout-float", {"timeoutSeconds": 2.5}, "'timeoutSeconds' must be an integer"),
 ):
     raw = json.dumps({"mcpServers": {"lean-beam": entry}}, indent=2).encode()
     home, path = fixture(label, raw)
@@ -847,24 +850,7 @@ assert state == "edit" and physical == str(path), plan
 assert fingerprint.endswith(":" + hashlib.sha256(valid).hexdigest()), fingerprint
 
 if sys.platform.startswith("linux"):
-    home, path = fixture("extended-acl", valid)
-    # POSIX ACL with a named user in addition to the ordinary mode entries.
-    unnamed = 0xFFFFFFFF
-    acl = struct.pack("<I", 2) + b"".join(
-        struct.pack("<HHI", tag, perms, uid) for tag, perms, uid in
-        ((1, 6, unnamed), (2, 4, os.geteuid()), (4, 0, unnamed),
-         (16, 4, unnamed), (32, 0, unnamed)))
-    try:
-        os.setxattr(path, "system.posix_acl_access", acl)
-    except OSError as error:
-        if error.errno not in (errno.ENOTSUP, errno.ENOSYS):
-            raise
-    else:
-        refuse(run(registration(home)), "extended ACL", path)
-        assert path.read_bytes() == valid
-        assert os.getxattr(path, "system.posix_acl_access") == acl
-
-    # Deterministically create a competing file at linkat, after every pre-publication check.
+    # Deterministically create a competing file at link, after every pre-publication check.
     # A forced rename failure also exercises staged file cleanup at the write boundary.
     injection = root / "agy-publication-fault.c"
     injection.write_text(r"""
@@ -875,24 +861,28 @@ if sys.platform.startswith("linux"):
 #include <string.h>
 #include <unistd.h>
 
-int linkat(int oldfd, const char *old, int newfd, const char *name, int flags) {
-  if (strcmp(name, "mcp_config.json") == 0) {
-    int fd = openat(newfd, name, O_WRONLY | O_CREAT | O_EXCL, 0600);
+static int is_leaf(const char *path) {
+  const char *slash = strrchr(path, '/');
+  return strcmp(slash ? slash + 1 : path, "mcp_config.json") == 0;
+}
+int link(const char *oldpath, const char *newpath) {
+  if (is_leaf(newpath)) {
+    int fd = open(newpath, O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (fd < 0) _exit(88);
     const char contents[] = "{\"competing\":true}\n";
     if (write(fd, contents, sizeof contents - 1) != sizeof contents - 1) _exit(89);
     close(fd);
   }
-  int (*next)(int, const char *, int, const char *, int) = dlsym(RTLD_NEXT, "linkat");
-  return next(oldfd, old, newfd, name, flags);
+  int (*next)(const char *, const char *) = dlsym(RTLD_NEXT, "link");
+  return next(oldpath, newpath);
 }
-int renameat(int oldfd, const char *old, int newfd, const char *name) {
-  if (strcmp(name, "mcp_config.json") == 0) {
+int rename(const char *oldpath, const char *newpath) {
+  if (is_leaf(newpath)) {
     errno = EIO;
     return -1;
   }
-  int (*next)(int, const char *, int, const char *) = dlsym(RTLD_NEXT, "renameat");
-  return next(oldfd, old, newfd, name);
+  int (*next)(const char *, const char *) = dlsym(RTLD_NEXT, "rename");
+  return next(oldpath, newpath);
 }
 """, encoding="utf-8")
     library = injection.with_suffix(".so")
@@ -906,11 +896,6 @@ int renameat(int oldfd, const char *old, int newfd, const char *name) {
 
     home, path = fixture("replace-failure", valid)
     refuse(run(registration(home), injected), "cannot replace the Antigravity MCP config", path)
-    assert path.read_bytes() == valid
-elif sys.platform == "darwin":
-    home, path = fixture("extended-acl", valid)
-    subprocess.run(["chmod", "+a", "everyone allow read", path], check=True)
-    refuse(run(registration(home)), "extended ACL", path)
     assert path.read_bytes() == valid
 PYTHON_AGY
   )

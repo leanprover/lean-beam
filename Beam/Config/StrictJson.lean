@@ -260,12 +260,15 @@ def parse (text : String) (jsonc := false) : Except String Value := do
   unless skipSpace bytes endPos == bytes.size do throw "unexpected text after the JSON value"
   return value
 
-/-- Doctor checks numeric fields by type only. Avoid materializing arbitrary decimal exponents. -/
+def isIntegerLexeme (lexeme : String) : Bool :=
+  !lexeme.isEmpty && !lexeme.contains '.' && !lexeme.contains 'e' && !lexeme.contains 'E'
+
+/-- Doctor checks numeric fields by type (and integer vs fractional). Avoid materializing huge exponents. -/
 partial def Value.forInspection : Value → Lean.Json
   | .null => .null
   | .bool b => .bool b
   | .str s => .str s
-  | .num _ => .num 0
+  | .num lexeme => if isIntegerLexeme lexeme then .num 0 else .num ⟨5, 1⟩
   | .arr items => .arr (items.map Value.forInspection)
   | .obj fields => Lean.Json.mkObj (fields.toList.map fun (key, value) => (key, value.forInspection))
 
@@ -291,5 +294,30 @@ private partial def render (value : Value) (out : String) : String := Id.run do
       return out.push '}'
 
 def Value.compress (value : Value) : String := render value ""
+
+private partial def renderPretty (value : Value) (depth : Nat) (out : String) : String := Id.run do
+  match value with
+  | .null | .bool _ | .str _ | .num _ => return render value out
+  | .arr items =>
+      if items.isEmpty then return out ++ "[]"
+      let inner := String.ofList (List.replicate ((depth + 1) * 2) ' ')
+      let outer := String.ofList (List.replicate (depth * 2) ' ')
+      let mut out := out ++ "[\n"
+      for i in [:items.size] do
+        if i > 0 then out := out ++ ",\n"
+        out := renderPretty items[i]! (depth + 1) (out ++ inner)
+      return out ++ "\n" ++ outer ++ "]"
+  | .obj fields =>
+      if fields.isEmpty then return out ++ "{}"
+      let inner := String.ofList (List.replicate ((depth + 1) * 2) ' ')
+      let outer := String.ofList (List.replicate (depth * 2) ' ')
+      let mut out := out ++ "{\n"
+      for i in [:fields.size] do
+        if i > 0 then out := out ++ ",\n"
+        let (key, item) := fields[i]!
+        out := renderPretty item (depth + 1) (out ++ inner ++ (Lean.Json.str key).compress ++ ": ")
+      return out ++ "\n" ++ outer ++ "}"
+
+def Value.pretty (value : Value) : String := renderPretty value 0 ""
 
 end Beam.Config.StrictJson

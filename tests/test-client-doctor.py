@@ -1562,7 +1562,8 @@ class ClientDoctorTest(unittest.TestCase):
         for fields in ({"httpUrl": None}, {"type": "sse"}, {"transport": "http"},
                        {"transport": 0}, {"cwd": {}}, {"env": []}, {"env": {"PORT": 42}},
                        {"enabledTools": {}}, {"disabledTools": [1]}, {"disabled": 0},
-                       {"args": [1]}, {"command": None}):
+                       {"args": [1]}, {"command": None},
+                       {"timeoutSeconds": "ten minutes"}, {"timeoutSeconds": 2.5}):
             with self.subTest(fields=fields):
                 self.json_file(config, {"mcpServers": {"lean-beam": {
                     "command": str(self.executable), **fields,
@@ -1571,9 +1572,39 @@ class ClientDoctorTest(unittest.TestCase):
                 self.assertEqual(report["clients"][0]["mcp"], "error")
                 self.has_code(report, "mcp.invalidEntry", "error")
         self.json_file(config, {"mcpServers": {"lean-beam": {
+            "command": str(self.executable), "timeoutSeconds": 60,
+        }}})
+        self.assertEqual(self.run_doctor("agy")["clients"][0]["mcp"], "checked")
+        self.json_file(config, {"mcpServers": {"lean-beam": {
             "command": str(self.executable), "type": "stdio", "transport": "stdio", "args": ["--debug"],
         }}})
         self.has_code(self.run_doctor("agy", expected=2), "launch.arguments", "unknown")
+
+    def test_agy_plugin_unrelated_mcp_and_cli_skill_paths(self):
+        plugin = self.home / ".gemini/config/plugins/skill-only-plugin"
+        self.write(plugin / "skills/lean-beam/SKILL.md", "Plugin skill\n")
+        self.json_file(plugin / "mcp_config.json", {
+            "mcpServers": {"other-server": {"command": "/bin/echo"}},
+        })
+        report = self.run_doctor("agy", expected=2)
+        client = report["clients"][0]
+        self.assertEqual(client["mcp"], "notConfigured")
+        self.assertEqual(client["skill"], "unverified")
+        self.has_code(report, "agy.pluginLayer", "unknown")
+        (plugin / "skills/lean-beam/SKILL.md").unlink()
+        (plugin / "mcp_config.json").unlink()
+
+        for rel in (".gemini/antigravity-cli/skills/lean-beam/SKILL.md",
+                    ".gemini/skills/lean-beam/SKILL.md"):
+            with self.subTest(rel=rel):
+                skill = self.home / rel
+                self.write(skill, "CLI skill\n")
+                report = self.run_doctor("agy")
+                client = report["clients"][0]
+                self.assertEqual(client["skill"], "checked")
+                self.assertIn({"path": str(skill), "purpose": "Lean skill", "state": "ok"},
+                              client["sources"])
+                skill.unlink()
 
     def test_agy_bom_and_blank_configs(self):
         registration = json.dumps({

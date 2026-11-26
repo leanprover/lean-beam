@@ -86,7 +86,7 @@ private def edit? (path command toolset text : String) (showPreview : Bool) : IO
   let servers := Fields.set servers "lean-beam" (.obj after)
   let updated := Value.obj (Fields.set root "mcpServers" (.obj servers))
   let blank := StrictJson.isBlank text
-  let output := (if blank then updated.forInspection.pretty else updated.compress) ++ "\n"
+  let output := updated.pretty ++ "\n"
   if output.utf8ByteSize > StrictJson.maxBytes then
     throw <| invalid "the updated file would exceed the 1 MiB size limit"
   let preview := if !showPreview then "" else if blank then output else

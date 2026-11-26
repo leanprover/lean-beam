@@ -157,7 +157,14 @@ def locations (context : Context) (client : Client)
       result := { result with skills := result.skills.push (
         context.workspace / ".vibe" / "skills" / "lean-beam" / "SKILL.md") }
   | .agy =>
-      result := { result with configs := #[config (home / "mcp_config.json") .json] }
+      let agyHome := match (context.env? "BEAM_AGY_HOME").filter (! ·.isEmpty) with
+        | some override => System.FilePath.mk override
+        | none => context.userHome
+      result := { result with
+        configs := #[config (home / "mcp_config.json") .json]
+        skills := result.skills
+          |>.push (agyHome / ".gemini" / "antigravity-cli" / "skills" / "lean-beam" / "SKILL.md")
+          |>.push (agyHome / ".gemini" / "skills" / "lean-beam" / "SKILL.md") }
       for dir in dirs do
         for rootName in agyWorkspaceRootNames do
           result := { result with configs := result.configs.push (

@@ -819,7 +819,7 @@ private def inspectAgyCustomLayers (context : Context) (dirs : Array System.File
       let hasBeamMcp ← match ← readFile pluginMcp with
         | .text text =>
             match parseAgyConfig text with
-            | .ok value => pure (hasBeamSkill || mentionsBeam value.forInspection)
+            | .ok value => pure (mentionsBeam value.forInspection)
             | .error _ => pure (hasBeamSkill || entry.fileName.contains "lean-beam")
         | .missing => pure false
         | _ => pure (hasBeamSkill || entry.fileName.contains "lean-beam")
