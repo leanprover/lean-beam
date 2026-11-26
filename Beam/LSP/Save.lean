@@ -358,7 +358,7 @@ private def saveBlockingDiagnosticOfInteractive
   {
     range := diagnostic.fullRange
     severity? := plain.severity?
-    message := singleLineText plain.message
+    message := plain.message
     saveBlocking := true
     completionBlocking := false
   }

@@ -444,6 +444,39 @@ def checkSaveReadinessDocumentErrors : ScenarioM Unit := do
 
   closeDoc doc
 
+def checkMultilineReadinessDiagnostic : ScenarioM Unit := do
+  let doc ← openDoc "tests/scenario/docs/SimpleProof.lean"
+  changeDoc doc {
+    line := 0
+    character := 0
+    insert := "theorem multilineGoal (x y : Nat) : x = y := by\n  skip\n\n"
+  }
+  syncDoc doc
+
+  let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs (← sendSaveReadiness doc)
+  unless !readiness.saveReady && readiness.saveReadyReason == "documentErrors" &&
+      readiness.blockingDiagnostics.size == 1 && readiness.blockingCommandMessages.isEmpty do
+    throw <| IO.userError s!"multiline readiness: unexpected verdict {(toJson readiness).compress}"
+  let some blocking := readiness.blockingDiagnostics[0]?
+    | throw <| IO.userError "multiline readiness: missing blocking diagnostic"
+  unless blocking.message.contains "\n" &&
+      blocking.message.contains "unsolved goals" &&
+      blocking.message.contains "x y : Nat" &&
+      blocking.message.contains "⊢ x = y" do
+    throw <| IO.userError
+      s!"multiline readiness: expected preserved multiline goal context, got {repr blocking.message}"
+  let currentErrors := readiness.currentDiagnostics.filter (·.severity? == some .error)
+  unless currentErrors.size == 1 && currentErrors[0]!.message == blocking.message do
+    throw <| IO.userError
+      s!"multiline readiness: blocking diagnostic diverged from currentDiagnostics: blocking={repr blocking.message}, current={(toJson currentErrors).compress}"
+  let some summary := readiness.saveReadyMessage?
+    | throw <| IO.userError "multiline readiness: missing saveReadyMessage"
+  unless summary.contains "cannot save artifacts for a document with errors;" &&
+      !summary.contains "\n" do
+    throw <| IO.userError
+      s!"multiline readiness: expected single-line save summary error, got {repr summary}"
+  closeDoc doc
+
 def checkRepeatedReadinessErrors : ScenarioM Unit := do
   let doc ← openDoc "tests/lean/BeamTest/Fixtures/Save/RepeatedErrors.lean"
   let readiness : Beam.LSP.Save.SaveReadinessResult ← awaitResponseAs (← sendSaveReadiness doc)
@@ -593,6 +626,7 @@ def run : ScenarioM Unit := do
   checkConcurrentDisjointPrivateSaves
   checkSaveArtifactsRejectsSameDocumentEditRace
   checkSaveReadinessDocumentErrors
+  checkMultilineReadinessDiagnostic
   checkRepeatedReadinessErrors
   checkReadinessWithoutFinalState
   checkSaveRequestsWithStandardLspInterference

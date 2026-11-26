@@ -611,7 +611,8 @@ operation result.
 including a blocking command message when Lean did not attach a diagnostic. It can therefore differ
 from `diagnostics.counts.error`. Warning counts are reported once, under `diagnostics.counts.warning`.
 
-Each save-blocking frontend error appears once in `blocking_diagnostics`, with its location.
+Each save-blocking frontend error appears once in `blocking_diagnostics`, with its location and
+Lean's full multiline diagnostic text (matching `diagnostics.items`).
 `blocking_messages` contains command-only blockers without a corresponding frontend diagnostic,
 such as deferred compilation; it does not repeat those located errors. Identical messages at
 different source locations remain separate diagnostics. Requested `diagnostics.items` replay is
