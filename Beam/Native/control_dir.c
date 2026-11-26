@@ -15,6 +15,36 @@ Author: Emilio J. Gallego Arias
 #include <unistd.h>
 #endif
 
+#if defined(__linux__)
+#include <linux/magic.h>
+#include <sys/vfs.h>
+#endif
+
+/* Namespace identity is diagnostic only. Platforms without Linux procfs provide no signal. */
+LEAN_EXPORT lean_obj_res lean_beam_network_namespace(lean_obj_arg world) {
+  (void)world;
+#if defined(__linux__)
+  const char *path = "/proc/self/ns/net";
+  struct statfs fs;
+  struct stat status;
+  if (statfs(path, &fs) == 0 && fs.f_type == NSFS_MAGIC && stat(path, &status) == 0) {
+    lean_object *some = lean_alloc_ctor(1, 1, 0);
+    lean_ctor_set(some, 0, lean_uint64_to_nat((uint64_t)status.st_ino));
+    return lean_io_result_mk_ok(some);
+  }
+#endif
+  return lean_io_result_mk_ok(lean_box(0));
+}
+
+LEAN_EXPORT uint8_t lean_beam_is_connection_refused(uint32_t os_code) {
+#if defined(__linux__)
+  return os_code == ECONNREFUSED;
+#else
+  (void)os_code;
+  return 0;
+#endif
+}
+
 /* Kept private to Beam.System: mode is meaningful only for PRIVATE_POSIX_MODE. */
 enum private_dir_kind {
   PRIVATE_ABSENT, PRIVATE_DIRECTORY, PRIVATE_LINK, PRIVATE_NOT_DIRECTORY,

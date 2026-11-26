@@ -66,6 +66,7 @@ A Lean release line is the canonical `major.minor` family recorded in
   set and must be reinstalled; they are not accepted as current installation inventories.
 - [CLI session descriptor](../Beam/Daemon/Protocol.lean) schema 5. It freezes one workspace binding,
   the canonical owning installation root, generation identity, lifecycle, endpoint, and capability.
+  Linux owners also record their network namespace when procfs exposes it.
   Workspace bindings require a Lean
   command, plugin, toolchain, and bundle identity. Descriptors and their workspace bindings reject
   undeclared fields, including removed Rocq configuration. Schema-less, schema-1, the superseded

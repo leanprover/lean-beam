@@ -247,6 +247,7 @@ private def sessionStatus (opts : CliOptions) : CliM Unit := do
   let sessionDir ← Beam.Daemon.controlDirFor root opts.explicitControlDir?
   let result : SessionStatus ←
     match ← observeProjectRegistry root opts.explicitControlDir? with
+    | .networkNamespaceMismatch entry => throw <| networkNamespaceFailure root entry.daemonId
     | .absent => pure <| mkSessionStatus .absent root sessionDir
     | .live entry => pure <| mkSessionStatus .running root sessionDir (some entry.daemonId)
     | .selectorMismatch entry =>

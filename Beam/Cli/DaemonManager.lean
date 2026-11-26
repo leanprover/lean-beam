@@ -256,6 +256,24 @@ def probeFailureDisposition (failure : BrokerClientFailure) : ProbeFailureDispos
   | .transport .connect _, .notSent => .manualRecoveryRequired
   | _, _ => .unresponsive
 
+/-- Compare only on a refused connect before submission. Neither a descriptor nor a namespace
+difference establishes whether the recorded generation is still alive. -/
+def foreignNetworkNamespaceOnRefusal
+    (recorded? : Option Nat) (failure : BrokerClientFailure) : IO Bool := do
+  let some recorded := recorded? | return false
+  let .transport .connect (.noSuchThing _ code _) := failure.cause | return false
+  let .notSent := failure.delivery | return false
+  unless Beam.isLinuxConnectionRefused code do return false
+  return (← Beam.networkNamespace?).any (· != recorded)
+
+def networkNamespaceFailure (root : System.FilePath) (generation : String) : CliFailure :=
+  let message := s!"The Beam owner for {root} is registered in a different network namespace. " ++
+    "This command cannot reach it from here, so its liveness is unknown. " ++
+    "Run the command outside the sandbox, in the namespace where lean-beam serve was started. " ++
+    "If the owner has stopped, Beam will report recovery steps there."
+  { CliFailure.make "sessionNetworkNamespaceMismatch" message with
+    failure.error.data? := some <| Json.mkObj [("root", toJson root.toString), ("generation", toJson generation)] }
+
 inductive RegistryUnsafeReason where
   | endpointProbeFailed (failure : BrokerClientFailure)
   | wrongEndpointRoot (daemonRoot : String)
@@ -268,6 +286,7 @@ inductive RegistryBlocker where
   | unusable (entry : SessionDescriptor) (reason : RegistryUnsafeReason)
 
 inductive RegistryObservation where
+  | networkNamespaceMismatch (entry : SessionDescriptor)
   | absent
   | live (entry : SessionDescriptor)
   | selectorMismatch (entry : SessionDescriptor)
@@ -311,6 +330,8 @@ private def observeRegistrySelection
           entry.identity entry.capability with
       | .exact => pure <| .live entry
       | .probeFailed failure =>
+          if ← foreignNetworkNamespaceOnRefusal entry.networkNamespace? failure then
+            return .networkNamespaceMismatch entry
           pure <| match probeFailureDisposition failure with
           | .manualRecoveryRequired => .recoveryRequired (.unusable entry (.endpointProbeFailed failure))
           | .unresponsive => .unresponsive entry failure
@@ -679,6 +700,7 @@ private def registryEntryFor
     capability
     pid
     ownerPid := ownerPid.toNat
+    networkNamespace? := ← Beam.networkNamespace?
     port
     workspace := RuntimeDescription.toWorkspaceBinding desired.runtime projectDaemonWorkspaceId desired.root
     configHash := identity.configHash
@@ -717,6 +739,7 @@ private def startDaemonEntry
       throw <| IO.userError (← daemonStartupFailure logPath detail)
 
 structure ProjectDaemonClient where
+  networkNamespace? : Option Nat := none
   endpoint : Transport.Endpoint
   identity : DaemonIdentity
   capability : String
@@ -737,6 +760,7 @@ def ProjectDaemonClient.sealRequest
 def ProjectDaemonClient.ofSessionDescriptor
     (entry : SessionDescriptor)
     (controlDir : System.FilePath) : ProjectDaemonClient := {
+    networkNamespace? := entry.networkNamespace?
     endpoint := registryEndpoint entry
     identity := entry.identity
     capability := entry.capability
@@ -951,6 +975,7 @@ def shutdownRegisteredProjectDaemon
     | .selected entry | .draining entry => admitControl .stop root control.dir entry
     | _ => pure ()
     match ← observeRegistrySelection root selection with
+    | .networkNamespaceMismatch entry => throw <| networkNamespaceFailure root entry.daemonId
     | .absent => pure ShutdownPlan.none
     | .live entry =>
         match ← markRegistryDraining control entry with

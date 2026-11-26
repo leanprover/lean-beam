@@ -98,6 +98,8 @@ private def collectDaemonPayload
     (explicitControlDir? : Option System.FilePath)
     (warnings : Array String) : IO (Json × Json × Array String) := do
   match ← observeProjectRegistry root explicitControlDir? with
+  | .networkNamespaceMismatch entry =>
+      pure (Json.null, Json.null, warnings.push (networkNamespaceFailure root entry.daemonId).failure.error.message)
   | .live entry =>
       let controlDir ← Beam.Daemon.controlDirFor root explicitControlDir?
       let client := ProjectDaemonClient.ofSessionDescriptor entry controlDir

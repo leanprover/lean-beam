@@ -38,6 +38,7 @@ def doctor (home : System.FilePath) (inspect : System.FilePath → CliM (List St
   let registry ← Beam.Daemon.registryPathFor root opts.explicitControlDir?
   let mut lines := [s!"beam home: {home}", s!"project root: {root}", s!"registry: {registry}"]
   lines := lines ++ (← match ← observeProjectRegistry root opts.explicitControlDir? with
+    | .networkNamespaceMismatch entry => pure [(networkNamespaceFailure root entry.daemonId).failure.error.message]
     | .live entry => pure [
         "daemon status: live", s!"daemon pid: {entry.pid}",
         s!"daemon endpoint: {Beam.Daemon.endpointSummary (Beam.Daemon.registryEndpoint entry)}",

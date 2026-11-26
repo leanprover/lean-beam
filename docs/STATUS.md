@@ -242,6 +242,10 @@ client protocol.
   Ordinary lookups take no mutation lock, create no control files, use the frozen workspace
   configuration, and preserve unsafe session state. A competing owner computes its proposed
   configuration but cannot replace a mismatched live owner.
+- On Linux, a refused connection from a different network namespace returns
+  `sessionNetworkNamespaceMismatch`. Retry in the network namespace where `lean-beam serve`
+  started. Owner liveness is unknown from the isolated caller, so Beam skips the daemon incident
+  and recovery command for this refusal.
 - `lean-beam status` projects internal descriptor observations onto public states: `absent`,
   `running`, `shutdownUnconfirmed`, `recoveryRequired`, and `unresponsive`. `running` means the selected generation
   answered an authenticated workspace probe; it does not establish Lean worker readiness.

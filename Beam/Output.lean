@@ -569,7 +569,7 @@ private def validateStringArray (json : Json) : Except String Json := do
 producer coverage for every entry; backend-only codes are not inferred from payload keys. -/
 def controlErrorDataCodes : Array String := #[
   "invalidParams", "internalError", "setupError", "sessionRecoveryRequired", "sessionUnresponsive",
-  "noLiveSession", "sessionShutdownUnconfirmed", "sessionInstallationMismatch",
+  "sessionNetworkNamespaceMismatch", "noLiveSession", "sessionShutdownUnconfirmed", "sessionInstallationMismatch",
   "requestCancelled", "brokerUnavailable"
 ]
 
