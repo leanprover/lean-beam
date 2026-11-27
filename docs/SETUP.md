@@ -926,14 +926,15 @@ tool_timeout_sec = 600
 at `~/.gemini/config/mcp_config.json`. The installer preserves other servers and user settings
 such as environment variables, timeouts, and tool filters. It refuses invalid JSON, symlinked or
 read-only config files, and existing `lean-beam` entries that are disabled or have conflicting
-launch settings, such as a remote URL or nonempty arguments. The installer refuses JSON comments
+launch settings, such as a remote URL or unsupported arguments (only empty args or
+`--toolset full|core` are accepted). The installer refuses JSON comments
 and trailing commas because it cannot preserve them. Remove them or use `agy mcp add`.
 `lean-beam doctor clients agy` can inspect JSONC with comments and trailing commas.
 
 Before publishing the runtime, interactive installs show only changed keys in an existing
 `mcpServers.lean-beam` entry, or the full new config for a missing or blank file. The installer
-asks for approval when an edit is needed. An existing entry with the requested command and
-`"disabled": false` is reported as already registered.
+asks for approval when an edit is needed. An existing entry already matching the requested command,
+`"disabled": false`, and toolset arguments is reported as already registered.
 
 MCP stdio (`lean-beam-mcp`) is recommended in Antigravity so agent sessions avoid terminal-sandbox
 loopback TCP restrictions. With Remote-SSH, install and configure Beam on the host running the

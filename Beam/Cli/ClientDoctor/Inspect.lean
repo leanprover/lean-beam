@@ -780,32 +780,49 @@ private def inspectAgyCustomLayers (context : Context) (dirs : Array System.File
         pluginsConfig.toString
         (remediation? := some "Review plugins.json and config.json plugin enablement if Beam is configured through a plugin.")
     let pluginsDir := root / "plugins"
-    let pluginEntries ← try
-        if (← pluginsDir.metadata).type == .dir then pluginsDir.readDir else pure #[]
-      catch _ => pure #[]
-    for entry in pluginEntries do
-      let pluginDir := entry.path
-      let pluginSkill := pluginDir / "skills" / "lean-beam" / "SKILL.md"
-      let hasBeamSkill ← try
-          pure ((← Beam.observeEntry pluginSkill) != .absent)
-        catch _ => pure false
-      let pluginMcp := pluginDir / "mcp_config.json"
-      let hasBeamMcp ← match ← readFile pluginMcp with
-        | .text text =>
-            match parseAgyConfig text with
-            | .ok value => pure (mentionsBeam value)
-            | .error _ => pure (hasBeamSkill || entry.fileName.contains "lean-beam")
-        | .missing => pure false
-        | _ => pure (hasBeamSkill || entry.fileName.contains "lean-beam")
-      if hasBeamSkill || hasBeamMcp then
-        report := { report with discovered := true }
-        if hasBeamMcp && hasBeamSkill then
-          report := { report with skill := report.skill.observe .unknown }
-        let area := if hasBeamMcp then CheckArea.mcp else .skill
-        report := add report area "agy.pluginLayer" .unknown
-          "A Beam plugin layer was found under plugins/; plugin enablement and config.json overrides are not verified."
-          pluginDir.toString
-          (remediation? := some "Review plugin status via `agy plugin list` or check config.json.")
+    let pluginsEntries? ← try
+        if (← pluginsDir.metadata).type == .dir then pure (some (← pluginsDir.readDir))
+        else pure (some #[])
+      catch
+      | .noFileOrDirectory .. => pure (some #[])
+      | _ => pure none
+    match pluginsEntries? with
+    | none =>
+        report := { report with discovered := true, skill := report.skill.observe .unknown }
+        report := add report .mcp "agy.pluginLayer" .unknown
+          "Antigravity plugins/ directory could not be read; plugin MCP servers and skills are not verified."
+          pluginsDir.toString
+          (remediation? := some "Check permissions on plugins/ or review plugin status via `agy plugin list`.")
+    | some pluginEntries =>
+      for entry in pluginEntries do
+        let pluginDir := entry.path
+        let isDir ← try pure ((← pluginDir.metadata).type == .dir) catch _ => pure false
+        if !isDir then continue
+        let pluginSkill := pluginDir / "skills" / "lean-beam" / "SKILL.md"
+        let hasBeamSkill ← try
+            pure ((← Beam.observeEntry pluginSkill) != .absent)
+          catch _ => pure false
+        let pluginMcp := pluginDir / "mcp_config.json"
+        let hasBeamMcp ← match ← readFile pluginMcp with
+          | .text text =>
+              match parseAgyConfig text with
+              | .ok value =>
+                  let pluginSource : ConfigSource := { path := pluginMcp, format := .json }
+                  pure (match entries context .agy pluginSource value with
+                    | .ok parsed => !(retainBeamAliases .agy parsed).isEmpty
+                    | .error () => mentionsBeam value)
+              | .error _ => pure (hasBeamSkill || entry.fileName.contains "lean-beam")
+          | .missing => pure false
+          | _ => pure (hasBeamSkill || entry.fileName.contains "lean-beam")
+        if hasBeamSkill || hasBeamMcp then
+          report := { report with discovered := true }
+          if hasBeamMcp && hasBeamSkill then
+            report := { report with skill := report.skill.observe .unknown }
+          let area := if hasBeamMcp then CheckArea.mcp else .skill
+          report := add report area "agy.pluginLayer" .unknown
+            "A Beam plugin layer was found under plugins/; plugin enablement and config.json overrides are not verified."
+            pluginDir.toString
+            (remediation? := some "Review plugin status via `agy plugin list` or check config.json.")
   return report
 
 def inspectClient (context : Context) (client : Client) (dirs : Array System.FilePath)

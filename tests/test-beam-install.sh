@@ -643,7 +643,7 @@ for label, raw, message in (
     ("root", b"[]", "root JSON value must be an object"),
     ("servers-array", b'{"mcpServers":[]}', "'mcpServers' must be a JSON object"),
     ("servers-null", b'{"mcpServers":null}', "'mcpServers' must be a JSON object"),
-    ("duplicate", rb'{"mcpServers":{"other":{"nested":{"key":1,"k\u0065y":2}}}}', "invalid Antigravity MCP config"),
+    ("duplicate", rb'{"mcpServers":{"other":{"nested":{"SECRET_DUP":1,"SECRET_\u0044UP":2}}}}', "not valid JSON"),
     ("nan", b'{"value":NaN}', "invalid Antigravity MCP config"),
     ("infinity", b'{"value":Infinity}', "invalid Antigravity MCP config"),
     ("negative-infinity", b'{"value":-Infinity}', "invalid Antigravity MCP config"),
@@ -664,6 +664,7 @@ for label, raw, message in (
     refuse(result, message, path, raw)
     if message == "comments or trailing commas":
         assert "agy mcp add" in result.stdout, result.stdout
+    assert "SECRET_DUP" not in result.stdout, result.stdout
 
 for label, entry, reason in (
     ("entry-null", None, "must be a JSON object"),

@@ -1336,11 +1336,26 @@ class ClientDoctorTest(unittest.TestCase):
                 self.has_code(report, "skill.readable", "ok")
                 skill_path.unlink()
 
-        # Unrelated plugins do not trigger false positives; Beam plugins, skills.json, and plugins.json report unverified.
+        # Unrelated plugins and stray files do not trigger false positives; Beam plugins, unreadable plugins/, skills.json, and plugins.json report unverified.
         self.json_file(self.home / ".gemini/config/plugins/other/mcp_config.json", {
-            "mcpServers": {"other": {"command": "/bin/echo"}},
+            "mcpServers": {"other": {"command": "/bin/echo", "args": ["/work/lean-beam-notes"]}},
         })
+        self.write(self.home / ".gemini/config/plugins/lean-beam-backup.tar.gz", "not a plugin dir\n")
         self.assertEqual(self.run_doctor("agy")["clients"][0]["mcp"], "checked")
+        (self.home / ".gemini/config/plugins/lean-beam-backup.tar.gz").unlink()
+
+        if os.geteuid() != 0:
+            locked_plugins = self.workspace / ".agents/plugins"
+            locked_plugins.mkdir(parents=True)
+            locked_plugins.chmod(0o000)
+            try:
+                report = self.run_doctor("agy", expected=2)
+                self.has_code(report, "agy.pluginLayer", "unknown")
+                self.assertEqual((report["clients"][0]["mcp"], report["clients"][0]["skill"]),
+                                 ("unverified", "unverified"))
+            finally:
+                locked_plugins.chmod(0o755)
+                locked_plugins.rmdir()
 
         beam_plugin = self.agy_config(self.home / ".gemini/config/plugins/lean-beam-plugin/mcp_config.json")
         self.has_code(self.run_doctor("agy", expected=2), "agy.pluginLayer", "unknown")

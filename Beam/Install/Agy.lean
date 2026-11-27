@@ -58,7 +58,10 @@ private def readConfig? (path : String) : IO (Option (String × String)) := do
   let fp := System.FilePath.mk path
   unless ← fp.pathExists do return none
   let limit := Agy.maxConfigBytes
-  if (← fp.metadata).byteSize.toNat > limit then
+  let metadata ← fp.metadata
+  if metadata.type != .file then
+    throw <| IO.userError s!"refusing to edit non-regular Antigravity MCP config at {path}"
+  if metadata.byteSize.toNat > limit then
     throw <| IO.userError s!"Antigravity MCP config at {path} exceeds the 1 MiB size limit"
   let handle ← IO.FS.Handle.mk fp .read
   let mut bytes := ByteArray.empty
@@ -96,10 +99,10 @@ private def edit? (path command toolset text : String) (showPreview : Bool) : IO
           if hasLoneSurrogate text then
             throw <| invalid "unsupported lone UTF-16 surrogate escape; edit the file manually or use agy mcp add"
           pure value
-      | .error error =>
+      | .error _ =>
           if (parseAgyConfig text).isOk then
             throw <| invalid "the file contains comments or trailing commas the installer cannot preserve; remove them or use agy mcp add"
-          throw <| invalid error
+          throw <| invalid "not valid JSON"
   let .ok rootMap := root.getObj? | throw <| invalid "root JSON value must be an object"
   let servers := (field? root "mcpServers").getD (Json.mkObj [])
   let .ok serversMap := servers.getObj? | throw <| invalid "'mcpServers' must be a JSON object"
@@ -148,10 +151,11 @@ private def render (path command toolset expectedFingerprint : String) : IO Unit
   let (text, fingerprint) := (← readConfig? path).getD ("", "absent")
   if fingerprint != expectedFingerprint then
     throw <| IO.userError s!"Antigravity MCP config changed before writing {path}; rerun the installer"
-  if let some edit ← edit? path command toolset text false then
-    let stdout ← IO.getStdout
-    stdout.putStr edit.output
-    stdout.flush
+  let some edit ← edit? path command toolset text false
+    | throw <| IO.userError s!"Antigravity MCP config no longer requires editing at {path}; rerun the installer"
+  let stdout ← IO.getStdout
+  stdout.putStr edit.output
+  stdout.flush
 
 def run (args : List String) : IO Unit := do
   match args with
