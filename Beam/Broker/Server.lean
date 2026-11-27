@@ -710,7 +710,7 @@ private def acquireBackendSession
   let (cmd, args, env) ← match ← leanCommand config (← requestHelperControl cancelRef? output?) with
     | .error failure => return .error failure
     | .ok command => pure command
-  let child ← IO.Process.spawn {
+  let child ← Beam.OwnedProcess.withWindowsSpawnLock <| IO.Process.spawn {
     toStdioConfig := brokerStdio
     cmd := cmd
     args := args

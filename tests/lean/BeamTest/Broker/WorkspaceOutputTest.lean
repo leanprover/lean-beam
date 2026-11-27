@@ -158,16 +158,12 @@ def producer (flood : Bool) : IO Unit := do
 private def checkPromptCapture (cancel : Bool) : IO Unit := do
   let buffer ← Buffer.create
   let publisher ← borrow buffer
-  let child ← IO.Process.spawn {
-    cmd := (← IO.appPath).toString
-    args := #[if cancel then "--workspace-output-flood" else "--workspace-output-producer"]
-    stdin := .piped, stdout := .piped, stderr := .piped
-    setsid := true
-  }
+  let child ← Beam.OwnedProcess.spawn (← IO.appPath).toString
+    #[if cancel then "--workspace-output-flood" else "--workspace-output-producer"]
   let captureRef ← IO.mkRef (none : Option Capture)
   let releasedAt ← IO.mkRef 0
   let completed ← Beam.ProcessJob.withChild child fun scope => do
-    captureRef.set (some (← Capture.start child.stdout child.stderr publisher))
+    captureRef.set (some (← Capture.startWithReaders child.stdout.readSome child.stderr.readSome publisher))
     let deadline := (← IO.monoMsNow) + 5000
     let mut stdout := ""
     let mut stderr := ""
@@ -183,8 +179,7 @@ private def checkPromptCapture (cancel : Bool) : IO Unit := do
       | .closed => throw <| IO.userError "output request closed before producer release"
     require "producer exited before its release gate" ((← scope.poll) == .running)
     releasedAt.set (← IO.monoMsNow)
-    child.stdin.putStr "release\n"
-    child.stdin.flush
+    child.stdin.writeAll "release\n".toUTF8
     if cancel then
       -- Observe an active flood, then revoke output without consuming its remainder.
       let mut emitting := false

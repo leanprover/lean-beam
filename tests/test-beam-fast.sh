@@ -35,6 +35,9 @@ run_step "installed MCP smoke harness" python3 tests/test-installed-mcp-smoke.py
 run_step "HTTP bridge reader" python3 tests/test-mcp-http-reader.py
 run_step "pipe line framing" python3 tests/test-pipe-lines.py
 run_step "project SDK binding" python3 tests/test-project-sdk.py
+case "$(uname -s)" in
+  Linux|Darwin) run_step "owned POSIX launcher" bash tests/test-owned-process-posix.sh ;;
+esac
 run_step "fixture workspace evidence" python3 tests/test-fixture-workspace.py
 run_step "extended CI helper" python3 tests/test-extended-ci.py
 run_step "process watchdog" python3 tests/test-process-watchdog.py

@@ -178,7 +178,7 @@ private structure StreamCapture where
   decoder : IO.Ref Decoder
   source : Source
 
-private def StreamCapture.start (handle : IO.FS.Handle) (source : Source)
+private def StreamCapture.start (read : USize → IO ByteArray) (readSize : USize) (source : Source)
     (publisher : Publisher) : IO StreamCapture := do
   let decoder ← IO.mkRef ({} : Decoder)
   let sink : Beam.StderrSink := fun bytes => do
@@ -187,9 +187,7 @@ private def StreamCapture.start (handle : IO.FS.Handle) (source : Source)
       decoder.set next
       unless text.isEmpty do publisher.offer source text
     return true
-  -- Handle.read waits for the requested count. A one-byte read exposes short flushed
-  -- fragments promptly; the buffer coalesces scalars into bounded presentation chunks.
-  let drain ← Beam.StderrCapture.start handle 0 (some sink) 1
+  let drain ← Beam.StderrCapture.startWithReader read 0 (some sink) readSize
   return { drain, decoder, source }
 
 private def StreamCapture.finish (capture : StreamCapture) (publisher : Publisher) :
@@ -206,15 +204,20 @@ structure Capture where
   private stderr : StreamCapture
   private publisher : Publisher
 
-def Capture.start (stdout stderr : IO.FS.Handle) (publisher : Publisher) : IO Capture := do
-  let out ← StreamCapture.start stdout .stdout publisher
+def Capture.startWithReaders (stdout stderr : USize → IO ByteArray) (publisher : Publisher)
+    (readSize : USize := 8192) : IO Capture := do
+  let out ← StreamCapture.start stdout readSize .stdout publisher
   try
-    let err ← StreamCapture.start stderr .stderr publisher
+    let err ← StreamCapture.start stderr readSize .stderr publisher
     return ⟨out, err, publisher⟩
   catch error =>
     publisher.retire
     discard <| out.drain.disableSinkAndAwaitCurrentWrite
     throw error
+
+/-- Buffered file handles require a one-byte read to expose a short flushed fragment promptly. -/
+def Capture.start (stdout stderr : IO.FS.Handle) (publisher : Publisher) : IO Capture :=
+  startWithReaders stdout.read stderr.read publisher 1
 
 /-- Call after terminating the process job. EOF does not establish process cleanup. -/
 def Capture.finish (capture : Capture) :
