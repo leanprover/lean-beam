@@ -577,8 +577,10 @@ def assert_no_staging(path):
     assert not list(path.parent.glob(".mcp_config.json.lean-beam-*")), path
 
 
-def refuse(result, message, path):
+def refuse(result, message, path, raw=None):
     assert result.returncode != 0 and message in result.stdout, result.stdout
+    if raw is not None:
+        assert path.read_bytes() == raw, path
     assert_no_staging(path)
 
 
@@ -650,15 +652,18 @@ for label, raw, message in (
     ("oversized", b" " * (1024 * 1024 + 1), "1 MiB size limit"),
     ("double-bom", b"\xef\xbb\xbf\xef\xbb\xbf{}", "invalid Antigravity MCP config"),
     ("non-rfc-blank", b"\x0b", "invalid Antigravity MCP config"),
+    ("comments-only", b"// only a comment\n", "comments or trailing commas"),
     ("line-comments", b'{// user settings\n"other": true}', "comments or trailing commas"),
     ("trailing-comma", b'{"other": true,}', "comments or trailing commas"),
+    ("zero-exp", b'{"n":0e-20}', "cannot safely serialize"),
+    ("lone-high-surrogate", rb'{"s":"\ud800"}', "lone UTF-16 surrogate"),
+    ("lone-low-surrogate", rb'{"s":"\udc00"}', "lone UTF-16 surrogate"),
 ):
     home, path = fixture(label, raw)
     result = run(registration(home))
-    refuse(result, message, path)
+    refuse(result, message, path, raw)
     if message == "comments or trailing commas":
         assert "agy mcp add" in result.stdout, result.stdout
-    assert path.read_bytes() == raw, label
 
 for label, entry, reason in (
     ("entry-null", None, "must be a JSON object"),
@@ -683,8 +688,8 @@ for label, entry, reason in (
     raw = json.dumps({"mcpServers": {"lean-beam": entry}}, indent=2).encode()
     home, path = fixture(label, raw)
     result = run(registration(home))
-    refuse(result, "conflicting 'mcpServers.lean-beam'", path)
-    assert reason in result.stdout and path.read_bytes() == raw, (label, result.stdout)
+    refuse(result, "conflicting 'mcpServers.lean-beam'", path, raw)
+    assert reason in result.stdout, (label, result.stdout)
 
 home, path = fixture("physical-parent", valid)
 alias_home = root / "agy-alias"
@@ -711,9 +716,9 @@ for label, message in (
     elif label == "fifo":
         path.parent.mkdir(parents=True)
         os.mkfifo(path)
-    # On POSIX root, -w can succeed on permission bits alone; the native planner still refuses.
-    if label != "read-only" or os.geteuid() != 0:
-        refuse(run(registration(home, action="preflight")), message, path)
+    if label == "read-only" and os.geteuid() == 0:
+        continue
+    refuse(run(registration(home, action="preflight")), message, path)
     refuse(run(registration(home)), message, path)
 assert target.read_bytes() == valid
 
@@ -831,18 +836,44 @@ assert rc != 0 and "symlinked Antigravity MCP config" in transcript, transcript
 assert path.is_symlink() and target.read_bytes() == valid
 assert_no_staging(path)
 
-home, path = fixture("replace-failure", valid)
-result = run(shell(home, """
-    set_bin_home "$1"
-    dont_ask=1
-    register_agy_mcp=1
-    validate_requested_location_config
-    plan_agy_mcp_registration
-    mv() { return 1; }
-    register_agy_mcp_server
-""", bin_home))
-refuse(result, "cannot replace Antigravity MCP config", path)
-assert path.read_bytes() == valid
+home, path = fixture("concurrent-create")
+def create_competing():
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(concurrent)
+
+rc, _, transcript = interactive(registration(home, interactive=True), b"y\n", create_competing)
+assert rc != 0 and "changed before writing" in transcript, transcript
+assert path.read_bytes() == concurrent
+assert_no_staging(path)
+
+for label, override, message in (
+    ("stat-failure", "stat() { return 1; }", "cannot read Antigravity MCP config permissions"),
+    ("replace-failure", "mv() { return 1; }", "cannot replace Antigravity MCP config"),
+):
+    home, path = fixture(label, valid)
+    result = run(shell(home, f"""
+        set_bin_home "$1"
+        dont_ask=1
+        register_agy_mcp=1
+        validate_requested_location_config
+        plan_agy_mcp_registration
+        {override}
+        register_agy_mcp_server
+    """, bin_home))
+    refuse(result, message, path, valid)
+
+if Path("/dev/full").exists():
+    home, path = fixture("write-full", valid)
+    token = subprocess.check_output(
+        [str(runtime), "agy-mcp", "plan", str(path), command, "--toolset", "full"],
+        text=True, timeout=20,
+    ).strip()
+    with open("/dev/full", "wb") as full_out:
+        result = subprocess.run(
+            [str(runtime), "agy-mcp", "render", str(path), command, "--toolset", "full", token],
+            stdout=full_out, stderr=subprocess.PIPE, text=True, timeout=20,
+        )
+    assert result.returncode != 0, result.stderr
 PYTHON_AGY
   )
 }
@@ -1382,16 +1413,23 @@ assert_contains_literal "$VIBE_HOME/config.toml" 'transport = "stdio"'
 assert_contains_literal "$VIBE_HOME/config.toml" "command = [\"$installed_mcp\"]"
 assert_contains_literal "$VIBE_HOME/config.toml" 'args = []'
 assert_contains_literal "$VIBE_HOME/config.toml" 'tool_timeout_sec = 600'
-assert_not_contains "$mcp_stub_log" "agy must not be invoked"
-assert_file "$BEAM_AGY_HOME/.gemini/config/mcp_config.json"
-python3 - "$BEAM_AGY_HOME/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
+assert_agy_mcp_entry() {
+  local config_path="$1"
+  local expected_command="$2"
+  local expected_toolset="${3:-full}"
+  assert_file "$config_path"
+  python3 - "$config_path" "$expected_command" "$expected_toolset" <<'PY'
 import json, sys
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    config = json.load(f)
-server = config["mcpServers"]["lean-beam"]
-assert server["command"] == sys.argv[2], server
-assert server["disabled"] is False, server
+config = json.loads(open(sys.argv[1], encoding="utf-8").read())
+expected = {"command": sys.argv[2], "disabled": False}
+if sys.argv[3] == "core":
+    expected["args"] = ["--toolset", "core"]
+assert config["mcpServers"]["lean-beam"] == expected, config
 PY
+}
+
+assert_not_contains "$mcp_stub_log" "agy must not be invoked"
+assert_agy_mcp_entry "$BEAM_AGY_HOME/.gemini/config/mcp_config.json" "$installed_mcp"
 
 run_step "inspect installed client configuration" \
   python3 tests/test-client-doctor-installed.py "$installed_lean_beam" "$tmp_root"
@@ -1546,14 +1584,6 @@ assert_contains "$inline_vibe_err" "inline mcp_servers entries"
 assert_contains_literal "$inline_vibe_home/config.toml" 'name = "other-server"'
 remove_tmp_file "$inline_vibe_err"
 
-custom_agy_home="$tmp_root/agy-sandbox"
-custom_agy_mcp_stub_log="$tmp_root/mcp-stubs-custom-agy.log"
-run_step "register Antigravity MCP with custom home" \
-  beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$custom_agy_mcp_stub_log" \
-    --toolchain "$toolchain" --agy-mcp --agy-home "$custom_agy_home" <&-
-assert_not_exists "$custom_agy_mcp_stub_log"
-assert_file "$custom_agy_home/.gemini/config/mcp_config.json"
-
 relative_agy_home_err="$(mktemp "$tmp_root/agy-relative-home-XXXXXX")"
 if beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$tmp_root/mcp-stubs-relative-agy.log" \
     --toolchain "$toolchain" --agy-mcp --agy-home relative-agy-home \
@@ -1605,29 +1635,17 @@ run_step "register Mistral Vibe MCP with --mcp-toolset core" \
 assert_contains_literal "$core_vibe_home/config.toml" 'args = ["--toolset", "core"]'
 
 core_agy_home="$tmp_root/agy-core-sandbox"
-run_step "register Antigravity MCP with --mcp-toolset core" \
-  bash "$source_checkout/scripts/install-beam.sh" --dont-ask --toolchain "$toolchain" \
-    --agy-mcp --mcp-toolset core --agy-home "$core_agy_home"
-python3 - "$core_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
-import json, sys
-config = json.loads(open(sys.argv[1], encoding="utf-8").read())
-assert config["mcpServers"]["lean-beam"] == {
-    "command": sys.argv[2],
-    "disabled": False,
-    "args": ["--toolset", "core"],
-}, config
-PY
+core_agy_stub_log="$tmp_root/mcp-stubs-core-agy.log"
+run_step "register Antigravity MCP with custom home and --mcp-toolset core" \
+  beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$core_agy_stub_log" \
+    --toolchain "$toolchain" --agy-mcp --mcp-toolset core --agy-home "$core_agy_home" <&-
+assert_not_exists "$core_agy_stub_log"
+assert_agy_mcp_entry "$core_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" core
 run_step "switch Antigravity MCP back to --mcp-toolset full" \
-  bash "$source_checkout/scripts/install-beam.sh" --dont-ask --toolchain "$toolchain" \
-    --agy-mcp --mcp-toolset full --agy-home "$core_agy_home"
-python3 - "$core_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" <<'PY'
-import json, sys
-config = json.loads(open(sys.argv[1], encoding="utf-8").read())
-assert config["mcpServers"]["lean-beam"] == {
-    "command": sys.argv[2],
-    "disabled": False,
-}, config
-PY
+  beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$core_agy_stub_log" \
+    --toolchain "$toolchain" --agy-mcp --mcp-toolset full --agy-home "$core_agy_home" <&-
+assert_not_exists "$core_agy_stub_log"
+assert_agy_mcp_entry "$core_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" full
 
 core_opencode_transcript="$tmp_root/opencode-mcp-core-transcript"
 run_step "show OpenCode MCP setup with --mcp-toolset core" \

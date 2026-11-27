@@ -41,7 +41,7 @@ def parseOptions (args : List String) : Except String Options := do
     | ["--config"] => throw "--config requires a file path."
     | arg :: rest =>
         let some client := Client.parse? arg
-          | throw s!"Unknown client or option. Choose {Client.proseList}."
+          | throw s!"Unknown client or option. Choose {Client.pipeList}."
         if options.client?.isSome then throw "Select at most one client."
         parse rest { options with client? := some client }
   parse args {}

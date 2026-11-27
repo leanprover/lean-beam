@@ -117,9 +117,8 @@ def parseConfig (format : Format) (text : String) : IO (Except Unit Json) := do
 
 /-- Antigravity accepts JSONC, an optional leading UTF-8 BOM, and blank pre-created files. -/
 def parseAgyConfig (text : String) : Except Unit Json := do
-  let text := withoutBOM text
-  if text.all isJsonWhitespace then return Json.mkObj []
-  let stripped ← withoutComments text
+  let stripped ← withoutComments (withoutBOM text)
+  if stripped.all isJsonWhitespace then return Json.mkObj []
   (Json.parse (withoutTrailingCommas stripped)).mapError (fun _ => ())
 
 end Beam.Cli.ClientDoctor

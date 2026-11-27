@@ -1312,17 +1312,16 @@ class ClientDoctorTest(unittest.TestCase):
         self.has_code(report, "runtime.invalid", "error")
         self.assertNotIn("DOCTOR_SECRET_SENTINEL", json.dumps(report))
 
+    def agy_config(self, path=None, **fields):
+        target = path or (self.home / ".gemini/config/mcp_config.json")
+        self.json_file(target, {"mcpServers": {"lean-beam": {"command": str(self.executable), **fields}}})
+        return target
+
     def test_agy_configuration_skills_and_overrides(self):
-        config_path = self.home / ".gemini/config/mcp_config.json"
-        self.json_file(config_path, {
-            "mcpServers": {
-                "lean-beam": {"command": str(self.executable), "disabled": False},
-            }
-        })
+        self.agy_config(disabled=False)
         self.write(self.home / ".gemini/config/skills/lean-beam/SKILL.md", "Lean skill\n")
         report = self.run_doctor("agy")
-        self.assertEqual(report["clients"][0]["mcp"], "checked")
-        self.assertEqual(report["clients"][0]["skill"], "checked")
+        self.assertEqual((report["clients"][0]["mcp"], report["clients"][0]["skill"]), ("checked", "checked"))
         self.has_code(report, "launch.file", "ok")
         self.has_code(report, "skill.readable", "ok")
 
@@ -1343,10 +1342,7 @@ class ClientDoctorTest(unittest.TestCase):
         })
         self.assertEqual(self.run_doctor("agy")["clients"][0]["mcp"], "checked")
 
-        beam_plugin = self.home / ".gemini/config/plugins/lean-beam-plugin/mcp_config.json"
-        self.json_file(beam_plugin, {
-            "mcpServers": {"lean-beam": {"command": str(self.executable)}},
-        })
+        beam_plugin = self.agy_config(self.home / ".gemini/config/plugins/lean-beam-plugin/mcp_config.json")
         self.has_code(self.run_doctor("agy", expected=2), "agy.pluginLayer", "unknown")
         beam_plugin.unlink()
 
@@ -1365,51 +1361,23 @@ class ClientDoctorTest(unittest.TestCase):
         plugins_json.unlink()
 
         # Disabled server is reported as an error.
-        self.json_file(config_path, {
-            "mcpServers": {
-                "lean-beam": {"command": str(self.executable), "disabled": True},
-            }
-        })
+        self.agy_config(disabled=True)
         self.has_code(self.run_doctor("agy", expected=1), "mcp.disabled", "error")
-
-        # Non-empty malformed JSON still fails with config.syntax.
-        self.write(config_path, "{not json\n")
-        self.has_code(self.run_doctor("agy", expected=1), "config.syntax", "error")
-
-        # HTTP url and legacy serverUrl transports are rejected for local stdio inspection.
-        for url_key in ("url", "serverUrl", "httpUrl"):
-            with self.subTest(url_key=url_key):
-                self.json_file(config_path, {
-                    "mcpServers": {
-                        "lean-beam": {url_key: "https://example.invalid/mcp"},
-                    }
-                })
-                self.has_code(self.run_doctor("agy", expected=1), "mcp.invalidEntry", "error")
 
         # BEAM_AGY_HOME override and explicit --config path.
         custom_home = self.root / "custom-agy-home"
         self.env["BEAM_AGY_HOME"] = str(custom_home)
-        self.json_file(custom_home / ".gemini/config/mcp_config.json", {
-            "mcpServers": {
-                "lean-beam": {"command": str(self.executable), "disabled": False},
-            }
-        })
+        self.agy_config(custom_home / ".gemini/config/mcp_config.json", disabled=False)
         self.has_code(self.run_doctor("agy"), "launch.file", "ok")
 
-        explicit = self.root / "explicit-agy.json"
-        self.json_file(explicit, {
-            "mcpServers": {
-                "lean-beam": {"command": str(self.executable), "disabled": False},
-            }
-        })
+        explicit = self.agy_config(self.root / "explicit-agy.json", disabled=False)
         explicit_report = self.run_doctor("agy", "--config", str(explicit))
         self.assertEqual(explicit_report["scope"], "explicitConfigFile")
         self.has_code(explicit_report, "launch.file", "ok")
 
     def test_agy_dual_area_plugin_with_jsonc(self):
         plugin = self.workspace / "_agent/plugins/example"
-        config = plugin / "mcp_config.json"
-        self.write(config, '{/* tool config */"mcpServers":{"lean-beam":{"command":"/unused"},},}')
+        self.write(plugin / "mcp_config.json", '{/* tool config */"mcpServers":{"lean-beam":{"command":"/unused"},},}')
         report = self.run_doctor("agy", expected=2)
         self.has_code(report, "agy.pluginLayer", "unknown")
         self.assertEqual(report["clients"][0]["skill"], "notConfigured")
@@ -1424,8 +1392,7 @@ class ClientDoctorTest(unittest.TestCase):
     def test_agy_all_workspace_mcp_roots(self):
         for name in (".agents", ".agent", "_agents", "_agent"):
             with self.subTest(root=name):
-                config = self.workspace / name / "mcp_config.json"
-                self.json_file(config, {"mcpServers": {"lean-beam": {"command": str(self.executable)}}})
+                config = self.agy_config(self.workspace / name / "mcp_config.json")
                 report = self.run_doctor("agy")
                 self.assertEqual(report["clients"][0]["mcp"], "checked")
                 self.assertIn({"path": str(config), "purpose": "project configuration", "state": "ok"},
@@ -1438,9 +1405,8 @@ class ClientDoctorTest(unittest.TestCase):
         (self.root / ".git").mkdir()
         workspace = self.home / "nested" / "workspace"
         workspace.mkdir(parents=True)
-        entry = {"mcpServers": {"lean-beam": {"command": str(self.executable)}}}
-        self.json_file(self.root / ".agent/mcp_config.json", entry)
-        self.json_file(self.home / ".gemini/config/mcp_config.json", entry)
+        self.agy_config(self.root / ".agent/mcp_config.json")
+        self.agy_config()
         options = {"global_args": ("--root", str(workspace))}
         physical = self.run_doctor("agy", **options)["clients"][0]
         self.env["HOME"] = str(alias)
@@ -1451,10 +1417,7 @@ class ClientDoctorTest(unittest.TestCase):
                          {source["path"] for source in aliased["sources"]})
 
     def test_agy_workspace_mcp_discovery_and_shadowing(self):
-        workspace_config = self.workspace / ".agents/mcp_config.json"
-        global_config = self.home / ".gemini/config/mcp_config.json"
-        registration = {"command": str(self.executable)}
-        self.json_file(workspace_config, {"mcpServers": {"lean-beam": registration}})
+        workspace_config = self.agy_config(self.workspace / ".agents/mcp_config.json")
         report = self.run_doctor()
         self.assertEqual([client["client"] for client in report["clients"]], ["agy"])
         client = report["clients"][0]
@@ -1464,7 +1427,7 @@ class ClientDoctorTest(unittest.TestCase):
                       client["sources"])
         self.has_code(report, "launch.file", "ok")
 
-        self.json_file(global_config, {"mcpServers": {"lean-beam": {**registration, "disabled": True}}})
+        global_config = self.agy_config(disabled=True)
         report = self.run_doctor("agy", expected=2)
         self.assertEqual(report["clients"][0]["mcp"], "unverified")
         self.has_code(report, "config.layers", "unknown")
@@ -1472,17 +1435,15 @@ class ClientDoctorTest(unittest.TestCase):
             {f["source"] for f in self.findings(report) if f["code"] == "mcp.definition"},
             {str(workspace_config), str(global_config)},
         )
-        explicit = self.run_doctor("agy", "--config", str(workspace_config))
-        self.assertEqual(explicit["clients"][0]["mcp"], "checked")
+        self.assertEqual(self.run_doctor("agy", "--config", str(workspace_config))["clients"][0]["mcp"], "checked")
 
     def test_agy_workspace_ancestors_stop_at_git_root(self):
         nonrepo_parent = self.home / "nonrepo"
         nonrepo_workspace = nonrepo_parent / "workspace"
         nonrepo_workspace.mkdir(parents=True)
-        parent_config = nonrepo_parent / ".agents/mcp_config.json"
+        parent_config = self.agy_config(nonrepo_parent / ".agents/mcp_config.json")
         parent_skill = nonrepo_parent / ".agents/skills/lean-beam/SKILL.md"
         parent_plugins = nonrepo_parent / ".agents/plugins.json"
-        self.json_file(parent_config, {"mcpServers": {"lean-beam": {"command": str(self.executable)}}})
         self.write(parent_skill, "Parent skill\n")
         self.json_file(parent_plugins, {})
 
@@ -1498,34 +1459,29 @@ class ClientDoctorTest(unittest.TestCase):
         # A .git file also marks a root, as it does in linked worktrees.
         (self.workspace / ".git").rmdir()
         self.write(self.workspace / ".git", "gitdir: /git/worktrees/workspace\n")
-        self.json_file(self.workspace / ".agents/mcp_config.json", {
-            "mcpServers": {"lean-beam": {"command": str(self.executable)}},
-        })
+        self.agy_config(self.workspace / ".agents/mcp_config.json")
         self.write(self.workspace / ".agents/skills/lean-beam/SKILL.md", "Repository skill\n")
         nested = self.workspace / "nested"
         nested.mkdir()
         report = self.run_doctor("agy", global_args=("--root", str(nested)))
-        client = report["clients"][0]
-        self.assertEqual((client["mcp"], client["skill"]), ("checked", "checked"))
+        self.assertEqual((report["clients"][0]["mcp"], report["clients"][0]["skill"]), ("checked", "checked"))
         self.has_code(report, "launch.file", "ok")
         self.has_code(report, "skill.readable", "ok")
 
     def test_agy_tool_filter_key_spellings(self):
-        config = self.home / ".gemini/config/mcp_config.json"
         for key in ("enabledTools", "disabledTools", "enabled_tools", "disabled_tools"):
             cases = [([], 0), ({}, 1 if key.endswith("Tools") else 0),
                      (["lean_run_at"], 2), (["other_tool"], 2)]
             for setting, expected in cases:
                 with self.subTest(key=key, setting=setting):
-                    self.json_file(config, {"mcpServers": {"lean-beam": {
-                        "command": str(self.executable), key: setting,
-                    }}})
+                    self.agy_config(**{key: setting})
                     report = self.run_doctor("agy", expected=expected)
                     self.assertEqual(report["clients"][0]["mcp"], ("checked", "error", "unverified")[expected])
                     if expected == 1:
                         self.has_code(report, "mcp.invalidEntry", "error")
                     filters = [f["key"] for f in self.findings(report) if f["code"] == "launch.overrides"]
                     self.assertEqual(filters, [f"mcpServers.lean-beam.{key}"] if expected == 2 else [])
+        config = self.home / ".gemini/config/mcp_config.json"
         for key in ("enabledTools", "disabledTools"):
             with self.subTest(top_level_key=key):
                 self.json_file(config, {
@@ -1545,9 +1501,10 @@ class ClientDoctorTest(unittest.TestCase):
                    '},}, "surrogate": "\\uD83D\\uDE00",}')
         self.assertEqual(self.run_doctor("agy")["clients"][0]["mcp"], "checked")
 
-        for value in ("NaN", "Infinity", "-Infinity", "[,]", "[1,,]"):
-            with self.subTest(value=value):
-                self.write(config, '{"unused": ' + value + ', "mcpServers": {},}')
+        for raw in ("{not json\n", '{"unused": NaN}', '{"unused": Infinity}',
+                    '{"unused": -Infinity}', '{"unused": [,]}', '{"unused": [1,,]}'):
+            with self.subTest(raw=raw):
+                self.write(config, raw)
                 self.has_code(self.run_doctor("agy", expected=1), "config.syntax", "error")
 
     def test_agy_rejects_invalid_stdio_fields(self):
@@ -1558,25 +1515,20 @@ class ClientDoctorTest(unittest.TestCase):
                 report = self.run_doctor("agy", expected=2)
                 self.assertEqual(report["clients"][0]["mcp"], "unverified")
                 self.has_code(report, "config.shape", "unknown")
-        for fields in ({"httpUrl": None}, {"type": "sse"}, {"transport": "http"},
+        for fields in ({"url": "https://example.invalid/mcp"}, {"serverUrl": "https://example.invalid/mcp"},
+                       {"httpUrl": None}, {"type": "sse"}, {"transport": "http"},
                        {"transport": 0}, {"cwd": {}}, {"env": []}, {"env": {"PORT": 42}},
                        {"enabledTools": {}}, {"disabledTools": [1]}, {"disabled": 0},
                        {"args": [1]}, {"command": None},
                        {"timeoutSeconds": "ten minutes"}, {"timeoutSeconds": 2.5}):
             with self.subTest(fields=fields):
-                self.json_file(config, {"mcpServers": {"lean-beam": {
-                    "command": str(self.executable), **fields,
-                }}})
+                self.agy_config(**fields)
                 report = self.run_doctor("agy", expected=1)
                 self.assertEqual(report["clients"][0]["mcp"], "error")
                 self.has_code(report, "mcp.invalidEntry", "error")
-        self.json_file(config, {"mcpServers": {"lean-beam": {
-            "command": str(self.executable), "timeoutSeconds": 60,
-        }}})
+        self.agy_config(timeoutSeconds=60)
         self.assertEqual(self.run_doctor("agy")["clients"][0]["mcp"], "checked")
-        self.json_file(config, {"mcpServers": {"lean-beam": {
-            "command": str(self.executable), "type": "stdio", "transport": "stdio", "args": ["--debug"],
-        }}})
+        self.agy_config(type="stdio", transport="stdio", args=["--debug"])
         self.has_code(self.run_doctor("agy", expected=2), "launch.arguments", "unknown")
 
     def test_agy_plugin_unrelated_mcp_and_cli_skill_paths(self):
@@ -1586,9 +1538,8 @@ class ClientDoctorTest(unittest.TestCase):
             "mcpServers": {"other-server": {"command": "/bin/echo"}},
         })
         report = self.run_doctor("agy", expected=2)
-        client = report["clients"][0]
-        self.assertEqual(client["mcp"], "notConfigured")
-        self.assertEqual(client["skill"], "unverified")
+        self.assertEqual((report["clients"][0]["mcp"], report["clients"][0]["skill"]),
+                         ("notConfigured", "unverified"))
         self.has_code(report, "agy.pluginLayer", "unknown")
         (plugin / "skills/lean-beam/SKILL.md").unlink()
         (plugin / "mcp_config.json").unlink()
@@ -1612,7 +1563,9 @@ class ClientDoctorTest(unittest.TestCase):
         paths = [self.home / ".gemini/config/mcp_config.json", self.workspace / ".agents/mcp_config.json"]
         for config in paths:
             config.parent.mkdir(parents=True)
-            for contents in (b"", b" \n\t\r", b"\xef\xbb\xbf", b"\xef\xbb\xbf \n\t\r", b"\xef\xbb\xbf{}"):
+            for contents in (b"", b" \n\t\r", b"// comment\n", b"/* comment */",
+                             b"\xef\xbb\xbf", b"\xef\xbb\xbf \n\t\r", b"\xef\xbb\xbf// comment\n",
+                             b"\xef\xbb\xbf{}"):
                 with self.subTest(config=config, contents=contents):
                     config.write_bytes(contents)
                     report = self.run_doctor("agy")

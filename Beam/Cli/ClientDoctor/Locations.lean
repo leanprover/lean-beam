@@ -30,18 +30,14 @@ def clientHome (context : Context) : Client → System.FilePath
   | .vibe => context.location "VIBE_HOME" (context.userHome / ".vibe")
   | .agy => context.location "BEAM_AGY_HOME" context.userHome / ".gemini" / "config"
 
-/-- Workspace customization dot-directories scanned by Antigravity. -/
-def agyWorkspaceRootNames : Array String := #[".agents", ".agent", "_agents", "_agent"]
+/-- Workspace customization roots scanned by Antigravity. -/
+def agyWorkspaceRoots (dirs : Array System.FilePath) : Array System.FilePath :=
+  dirs.flatMap fun dir => #[".agents", ".agent", "_agents", "_agent"].map fun name : String => dir / name
 
 /-- Global and workspace customization roots checked for Antigravity layers. -/
-def agyCustomizationRoots (context : Context) (dirs : Array System.FilePath) : Array System.FilePath := Id.run do
-  let mut roots := #[clientHome context .agy]
-  for dir in dirs do
-    for rootName in agyWorkspaceRootNames do
-      let root := dir / rootName
-      if !roots.contains root then
-        roots := roots.push root
-  return roots
+def agyCustomizationRoots (context : Context) (dirs : Array System.FilePath) : Array System.FilePath :=
+  (#[clientHome context .agy] ++ agyWorkspaceRoots dirs).foldl (fun acc root =>
+    if acc.contains root then acc else acc.push root) #[]
 
 def physicalUserHome (context : Context) : IO System.FilePath := do
   try IO.FS.realPath context.userHome catch _ => pure context.userHome
@@ -157,20 +153,15 @@ def locations (context : Context) (client : Client)
       result := { result with skills := result.skills.push (
         context.workspace / ".vibe" / "skills" / "lean-beam" / "SKILL.md") }
   | .agy =>
-      let agyHome := match (context.env? "BEAM_AGY_HOME").filter (! ·.isEmpty) with
-        | some override => System.FilePath.mk override
-        | none => context.userHome
+      let agyHome := context.location "BEAM_AGY_HOME" context.userHome
+      let workspaceRoots := agyWorkspaceRoots dirs
       result := { result with
-        configs := #[config (home / "mcp_config.json") .json]
+        configs := #[config (home / "mcp_config.json") .json] ++
+          workspaceRoots.map (fun root => config (root / "mcp_config.json") .json .projectConfig)
         skills := result.skills
           |>.push (agyHome / ".gemini" / "antigravity-cli" / "skills" / "lean-beam" / "SKILL.md")
-          |>.push (agyHome / ".gemini" / "skills" / "lean-beam" / "SKILL.md") }
-      for dir in dirs do
-        for rootName in agyWorkspaceRootNames do
-          result := { result with configs := result.configs.push (
-            config (dir / rootName / "mcp_config.json") .json .projectConfig) }
-          result := { result with skills := result.skills.push (
-            dir / rootName / "skills" / "lean-beam" / "SKILL.md") }
+          |>.push (agyHome / ".gemini" / "skills" / "lean-beam" / "SKILL.md")
+          |>.append (workspaceRoots.map (· / "skills" / "lean-beam" / "SKILL.md")) }
   -- The same file can be both a home and workspace candidate. Inspect it only once.
   result := { result with
     configs := result.configs.foldl (fun acc source =>

@@ -33,8 +33,8 @@ agy_config_dir=""
 agy_skills_home=""
 agy_mcp_config=""
 agy_physical_config=""
-agy_plan_state=""
-agy_plan_fingerprint=""
+agy_approved_config=""
+agy_plan_token=""
 bin_home=""
 install_root=""
 versions_root=""
@@ -139,6 +139,8 @@ set_agy_home() {
   agy_config_dir="$agy_home/.gemini/config"
   agy_skills_home="$agy_config_dir/skills"
   agy_mcp_config="$agy_config_dir/mcp_config.json"
+  agy_approved_config=""
+  agy_plan_token=""
 }
 
 set_bin_home "${BEAM_BIN_HOME:-$HOME/.local/bin}"
@@ -1669,7 +1671,7 @@ print_agent_setup_summary() {
   if target_list_contains_prefix "Mistral Vibe" ${registered_mcp_targets[@]+"${registered_mcp_targets[@]}"}; then
     vibe_mcp_registered=1
   fi
-  if [ "$agy_plan_state" = noop ]; then
+  if [ "$agy_plan_token" = noop ]; then
     agy_mcp_registered=2
   elif target_list_contains_prefix "Antigravity" ${registered_mcp_targets[@]+"${registered_mcp_targets[@]}"}; then
     agy_mcp_registered=1

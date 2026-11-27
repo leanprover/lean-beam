@@ -484,34 +484,11 @@ private def decodeOpenCodeSource (value : Json) : Except Unit (Array String) := 
     unless ms.isFinite && ms > 0 && ms == ms.floor do throw ()
   return command
 
-/-- How a client expresses an explicitly disabled local MCP server entry. -/
-private inductive DisabledField where
-  | enabledFalse
-  | disabledTrue
-  | none
-
-private def Client.disabledField : Client → DisabledField
-  | .codex | .claude | .opencode => .enabledFalse
-  | .vibe | .agy => .disabledTrue
-  | .pi => .none
-
-private def DisabledField.validate (spec : DisabledField) (value : Json) : Except Unit Unit := do
-  match spec with
-  | .enabledFalse =>
-      if let some setting := field? value "enabled" then
-        let _ ← setting.getBool? |>.mapError (fun _ => ())
-        pure ()
-  | .disabledTrue =>
-      if let some setting := field? value "disabled" then
-        let _ ← setting.getBool? |>.mapError (fun _ => ())
-        pure ()
-  | .none => pure ()
-
-private def DisabledField.isDisabled (spec : DisabledField) (value : Json) : Bool :=
-  match spec with
-  | .enabledFalse => field? value "enabled" == some (.bool false)
-  | .disabledTrue => field? value "disabled" == some (.bool true)
-  | .none => false
+/-- Key and boolean value that explicitly disables a client's local MCP server entry. -/
+private def Client.disabledSetting? : Client → Option (String × Bool)
+  | .codex | .claude | .opencode => some ("enabled", false)
+  | .vibe | .agy => some ("disabled", true)
+  | .pi => none
 
 private def Client.transportKey? : Client → Option String
   | .vibe => some "transport"
@@ -533,7 +510,9 @@ private def decodeLaunch (client : Client) (value : Json) : Except Unit (String 
     let some executable := command[0]? | throw ()
     return (executable, command.extract 1 command.size)
   let _ ← object value
-  client.disabledField.validate value
+  if let some (key, _) := client.disabledSetting? then
+    if let some setting := field? value key then
+      let _ ← setting.getBool? |>.mapError (fun _ => ())
   let (command, commandArgs) ← if client == .vibe &&
       (field? value "command").any (·.getArr?.isOk) then do
     let some raw := field? value "command" | throw ()
@@ -592,11 +571,6 @@ private def prepareOpenCodeEntry (entry : Entry) (report : ClientReport) : Optio
     "This OpenCode source must define a complete local server or an enabled boolean override."
     entry.source entry.key "Use type = local and a command array, or an enabled-only override.")
 
-private def isSupportedBeamMcpArgs (args : Array String) : Bool :=
-  args.isEmpty ||
-    args == #["--toolset", "full"] ||
-    args == #["--toolset", "core"]
-
 private def inspectEntry (client : Client) (entry : Entry)
     (report : ClientReport) (checkLaunch : Bool) : IO ClientReport := do
   let value := entry.value
@@ -611,7 +585,7 @@ private def inspectEntry (client : Client) (entry : Entry)
     return add report .mcp "mcp.definition" .ok
       "A Beam registration was found; its launch settings were not verified."
       entry.source entry.key
-  if client.disabledField.isDisabled value then
+  if client.disabledSetting?.any (fun (key, flag) => field? value key == some (.bool flag)) then
     return add report .mcp "mcp.disabled" .error
       "Beam's MCP registration is explicitly disabled." entry.source entry.key
       "Enable the registration in this client if you intend to use Beam through MCP."
@@ -643,7 +617,7 @@ private def inspectEntry (client : Client) (entry : Entry)
             "Tool filters, environment, or working-directory overrides are configured; their effect is not verified."
             entry.source (entry.key ++ "." ++ key)
       if !args.isEmpty &&
-          !(isMcpExecutable (System.FilePath.mk command) && isSupportedBeamMcpArgs args) then
+          !(isMcpExecutable (System.FilePath.mk command) && Agy.isSupportedToolsetArgs args) then
         report := add report .mcp "launch.arguments" .unknown
           "Additional launch arguments are configured; their behavior is not verified." entry.source entry.key
       -- Vibe splits string commands (POSIX shlex; Windows preserves backslashes).
@@ -888,24 +862,21 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
         report := { report with
           discovered := true
           sources := report.sources.push { path := source.path.toString, role := source.role, conditional := source.conditional, state := .ok } }
-        let parsed ← if client == .agy then
-            pure ((parseAgyConfig text).map fun value =>
-              (value, (Agy.servers value).isOk))
-          else
-            pure ((← parseConfig source.format text).map fun value => (value, true))
+        let parsed ← if client == .agy then pure (parseAgyConfig text)
+          else parseConfig source.format text
         match parsed with
         | .error () =>
             sourcesComplete := false
             report := add report configArea "config.syntax" .error
               "Configuration is not valid JSON/TOML for this client; source text is omitted." source.path.toString
-        | .ok (value, validContainers) =>
+        | .ok value =>
             toolPolicies := toolPolicies ++ collectPolicies client source value
             report := inspectSettings context client source value report
             if client == .claude then
               let (updated, collected) := claudePolicies context source value report
               report := updated
               policies := policies ++ collected
-            match (if validContainers then entries context client source value else .error ()) with
+            match entries context client source value with
             | .error () =>
                 sourcesComplete := false
                 report := add report configArea "config.shape" .unknown

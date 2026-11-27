@@ -90,6 +90,9 @@ preflight_agy_mcp_config() {
     die "cannot resolve the Antigravity MCP config parent directory at $ancestor"
   physical="${physical%$'\n.'}"
   agy_physical_config="${physical%/}$suffix"
+  if [ -n "$agy_approved_config" ] && [ "$agy_physical_config" != "$agy_approved_config" ]; then
+    die "Antigravity MCP config location changed before writing $agy_approved_config; rerun the installer"
+  fi
   if [ -L "$agy_physical_config" ]; then
     die "refusing to edit symlinked Antigravity MCP config at $agy_physical_config"
   fi
@@ -325,7 +328,6 @@ remember_approved_write_home() {
 }
 
 approve_requested_writes() {
-  local shown_agy_config=""
   if [ "$dont_ask" -eq 1 ]; then
     verify_requested_install_targets
     return 0
@@ -343,11 +345,8 @@ approve_requested_writes() {
     prompt_write_approval
     case "$write_approval_action" in
       approve)
-        shown_agy_config="$agy_physical_config"
+        agy_approved_config="$agy_physical_config"
         verify_requested_install_targets
-        if [ "$shown_agy_config" != "$agy_physical_config" ]; then
-          die "Antigravity MCP config location changed after Write Locations; rerun the installer"
-        fi
         approve_current_write_locations
         return 0
         ;;

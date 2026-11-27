@@ -76,7 +76,7 @@ manual_mcp_targets=("OpenCode: lean-beam")
         self.assertNotIn("--agy-mcp", output)
 
     def test_agy_noop_reports_already_registered(self):
-        output = self.summary("agy_plan_state=noop")
+        output = self.summary("agy_plan_token=noop")
         self.assertRegex(output, r"(?m)^ +Antigravity +skills: not installed this run; MCP: already registered$")
         self.assertIn("./scripts/install-beam.sh --agy", output)
         self.assertNotIn("--agy-mcp", output)

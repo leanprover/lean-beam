@@ -26,16 +26,6 @@ def Client.all : Array Client := #[.codex, .claude, .pi, .opencode, .vibe, .agy]
 def Client.pipeList : String :=
   String.intercalate "|" (Client.all.map Client.name).toList
 
-def Client.proseList : String :=
-  match (Client.all.map Client.name).toList with
-  | [] => ""
-  | [only] => only
-  | [first, second] => s!"{first} or {second}"
-  | names =>
-      let init := names.dropLast
-      let last := names.getLast!
-      s!"{String.intercalate ", " init}, or {last}"
-
 /-- Environment variables with a documented role in each client's local discovery. -/
 def Client.envVars : Client → Array String
   | .codex => #["CODEX_HOME"]

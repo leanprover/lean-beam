@@ -15,15 +15,6 @@ private def field? (value : Lean.Json) (key : String) : Option Lean.Json :=
 private def stringArray (value : Lean.Json) : Option (Array String) := do
   (← value.getArr?.toOption).mapM (·.getStr?.toOption)
 
-/-- Validate root and `mcpServers` container types using `Lean.Json`. -/
-def servers (value : Lean.Json) : Except String Lean.Json := do
-  unless value.getObj?.isOk do throw "root JSON value must be an object"
-  match field? value "mcpServers" with
-  | none => return Lean.Json.mkObj []
-  | some servers =>
-      unless servers.getObj?.isOk do throw "'mcpServers' must be a JSON object"
-      return servers
-
 structure Launch where
   command? : Option String
   args : Array String
