@@ -85,27 +85,6 @@ ensure_vibe_mcp_config_replaceable() {
   if [ -e "$vibe_mcp_config" ] && [ ! -f "$vibe_mcp_config" ]; then
     die "refusing to edit non-file Mistral Vibe config at $vibe_mcp_config"
   fi
-  require_vibe_mcp_servers_appendable
-}
-
-# TOML forbids extending an inline `mcp_servers = [...]` array with [[mcp_servers]]
-# tables. The installer removes Vibe's default empty assignment, but refuses to
-# rewrite inline entries it cannot merge safely.
-require_vibe_mcp_servers_appendable() {
-  if [ ! -f "$vibe_mcp_config" ]; then
-    return 0
-  fi
-  if awk '
-    /^[[:space:]]*\[/ { exit 0 }
-    /^[[:space:]]*mcp_servers[[:space:]]*=/ {
-      if ($0 !~ /^[[:space:]]*mcp_servers[[:space:]]*=[[:space:]]*\[[[:space:]]*\][[:space:]]*(#.*)?$/) {
-        exit 1
-      }
-    }
-  ' "$vibe_mcp_config"; then
-    return 0
-  fi
-  die "refusing to edit Mistral Vibe config with inline mcp_servers entries at $vibe_mcp_config; move them to [[mcp_servers]] tables first"
 }
 
 ensure_mcp_config_dir() {
@@ -122,66 +101,131 @@ ensure_mcp_config_dir() {
   mkdir -p "$path"
 }
 
+cleanup_toml_stage() {
+  local stage="$1"
+  local tmp_config="$2"
+  rm -f -- "$tmp_config" "$stage/original"
+  rmdir "$stage" 2>/dev/null || true
+}
+
+write_toml_mcp_config() {
+  local config="$1" approval_action="$2" edit="$3"
+  shift 3
+  local stage="" tmp_config="" input_config="-"
+  stage="$(mktemp -d "${config}.lean-beam-XXXXXX")" || return
+  tmp_config="$stage/${config##*/}"
+  if [ -f "$config" ]; then
+    if ! cp -p "$config" "$stage/original"; then
+      cleanup_toml_stage "$stage" "$tmp_config"
+      return 1
+    fi
+    input_config="$stage/original"
+  fi
+  if ! (umask 077; "$construction_tool" "$edit" "$config" "$input_config" "$@" >"$tmp_config"); then
+    cleanup_toml_stage "$stage" "$tmp_config"
+    return 1
+  fi
+  if [ -n "$approval_action" ]; then
+    if ! (confirm_edit "$approval_action" "$config"); then
+      cleanup_toml_stage "$stage" "$tmp_config"
+      return 1
+    fi
+  fi
+  if [ -L "$config" ] || { [ -e "$config" ] && [ ! -f "$config" ]; }; then
+    cleanup_toml_stage "$stage" "$tmp_config"
+    die "refusing to replace a symlink or non-file MCP config at $config"
+  fi
+  if [ -f "$stage/original" ]; then
+    if ! cmp -s "$stage/original" "$config"; then
+      cleanup_toml_stage "$stage" "$tmp_config"
+      die "MCP config changed during registration at $config; retry the installer"
+    fi
+  elif [ -e "$config" ]; then
+    cleanup_toml_stage "$stage" "$tmp_config"
+    die "MCP config appeared during registration at $config; retry the installer"
+  fi
+  # Renaming by basename in the parent prevents mv from nesting inside a directory at config.
+  if ! mv -f "$tmp_config" "${config%/*}/"; then
+    cleanup_toml_stage "$stage" "$tmp_config"
+    die "could not publish MCP config at $config"
+  fi
+  cleanup_toml_stage "$stage" "$tmp_config"
+}
+
 set_codex_parallel_tool_calls() {
-  local tmp_config=""
   if [ -L "$codex_mcp_config" ] || [ ! -f "$codex_mcp_config" ]; then
     die "Codex did not write a regular MCP config at $codex_mcp_config"
   fi
-  tmp_config="$(mktemp "$codex_home/.config.toml.lean-beam-XXXXXX")"
-  if ! awk '
-    BEGIN {
-      single_quote = sprintf("%c", 39)
-      mcp_key = "(mcp_servers|\"mcp_servers\"|" single_quote "mcp_servers" single_quote ")"
-      server_key = "(lean-beam|\"lean-beam\"|" single_quote "lean-beam" single_quote ")"
-      target_table = "^\\[" mcp_key "\\." server_key "\\]$"
-    }
-    {
-      compact_header = $0
-      sub(/\][[:space:]]*#.*$/, "]", compact_header)
-      gsub(/[[:space:]]/, "", compact_header)
-    }
-    compact_header ~ target_table {
-      print
-      print "supports_parallel_tool_calls = true"
-      saw_target = 1
-      in_target = 1
-      next
-    }
-    /^[[:space:]]*\[/ {
-      in_target = 0
-      print
-      next
-    }
-    in_target && /^[[:space:]]*supports_parallel_tool_calls[[:space:]]*=/ { next }
-    { print }
-    END { if (!saw_target) exit 2 }
-  ' "$codex_mcp_config" >"$tmp_config"; then
-    rm -f -- "$tmp_config"
-    die "Codex MCP config does not contain the registered lean-beam server table: $codex_mcp_config"
-  fi
-  mv "$tmp_config" "$codex_mcp_config"
+  write_toml_mcp_config "$codex_mcp_config" "" codex-mcp
 }
 
 register_codex_mcp_server() {
-  ensure_mcp_config_dir "$codex_home" "Codex home"
+  ensure_mcp_config_dir "$codex_home" "Codex home" || return
   ensure_codex_mcp_config_replaceable
   if [ "$mcp_toolset" = "core" ]; then
-    CODEX_HOME="$codex_home" codex mcp add lean-beam -- "$bin_home/lean-beam-mcp" --toolset core >/dev/null
+    CODEX_HOME="$codex_home" codex mcp add lean-beam -- "$bin_home/lean-beam-mcp" --toolset core >/dev/null || return
   else
-    CODEX_HOME="$codex_home" codex mcp add lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
+    CODEX_HOME="$codex_home" codex mcp add lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null || return
   fi
-  set_codex_parallel_tool_calls
+  set_codex_parallel_tool_calls || return
   registered_mcp_targets+=("Codex: lean-beam")
 }
 
-register_claude_mcp_server() {
-  ensure_mcp_config_dir "$claude_mcp_home" "Claude Code MCP config home"
-  HOME="$claude_mcp_home" claude mcp remove --scope user lean-beam >/dev/null 2>&1 || true
-  if [ "$mcp_toolset" = "core" ]; then
-    HOME="$claude_mcp_home" claude mcp add --scope user lean-beam -- "$bin_home/lean-beam-mcp" --toolset core >/dev/null
-  else
-    HOME="$claude_mcp_home" claude mcp add --scope user lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null
+cleanup_claude_backup() {
+  local backup_dir="$1"
+  local backup="$2"
+  if [ -n "$backup_dir" ]; then
+    rm -f -- "$backup"
+    rmdir "$backup_dir" 2>/dev/null || true
   fi
+}
+
+write_claude_mcp_registration() {
+  local backup_dir="" backup="" registration="absent" operation="add" status=0
+  validate_claude_mcp_config_path
+  ensure_mcp_config_dir "$claude_mcp_home" "Claude Code MCP config home" || return
+  if [ -f "$claude_mcp_user_config" ]; then
+    backup_dir="$(mktemp -d "$claude_mcp_home/.claude.json.lean-beam-XXXXXX")" || return
+    backup="$backup_dir/.claude.json"
+    if ! cp -p "$claude_mcp_user_config" "$backup"; then
+      cleanup_claude_backup "$backup_dir" "$backup"
+      return 1
+    fi
+    if ! registration="$("$construction_tool" claude-mcp "$backup")"; then
+      cleanup_claude_backup "$backup_dir" "$backup"
+      return 1
+    fi
+    if ! cmp -s "$backup" "$claude_mcp_user_config"; then
+      cleanup_claude_backup "$backup_dir" "$backup"
+      die "Claude Code MCP config changed during registration at $claude_mcp_user_config; retry the installer"
+    fi
+  fi
+  if [ "$registration" = present ]; then
+    operation="remove"
+    HOME="$claude_mcp_home" claude mcp remove --scope user lean-beam >/dev/null || status=$?
+  fi
+  if [ "$status" -eq 0 ]; then
+    operation="add"
+    if [ "$mcp_toolset" = "core" ]; then
+      HOME="$claude_mcp_home" claude mcp add --scope user lean-beam -- "$bin_home/lean-beam-mcp" --toolset core >/dev/null || status=$?
+    else
+      HOME="$claude_mcp_home" claude mcp add --scope user lean-beam -- "$bin_home/lean-beam-mcp" >/dev/null || status=$?
+    fi
+  fi
+  if [ "$status" -ne 0 ]; then
+    if [ -n "$backup" ] && ! cmp -s "$backup" "$claude_mcp_user_config"; then
+      if ! mv -f "$backup" "$claude_mcp_home/"; then
+        die "Claude Code MCP $operation failed (exit $status) and config restoration failed; original config retained at $backup"
+      fi
+    fi
+    cleanup_claude_backup "$backup_dir" "$backup"
+    die "Claude Code MCP $operation failed for lean-beam (exit $status)"
+  fi
+  cleanup_claude_backup "$backup_dir" "$backup"
+}
+
+register_claude_mcp_server() {
+  write_claude_mcp_registration || return
   registered_mcp_targets+=("Claude Code: lean-beam")
 }
 
@@ -189,94 +233,23 @@ register_opencode_mcp_server() {
   manual_mcp_targets+=("OpenCode: lean-beam")
 }
 
-# Print the Mistral Vibe config with any existing lean-beam [[mcp_servers]] block,
-# the top-level default empty `mcp_servers = []` assignment, and trailing blank
-# lines removed, so re-registration replaces instead of duplicating and the
-# appended [[mcp_servers]] table stays valid TOML.
-vibe_mcp_config_without_lean_beam_server() {
-  awk '
-    function flush_block() {
-      if (in_block && !block_is_lean_beam) {
-        printf "%s", block
-      }
-      block = ""
-      in_block = 0
-      block_is_lean_beam = 0
-    }
-    /^[[:space:]]*\[\[[[:space:]]*mcp_servers[[:space:]]*\]\][[:space:]]*(#.*)?$/ {
-      seen_table = 1
-      flush_block()
-      in_block = 1
-      block = $0 "\n"
-      next
-    }
-    /^[[:space:]]*\[/ {
-      seen_table = 1
-      flush_block()
-      print
-      next
-    }
-    {
-      if (in_block) {
-        block = block $0 "\n"
-        if ($0 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*"lean-beam"[[:space:]]*(#.*)?$/) {
-          block_is_lean_beam = 1
-        }
-      } else if (seen_table \
-        || $0 !~ /^[[:space:]]*mcp_servers[[:space:]]*=[[:space:]]*\[[[:space:]]*\][[:space:]]*(#.*)?$/) {
-        print
-      }
-    }
-    END { flush_block() }
-  ' "$1" | awk '
-    { lines[NR] = $0 }
-    END {
-      last = NR
-      while (last > 0 && lines[last] ~ /^[[:space:]]*$/) {
-        last--
-      }
-      for (i = 1; i <= last; i++) {
-        print lines[i]
-      }
-    }
-  '
-}
-
 register_vibe_mcp_server() {
-  local tmp_config=""
-  local tmp_config_has_content=0
+  local approval_action=""
+  local preview_args=()
   local mcp_command="$bin_home/lean-beam-mcp"
   case "$mcp_command" in
     *'"'*|*\\*)
       die "refusing to write Mistral Vibe MCP command path containing quotes or backslashes: $mcp_command"
       ;;
   esac
-  ensure_mcp_config_dir "$vibe_home" "Mistral Vibe home"
+  ensure_mcp_config_dir "$vibe_home" "Mistral Vibe home" || return
   ensure_vibe_mcp_config_replaceable
-  confirm_path_edit "register lean-beam MCP server in the Mistral Vibe config" "$vibe_mcp_config"
-  tmp_config="$(mktemp "$vibe_home/.config.toml.lean-beam-XXXXXX")"
-  if [ -f "$vibe_mcp_config" ]; then
-    vibe_mcp_config_without_lean_beam_server "$vibe_mcp_config" >"$tmp_config"
+  if [ "$dont_ask" -eq 0 ] && [ -t 0 ]; then
+    preview_args=(--preview)
+    approval_action="register lean-beam MCP server in the Mistral Vibe config"
   fi
-  if [ -s "$tmp_config" ]; then
-    tmp_config_has_content=1
-  fi
-  {
-    if [ "$tmp_config_has_content" -eq 1 ]; then
-      printf '\n'
-    fi
-    printf '[[mcp_servers]]\n'
-    printf 'name = "lean-beam"\n'
-    printf 'transport = "stdio"\n'
-    printf 'command = ["%s"]\n' "$mcp_command"
-    if [ "$mcp_toolset" = "core" ]; then
-      printf 'args = ["--toolset", "core"]\n'
-    else
-      printf 'args = []\n'
-    fi
-    printf 'tool_timeout_sec = 600\n'
-  } >>"$tmp_config"
-  mv "$tmp_config" "$vibe_mcp_config"
+  write_toml_mcp_config "$vibe_mcp_config" "$approval_action" vibe-mcp "$mcp_command" --toolset "$mcp_toolset" \
+    ${preview_args[@]+"${preview_args[@]}"} || return
   registered_mcp_targets+=("Mistral Vibe: lean-beam")
 }
 

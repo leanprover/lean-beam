@@ -61,6 +61,7 @@ export OPENCODE_CONFIG_DIR="$tmp_root/opencode"
 export VIBE_HOME="$tmp_root/vibe"
 export BEAM_AGY_HOME="$tmp_root/agy-home"
 export BEAM_INSTALL_ROOT="$tmp_root/install-root"
+unset CLAUDE_CONFIG_DIR
 
 mkdir -p "$HOME" "$BEAM_INSTALL_ROOT"
 
@@ -1064,6 +1065,8 @@ printf '[%s] installer admission and interactive plans finished in %ss\n' \
 run_step "install default runtime" run_install_from_source
 expected_source_commit="$(git -C "$source_checkout" rev-parse HEAD 2>/dev/null || true)"
 install_layout_json="$(cd "$source_checkout" && ./.lake/build/bin/beam-install-runtime layout)"
+run_step "installer client adapter regressions" python3 tests/test-install-client-adapters.py \
+  "$source_checkout/.lake/build/bin/beam-install-runtime"
 
 installed_lean_beam="$HOME/.local/bin/lean-beam"
 installed_helper="$HOME/.local/bin/lean-beam-search"
@@ -1404,7 +1407,7 @@ server = config["mcp_servers"]["lean-beam"]
 if server.get("supports_parallel_tool_calls") is not True:
     raise SystemExit(f"Codex lean-beam server does not enable parallel tool calls: {server}")
 PY
-assert_contains_literal "$mcp_stub_log" "claude|mcp|remove|--scope|user|lean-beam"
+assert_not_contains "$mcp_stub_log" "claude|mcp|remove"
 assert_contains_literal "$mcp_stub_log" "claude|mcp|add|--scope|user|lean-beam|--|$installed_mcp"
 assert_not_exists "$OPENCODE_CONFIG_DIR/opencode.json"
 assert_file "$VIBE_HOME/config.toml"
@@ -1486,8 +1489,7 @@ if [ ! -d "$custom_claude_config_home" ]; then
   echo "expected installer to create custom Claude MCP config home" >&2
   exit 1
 fi
-assert_contains_literal "$custom_mcp_stub_log" \
-  "claude|mcp|remove|--scope|user|lean-beam|HOME=$custom_claude_config_home"
+assert_not_contains "$custom_mcp_stub_log" "claude|mcp|remove"
 assert_contains_literal "$custom_mcp_stub_log" \
   "claude|mcp|add|--scope|user|lean-beam|--|$installed_mcp|HOME=$custom_claude_config_home"
 assert_file "$custom_claude_config"

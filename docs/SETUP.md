@@ -728,15 +728,25 @@ workflow does not require MCP.
 Both installation paths provide the experimental stdio MCP server as `lean-beam-mcp`.
 The checkout installer can register its server automatically for Codex, Claude Code, Mistral Vibe,
 or Antigravity (`agy`).
-For Antigravity, the installer updates `~/.gemini/config/mcp_config.json` directly.
-For Mistral Vibe, the installer edits `~/.vibe/config.toml` directly: it replaces any existing `lean-beam` entry in
-`[[mcp_servers]]`, removes Vibe's default empty `mcp_servers = []` line (TOML forbids extending an
-inline array with `[[mcp_servers]]` tables), and leaves other entries untouched. If the config
-holds other servers as inline `mcp_servers = [...]` entries, the installer refuses; move those
-entries to `[[mcp_servers]]` tables first. For OpenCode, the installer prints the
+
+Claude Code registration uses the CLI's user scope. If removing or adding the entry fails, the
+installer restores the original user config. When `CLAUDE_CONFIG_DIR` is set, the installer
+refuses registration before asking for write approval, even if `--claude-mcp-config` is supplied.
+Unset `CLAUDE_CONFIG_DIR` to register in the selected `.claude.json`, or use the manual Claude Code
+command below in the environment that selects your Claude Code home.
+
+The installer edits `~/.vibe/config.toml` directly for Mistral Vibe. It replaces existing
+`lean-beam` entries in `[[mcp_servers]]` and removes the default empty `mcp_servers = []`
+assignment. Move any nonempty inline `mcp_servers` entries to `[[mcp_servers]]` tables first.
+Each table needs a single-line string name. Write any subtables of the `lean-beam` entry as
+inline fields before updating it. An interactive install shows a redacted diff of the
+`lean-beam` block for approval before writing the config.
+
+For Antigravity, the installer updates `~/.gemini/config/mcp_config.json` directly (see
+[Antigravity (`agy`)](#antigravity-agy) below). For OpenCode, the installer prints the
 `opencode mcp add` values to use manually. Pi Agent does not support MCP; install its skill with
-`--pi`. Codex registration also sets `supports_parallel_tool_calls = true` on the `lean-beam`
-server entry so Codex can keep independent Lean probes in flight concurrently.
+`--pi`. Codex registration sets `supports_parallel_tool_calls = true` on the `lean-beam` server
+entry so Codex can keep independent Lean probes in flight concurrently.
 
 The server prefers stateless MCP `2026-07-28` and also accepts the initialization-based
 `2025-11-25` lifecycle while clients migrate. This is automatic: modern clients can discover the

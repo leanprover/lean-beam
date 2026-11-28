@@ -18,6 +18,9 @@ validate_codex_home() {
 }
 
 validate_claude_mcp_config_path() {
+  if [ "${CLAUDE_CONFIG_DIR+x}" = x ]; then
+    die "CLAUDE_CONFIG_DIR is set; unset it before registering with the installer, or register lean-beam manually in that Claude Code home"
+  fi
   require_absolute_path "$claude_mcp_user_config" "Claude Code MCP config"
   require_absolute_path "$claude_mcp_home" "Claude Code MCP config home"
   require_not_root "$claude_mcp_home" "Claude Code MCP config home"
@@ -25,6 +28,9 @@ validate_claude_mcp_config_path() {
   require_not_root "$claude_mcp_backup_home" "Claude Code backup home"
   if [ "$(basename "$claude_mcp_user_config")" != ".claude.json" ]; then
     die "Claude Code MCP config must be named .claude.json: $claude_mcp_user_config"
+  fi
+  if [ -L "$claude_mcp_user_config" ] || { [ -e "$claude_mcp_user_config" ] && [ ! -f "$claude_mcp_user_config" ]; }; then
+    die "refusing to edit a symlink or non-file Claude Code MCP config at $claude_mcp_user_config"
   fi
 }
 
