@@ -1035,7 +1035,47 @@ stopped_status="$("$beam_script" --root "$tmp1" status)"
 assert_json_field_equals "stopped session status state" "$stopped_status" result.state absent
 
 printf '%s\n' "$original_selector" > "$tmp1/lean-toolchain"
+# The private second installation shares hard links with the first. Atomically replace only
+# its directory entry. The launcher restores the daemon at its canonical path before exec.
+original_beam_script="$beam_script"
+beam_script="$other_installation/bin/lean-beam"
+export BEAM_TEST_CRASH_RECEIPT="$tmp1/daemon-stderr-holder"
+python3 - "$other_installation" "$original_selector" <<'PYCRASH'
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+manifest = json.loads((root / "manifest.json").read_text())
+target = next(t for t in manifest["components"]["targets"] if t["toolchain"] == sys.argv[2])
+daemon = root / target["daemon"]
+backup = daemon.with_suffix(".crash-fixture-real")
+assert not backup.exists()
+daemon.rename(backup)
+daemon.write_text("""#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+import time
+
+path = Path(__file__)
+real = path.with_suffix(".crash-fixture-real")
+if "--session-owner-stdin" in sys.argv:
+    real.replace(path)
+    real = path
+    if os.fork() == 0:
+        os.close(0)
+        os.close(1)
+        receipt = Path(os.environ["BEAM_TEST_CRASH_RECEIPT"])
+        receipt.write_text(f"{os.getpid()} {os.getpgrp()} {os.getsid(0)}" + chr(10))
+        time.sleep(120)
+        os._exit(0)
+os.execv(real, [str(real), *sys.argv[1:]])
+""")
+daemon.chmod(0o755)
+PYCRASH
 start_owner "$tmp1" "owner-2"
+wait_for_nonempty_file "$BEAM_TEST_CRASH_RECEIPT" "in-group stderr holder"
 daemon2_pid="$(read_json_field "$registry" pid)"
 daemon2_id="$(read_json_field "$registry" daemonId)"
 if [ "$daemon2_id" = "$daemon1_id" ]; then
@@ -1043,6 +1083,11 @@ if [ "$daemon2_id" = "$daemon1_id" ]; then
   exit 1
 fi
 
+read -r holder_pid holder_group holder_session < "$BEAM_TEST_CRASH_RECEIPT"
+if [ "$holder_group" != "$daemon2_pid" ] || [ "$holder_session" != "$daemon2_pid" ]; then
+  echo "stderr holder is outside the daemon session" >&2
+  exit 1
+fi
 kill -KILL "$daemon2_pid"
 if ! wait_for_exit "$hold_pid" "owner after unexpected daemon crash" 200 0.05; then
   cat "$tmp1/owner-2.err" >&2
@@ -1057,7 +1102,16 @@ if [ "$crashed_owner_status" -eq 0 ]; then
   echo "expected the owner to report an unexpected daemon crash" >&2
   exit 1
 fi
-if ! grep -Fq "owned Beam daemon exited with status" "$tmp1/owner-2.err"; then
+PYTHONPATH=tests python3 - "$holder_pid" <<'PYSTOPPED'
+from lib.process_watchdog import process_is_running
+import sys
+assert not process_is_running(int(sys.argv[1])), "daemon stderr holder survived teardown"
+PYSTOPPED
+if grep -Eq 'stderr (remained open|source failed)' "$tmp1/owner-2.err"; then
+  cat "$tmp1/owner-2.err" >&2
+  exit 1
+fi
+if ! grep -Fq "owned Beam daemon exited with status 137" "$tmp1/owner-2.err"; then
   echo "expected the owner crash report to include the daemon exit status" >&2
   cat "$tmp1/owner-2.err" >&2
   exit 1
@@ -1090,6 +1144,9 @@ if [ -e "$registry" ]; then
   echo "expected exact-generation crash recovery to quarantine the fence" >&2
   exit 1
 fi
+
+beam_script="$original_beam_script"
+unset BEAM_TEST_CRASH_RECEIPT
 
 # A paused live daemon must not become replaceable merely because its greeting times out.
 start_owner "$tmp1" "owner-unresponsive"

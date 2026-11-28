@@ -584,8 +584,8 @@ The helper waits for an owner handshake before binding its installation or evalu
 code. One process-job scope owns assignment, observation, termination, and the final child wait.
 Its caller receives an observation capability rather than maintaining a separate ownership flag.
 Observation and teardown are serialized: loss of child ownership is permanent, and a capability
-retained past teardown rejects observation before touching the old PID. The caller must not wait
-or kill the raw child separately. Native failures retain their OS error code in `IO.Error`.
+retained past teardown rejects observation and releases its reference to the child and pipes. The caller must not
+wait or kill the raw child separately. Native failures retain their OS error code in `IO.Error`.
 The ownership mutex remains held through final collection. Concurrent observation can wait for
 collection to finish; afterward it rejects the closed scope even if cleanup failed. This does not
 promise prompt polling or cancellation while collection is blocked.
@@ -600,12 +600,12 @@ retains that raw diagnostic evidence, including a rejected reply. It does not es
 or override the separately recorded typed outcome. A completed preparation
 reply can therefore coexist with failed cleanup. The reply does not establish canonical checkpoint
 publication, rollback, or safe retry.
-Output capture starts before the owner handshake and finishes after process cleanup. A failure
-while finishing capture or retiring its publisher cannot replace the retained operation receipt.
-This refers to thrown finalization errors. Best-effort drain observations such as a failed source or
-a pipe still open at the drain deadline remain capture results, not helper cleanup failures.
-This separates the operation from cleanup; it does not aggregate every native close,
-termination, and wait error or change their existing precedence.
+The helper's atomic reply publication commits its operation. If the first lookup misses and the
+leader has exited, the owner checks once more before returning `workerExited` with `newHelper`
+recovery guidance. Output capture starts before the handshake and finishes after process cleanup.
+A returned `sourceFailed` or `pipeStillOpen` is best-effort stdout/stderr evidence. A committed
+success or broker error retains its meaning in either case. An exception finishing capture or
+retiring its publisher is recorded in `outputCleanup`.
 
 The broker finalizes save traces after the artifact worker has acknowledged completion. It hashes
 the private outputs, fills the output descriptors in the target-prepared dependency metadata, and
@@ -619,29 +619,26 @@ hashes across supported versions. Flushing reports buffered I/O failures; it doe
 recovery or a filesystem durability guarantee.
 Cancellation is checked after local trace finalization and again by the final publication guard.
 
-The CLI detaches the daemon's stdin writer immediately after spawning it. Published child handles
-therefore cannot retain that writer; one shared reference owns it until foreground-owner cleanup
-clears the reference and sends EOF. Taking stdin only during cleanup would leave aliases of the
-original child keeping the pipe open. Forced termination uses the existing native child/group
-signalling operation, so it does not depend on detached child handles retaining `setsid` metadata.
-A forced owner cleanup emits a stderr diagnostic; ordinary stop and interruption must exit without
-that fallback. Exit observation and bounded collection still belong to the CLI owner.
-Windows uses `Child.tryWait` on the retained process handle without collecting the child. It
-assigns a non-inheritable kill-on-close Job Object before the handshake; successful job closure requests
-termination of its members, so cleanup waits on the retained child handle without another kill. Failed
-assignment or closure still requires explicit leader termination and waiting. On POSIX
-the helper owns a new session/process group and watches its owner's stdin lease, terminating its
-group on owner loss. The parent observes exit without reaping until it has signalled the retained
-leader and its group. Cleanup terminates the retained leader before its group because cancellation
-can arrive before the child reaches `setsid`. On Darwin, signalling a group whose members are
-already exiting can return `EPERM` before those members become zombies. Cleanup accepts this only
-after a complete kernel query confirms every member is a zombie or has the kernel's `P_WEXIT`
-exit flag. An uncertain or failed query preserves the error. Do not substitute
-the POSIX `Child.tryWait` followed by a PID signal, since that operation reaps the child. These
-mechanisms clean up ordinary
-descendants; POSIX process groups do not contain descendants that deliberately escape their
-session/group. OS process creation and termination are not hard real-time bounds; CI retains its
-external watchdog.
+Beam launches each target Lake helper and each foreground-owned daemon through
+`Beam.OwnedProcess.spawn`. The parent retains the leader until teardown and owns three pipe
+endpoints. Closing the daemon's stdin writer sends EOF once any outstanding write finishes.
+Readers retain their endpoint through each blocking read, so closing a reader concurrently
+prevents future reads and lets the active read finish. Ordinary backend children use Lean's
+`IO.Process.Child`.
+
+On POSIX, `posix_spawn` establishes a new session before the helper or daemon runs. The child
+is the session and process-group leader. Beam observes its exit status with `waitid(WNOWAIT)`,
+signals the retained group, then collects the leader with `waitpid`. On Darwin, signalling
+a group whose last members are exiting can return `EPERM`. Beam accepts that result only when
+a complete kernel query confirms every member is a zombie or has the kernel's `P_WEXIT` flag.
+A descendant that deliberately leaves the group is outside group teardown.
+
+On Windows, `CreateProcessW` assigns the child to a non-inheritable kill-on-close Job Object at
+creation and passes the three standard streams through an explicit handle list. The broker
+serializes helper and ordinary backend creation while those child handles are inheritable. Beam observes
+exit through the original process handle. Closing the job terminates surviving members even
+after the leader has exited. Both platforms retain the original leader's exit status through
+cleanup. The Lake helper waits for the parent's go-ahead before evaluating project code.
 
 The thick part of the broker is request orchestration. For `sync`, `runAt`, `goals`, `runWith`,
 `release`, and `save`, the broker reads the source file, updates the LSP document mirror, waits for
@@ -765,16 +762,22 @@ that generation from `live` to `draining` under the control lock before sending 
 shutdown. A repeated stop observes the committed drain and does not deliver another request; a
 post-commit delivery failure is presentation detail rather than a rollback of the fence. Normal
 holder exit likewise publishes `draining`, closes its pipe, waits for graceful
-teardown, and, after the deadline, terminates the owned process group. It removes only the exact
-generation after owned cleanup completes. A nonzero daemon exit during graceful drain restores the
-exact conservative fence instead of clearing it; a controlled process-group kill that reaps the
-leader completes normal owner cleanup. An unexpected daemon exit preserves its exact live
-descriptor so endpoint observation reports recovery-required state. An unexpected owner exit also
-deliberately leaves the descriptor fenced: startup does not infer complete process-tree exit from
-persisted PIDs. Normal foreground-owner cleanup has a hard deadline because it retains the child
-handle; after abrupt owner death, the daemon closes cooperatively on owner-pipe EOF, but there is no
-independent supervisor imposing that same hard bound. Once
-the operator establishes that the old session is no longer authoritative,
+teardown, and requests group or job termination when the grace period expires. The owner removes
+only its exact draining generation after successful owned cleanup and daemon stderr EOF. The
+collected leader must have exited at zero or have a status consistent with force requested while
+last observed running. On POSIX that means signal death by SIGKILL. Natural exit 137 is a distinct
+outcome. On Windows the owner calls `TerminateJobObject` with a designated exit code and collects
+the original process handle. Another actor can produce the same signal or exit code in that
+interval. Other abnormal exits, failed cleanup and incomplete drains retain the shutdown fence.
+
+After an unexpected leader exit the owner requests teardown of surviving group members, collects
+the leader, and observes stderr separately. Its live descriptor continues to require recovery,
+including after unexpected exit zero. Abrupt owner loss also leaves the descriptor fenced.
+A grace period bounds observation. EOF establishes that the pipe closed, and successful collection
+establishes the leader's exit. Neither gives a deadline for every descendant to settle. POSIX
+cleanup can reach processes that remain in the owned group. When explicit cleanup cannot collect
+a leader immediately after a signaling failure, it reports the failure and transfers the remaining
+wait to a reaper established before launch. Once the operator establishes that the old session is no longer authoritative,
 `lean-beam --root ROOT recover --generation ID` quarantines that exact descriptor without signalling
 any recorded process. Installation control admission runs before endpoint probes or registry
 mutation and compares the recorded daemon path with the invoking executable’s concrete installation
@@ -1037,6 +1040,13 @@ separately from the action runtime.
 
 Beam carries a few local workarounds for missing or version-skewed Lean/Lake APIs. When upstream
 support lands, prefer deleting the workaround over preserving compatibility branches.
+
+- The owned launcher is a temporary native dependency for Lake helpers and foreground daemons.
+  P1 retirement cards cover the lifecycle and owner-loss facility (ULC-0009), retained POSIX
+  group identity and collection (ULC-0010), Windows job ownership at creation (ULC-0019), and
+  independently closeable pipe endpoints (ULC-0020). When all supported SDKs provide those
+  capabilities, remove the native launcher, its fallback reaper and its source-level harness.
+  Generation checks, reply publication and capture policy belong to Beam.
 
 - Lean file-worker `lake setup-file` progress is currently exposed as ordinary information
   diagnostics with a synthetic file-start range. Beam recognizes Lake build-monitor text such as

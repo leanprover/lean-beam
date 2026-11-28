@@ -1386,6 +1386,70 @@ private def checkServeDoesNotProbe : IO Unit := do
   finally
     if ← root.pathExists then IO.FS.removeDirAll root
 
+private def checkDaemonDrainEvidence : IO Unit := do
+  let release := Beam.Cli.Internal.drainSettled
+  let collected := fun (running : Bool) (s : Beam.OwnedProcess.ExitStatus) =>
+    ({ force := .ok running, collection := .ok (some s) } : Beam.OwnedProcess.Completion)
+  let error := IO.userError "fixture error"
+  let marker := Beam.OwnedProcess.windowsForceCode
+  for (status, forced, expected) in [
+      (.exited 0, false, true), (.exited 23, true, false), (.exited 137, true, false),
+      (.signaled 9, true, true), (.signaled 9, false, false), (.signaled 11, true, false),
+      (.windows 0, false, true), (.windows 23, true, false), (.windows marker, true, true),
+      (.windows marker, false, false)] do
+    let done := collected forced status
+    require s!"release policy for {repr status}, force {forced}" (release done .drained == expected)
+    require "daemon stderr must settle" (!release done .pipeStillOpen && !release done (.sourceFailed error))
+    require "failed force keeps the fence" (!release { done with force := .error error } .drained)
+    require "pending or lost collection keeps the fence"
+      (!release { done with collection := .ok none } .drained &&
+       !release { done with collection := .error error } .drained)
+
+private def checkDrainRegistryAtExit : IO Unit := do
+  for (code, unexpected, force, replace) in [
+      (23, false, false, false), (137, false, false, false), (0, false, false, false),
+      (0, true, false, false), (0, false, true, false), (0, false, true, true),
+      (23, false, false, true)] do
+    IO.FS.withTempDir fun root => do
+      let control ← ensureTestControlDir root
+      Beam.Cli.withLock (control / "lock") (writeTestRegistryEntry root)
+      let registry ← Beam.Daemon.registryPath root
+      let .current entry ← Beam.Daemon.readRegistry root | throw <| IO.userError "missing generation"
+      let gate := root / "exit"
+      let child ← Beam.OwnedProcess.spawn (← IO.appPath).toString #["--owned-exit", gate.toString, toString code]
+      try
+        let capture ← Beam.StderrCapture.startWithReader child.stderr.readSome 32
+        let releaseChild := do
+          IO.FS.writeFile gate ""
+          let deadline := (← IO.monoMsNow) + 5000
+          while (← child.exitCode?).isNone do
+            if (← IO.monoMsNow) ≥ deadline then throw <| IO.userError "leader failed to exit"
+            IO.sleep 5
+        if unexpected then releaseChild
+        let graceRan ← IO.mkRef false
+        Beam.Cli.Internal.finishDaemonGeneration root control entry child capture do
+          unless unexpected do
+            require "last grace poll must see a live leader" (← child.exitCode?).isNone
+            let .current current ← Beam.Daemon.readRegistry root | throw <| IO.userError "missing drain"
+            require "exact generation already draining" (current == { entry with lifecycle := .draining })
+            if replace then
+              IO.FS.writeFile registry (toJson { entry with daemonId := "replacement" }).pretty
+            unless force do releaseChild
+          graceRan.set true
+        require "exit barrier ran" (← graceRan.get)
+        match ← Beam.Daemon.readRegistry root with
+        | .absent => require "only clean/forced drains release" (!unexpected && !replace && (force || code == 0))
+        | .current current =>
+            if replace then require "replacement preserved" (current == { entry with daemonId := "replacement" })
+            else if unexpected then require "unexpected exit zero stays live" (current == entry)
+            else
+              require "independent crash preserves the exact draining fence"
+                (!force && code != 0 && current == { entry with lifecycle := .draining })
+              let .recoveryRequired (.unusable _ .shutdownUnconfirmed) ← Beam.Cli.observeProjectRegistry root
+                | throw <| IO.userError "wrong caller state after intervening exit"
+        | .invalid _ => throw <| IO.userError "cleanup corrupted the descriptor"
+      finally discard child.finish
+
 private def checkUnconfirmedShutdown : IO Unit := do
   let root := System.FilePath.mk s!"/tmp/beam-unconfirmed-shutdown ' {← IO.monoNanosNow}"
   try
@@ -2044,6 +2108,8 @@ def main : IO Unit := do
   OutputTest.check
   checkBrokerConnectionClosedIncident
   checkServeDoesNotProbe
+  checkDaemonDrainEvidence
+  checkDrainRegistryAtExit
   checkUnconfirmedShutdown
   checkTypedRegistryReads
   checkRecoveryGenerationRecheck
@@ -2057,6 +2123,10 @@ end BeamTest.Broker.CliDaemonTest
 
 def main (args : List String) : IO UInt32 :=
   match args with
+  | ["--owned-exit", path, code] => do
+      while !(← (System.FilePath.mk path).pathExists) do IO.sleep 5
+      let some n := code.toNat? | throw <| IO.userError "invalid exit code"
+      return n.toUInt32
   | ["--session-commands", installation, root, control, generation] => do
       let command := Beam.Cli.installationSessionCommand installation root control
       IO.println <| (Json.mkObj [

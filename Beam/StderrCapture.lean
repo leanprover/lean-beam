@@ -67,12 +67,12 @@ private def appendBoundedTail
       set combined
 
 private partial def drainStderr
-    (source : IO.FS.Handle)
+    (read : USize → IO ByteArray)
     (tail : Std.Mutex ByteArray)
     (tailLimit : Nat)
     (sinkState : Std.Mutex StderrSinkState)
     (readSize : USize) : IO Unit := do
-  let chunk ← source.read readSize
+  let chunk ← read readSize
   unless chunk.isEmpty do
     appendBoundedTail tail tailLimit chunk
     sinkState.atomically do
@@ -86,10 +86,10 @@ private partial def drainStderr
             sink? := none
             failure? := state.failure? <|> some err
           }
-    drainStderr source tail tailLimit sinkState readSize
+    drainStderr read tail tailLimit sinkState readSize
 
-def StderrCapture.start
-    (source : IO.FS.Handle)
+def StderrCapture.startWithReader
+    (read : USize → IO ByteArray)
     (tailLimit : Nat)
     (sink? : Option StderrSink := none)
     (readSize : USize := 8192) : IO StderrCapture := do
@@ -97,8 +97,12 @@ def StderrCapture.start
   let tail ← Std.Mutex.new ByteArray.empty
   let sinkState ← Std.Mutex.new ({ sink? } : StderrSinkState)
   let drainTask ← IO.asTask (prio := Task.Priority.dedicated) <|
-    drainStderr source tail tailLimit sinkState readSize
+    drainStderr read tail tailLimit sinkState readSize
   pure { tail, sinkState, drainTask }
+
+def StderrCapture.start (source : IO.FS.Handle) (tailLimit : Nat)
+    (sink? : Option StderrSink := none) (readSize : USize := 8192) : IO StderrCapture :=
+  startWithReader source.read tailLimit sink? readSize
 
 def StderrCapture.snapshot (capture : StderrCapture) : IO String := do
   let bytes ← capture.tail.atomically get

@@ -47,12 +47,12 @@ def StartupReady.decodeLine
     throw s!"Beam daemon readiness port {ready.port} is outside 1-65535"
   pure <| .tcp ready.port.toUInt16
 
-def StartupReady.readLine (source : IO.FS.Handle) : IO String := do
+def StartupReady.readLineWith (read : USize → IO ByteArray) : IO String := do
   let mut bytes := ByteArray.empty
   repeat
     if bytes.size >= maxStartupReadyBytes then
       throw <| IO.userError s!"Beam daemon readiness exceeds {maxStartupReadyBytes} bytes"
-    let chunk ← source.read 1
+    let chunk ← read 1
     if chunk.isEmpty then
       throw <| IO.userError "Beam daemon closed its readiness pipe before reporting readiness"
     if chunk[0]! == '\n'.toUInt8 then
@@ -61,5 +61,7 @@ def StartupReady.readLine (source : IO.FS.Handle) : IO String := do
   let some line := String.fromUTF8? bytes
     | throw <| IO.userError "Beam daemon readiness is not valid UTF-8"
   pure line
+
+def StartupReady.readLine (source : IO.FS.Handle) : IO String := readLineWith source.read
 
 end Beam.Daemon

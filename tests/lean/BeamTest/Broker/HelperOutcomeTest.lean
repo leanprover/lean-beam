@@ -27,11 +27,10 @@ private def checkScopeOutcomes : IO Unit := do
       let actions ← IO.mkRef (0 : Nat)
       let cleanups ← IO.mkRef (0 : Nat)
       let result ← Beam.ProcessJob.Internal.runScope
-        (pure { observe := pure .running, finalize := fun retained => do
-          require "cleanup receives retained ownership" retained
+        (pure .running) (do
           cleanups.modify (· + 1)
           if cleanupFails then throw <| IO.userError "job cleanup"
-        }) (pure ()) fun _ => do
+        ) fun _ => do
           actions.modify (· + 1)
           if operationFails then throw <| IO.userError "operation"
           pure 7
@@ -41,36 +40,6 @@ private def checkScopeOutcomes : IO Unit := do
       else require "operation success retained" (match result.operation with | .ok 7 => true | _ => false)
       if cleanupFails then requireIOError "cleanup retained" result.cleanup "job cleanup"
       else discard <| IO.ofExcept result.cleanup
-  let actions ← IO.mkRef (0 : Nat)
-  let collections ← IO.mkRef (0 : Nat)
-  let result ← Beam.ProcessJob.Internal.runScope
-    (throw <| IO.userError "assignment")
-    (do collections.modify (· + 1); throw <| IO.userError "unassigned cleanup")
-    (fun _ => do actions.modify (· + 1); pure ())
-  requireIOError "assignment is not replaced by cleanup" result.operation "assignment"
-  requireIOError "failed-assignment cleanup retained" result.cleanup "unassigned cleanup"
-  require "failed assignment never admits action" ((← actions.get) == 0)
-  require "failed assignment collects once" ((← collections.get) == 1)
-
-private def checkLostOwnership : IO Unit := do
-  let observations ← IO.mkRef (0 : Nat)
-  let retained? ← IO.mkRef (none : Option Bool)
-  let result ← Beam.ProcessJob.Internal.runScope
-    (pure {
-      observe := do observations.modify (· + 1); pure .notChild
-      finalize := fun retained => retained?.set (some retained)
-    }) (throw <| IO.userError "unexpected unassigned cleanup") fun scope => do
-      require "first poll records ownership loss" ((← scope.poll) == .notChild)
-      require "subsequent polls retain ownership loss" ((← scope.poll) == .notChild)
-      pure scope
-  discard <| IO.ofExcept result.cleanup
-  let scope ← IO.ofExcept result.operation
-  require "lost ownership avoids another native observation" ((← observations.get) == 1)
-  require "cleanup cannot claim lost ownership" ((← retained?.get) == some false)
-  requireIOError "lost scope still closes" (← scope.poll.toBaseIO) "process-job scope is closed"
-
-/-- The current policy serializes observation behind final collection. This test deliberately
-holds cleanup; its short observation window is a fixture gate, not a production deadline. -/
 private def checkClosingScope : IO Unit := do
   let ready ← IO.Promise.new (α := Option Beam.ProcessJob.Scope)
   let entered ← IO.Promise.new
@@ -86,15 +55,12 @@ private def checkClosingScope : IO Unit := do
   let observer? ← IO.mkRef (none : Option (Task (Except IO.Error Beam.ProcessJob.State)))
   let owner ← IO.asTask (prio := .dedicated) do
     let result ← Beam.ProcessJob.Internal.runScope
-      (pure {
-        observe := do observations.modify (· + 1); pure .running
-        finalize := fun retained => do
-          require "closing scope still owns collection" retained
+      (do observations.modify (· + 1); pure .running) (do
           collections.modify (· + 1)
           entered.resolve ()
           discard <| IO.wait release.result?
           throw <| IO.userError "collection failure"
-      }) (pure ()) fun scope => do
+      ) fun scope => do
         ready.resolve (some scope)
         pure 7
     pure result
@@ -121,6 +87,50 @@ private def checkClosingScope : IO Unit := do
     releaseOnce
     discard <| IO.wait owner
     if let some observer ← observer?.get then discard <| IO.wait observer
+
+private def checkPublicationAtExit : IO Unit := do
+  for kind in ["success", "failure", "malformed", "absent", "cancelled"] do
+    IO.FS.withTempDir fun directory => do
+      let observed ← IO.mkRef (none : Option Json)
+      let cancelled ← IO.mkRef false
+      let poll : IO Beam.ProcessJob.State := do
+        match kind with
+        | "failure" =>
+          LakeHelperJob.publish directory (.error { code := .invalidParams } : Except BrokerFailure Nat)
+        | "malformed" => IO.FS.writeFile (LakeHelperJob.responsePath directory) "{}"
+        | "absent" => pure ()
+        | _ => LakeHelperJob.publish directory (.ok 23 : Except BrokerFailure Nat)
+        cancelled.set (kind == "cancelled")
+        pure Beam.ProcessJob.State.exited
+      let job ← Beam.ProcessJob.Internal.runScope poll (pure ()) fun scope =>
+        LakeHelperJob.Internal.awaitResponse (α := Nat) scope directory
+          { cancelRef? := some cancelled } observed
+      discard <| IO.ofExcept job.cleanup
+      require "committed reply recorded" ((← observed.get).isSome == (kind != "absent"))
+      match kind, job.operation with
+      | "success", .ok (.ok 23) | "malformed", .error _ => pure ()
+      | "failure", .ok (.error f) => require kind (f.code == .invalidParams)
+      | "absent", .ok (.error f) => require kind (f.code == .workerExited)
+      | "cancelled", .ok (.error f) => require kind (f.code == .requestCancelled)
+      | _, _ => throw <| IO.userError s!"unexpected publication outcome for {kind}"
+
+private def checkBestEffortOutput : IO Unit := do
+  let output ← Beam.WorkspaceOutput.Buffer.create
+  let some publisher ← output.borrow | throw <| IO.userError "missing publisher"
+  let release ← IO.Promise.new (α := Unit)
+  let capture ← Beam.WorkspaceOutput.Capture.startWithReaders
+    (fun _ => do discard <| IO.wait release.result?; return .empty)
+    (fun _ => throw <| IO.userError "fixture source failure") publisher
+  try
+    let cleanup ← (LakeHelperJob.Internal.finishOutput (some capture) publisher).toBaseIO
+    for result in [(.ok 23 : Except BrokerFailure Nat), .error { code := .contentModified }] do
+      let completed := LakeHelperJob.Internal.projectCompletion .serverEnv {
+        operation := .ok result, jobCleanup := .ok (), directoryCleanup := .ok (), outputCleanup := cleanup }
+      match result, completed with
+      | .ok 23, .ok 23 => pure ()
+      | .error _, .error f => require "captured error survives" (f.code == .contentModified)
+      | _, _ => throw <| IO.userError "best-effort output replaced the committed result"
+  finally release.resolve ()
 
 private def checkResponseCodec : IO Unit := do
   let result : LeanServerLakeEnv := { env := #[("X", some "value")], moreServerArgs := #["--flag"] }
@@ -295,12 +305,13 @@ private def checkEarlyOutputRetirement : IO Unit :=
 
 def run : IO Unit := do
   checkScopeOutcomes
-  checkLostOwnership
   checkClosingScope
+  checkPublicationAtExit
+  checkBestEffortOutput
   checkResponseCodec
   checkHelperOutcomes
   checkInvalidResponse
   checkEarlyOutputRetirement
-  IO.println "helper outcomes: operation, assignment, resource cleanup and closed ownership passed"
+  IO.println "helper outcomes: operation, resource cleanup and closed ownership passed"
 
 end BeamTest.Broker.HelperOutcomeTest

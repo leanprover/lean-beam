@@ -112,10 +112,6 @@ def publish [ToJson α] (directory : System.FilePath) (response : Except BrokerF
 
 end LakeHelperJob
 
-private def helperStdio : IO.Process.StdioConfig := {
-  stdin := .piped, stdout := .piped, stderr := .piped
-}
-
 private def helperCancelled (control : LakeHelperControl) : IO Bool := do
   match control.cancelRef? with
   | some ref => ref.get
@@ -125,32 +121,34 @@ private def cancelledHelper : BrokerFailure := {
   code := .requestCancelled, message := "target Lake helper request cancelled"
 }
 
-private partial def awaitHelperResponse [FromJson α]
-    (scope : Beam.ProcessJob.Scope)
-    (directory : System.FilePath)
-    (control : LakeHelperControl)
-    (observedResponse : IO.Ref (Option Json)) : IO (Except BrokerFailure α) := do
+private def committedResponse? [FromJson α] (directory : System.FilePath)
+    (control : LakeHelperControl) (observedResponse : IO.Ref (Option Json)) :
+    IO (Option (Except BrokerFailure α)) := do
+  let path := LakeHelperJob.responsePath directory
+  if (← Beam.observeEntry path) == .absent then
+    return if ← helperCancelled control then some (.error cancelledHelper) else none
+  let response ← LakeHelperJob.readJson path
+  observedResponse.set (some response)
+  let decoded := LakeHelperResponse.decode response
+  if ← helperCancelled control then return some (.error cancelledHelper)
+  return some (← IO.ofExcept decoded)
+
+/-- Exit and reply publication are separate observations. Check the commit again after exit. -/
+partial def LakeHelperJob.Internal.awaitResponse [FromJson α]
+    (scope : Beam.ProcessJob.Scope) (directory : System.FilePath)
+    (control : LakeHelperControl) (observedResponse : IO.Ref (Option Json)) :
+    IO (Except BrokerFailure α) := do
   if ← helperCancelled control then return .error cancelledHelper
-  let responsePath := LakeHelperJob.responsePath directory
-  if ← responsePath.pathExists then
-    let response ← LakeHelperJob.readJson responsePath
-    -- Diagnostic evidence is independent of decoding, cancellation, and cleanup outcomes.
-    observedResponse.set (some response)
-    let decoded := LakeHelperResponse.decode response
-    if ← helperCancelled control then return .error cancelledHelper
-    return ← IO.ofExcept decoded
+  if let some result ← committedResponse? directory control observedResponse then return result
   match ← scope.poll with
   | .running =>
       IO.sleep 10
-      awaitHelperResponse scope directory control observedResponse
+      awaitResponse scope directory control observedResponse
   | .exited =>
-      pure <| .error {
+      if let some result ← committedResponse? directory control observedResponse then return result
+      return .error {
         code := .workerExited, message := "target Lake helper exited before completing its response"
         data? := some <| workerRecoveryData .newHelper
-      }
-  | .notChild =>
-      pure <| .error {
-        code := .internalError, message := "target Lake helper child ownership was lost"
       }
 
 namespace LakeHelperJob
@@ -214,6 +212,13 @@ def projectCompletion (operation : LakeHelperOperation)
        ("cleanup", Json.mkObj cleanupFields)] ++ responseFields
   }
 
+/-- Capture observations are best-effort. A thrown finalization error enters the cleanup receipt. -/
+def finishOutput (capture? : Option Beam.WorkspaceOutput.Capture)
+    (publisher : Beam.WorkspaceOutput.Publisher) : IO Unit := do
+  match capture? with
+  | some capture => discard capture.finish  -- retires its publisher in a finally clause
+  | none => publisher.retire
+
 end Internal
 
 /-- Internal owned-job primitive; production callers use the typed operation wrappers below. -/
@@ -240,29 +245,21 @@ def runRequest [ToJson α] [FromJson β]
           let directory := temporary / "job"
           Beam.ensurePrivateDir "target Lake helper job directory" directory
           IO.FS.writeFile (LakeHelperJob.requestPath directory) (toJson request).compress
-          let child ← IO.Process.spawn {
-            toStdioConfig := helperStdio
-            cmd := helper.toString
-            args := #["lake-helper", operation.key, directory.toString]
-            setsid := true
-          }
+          let child ← Beam.OwnedProcess.spawn helper.toString
+            #["lake-helper", operation.key, directory.toString]
           Beam.ProcessJob.withChild child fun scope => do
             -- Establish both drains before allowing configuration code to write either pipe.
-            capture.set (some (← Beam.WorkspaceOutput.Capture.start child.stdout child.stderr publisher))
+            capture.set (some (← Beam.WorkspaceOutput.Capture.startWithReaders
+              child.stdout.readSome child.stderr.readSome publisher))
             if ← helperCancelled control then return .error cancelledHelper
-            -- The helper cannot evaluate project code until its Windows job is assigned.
-            child.stdin.putStr "go\n"
-            child.stdin.flush
-            awaitHelperResponse scope directory control observedResponse)
+            -- Release project evaluation only after both output drains are listening.
+            child.stdin.writeAll "go\n".toUTF8
+            Internal.awaitResponse scope directory control observedResponse)
           (IO.FS.removeDirAll temporary)
     catch error => pure {
       operation := .error error, jobCleanup := .ok (), directoryCleanup := .ok () }
   -- Pipe capture settles only after the process job; its failure cannot replace that receipt.
-  let outputCleanup ← (do
-    try
-      if let some capture ← capture.get then discard <| capture.finish
-    finally
-      publisher.retire).toBaseIO
+  let outputCleanup ← (Internal.finishOutput (← capture.get) publisher).toBaseIO
   return Internal.projectCompletion operation { completion with
     outputCleanup, observedResponse? := ← observedResponse.get }
 
