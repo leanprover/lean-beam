@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 -/
 
 import Beam.Cli.ClientDoctor.Locations
+import Beam.Config.Agy
 import Beam.Installation.StandaloneLayout
 import Beam.Path
 import Beam.System
@@ -12,6 +13,7 @@ namespace Beam.Cli.ClientDoctor
 
 open Lean
 open Beam.Installation
+open Beam.Config
 
 private def field? (value : Json) (key : String) : Option Json :=
   (value.getObjVal? key).toOption
@@ -177,6 +179,10 @@ private def entries (context : Context) (client : Client) (source : ConfigSource
                 conditional := source.conditional
               }
           return result
+  | .agy =>
+      match field? value "mcpServers" with
+      | none => return #[]
+      | some servers => namedEntries source "mcpServers" servers
 
 private partial def mentionsBeam : Json → Bool
   | .str text => text.contains "lean-beam"
@@ -222,11 +228,15 @@ private def splitClaudePermissions (value : Json) : Json × Json := Id.run do
     tools := tools.push (key, setting)
   return (Json.mkObj tools.toList, .arr skills)
 
+private def toolFilterKeys (client : Client) : List String :=
+  ["enabled_tools", "disabled_tools"] ++
+    (if client == .agy then ["enabledTools", "disabledTools"] else [])
+
 private def collectPolicies (client : Client) (source : ConfigSource) (value : Json) : Array PolicySetting := Id.run do
   let setting (key : String) (value : Json) (area : CheckArea := .mcp) : PolicySetting :=
     { source := source.path.toString, key, value, area, conditional := source.conditional }
   let mut result := #[]
-  for key in ["permissions", "permission", "tools", "enabled_tools", "disabled_tools", "skills"] do
+  for key in ["permissions", "permission", "tools"] ++ toolFilterKeys client ++ ["skills"] do
     if client == .pi && key == "skills" then continue
     let some raw := field? value key | continue
     if key == "skills" then
@@ -474,15 +484,35 @@ private def decodeOpenCodeSource (value : Json) : Except Unit (Array String) := 
     unless ms.isFinite && ms > 0 && ms == ms.floor do throw ()
   return command
 
+/-- Key and boolean value that explicitly disables a client's local MCP server entry. -/
+private def Client.disabledSetting? : Client → Option (String × Bool)
+  | .codex | .claude | .opencode => some ("enabled", false)
+  | .vibe | .agy => some ("disabled", true)
+  | .pi => none
+
+private def Client.transportKey? : Client → Option String
+  | .vibe => some "transport"
+  | .claude => some "type"
+  | .codex | .agy | .opencode | .pi => none
+
+private def Client.configFormat : Client → Format
+  | .codex | .vibe => .toml
+  | .opencode => .jsonc
+  | .claude | .pi | .agy => .json
+
 private def decodeLaunch (client : Client) (value : Json) : Except Unit (String × Array String) := do
+  if client == .agy then
+    let launch ← (Agy.validateEntry value).mapError (fun _ => ())
+    let some command := launch.command? | throw ()
+    return (command, launch.args)
   if client == .opencode then
     let command ← decodeOpenCodeSource value
     let some executable := command[0]? | throw ()
     return (executable, command.extract 1 command.size)
-  let disabledKey := if client == .vibe then "disabled" else "enabled"
   let _ ← object value
-  if let some enabled := field? value disabledKey then
-    let _ ← enabled.getBool? |>.mapError (fun _ => ())
+  if let some (key, _) := client.disabledSetting? then
+    if let some setting := field? value key then
+      let _ ← setting.getBool? |>.mapError (fun _ => ())
   let (command, commandArgs) ← if client == .vibe &&
       (field? value "command").any (·.getArr?.isOk) then do
     let some raw := field? value "command" | throw ()
@@ -501,11 +531,13 @@ private def decodeLaunch (client : Client) (value : Json) : Except Unit (String 
     if let some env := field? value key then
       for (_, setting) in ← object env do
         let _ ← string setting
-  let transportKey := match client with | .vibe => "transport" | .codex => "" | _ => "type"
-  if let some transport := field? value transportKey then
-    let transport ← string transport
-    unless transport == "stdio" do throw ()
-  else if client == .vibe then throw ()
+  match client.transportKey? with
+  | some transportKey =>
+      if let some transport := field? value transportKey then
+        let transport ← string transport
+        unless transport == "stdio" do throw ()
+      else if client == .vibe then throw ()
+  | none => pure ()
   if (field? value "url").isSome then throw ()
   if let some parallel := field? value "supports_parallel_tool_calls" then
     let _ ← parallel.getBool? |>.mapError (fun _ => ())
@@ -539,16 +571,11 @@ private def prepareOpenCodeEntry (entry : Entry) (report : ClientReport) : Optio
     "This OpenCode source must define a complete local server or an enabled boolean override."
     entry.source entry.key "Use type = local and a command array, or an enabled-only override.")
 
-private def isSupportedBeamMcpArgs (args : Array String) : Bool :=
-  args.isEmpty ||
-    args == #["--toolset", "full"] ||
-    args == #["--toolset", "core"]
-
 private def inspectEntry (client : Client) (entry : Entry)
     (report : ClientReport) (checkLaunch : Bool) : IO ClientReport := do
   let value := entry.value
   let mut report := report
-  if !(object value).isOk then
+  if client != .agy && !(object value).isOk then
     return add report .mcp "config.entryShape" .unknown
       "A Beam server definition has an unsupported shape; expected a server object."
       entry.source entry.key
@@ -558,9 +585,7 @@ private def inspectEntry (client : Client) (entry : Entry)
     return add report .mcp "mcp.definition" .ok
       "A Beam registration was found; its launch settings were not verified."
       entry.source entry.key
-  let disabledKey := if client == .vibe then "disabled" else "enabled"
-  let disabledValue := client == .vibe
-  if field? value disabledKey == some (.bool disabledValue) then
+  if client.disabledSetting?.any (fun (key, flag) => field? value key == some (.bool flag)) then
     return add report .mcp "mcp.disabled" .error
       "Beam's MCP registration is explicitly disabled." entry.source entry.key
       "Enable the registration in this client if you intend to use Beam through MCP."
@@ -586,13 +611,13 @@ private def inspectEntry (client : Client) (entry : Entry)
         report := add report .mcp "codex.parallelCalls" .warning
           "supports_parallel_tool_calls is not true; Beam's documented Codex adapter recommends it for independent probes."
           entry.source (entry.key ++ ".supports_parallel_tool_calls")
-      for key in ["enabled_tools", "disabled_tools", "env", "environment", "cwd"] do
+      for key in toolFilterKeys client ++ ["env", "environment", "cwd"] do
         if (field? value key).any (fun setting => setting != Json.mkObj [] && setting != .arr #[]) then
           report := add report .mcp "launch.overrides" .unknown
             "Tool filters, environment, or working-directory overrides are configured; their effect is not verified."
             entry.source (entry.key ++ "." ++ key)
       if !args.isEmpty &&
-          !(isMcpExecutable (System.FilePath.mk command) && isSupportedBeamMcpArgs args) then
+          !(isMcpExecutable (System.FilePath.mk command) && Agy.isSupportedToolsetArgs args) then
         report := add report .mcp "launch.arguments" .unknown
           "Additional launch arguments are configured; their behavior is not verified." entry.source entry.key
       -- Vibe splits string commands (POSIX shlex; Windows preserves backslashes).
@@ -709,21 +734,104 @@ private def mergeOpenCode (entries : Array OpenCodeSourceEntry) : Array Entry :=
     else result := result.push entry
   return result
 
-private def mcpSetupRemediation? (client : Client) (explicitConfig : Bool) : Option String :=
-  let action? := match client with
-    | .codex => some "run `codex mcp add lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`"
-    | .claude => some "run `claude mcp add --scope user lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`"
-    | .opencode => some "run `opencode mcp add` with name lean-beam, type local, and your installed MCP server's absolute path"
-    | .vibe => some "add the documented `[[mcp_servers]]` entry to your Vibe configuration"
-    | .pi => none
-  action?.map fun action =>
+private def mcpSetupRemediation? (context : Context) (client : Client)
+    (explicitConfig : Bool) : IO (Option String) := do
+  let action? ← match client with
+    | .codex => pure (some "run `codex mcp add lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`")
+    | .claude => pure (some "run `claude mcp add --scope user lean-beam -- \"/absolute/path/to/lean-beam-mcp\"`")
+    | .opencode => pure (some "run `opencode mcp add` with name lean-beam, type local, and your installed MCP server's absolute path")
+    | .vibe => pure (some "add the documented `[[mcp_servers]]` entry to your Vibe configuration")
+    | .agy =>
+      if !((context.env? "BEAM_AGY_HOME").getD "").isEmpty then do
+        let path := clientHome context .agy / "mcp_config.json"
+        let path ← try Beam.resolvePathForCreation path catch _ => pure path
+        pure (some s!"add the documented `mcpServers.lean-beam` entry to `{path}`")
+      else pure (some "run `agy mcp add lean-beam -- \"/absolute/path/to/lean-beam-mcp\"` or add the documented `mcpServers.lean-beam` entry to `~/.gemini/config/mcp_config.json`")
+    | .pi => pure none
+  return action?.map fun action =>
     if explicitConfig then
       s!"Add the client-specific Beam MCP registration to this file if needed. Setup: {setupGuideUrl}#mcp-setup."
     else
       s!"For MCP use, {action}. Setup: {setupGuideUrl}#mcp-setup."
 
+/-- Surface Antigravity JSON manifests and Beam-bearing plugin directories without claiming full plugin evaluation. -/
+private def inspectAgyCustomLayers (context : Context) (dirs : Array System.FilePath)
+    (report : ClientReport) : IO ClientReport := do
+  let mut report := report
+  for root in agyCustomizationRoots context dirs do
+    let skillsConfig := root / "skills.json"
+    let skillsPresent ← try
+        pure ((← Beam.observeEntry skillsConfig) != .absent)
+      catch _ => pure false
+    if skillsPresent then
+      report := { report with discovered := true }
+      report := add report .skill "agy.skillsConfig" .unknown
+        "Antigravity skills.json may declare additional or filtered skill sources; doctor checks standard skill directories only."
+        skillsConfig.toString
+        (remediation? := some "Review skills.json if your Lean skill is registered outside standard skills/ directories.")
+    let pluginsConfig := root / "plugins.json"
+    let pluginsConfigPresent ← try
+        pure ((← Beam.observeEntry pluginsConfig) != .absent)
+      catch _ => pure false
+    if pluginsConfigPresent then
+      report := { report with discovered := true, skill := report.skill.observe .unknown }
+      report := add report .mcp "agy.pluginsConfig" .unknown
+        "Antigravity plugins.json may declare plugins providing MCP servers or skills; doctor inspects mcp_config.json and standard skill directories only."
+        pluginsConfig.toString
+        (remediation? := some "Review plugins.json and config.json plugin enablement if Beam is configured through a plugin.")
+    let pluginsDir := root / "plugins"
+    let pluginsEntries? ← try
+        if (← pluginsDir.metadata).type == .dir then pure (some (← pluginsDir.readDir))
+        else pure (some #[])
+      catch
+      | .noFileOrDirectory .. => pure (some #[])
+      | _ => pure none
+    match pluginsEntries? with
+    | none =>
+        report := { report with discovered := true, skill := report.skill.observe .unknown }
+        report := add report .mcp "agy.pluginLayer" .unknown
+          "Antigravity plugins/ directory could not be read; plugin MCP servers and skills are not verified."
+          pluginsDir.toString
+          (remediation? := some "Check permissions on plugins/ or review plugin status via `agy plugin list`.")
+    | some pluginEntries =>
+      for entry in pluginEntries do
+        let pluginDir := entry.path
+        let isDir ← try pure ((← pluginDir.metadata).type == .dir) catch _ => pure false
+        if !isDir then continue
+        let pluginSkill := pluginDir / "skills" / "lean-beam" / "SKILL.md"
+        let hasBeamSkill ← try
+            pure ((← Beam.observeEntry pluginSkill) != .absent)
+          catch _ => pure false
+        let pluginMcp := pluginDir / "mcp_config.json"
+        let hasBeamMcp ← match ← readFile pluginMcp with
+          | .text text =>
+              match parseAgyConfig text with
+              | .ok value =>
+                  let pluginSource : ConfigSource := { path := pluginMcp, format := .json }
+                  pure (match entries context .agy pluginSource value with
+                    | .ok parsed => !(retainBeamAliases .agy parsed).isEmpty
+                    | .error () => mentionsBeam value)
+              | .error _ => pure (hasBeamSkill || entry.fileName.contains "lean-beam")
+          | .missing => pure false
+          | _ => pure (hasBeamSkill || entry.fileName.contains "lean-beam")
+        if hasBeamSkill || hasBeamMcp then
+          report := { report with discovered := true }
+          if hasBeamMcp && hasBeamSkill then
+            report := { report with skill := report.skill.observe .unknown }
+          let area := if hasBeamMcp then CheckArea.mcp else .skill
+          report := add report area "agy.pluginLayer" .unknown
+            "A Beam plugin layer was found under plugins/; plugin enablement and config.json overrides are not verified."
+            pluginDir.toString
+            (remediation? := some "Review plugin status via `agy plugin list` or check config.json.")
+  return report
+
 def inspectClient (context : Context) (client : Client) (dirs : Array System.FilePath)
     (configOverride? : Option System.FilePath := none) : IO ClientReport := do
+  let context ← if client == .agy then
+      pure { context with userHome := ← physicalUserHome context }
+    else pure context
+  let dirs ← if client == .agy && configOverride?.isNone then workspaceDirectories context (agy := true)
+    else pure dirs
   let mut plan := locations context client dirs
   if client == .vibe && configOverride?.isNone && (clientHome context .vibe).isAbsolute then
     if let some path ← vibeProjectConfig? context then
@@ -733,8 +841,7 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
   if let some path := configOverride? then
     let source : ConfigSource := {
       path
-      format := if client == .codex || client == .vibe then .toml
-        else if client == .opencode then .jsonc else .json
+      format := client.configFormat
       role := .explicitConfig
       settingsOnly := client == .pi
     }
@@ -772,7 +879,9 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
         report := { report with
           discovered := true
           sources := report.sources.push { path := source.path.toString, role := source.role, conditional := source.conditional, state := .ok } }
-        match ← parseConfig source.format text with
+        let parsed ← if client == .agy then pure (parseAgyConfig text)
+          else parseConfig source.format text
+        match parsed with
         | .error () =>
             sourcesComplete := false
             report := add report configArea "config.syntax" .error
@@ -862,14 +971,15 @@ def inspectClient (context : Context) (client : Client) (dirs : Array System.Fil
         sourcesComplete && !entry.conditional && (selected.filter (·.name == entry.name)).size == 1
       else checkLaunch
     report ← inspectEntry client entry report checkEntry
+  if client == .agy && configOverride?.isNone then
+    report ← inspectAgyCustomLayers context dirs report
   if selected.isEmpty && (report.mcp == .notConfigured || report.mcp == .notApplicable) then
     report := add report .general (if client == .pi then "mcp.notApplicable" else "mcp.notConfigured") .notConfigured
       (if client == .pi then "Beam uses Pi's CLI skill; no native Pi MCP configuration is inspected."
        else "No Beam MCP registration found. Optional for CLI/skill use.")
-      (remediation? := mcpSetupRemediation? client configOverride?.isSome)
-  let before := report.findings.size
+      (remediation? := ← mcpSetupRemediation? context client configOverride?.isSome)
   for path in plan.skills do report ← inspectSkill path report
-  if report.findings.size == before && configOverride?.isNone then
+  if report.skill == .notConfigured && configOverride?.isNone then
     report := add report .general "skill.notConfigured" .notConfigured
       (if client == .pi then "No Lean skill found for Pi's CLI workflow."
        else "No Lean skill found. Optional for MCP use.")

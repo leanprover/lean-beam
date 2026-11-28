@@ -57,7 +57,8 @@ def main():
         env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
         for key in ["CODEX_HOME", "CLAUDE_HOME", "CLAUDE_CONFIG_DIR", "BEAM_CLAUDE_MCP_CONFIG",
                     "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR",
-                    "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "VIBE_HOME", "BEAM_SESSION_ROOT"]:
+                    "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "VIBE_HOME",
+                    "BEAM_AGY_HOME", "BEAM_SESSION_ROOT"]:
             env.pop(key, None)
 
         def inspect(*args, expected=0, environment=None, report=True):
@@ -114,6 +115,48 @@ def main():
                         "command = " + json.dumps(str(launcher)) + "\n", encoding="utf-8")
         result = inspect("vibe", expected=1)
         assert any(f["code"] == "mcp.disabled" for f in result["clients"][0]["findings"]), result
+        agy_entry = json.dumps({"mcpServers": {"lean-beam": {"command": str(launcher)}}}).encode("utf-8")
+        agy = home / ".gemini/config/mcp_config.json"
+        agy.parent.mkdir(parents=True)
+        for contents in (b"\xef\xbb\xbf", b"\xef\xbb\xbf \n\t\r", b"// comment\n", b"\xef\xbb\xbf{}"):
+            agy.write_bytes(contents)
+            client = inspect("agy")["clients"][0]
+            assert client["discovered"] and client["mcp"] == "notConfigured", client
+        jsonc = agy_entry[:-1] + b",}"
+        agy.write_bytes(b"\xef\xbb\xbf{/* header */ // comment\n" + jsonc[1:])
+        client = inspect("agy", expected=expected)["clients"][0]
+        codes = {f["code"] for f in client["findings"]}
+        assert client["mcp"] == ("unverified" if expected else "checked"), client
+        assert "launch.file" in codes and ("launch.permissions" in codes) == (os.name == "nt"), client
+        assert any(Path(s["path"]) == agy and s["state"] == "ok" for s in client["sources"]), client
+        agy.unlink()
+
+        project_agy = workspace / ".agents/mcp_config.json"
+        project_agy.parent.mkdir(parents=True)
+        project_agy.write_bytes(agy_entry)
+        client = inspect("agy", expected=expected)["clients"][0]
+        assert any(Path(s["path"]) == project_agy and s["state"] == "ok" for s in client["sources"]), client
+        project_agy.unlink()
+
+        nonrepo_parent = home / "nonrepo"
+        nonrepo_workspace = nonrepo_parent / "workspace"
+        nonrepo_workspace.mkdir(parents=True)
+        ancestor_agy = nonrepo_parent / ".agents/mcp_config.json"
+        ancestor_agy.parent.mkdir(parents=True)
+        ancestor_agy.write_bytes(agy_entry)
+        custom_home = root / "custom agy home"
+        nonrepo_env = dict(env, BEAM_AGY_HOME=str(custom_home))
+        result = subprocess.run(
+            [str(cli), "--root", str(nonrepo_workspace), "doctor", "clients", "agy", "--json"],
+            cwd=nonrepo_workspace, env=nonrepo_env, capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+        client = json.loads(result.stdout)["clients"][0]
+        assert not client["discovered"] and client["mcp"] == "notConfigured", client
+        assert Path(ancestor_agy) not in {Path(s["path"]) for s in client["sources"]}, client
+        remediation = next(f["remediation"] for f in client["findings"] if f["code"] == "mcp.notConfigured")
+        assert str(custom_home / ".gemini/config/mcp_config.json") in remediation, client
+        assert "agy mcp add" not in remediation, client
         if os.name == "nt":
             no_home = {key: value for key, value in env.items() if key != "HOME"}
             result = inspect("codex", expected=2, environment=no_home)

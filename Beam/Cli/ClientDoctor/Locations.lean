@@ -28,18 +28,36 @@ def clientHome (context : Context) : Client → System.FilePath
   | .opencode => context.location "OPENCODE_CONFIG_DIR" (
       context.location "XDG_CONFIG_HOME" (context.userHome / ".config") / "opencode")
   | .vibe => context.location "VIBE_HOME" (context.userHome / ".vibe")
+  | .agy => context.location "BEAM_AGY_HOME" context.userHome / ".gemini" / "config"
 
-/-- A bounded ancestor walk, stopping at the nearest Git boundary or the user's home. -/
-def workspaceDirectories (context : Context) : IO (Array System.FilePath) := do
+/-- Workspace customization roots scanned by Antigravity. -/
+def agyWorkspaceRoots (dirs : Array System.FilePath) : Array System.FilePath :=
+  dirs.flatMap fun dir => #[".agents", ".agent", "_agents", "_agent"].map fun name : String => dir / name
+
+/-- Global and workspace customization roots checked for Antigravity layers. -/
+def agyCustomizationRoots (context : Context) (dirs : Array System.FilePath) : Array System.FilePath :=
+  (#[clientHome context .agy] ++ agyWorkspaceRoots dirs).foldl (fun acc root =>
+    if acc.contains root then acc else acc.push root) #[]
+
+def physicalUserHome (context : Context) : IO System.FilePath := do
+  try IO.FS.realPath context.userHome catch _ => pure context.userHome
+
+/-- Antigravity walks up to the nearest Git root (bounded by the user's home), or uses only
+    the workspace outside Git. Other clients use the same bounded ancestor walk without collapsing
+    non-Git workspaces. -/
+def workspaceDirectories (context : Context) (agy := false) : IO (Array System.FilePath) := do
+  let userHome ← physicalUserHome context
   let mut dirs := #[]
   let mut dir := context.workspace
-  for _ in [:64] do
+  let limit := if agy then context.workspace.components.length + 1 else 64
+  for _ in [:limit] do
     dirs := dirs.push dir
-    if dir == context.userHome || (← (dir / ".git").pathExists) then break
+    if (← (dir / ".git").pathExists) then return dirs.reverse
+    if dir == userHome then break
     let parent := dir.parent.getD dir
     if parent == dir then break
     dir := parent
-  return dirs.reverse
+  return if agy then #[context.workspace] else dirs.reverse
 
 /-- Vibe searches nearest-first, stopping before VIBE_HOME's parent, independently of Git.
     https://github.com/mistralai/mistral-vibe/blob/v3.0.3/vibe/core/config/layers/project.py -/
@@ -134,6 +152,16 @@ def locations (context : Context) (client : Client)
       result := { result with configs := #[config (home / "config.toml") .toml] }
       result := { result with skills := result.skills.push (
         context.workspace / ".vibe" / "skills" / "lean-beam" / "SKILL.md") }
+  | .agy =>
+      let agyHome := context.location "BEAM_AGY_HOME" context.userHome
+      let workspaceRoots := agyWorkspaceRoots dirs
+      result := { result with
+        configs := #[config (home / "mcp_config.json") .json] ++
+          workspaceRoots.map (fun root => config (root / "mcp_config.json") .json .projectConfig)
+        skills := result.skills
+          |>.push (agyHome / ".gemini" / "antigravity-cli" / "skills" / "lean-beam" / "SKILL.md")
+          |>.push (agyHome / ".gemini" / "skills" / "lean-beam" / "SKILL.md")
+          |>.append (workspaceRoots.map (· / "skills" / "lean-beam" / "SKILL.md")) }
   -- The same file can be both a home and workspace candidate. Inspect it only once.
   result := { result with
     configs := result.configs.foldl (fun acc source =>

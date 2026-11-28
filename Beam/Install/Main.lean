@@ -5,6 +5,7 @@ Author: Emilio J. Gallego Arias
 -/
 
 import Beam.Install.Construction
+import Beam.Install.Agy
 import Beam.Installation.StandaloneLayout
 
 /-- Maintainer/installer construction tool. Deliberately absent from the installed artifact set. -/
@@ -20,4 +21,5 @@ def main (args : List String) : IO Unit := do
       Beam.Installation.validateInstalledRuntimeForReuse root
       discard <| Beam.Install.Construction.verify root
   | ["layout"] => IO.println (Lean.toJson Beam.Installation.standaloneLayout).compress
-  | _ => throw <| IO.userError "usage: beam-install-runtime construct SOURCE FRONTEND-SDK STAGING SOURCE-COMMIT|- TARGET... | verify ROOT | verify-installed ROOT | layout"
+  | "agy-mcp" :: args => Beam.Install.Agy.run args
+  | _ => throw <| IO.userError "usage: beam-install-runtime construct SOURCE FRONTEND-SDK STAGING SOURCE-COMMIT|- TARGET... | verify ROOT | verify-installed ROOT | layout | agy-mcp ..."

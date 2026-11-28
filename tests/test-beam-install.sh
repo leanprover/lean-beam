@@ -59,6 +59,7 @@ export CLAUDE_HOME="$tmp_root/claude"
 export PI_CODING_AGENT_DIR="$tmp_root/pi-agent"
 export OPENCODE_CONFIG_DIR="$tmp_root/opencode"
 export VIBE_HOME="$tmp_root/vibe"
+export BEAM_AGY_HOME="$tmp_root/agy-home"
 export BEAM_INSTALL_ROOT="$tmp_root/install-root"
 
 mkdir -p "$HOME" "$BEAM_INSTALL_ROOT"
@@ -471,6 +472,415 @@ assert_contains "$change_alias_transcript" 'cancelled before: Write Locations'
 assert_not_exists "$change_alias_install_root"
 remove_tmp_file "$change_alias_transcript"
 
+test_agy_selection_aliases() {
+  local choice=""
+  local transcript="$tmp_root/agy-selection-transcript"
+  local selection_home="$tmp_root/agy-selection-home"
+  local selection_root="$tmp_root/agy-selection-root"
+  mkdir -p "$selection_home"
+  for choice in agy antigravity a all; do
+    if beam_install_run_interactive_from_source "$transcript" "$selection_home" "$selection_root" \
+        $'\n'"$choice"$'\n'"$choice"$'\nN\n'; then
+      echo "expected interactive install to stop when write permission is denied" >&2
+      return 1
+    fi
+    assert_contains "$transcript" 'cancelled before: Write Locations'
+    python3 - "$transcript" "$choice" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+transcript = Path(sys.argv[1]).read_text()
+plan = transcript.split("Install Plan", 1)[1].split("Write Locations", 1)[0]
+labels = set(re.findall(r"^  (\w+(?: \w+)* (?:skills|MCP))\s+", plan, re.MULTILINE))
+skills = {"Codex", "Claude", "Pi Agent", "OpenCode", "Mistral Vibe", "Antigravity"}
+clients = skills - {"Pi Agent"}
+expected = {"Antigravity skills", "Antigravity MCP"}
+if sys.argv[2] in ("a", "all"):
+    expected = {f"{agent} skills" for agent in skills} | {f"{agent} MCP" for agent in clients}
+assert labels == expected, (sys.argv[2], labels, expected)
+PY
+  done
+  assert_not_exists "$selection_root"
+}
+
+test_agy_mcp_config() {
+  (
+    cd "$source_checkout" || exit
+    python3 - "$tmp_root" <<'PYTHON_AGY'
+import errno
+import hashlib
+import json
+import os
+from pathlib import Path
+import pty
+import select
+import shutil
+import stat
+import struct
+import subprocess
+import sys
+
+root = Path(sys.argv[1]).resolve()
+bin_home = root / "bin with spaces"
+command = str(bin_home / "lean-beam-mcp")
+new_entry = {"command": command, "disabled": False}
+expected_config = {"mcpServers": {"lean-beam": new_entry}}
+bash = shutil.which("bash")
+runtime = Path(".lake/build/bin/beam-install-runtime").resolve()
+essential_bin = root / "agy-essential-bin"
+essential_bin.mkdir()
+for name in ("awk", "basename", "cat", "chmod", "cmp", "cp", "date", "dirname", "elan",
+             "env", "find", "grep", "ln", "mkdir", "mktemp", "mv", "readlink", "rm", "rmdir",
+             "sed", "sha256sum", "shasum", "sort", "stat", "tr", "uname"):
+    if tool := shutil.which(name):
+        (essential_bin / name).symlink_to(tool)
+env = dict(os.environ, PATH=str(essential_bin))
+assert shutil.which("python3", path=env["PATH"]) is None
+assert shutil.which("agy", path=env["PATH"]) is None
+
+
+def shell(home, program, *args):
+    return [bash, "-c", '. scripts/install-beam.sh\nset_agy_home "$1"\nshift\n' + program,
+            "agy-fixture", str(home), *map(str, args)]
+
+
+def registration(home, action="write", interactive=False):
+    return shell(home, """
+        set_bin_home "$1"
+        dont_ask="$2"
+        register_agy_mcp=1
+        validate_requested_location_config
+        if [ "$3" = write ]; then
+          plan_agy_mcp_registration
+          register_agy_mcp_server
+        fi
+        """, bin_home, "0" if interactive else "1", action)
+
+
+def run(argv, environment=env):
+    return subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, env=environment, text=True, timeout=20)
+
+
+def fixture(label, raw=None, mode=0o640):
+    home = root / f"agy-{label}"
+    path = home / ".gemini/config/mcp_config.json"
+    if raw is not None:
+        path.parent.mkdir(parents=True)
+        path.write_bytes(raw)
+        path.chmod(mode)
+    return home, path
+
+
+def assert_no_staging(path):
+    assert not list(path.parent.glob(".mcp_config.json.lean-beam-*")), path
+
+
+def refuse(result, message, path, raw=None):
+    assert result.returncode != 0 and message in result.stdout, result.stdout
+    if raw is not None:
+        assert path.read_bytes() == raw, path
+    assert_no_staging(path)
+
+
+valid = rb"""{
+  "user": 42,
+  "mcpServers": {
+    "other": {"command": "/bin/echo", "env": {"API_KEY": "secret-do-not-print"}},
+    "lean-beam": {
+      "command": "/old",
+      "enabledTools": ["lean_goal"],
+      "disabledTools": ["lean_run_code"],
+      "env": {"LABEL": "caf\u00e9"},
+      "timeoutSeconds": 30,
+      "args": [],
+      "cwd": "/workspace",
+      "headers": {"custom": "\uD83D\uDE00"},
+      "custom": {"nested": [true, null]},
+      "apiKey": "sk-SECRET-TRAILING"
+    }
+  }
+}
+"""
+home, path = fixture("no-python-or-agy", valid)
+expected = json.loads(valid)
+expected["mcpServers"]["lean-beam"].update(new_entry)
+result = run(registration(home))
+assert result.returncode == 0 and not result.stdout, result.stdout
+payload = path.read_bytes()
+assert b"\n" in payload[:-1] and payload.endswith(b"\n"), payload
+assert json.loads(payload) == expected
+assert stat.S_IMODE(path.stat().st_mode) == 0o640
+assert_no_staging(path)
+installed = path.stat()
+result = run(registration(home, interactive=True))
+assert result.returncode == 0 and not result.stdout, result.stdout
+assert (path.stat().st_ino, path.stat().st_mtime_ns, path.read_bytes()) == (
+    installed.st_ino, installed.st_mtime_ns, payload)
+
+for label, raw in (
+    ("absent", None),
+    ("zero-byte", b""),
+    ("whitespace", b" \t\r\n"),
+    ("bom-blank", b"\xef\xbb\xbf \t\r\n"),
+    ("bom", b'\xef\xbb\xbf{"user": "kept"}\n'),
+):
+    home, path = fixture(label, raw)
+    result = run(registration(home))
+    assert result.returncode == 0 and not result.stdout, result.stdout
+    expected = {**expected_config, "user": "kept"} if label == "bom" else expected_config
+    assert json.loads(path.read_bytes()) == expected
+    assert stat.S_IMODE(path.stat().st_mode) == (0o600 if raw is None else 0o640)
+
+home, path = fixture("missing-command", b'{"mcpServers":{"lean-beam":{"timeout":60}}}')
+result = run(registration(home))
+assert result.returncode == 0 and not result.stdout, result.stdout
+assert json.loads(path.read_bytes()) == {"mcpServers": {"lean-beam": {**new_entry, "timeout": 60}}}
+
+for label, raw, message in (
+    ("malformed", b"{not json\n", "invalid Antigravity MCP config"),
+    ("root", b"[]", "root JSON value must be an object"),
+    ("servers-array", b'{"mcpServers":[]}', "'mcpServers' must be a JSON object"),
+    ("servers-null", b'{"mcpServers":null}', "'mcpServers' must be a JSON object"),
+    ("duplicate", rb'{"mcpServers":{"other":{"nested":{"SECRET_DUP":1,"SECRET_\u0044UP":2}}}}', "not valid JSON"),
+    ("nan", b'{"value":NaN}', "invalid Antigravity MCP config"),
+    ("infinity", b'{"value":Infinity}', "invalid Antigravity MCP config"),
+    ("negative-infinity", b'{"value":-Infinity}', "invalid Antigravity MCP config"),
+    ("leading-zero", b'{"value":01}', "invalid Antigravity MCP config"),
+    ("bad-exponent", b'{"value":1e+}', "invalid Antigravity MCP config"),
+    ("oversized", b" " * (1024 * 1024 + 1), "1 MiB size limit"),
+    ("double-bom", b"\xef\xbb\xbf\xef\xbb\xbf{}", "invalid Antigravity MCP config"),
+    ("non-rfc-blank", b"\x0b", "invalid Antigravity MCP config"),
+    ("comments-only", b"// only a comment\n", "comments or trailing commas"),
+    ("line-comments", b'{// user settings\n"other": true}', "comments or trailing commas"),
+    ("trailing-comma", b'{"other": true,}', "comments or trailing commas"),
+    ("zero-exp", b'{"n":0e-20}', "cannot safely serialize"),
+    ("lone-high-surrogate", rb'{"s":"\ud800"}', "lone UTF-16 surrogate"),
+    ("lone-low-surrogate", rb'{"s":"\udc00"}', "lone UTF-16 surrogate"),
+):
+    home, path = fixture(label, raw)
+    result = run(registration(home))
+    refuse(result, message, path, raw)
+    if message == "comments or trailing commas":
+        assert "agy mcp add" in result.stdout, result.stdout
+    assert "SECRET_DUP" not in result.stdout, result.stdout
+
+for label, entry, reason in (
+    ("entry-null", None, "must be a JSON object"),
+    ("disabled", {"disabled": True}, "'disabled' must be false or absent"),
+    ("disabled-number", {"disabled": 0}, "'disabled' must be a boolean"),
+    ("url", {"url": "https://example.invalid"}, "remote transport"),
+    ("server-url", {"serverUrl": "https://example.invalid"}, "remote transport"),
+    ("http-url", {"httpUrl": None}, "remote transport"),
+    ("args", {"args": ["--custom"]}, "'args' must be an empty array, Beam's --toolset flag, or absent"),
+    ("args-object", {"args": {}}, "'args' must be an array of strings"),
+    ("command-array", {"command": ["/old"]}, "'command' must be a string"),
+    ("transport", {"transport": "http"}, "'transport' must specify stdio"),
+    ("type", {"type": "sse"}, "'type' must specify stdio"),
+    ("cwd", {"cwd": {}}, "'cwd' must be a string or absent"),
+    ("env-array", {"env": []}, "'env' must be a JSON object"),
+    ("env-value", {"env": {"NUMBER": 1}}, "'env' must be a JSON object"),
+    ("enabled-object", {"enabledTools": {}}, "'enabledTools' must be an array of strings"),
+    ("disabled-item", {"disabledTools": [1]}, "'disabledTools' must be an array of strings"),
+    ("timeout-string", {"timeoutSeconds": "ten minutes"}, "'timeoutSeconds' must be an integer"),
+    ("timeout-float", {"timeoutSeconds": 2.5}, "'timeoutSeconds' must be an integer"),
+):
+    raw = json.dumps({"mcpServers": {"lean-beam": entry}}, indent=2).encode()
+    home, path = fixture(label, raw)
+    result = run(registration(home))
+    refuse(result, "conflicting 'mcpServers.lean-beam'", path, raw)
+    assert reason in result.stdout, (label, result.stdout)
+
+home, path = fixture("physical-parent", valid)
+alias_home = root / "agy-alias"
+alias_home.symlink_to(home, target_is_directory=True)
+result = run(registration(alias_home / "." / "missing"))
+assert result.returncode == 0 and not result.stdout, result.stdout
+assert (home / "missing/.gemini/config/mcp_config.json").is_file()
+assert path.read_bytes() == valid
+
+target = root / "agy-link-target.json"
+target.write_bytes(valid)
+for label, message in (
+    ("symlink", "symlinked Antigravity MCP config"),
+    ("directory", "non-regular Antigravity MCP config"),
+    ("fifo", "non-regular Antigravity MCP config"),
+    ("read-only", "read-only Antigravity MCP config"),
+):
+    home, path = fixture(label, valid if label == "read-only" else None, 0o444)
+    if label == "symlink":
+        path.parent.mkdir(parents=True)
+        path.symlink_to(target)
+    elif label == "directory":
+        path.mkdir(parents=True)
+    elif label == "fifo":
+        path.parent.mkdir(parents=True)
+        os.mkfifo(path)
+    if label == "read-only" and os.geteuid() == 0:
+        continue
+    refuse(run(registration(home, action="preflight")), message, path)
+    refuse(run(registration(home)), message, path)
+assert target.read_bytes() == valid
+
+
+def interactive(argv, replies, before_reply=lambda: None, initial=b""):
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(argv, stdin=slave, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, env=env)
+    os.close(slave)
+    try:
+        if initial:
+            os.write(master, initial)
+        preview = b""
+        while b"Allow this edit? [y/N]" not in preview:
+            ready, _, _ = select.select([proc.stdout], [], [], 10)
+            assert ready, preview
+            chunk = os.read(proc.stdout.fileno(), 4096)
+            assert chunk, preview
+            preview += chunk
+        before_reply()
+        os.write(master, replies)
+        output, _ = proc.communicate(timeout=20)
+        return proc.returncode, preview.decode(), (preview + output).decode()
+    finally:
+        os.close(master)
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+
+def installer(home, *args):
+    # Exercise real admission, publication and the native writer with a prebuilt construction tool.
+    # Skip generation assembly here; the full installer tests assemble and publish real runtimes.
+    return shell(home, """
+        set_install_root "$1"
+        set_bin_home "$2"
+        shift 2
+        ensure_runtime_artifacts() { printf 'fixture build reached\n'; }
+        prepare_install_version() {
+          prepared_version_root="$versions_root/fixture"
+          mkdir -p "$prepared_version_root/bin"
+          remove_owned_staging_dir "$1"
+        }
+        main --toolchain "$(<lean-toolchain)" --agy-mcp "$@"
+        """, root / f"{home.name}-runtime", root / f"{home.name}-bin", *args)
+
+
+home, path = fixture("decline-preview", valid)
+rc, preview, transcript = interactive(installer(home, "--agy"), b"N\n", initial=b"Y\n")
+assert rc != 0 and "cancelled before editing" in transcript, transcript
+assert str(path) in preview and 'fixture build reached' in preview, preview
+assert '-  "command": "/old"\n' in preview and '+  "disabled": false\n' in preview, preview
+assert all(secret not in transcript for secret in
+           ("sk-SECRET-TRAILING", "apiKey", "secret-do-not-print", "API_KEY", "/bin/echo")), transcript
+assert path.read_bytes() == valid
+assert not (root / f"{home.name}-runtime/current").exists()
+assert not (root / f"{home.name}-bin").exists()
+assert not (path.parent / "skills").exists()
+assert_no_staging(path)
+
+home, path = fixture("lifecycle-invalid", b'{"mcpServers":null}')
+refuse(run(installer(home, "--dont-ask", "--agy")), "'mcpServers' must be a JSON object", path)
+assert not (root / f"{home.name}-runtime/current").exists()
+assert not (root / f"{home.name}-bin").exists()
+assert not (path.parent / "skills").exists()
+
+if sys.platform.startswith("linux") and not os.access("/sys", os.W_OK):
+    protected = Path("/sys") / root.name
+else:
+    locked = root / "locked-agy-ancestor"
+    locked.mkdir(mode=0o500)
+    protected = locked / "missing"
+if not os.access(protected.parent, os.W_OK):
+    result = run(installer(protected, "--dont-ask"))
+    assert result.returncode != 0 and "not writable and searchable" in result.stdout, result.stdout
+    assert "fixture build reached" not in result.stdout, result.stdout
+
+home, path = fixture("closed-stdin")
+argv = installer(home, "--dont-ask")
+argv[2] = "exec 0<&-\n" + argv[2]
+result = run(argv)
+assert result.returncode == 0, result.stdout
+assert "MCP: registered this run" in result.stdout, result.stdout
+after = path.stat()
+result = run(argv)
+assert result.returncode == 0 and "MCP: already registered" in result.stdout, result.stdout
+assert (path.stat().st_ino, path.stat().st_mtime_ns) == (after.st_ino, after.st_mtime_ns)
+
+home, path = fixture("interactive-new")
+rc, preview, transcript = interactive(registration(home, interactive=True), b"y\n")
+assert rc == 0 and '"mcpServers":' in preview and command in preview, transcript
+assert json.loads(path.read_bytes()) == expected_config
+
+home, path = fixture("interactive-empty", b" \n")
+rc, preview, transcript = interactive(registration(home, interactive=True), b"n\n")
+assert rc != 0 and '"mcpServers":' in preview, transcript
+assert path.read_bytes() == b" \n"
+assert_no_staging(path)
+
+concurrent = b'{"changed": true}\n'
+home, path = fixture("concurrent-edit", valid)
+rc, _, transcript = interactive(registration(home, interactive=True), b"y\n",
+                                lambda: path.write_bytes(concurrent))
+assert rc != 0 and "changed before writing" in transcript, transcript
+assert path.read_bytes() == concurrent
+assert_no_staging(path)
+
+home, path = fixture("concurrent-symlink", valid)
+def introduce_symlink():
+    path.unlink()
+    path.symlink_to(target)
+
+rc, _, transcript = interactive(registration(home, interactive=True), b"y\n", introduce_symlink)
+assert rc != 0 and "symlinked Antigravity MCP config" in transcript, transcript
+assert path.is_symlink() and target.read_bytes() == valid
+assert_no_staging(path)
+
+home, path = fixture("concurrent-create")
+def create_competing():
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(concurrent)
+
+rc, _, transcript = interactive(registration(home, interactive=True), b"y\n", create_competing)
+assert rc != 0 and "changed before writing" in transcript, transcript
+assert path.read_bytes() == concurrent
+assert_no_staging(path)
+
+for label, override, message in (
+    ("stat-failure", "stat() { return 1; }", "cannot read Antigravity MCP config permissions"),
+    ("replace-failure", "mv() { return 1; }", "cannot replace Antigravity MCP config"),
+):
+    home, path = fixture(label, valid)
+    result = run(shell(home, f"""
+        set_bin_home "$1"
+        dont_ask=1
+        register_agy_mcp=1
+        validate_requested_location_config
+        plan_agy_mcp_registration
+        {override}
+        register_agy_mcp_server
+    """, bin_home))
+    refuse(result, message, path, valid)
+
+if Path("/dev/full").exists():
+    home, path = fixture("write-full", valid)
+    token = subprocess.check_output(
+        [str(runtime), "agy-mcp", "plan", str(path), command, "--toolset", "full"],
+        text=True, timeout=20,
+    ).strip()
+    with open("/dev/full", "wb") as full_out:
+        result = subprocess.run(
+            [str(runtime), "agy-mcp", "render", str(path), command, "--toolset", "full", token],
+            stdout=full_out, stderr=subprocess.PIPE, text=True, timeout=20,
+        )
+    assert result.returncode != 0, result.stderr
+PYTHON_AGY
+  )
+}
+
+run_step "Antigravity selection aliases" test_agy_selection_aliases
+
 interactive_home="$tmp_root/interactive-home"
 interactive_install_root="$tmp_root/interactive-install-root"
 interactive_transcript="$tmp_root/install-interactive-transcript"
@@ -501,6 +911,8 @@ assert_not_exists "$interactive_home/.claude"
 assert_not_exists "$interactive_home/.pi"
 assert_not_exists "$interactive_home/.config/opencode"
 remove_tmp_file "$interactive_transcript"
+
+run_step "Antigravity MCP config validation, writes, and approvals" test_agy_mcp_config
 
 interactive_claude_home="$tmp_root/interactive-claude-home"
 interactive_claude_install_root="$tmp_root/interactive-claude-install-root"
@@ -616,6 +1028,35 @@ assert_not_exists "$interactive_vibe_custom_bin"
 assert_not_exists "$interactive_vibe_custom_runtime"
 assert_not_exists "$interactive_vibe_custom_home"
 remove_tmp_file "$interactive_vibe_transcript"
+
+interactive_agy_home="$tmp_root/interactive-agy-home"
+interactive_agy_install_root="$tmp_root/interactive-agy-install-root"
+interactive_agy_custom_home="$tmp_root/interactive-agy-sandbox"
+interactive_agy_custom_bin="$tmp_root/interactive-agy-bin"
+interactive_agy_custom_runtime="$tmp_root/interactive-agy-runtime"
+interactive_agy_transcript="$tmp_root/install-interactive-agy-transcript"
+mkdir -p "$interactive_agy_home"
+if BEAM_TEST_MCP_STUB_LOG="$interactive_mcp_stub_log" PATH="$interactive_mcp_stub_bin:$PATH" \
+    beam_install_run_interactive_from_source \
+      "$interactive_agy_transcript" "$interactive_agy_home" "$interactive_agy_install_root" \
+      $'\n\n6\nchange\n'"$interactive_agy_custom_bin"$'\n'"$interactive_agy_custom_runtime"$'\n'"$interactive_agy_custom_home"$'\nN\n'; then
+  echo "expected interactive Antigravity MCP install to stop when write permission is denied" >&2
+  cat "$interactive_agy_transcript" >&2
+  exit 1
+fi
+assert_contains "$interactive_agy_transcript" 'Write Locations'
+assert_contains "$interactive_agy_transcript" 'Change Locations'
+assert_contains_literal "$interactive_agy_transcript" "Command directory [$interactive_agy_home/.local/bin]"
+assert_contains_literal "$interactive_agy_transcript" "Runtime install root [$interactive_agy_install_root]"
+assert_contains_literal "$interactive_agy_transcript" "Antigravity home [$BEAM_AGY_HOME]"
+assert_contains_literal "$interactive_agy_transcript" "Antigravity home: $interactive_agy_custom_home"
+assert_contains_literal "$interactive_agy_transcript" \
+  "Antigravity config: $(cd -P "$tmp_root" && pwd)/interactive-agy-sandbox/.gemini/config/mcp_config.json"
+assert_contains "$interactive_agy_transcript" 'cancelled before: Write Locations'
+assert_not_exists "$interactive_agy_custom_bin"
+assert_not_exists "$interactive_agy_custom_runtime"
+assert_not_exists "$interactive_agy_custom_home"
+remove_tmp_file "$interactive_agy_transcript"
 
 printf '[%s] installer admission and interactive plans finished in %ss\n' \
   "$BEAM_TEST_SUITE" "$(( $(date +%s) - install_admission_start ))"
@@ -931,10 +1372,11 @@ assert_not_exists "$CLAUDE_HOME"
 assert_not_exists "$PI_CODING_AGENT_DIR"
 assert_not_exists "$OPENCODE_CONFIG_DIR"
 assert_not_exists "$VIBE_HOME"
+assert_not_exists "$BEAM_AGY_HOME"
 
 run_step "install Lean skills" run_install_from_source --toolchain "$toolchain" --all-skills
 
-for skills_home in "$CODEX_HOME/skills" "$CLAUDE_HOME/skills" "$PI_CODING_AGENT_DIR/skills" "$OPENCODE_CONFIG_DIR/skills" "$VIBE_HOME/skills"; do
+for skills_home in "$CODEX_HOME/skills" "$CLAUDE_HOME/skills" "$PI_CODING_AGENT_DIR/skills" "$OPENCODE_CONFIG_DIR/skills" "$VIBE_HOME/skills" "$BEAM_AGY_HOME/.gemini/config/skills"; do
   assert_file "$skills_home/lean-beam/SKILL.md"
   assert_file "$skills_home/lean-beam/.lean-beam-skill"
   assert_not_exists "$skills_home/rocq-beam"
@@ -972,6 +1414,23 @@ assert_contains_literal "$VIBE_HOME/config.toml" 'transport = "stdio"'
 assert_contains_literal "$VIBE_HOME/config.toml" "command = [\"$installed_mcp\"]"
 assert_contains_literal "$VIBE_HOME/config.toml" 'args = []'
 assert_contains_literal "$VIBE_HOME/config.toml" 'tool_timeout_sec = 600'
+assert_agy_mcp_entry() {
+  local config_path="$1"
+  local expected_command="$2"
+  local expected_toolset="${3:-full}"
+  assert_file "$config_path"
+  python3 - "$config_path" "$expected_command" "$expected_toolset" <<'PY'
+import json, sys
+config = json.loads(open(sys.argv[1], encoding="utf-8").read())
+expected = {"command": sys.argv[2], "disabled": False}
+if sys.argv[3] == "core":
+    expected["args"] = ["--toolset", "core"]
+assert config["mcpServers"]["lean-beam"] == expected, config
+PY
+}
+
+assert_not_contains "$mcp_stub_log" "agy must not be invoked"
+assert_agy_mcp_entry "$BEAM_AGY_HOME/.gemini/config/mcp_config.json" "$installed_mcp"
 
 run_step "inspect installed client configuration" \
   python3 tests/test-client-doctor-installed.py "$installed_lean_beam" "$tmp_root"
@@ -1126,6 +1585,17 @@ assert_contains "$inline_vibe_err" "inline mcp_servers entries"
 assert_contains_literal "$inline_vibe_home/config.toml" 'name = "other-server"'
 remove_tmp_file "$inline_vibe_err"
 
+relative_agy_home_err="$(mktemp "$tmp_root/agy-relative-home-XXXXXX")"
+if beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$tmp_root/mcp-stubs-relative-agy.log" \
+    --toolchain "$toolchain" --agy-mcp --agy-home relative-agy-home \
+    2>"$relative_agy_home_err"; then
+  echo "expected --agy-home to reject relative paths" >&2
+  remove_tmp_file "$relative_agy_home_err"
+  exit 1
+fi
+assert_contains "$relative_agy_home_err" "Antigravity home must be an absolute path"
+remove_tmp_file "$relative_agy_home_err"
+
 opencode_mcp_transcript="$tmp_root/opencode-mcp-manual-transcript"
 preseed_elan_home "$HOME/.elan" "$toolchain"
 run_step "show OpenCode MCP setup" \
@@ -1164,6 +1634,19 @@ run_step "register Mistral Vibe MCP with --mcp-toolset core" \
   bash "$source_checkout/scripts/install-beam.sh" --dont-ask --toolchain "$toolchain" \
     --vibe-mcp --mcp-toolset core --vibe-home "$core_vibe_home"
 assert_contains_literal "$core_vibe_home/config.toml" 'args = ["--toolset", "core"]'
+
+core_agy_home="$tmp_root/agy-core-sandbox"
+core_agy_stub_log="$tmp_root/mcp-stubs-core-agy.log"
+run_step "register Antigravity MCP with custom home and --mcp-toolset core" \
+  beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$core_agy_stub_log" \
+    --toolchain "$toolchain" --agy-mcp --mcp-toolset core --agy-home "$core_agy_home" <&-
+assert_not_exists "$core_agy_stub_log"
+assert_agy_mcp_entry "$core_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" core
+run_step "switch Antigravity MCP back to --mcp-toolset full" \
+  beam_install_run_with_mcp_stubs "$mcp_stub_bin" "$core_agy_stub_log" \
+    --toolchain "$toolchain" --agy-mcp --mcp-toolset full --agy-home "$core_agy_home" <&-
+assert_not_exists "$core_agy_stub_log"
+assert_agy_mcp_entry "$core_agy_home/.gemini/config/mcp_config.json" "$installed_mcp" full
 
 core_opencode_transcript="$tmp_root/opencode-mcp-core-transcript"
 run_step "show OpenCode MCP setup with --mcp-toolset core" \

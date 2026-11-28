@@ -146,13 +146,14 @@ From a Lean Beam checkout, run one installer command that matches how you plan t
 ./scripts/install-beam.sh --pi       # wrappers plus Pi Agent skills
 ./scripts/install-beam.sh --opencode # wrappers plus OpenCode skills
 ./scripts/install-beam.sh --vibe     # wrappers plus Mistral Vibe skills
+./scripts/install-beam.sh --agy      # wrappers plus Antigravity skills
 ./scripts/install-beam.sh --all-skills # wrappers plus every supported agent skill
 ```
 
 The default installer is interactive: it asks which Lean toolchains, agent skills, and
-MCP client registrations to set up. It then shows a compact write summary and asks once for the Beam
-runtime/wrapper install area, selected skill locations, and selected MCP config locations. For
-non-interactive scripts, pass `--dont-ask`; this only skips prompts for requested Beam-owned
+MCP client registrations to set up. It then asks for approval of the Beam runtime and wrapper
+directories, selected skill locations, and selected MCP config locations. Antigravity config
+edits have a separate preview and approval. For non-interactive scripts, pass `--dont-ask`; this only skips prompts for requested Beam-owned
 install/config paths and does not allow replacing unrelated user files.
 
 The final **Agent Setup This Run** summary reports only actions performed by that invocation.
@@ -635,7 +636,7 @@ lean-beam --pretty doctor clients codex --json
 lean-beam --root /path/to/workspace doctor clients claude
 ```
 
-The supported client names are `codex`, `claude`, `pi`, `opencode`, and `vibe`. With no name, the
+The supported client names are `codex`, `claude`, `pi`, `opencode`, `vibe`, and `agy`. With no name, the
 command reports clients whose configuration or Lean skill files it finds. Selecting a client also
 reports absent optional integrations. The workspace is the current directory or `--root`; it need
 not be a Lean project. This command does not use `--session-dir`.
@@ -725,7 +726,9 @@ Use this section only when your editor or agent client speaks MCP. The ordinary 
 workflow does not require MCP.
 
 Both installation paths provide the experimental stdio MCP server as `lean-beam-mcp`.
-The checkout installer can register its server automatically for Codex, Claude Code, or Mistral Vibe.
+The checkout installer can register its server automatically for Codex, Claude Code, Mistral Vibe,
+or Antigravity (`agy`).
+For Antigravity, the installer updates `~/.gemini/config/mcp_config.json` directly.
 For Mistral Vibe, the installer edits `~/.vibe/config.toml` directly: it replaces any existing `lean-beam` entry in
 `[[mcp_servers]]`, removes Vibe's default empty `mcp_servers = []` line (TOML forbids extending an
 inline array with `[[mcp_servers]]` tables), and leaves other entries untouched. If the config
@@ -750,6 +753,7 @@ command without reinstalling, use the manual instructions below.
 ./scripts/install-beam.sh --claude-mcp
 ./scripts/install-beam.sh --opencode-mcp
 ./scripts/install-beam.sh --vibe-mcp
+./scripts/install-beam.sh --agy-mcp
 ./scripts/install-beam.sh --all-mcp
 ```
 
@@ -774,6 +778,7 @@ token overhead in clients that load all tool schemas eagerly, append `--toolset 
 ```bash
 codex mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"
 claude mcp add --scope user lean-beam -- "/absolute/path/to/lean-beam-mcp"
+agy mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"
 opencode mcp add
 ```
 
@@ -912,6 +917,48 @@ command = ["/absolute/path/to/lean-beam-mcp"]
 args = []
 tool_timeout_sec = 600
 ```
+
+### Antigravity (`agy`)
+
+`./scripts/install-beam.sh --agy --agy-mcp` installs the Antigravity skill and registers
+`lean-beam-mcp` for the Antigravity app, IDE, and CLI. The installer atomically updates the
+[global Antigravity MCP config](https://antigravity.google/docs/cli/mcp/)
+at `~/.gemini/config/mcp_config.json`. The installer preserves other servers and user settings
+such as environment variables, timeouts, and tool filters. It refuses invalid JSON, symlinked or
+read-only config files, and existing `lean-beam` entries that are disabled or have conflicting
+launch settings, such as a remote URL or unsupported arguments (only empty args or
+`--toolset full|core` are accepted). The installer refuses JSON comments
+and trailing commas because it cannot preserve them. Remove them or use `agy mcp add`.
+`lean-beam doctor clients agy` can inspect JSONC with comments and trailing commas.
+
+Before publishing the runtime, interactive installs show only changed keys in an existing
+`mcpServers.lean-beam` entry, or the full new config for a missing or blank file. The installer
+asks for approval when an edit is needed. An existing entry already matching the requested command,
+`"disabled": false`, and toolset arguments is reported as already registered.
+
+MCP stdio (`lean-beam-mcp`) is recommended in Antigravity so agent sessions avoid terminal-sandbox
+loopback TCP restrictions. With Remote-SSH, install and configure Beam on the host running the
+agent and use an executable path valid on that host.
+
+For manual registration, run `agy mcp add lean-beam -- "/absolute/path/to/lean-beam-mcp"` or edit
+the `lean-beam` entry under `mcpServers` in `~/.gemini/config/mcp_config.json`.
+
+```json
+{
+  "mcpServers": {
+    "lean-beam": {
+      "command": "/absolute/path/to/lean-beam-mcp",
+      "disabled": false
+    }
+  }
+}
+```
+
+Global skills live under `~/.gemini/config/skills/lean-beam`, and workspace skills are discovered
+under `.agents/skills/lean-beam` (as well as `.agent/`, `_agents/`, and `_agent/`). The doctor
+also checks `mcp_config.json` in all four workspace customization roots. If `skills.json`,
+`plugins.json`, or a Beam-referencing plugin under `plugins/` is present, `lean-beam doctor clients agy`
+reports those layers as unverified rather than claiming full plugin evaluation.
 
 ## Before An Upgrade
 
@@ -1178,6 +1225,9 @@ is managed by that toolchain's distributor.
 | Mistral Vibe home | `$HOME/.vibe` | interactive `change`, `VIBE_HOME`, or `--vibe-home` |
 | Mistral Vibe skill home | `$HOME/.vibe/skills` | derived from the Mistral Vibe home |
 | Mistral Vibe MCP config | `$HOME/.vibe/config.toml` | derived from the Mistral Vibe home |
+| Antigravity home | `$HOME` | interactive `change`, `BEAM_AGY_HOME`, or `--agy-home` |
+| Antigravity skill home | `$HOME/.gemini/config/skills` | derived from the Antigravity home |
+| Antigravity MCP config | `$HOME/.gemini/config/mcp_config.json` | derived from the Antigravity home |
 
 For sandboxed config locations, pass the target paths explicitly:
 
@@ -1185,10 +1235,11 @@ For sandboxed config locations, pass the target paths explicitly:
 ./scripts/install-beam.sh --codex-mcp --codex-home /path/to/sandbox/.codex
 ./scripts/install-beam.sh --claude-mcp --claude-mcp-config /path/to/sandbox/.claude.json
 ./scripts/install-beam.sh --vibe-mcp --vibe-home /path/to/sandbox/.vibe
+./scripts/install-beam.sh --agy-mcp --agy-home /path/to/sandbox
 ```
 
-The same Codex, Claude, and Mistral Vibe overrides are available as `CODEX_HOME`,
-`BEAM_CLAUDE_MCP_CONFIG`, and `VIBE_HOME`. Interactive installs can also choose `change` at the
+The same Codex, Claude, Mistral Vibe, and Antigravity overrides are available as `CODEX_HOME`,
+`BEAM_CLAUDE_MCP_CONFIG`, `VIBE_HOME`, and `BEAM_AGY_HOME`. Interactive installs can also choose `change` at the
 write-location prompt before approving writes.
 
 ## Slow Or Offline Installs

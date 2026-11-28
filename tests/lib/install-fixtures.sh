@@ -161,7 +161,12 @@ PY_CLAUDE
 fi
 exit 0
 SH
-  chmod +x "$stub_bin/codex" "$stub_bin/claude"
+  cat > "$stub_bin/agy" <<'SH'
+#!/usr/bin/env bash
+printf 'agy must not be invoked\n' >> "$BEAM_TEST_MCP_STUB_LOG"
+exit 1
+SH
+  chmod +x "$stub_bin/codex" "$stub_bin/claude" "$stub_bin/agy"
 }
 
 beam_install_run_with_mcp_stubs() {

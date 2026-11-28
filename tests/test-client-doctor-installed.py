@@ -37,13 +37,13 @@ result = subprocess.run([str(cli), "doctor", "clients", "--json"], cwd=workspace
 assert result.returncode == 0, (result.stdout, result.stderr)
 report = json.loads(result.stdout)
 clients = {client["client"]: client for client in report["clients"]}
-assert set(clients) == {"codex", "claude", "pi", "opencode", "vibe"}, report
+assert set(clients) == {"codex", "claude", "pi", "opencode", "vibe", "agy"}, report
 for name, client in clients.items():
     findings = {finding["code"] for finding in client["findings"]}
     assert "skill.readable" in findings, (name, client)
     assert client["skill"] == "checked", (name, client)
     assert not any(f["status"] in ["error", "unknown"] for f in client["findings"]), client
-    if name in ["codex", "claude", "vibe"]:
+    if name in ["codex", "claude", "vibe", "agy"]:
         assert {"launch.file", "runtime.metadata"} <= findings, (name, client)
     elif name == "pi":
         assert "mcp.notApplicable" in findings, client
@@ -57,4 +57,4 @@ text = subprocess.run([str(cli), "doctor", "clients"], cwd=workspace,
                       text=True, capture_output=True, timeout=15, check=True).stdout
 assert "0 errors, 0 unverified checks, 0 recommendations, 1 setup reminder." in text, text
 assert snapshot() == before, "installed doctor modified files or created state"
-print("Installed doctor: five skills and three installer registrations checked; files unchanged.")
+print("Installed doctor: six skills and four installer registrations checked; files unchanged.")

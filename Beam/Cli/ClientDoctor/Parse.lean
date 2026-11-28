@@ -14,8 +14,17 @@ inductive Format where
   | json | jsonc | toml
   deriving BEq
 
+def isJsonWhitespace (ch : Char) : Bool :=
+  ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+
+def withoutBOM (text : String) : String :=
+  if text.startsWith "\uFEFF" then (text.drop 1).toString else text
+
+def isBlankJson (text : String) : Bool :=
+  (withoutBOM text).all isJsonWhitespace
+
 /-- Preserve strings and line breaks while removing JSONC comments. No source text escapes errors. -/
-private def withoutComments (text : String) : Except Unit String := do
+def withoutComments (text : String) : Except Unit String := do
   let mut result := ""
   let mut quoted := false
   let mut escaped := false
@@ -26,15 +35,15 @@ private def withoutComments (text : String) : Except Unit String := do
     let ch := chars.head!
     chars := chars.tail!
     if lineComment then
-      result := result.push (if ch == '\n' then '\n' else ' ')
-      if ch == '\n' then lineComment := false
+      result := result.push (if ch == '\n' || ch == '\r' then ch else ' ')
+      if ch == '\n' || ch == '\r' then lineComment := false
     else if blockComment then
       if ch == '*' && chars.head? == some '/' then
         chars := chars.tail!
         result := result ++ "  "
         blockComment := false
       else
-        result := result.push (if ch == '\n' then '\n' else ' ')
+        result := result.push (if ch == '\n' || ch == '\r' then ch else ' ')
     else if quoted then
       result := result.push ch
       if escaped then escaped := false
@@ -56,7 +65,7 @@ private def withoutComments (text : String) : Except Unit String := do
   if blockComment then throw ()
   return result
 
-private def withoutTrailingCommas (text : String) : String := Id.run do
+def withoutTrailingCommas (text : String) : String := Id.run do
   let mut result := ""
   let mut quoted := false
   let mut escaped := false
@@ -105,5 +114,11 @@ def parseConfig (format : Format) (text : String) : IO (Except Unit Json) := do
       match ← (Lake.Toml.loadToml (Parser.mkInputContext text "client-config")).toBaseIO with
       | .ok table => return .ok <| tomlJson (.table .missing table)
       | .error _ => return .error ()
+
+/-- Antigravity accepts JSONC, an optional leading UTF-8 BOM, and blank pre-created files. -/
+def parseAgyConfig (text : String) : Except Unit Json := do
+  let stripped ← withoutComments (withoutBOM text)
+  if stripped.all isJsonWhitespace then return Json.mkObj []
+  (Json.parse (withoutTrailingCommas stripped)).mapError (fun _ => ())
 
 end Beam.Cli.ClientDoctor
